@@ -67,15 +67,17 @@ export default defineConfig({
       },
     },
     server: {
-      // 显式绑 IPv4 而不是默认的 'localhost'。
-      // 默认 'localhost' 会先解析到 IPv6 ::1,Windows 上若 ::1:5173 落在
-      // Hyper-V / WinNAT 的保留端口范围内会抛 EACCES (而不是 EADDRINUSE),
-      // 直接让 Vite 启动失败。锁 127.0.0.1 绕过 IPv6 问题。
+      // 锁 IPv4,避免 Vite 默认 localhost 先解析到 IPv6 ::1 时
+      // 撞 Windows IPv6 保留端口的 EACCES。
       host: '127.0.0.1',
-      port: 5173,
-      // 5173 也可能被占,放弃 strictPort 让 Vite 自动 +1 试到一个可用端口。
-      // electron-vite 会把最终端口写到 ELECTRON_RENDERER_URL 环境变量,
-      // main process 从此变量加载 URL,所以动态端口对主进程透明。
+      // 端口选择: Windows + Hyper-V/WinNAT 会保留大段动态端口范围
+      // (开发者自查命令: `netsh interface ipv4 show excludedportrange protocol=tcp`)。
+      // Vite 默认的 5173 在很多 Windows 11 机器上落在 5141-5340 保留段内,会抛 EACCES。
+      // 5800 在常见保留段之外 (5341-5984 是非保留区间),也不和 VNC/WinRM 等常见服务冲突。
+      // 若开发者机器仍命中保留段,可通过环境变量 EASYTERM_DEV_PORT 覆盖。
+      port: Number(process.env.EASYTERM_DEV_PORT) || 5800,
+      // EACCES 时 Vite 不会自动回退到下一个端口 (它只对 EADDRINUSE 这么做),
+      // 所以 strictPort 没意义,关掉避免误导。真要换端口直接改上一行或 export EASYTERM_DEV_PORT。
       strictPort: false,
     },
   },
