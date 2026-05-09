@@ -8,8 +8,8 @@
  *   - stylelint 静态校验 (CP-4 接入)
  *
  * CP-1 阶段:
- * 仅引入 Rose Pine 默认调色板与最小布局 reset。CP-4 阶段会拆分到独立的
- * rose-pine-themes.css,并按主题切换。
+ * 仅引入 Rose Pine 默认调色板 + 应用骨架样式 (header / main / terminal-wrapper)。
+ * CP-4 阶段会拆分到独立的 rose-pine-themes.css,并按主题切换。
  */
 
 :root {
@@ -57,16 +57,161 @@ a {
   color: var(--foam, #f0f);
 }
 
+/* ── 应用骨架 ── */
+
 .app-root {
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
   height: 100%;
+}
+
+.app-root.with-terminal {
+  background-color: var(--base, #f0f);
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background-color: var(--surface, #f0f);
+  border-bottom: 1px solid var(--overlay, #f0f);
+  font-size: 13px;
+  flex: 0 0 auto;
+}
+
+.app-title {
+  font-weight: 600;
+  color: var(--iris, #f0f);
+  letter-spacing: 0.5px;
+}
+
+.app-window-badge {
+  padding: 2px 8px;
+  background-color: var(--overlay, #f0f);
+  color: var(--gold, #f0f);
+  border-radius: 4px;
+  font-family: var(--terminal-font-family, monospace);
+  font-size: 11px;
+}
+
+.app-version {
+  margin-left: auto;
+  color: var(--muted, #f0f);
+  font-family: var(--terminal-font-family, monospace);
+  font-size: 11px;
+}
+
+.app-main {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+/* ── Terminal ── */
+
+.terminal-wrapper {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  background-color: var(--base, #f0f);
+}
+
+.terminal-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  background-color: var(--surface, #f0f);
+  border-bottom: 1px solid var(--overlay, #f0f);
+  font-size: 11px;
+  color: var(--subtle, #f0f);
+  font-family: var(--terminal-font-family, monospace);
+  flex: 0 0 auto;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.status-dot.active {
+  background-color: var(--pine, #f0f);
+}
+
+.status-dot.pending {
+  background-color: var(--gold, #f0f);
+}
+
+.status-text {
+  color: var(--text, #f0f);
+}
+
+.status-cwd {
+  margin-left: auto;
+  color: var(--muted, #f0f);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 50%;
+}
+
+.terminal-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 8px;
+}
+
+.terminal-host .xterm {
+  height: 100%;
+  width: 100%;
+}
+
+.terminal-host .xterm-viewport {
+  background-color: transparent !important;
+}
+
+/* ── 错误 / 占位状态 ── */
+
+.terminal-error {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   padding: 32px;
+  flex: 1 1 auto;
+  background-color: var(--base, #f0f);
+  color: var(--text, #f0f);
+}
+
+.terminal-error h2 {
+  color: var(--love, #f0f);
+  margin: 0 0 16px;
+}
+
+.terminal-error pre {
+  background-color: var(--overlay, #f0f);
+  padding: 12px;
+  border-radius: 4px;
+  font-family: var(--terminal-font-family, monospace);
+  font-size: 12px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  margin: 0 0 16px;
+}
+
+.terminal-error .hint {
+  color: var(--muted, #f0f);
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 0;
 }
 
 .bootstrap-placeholder {
   max-width: 640px;
+  margin: auto;
   text-align: center;
   background-color: var(--surface, #f0f);
   border: 1px solid var(--overlay, #f0f);
@@ -83,6 +228,10 @@ a {
   letter-spacing: 1px;
 }
 
+.bootstrap-placeholder.error h1 {
+  color: var(--love, #f0f);
+}
+
 .bootstrap-placeholder .subtitle {
   margin: 0 0 24px;
   color: var(--subtle, #f0f);
@@ -90,33 +239,23 @@ a {
   letter-spacing: 0.5px;
 }
 
-.bootstrap-placeholder .diagnostics {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 8px 16px;
-  margin: 0 0 24px;
-  padding: 16px;
-  background-color: var(--overlay, #f0f);
-  border-radius: 6px;
-  text-align: left;
-  font-family: var(--terminal-font-family, monospace);
-  font-size: 13px;
-}
-
-.bootstrap-placeholder dt {
-  color: var(--gold, #f0f);
-  font-weight: 500;
-}
-
-.bootstrap-placeholder dd {
-  margin: 0;
-  color: var(--text, #f0f);
-}
-
 .bootstrap-placeholder .hint {
-  margin: 0;
   color: var(--muted, #f0f);
   font-size: 12px;
   text-align: left;
   line-height: 1.6;
+  margin: 0;
+}
+
+.bootstrap-placeholder .error-pre {
+  background-color: var(--overlay, #f0f);
+  padding: 12px;
+  border-radius: 4px;
+  font-family: var(--terminal-font-family, monospace);
+  font-size: 12px;
+  text-align: left;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  margin: 0;
+  color: var(--love, #f0f);
 }
