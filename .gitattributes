@@ -1,0 +1,24 @@
+# Enforce LF for text source files across platforms (Windows checkout writes
+# CRLF in working copy if user has core.autocrlf=true, but the repo always
+# stores LF — this prevents diff churn between Windows and Linux contributors).
+* text=auto eol=lf
+
+# Binary files: never touch these
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.exe binary
+*.dll binary
+*.node binary
+
+# Shell hooks: keep their native line endings (PowerShell .ps1 tolerant of LF)
+*.ps1 text eol=lf
+*.bat text eol=crlf
+*.sh text eol=lf
