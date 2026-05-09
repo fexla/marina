@@ -144,7 +144,21 @@ export class WindowManager implements IWindowManager {
     const queryString = `?windowId=${encodeURIComponent(windowId)}&windowNumber=${windowNumber}`;
     if (isDev && process.env.ELECTRON_RENDERER_URL) {
       void win.loadURL(process.env.ELECTRON_RENDERER_URL + queryString);
-      win.webContents.openDevTools({ mode: 'detach' });
+
+      // DevTools 默认只为第一个窗口自动打开:
+      // - 每开一个 BrowserWindow 都打 DevTools,会让 Chromium 重复尝试启用
+      //   Autofill 等 Chrome 私有协议 (Electron 不实现),刷
+      //   "Request Autofill.enable failed" stderr 噪音
+      // - 多窗口测试时也避免一堆 detached DevTools 窗口堆屏幕
+      // 用户要 DevTools 直接 F12 / Ctrl+Shift+I,或 EASYTERM_DEVTOOLS=always 强开
+      const devtoolsMode = process.env['EASYTERM_DEVTOOLS'];
+      const isFirstWindow = windowNumber === 1;
+      const shouldOpenDevTools =
+        devtoolsMode === 'always' ||
+        (devtoolsMode !== 'never' && isFirstWindow);
+      if (shouldOpenDevTools) {
+        win.webContents.openDevTools({ mode: 'detach' });
+      }
     } else {
       void win.loadFile(resolve(__dirname, '../renderer/index.html'), {
         search: queryString.slice(1), // loadFile 的 search 不要前导 ?
