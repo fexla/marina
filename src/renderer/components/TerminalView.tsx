@@ -108,39 +108,7 @@ export function TerminalView({ windowId }: TerminalViewProps): JSX.Element {
 
     term.open(container);
 
-    // —— 状态变量先于 scheduleFit 声明,避免 TDZ ——
-    let cleanupOutput: (() => void) | null = null;
-    let cleanupExited: (() => void) | null = null;
-    let disposed = false;
-    let sessionId: string | null = null;
-
-    /**
-     * fit() 用 rAF 调度,每帧最多一次。这是为了断 ResizeObserver 反馈环:
-     *   fit() 改 xterm 尺寸 → DOM 节点略动 → ResizeObserver 再触发 → fit() 再跑
-     * 屏幕表现就是肉眼可见的"闪动 / 抖动"。改成 rAF 后多次触发被合并成一次,
-     * 而且让出一帧给浏览器布局稳定下来后再测,字体未加载完毕的初始抖动也消解。
-     */
-    let fitFrame: number | null = null;
-    const scheduleFit = (onFitted?: (cols: number, rows: number) => void): void => {
-      if (disposed) return;
-      if (fitFrame !== null) {
-        // 已排队等下一帧,新的 onFitted 覆盖旧的 (新的尺寸总是最新的)
-        cancelAnimationFrame(fitFrame);
-      }
-      fitFrame = requestAnimationFrame(() => {
-        fitFrame = null;
-        if (disposed) return;
-        try {
-          fitAddon.fit();
-        } catch {
-          return;
-        }
-        if (onFitted) onFitted(term.cols, term.rows);
-      });
-    };
-
-    // 初次 fit 同步路径:让 cmd:session:create 拿到一个合理初始 cols/rows。
-    // 后续 ResizeObserver / scheduleFit 走 rAF 防抖,避免反馈环。
+    // 初次 fit 后才知道实际 cols/rows
     let cols = 80;
     let rows = 24;
     try {
@@ -150,6 +118,12 @@ export function TerminalView({ windowId }: TerminalViewProps): JSX.Element {
     } catch {
       // 极小窗口下 fit 可能抛错,fallback 到 80x24
     }
+
+    // —— 创建 PTY session ——
+    let cleanupOutput: (() => void) | null = null;
+    let cleanupExited: (() => void) | null = null;
+    let disposed = false;
+    let sessionId: string | null = null;
 
     void (async () => {
       try {
@@ -209,12 +183,30 @@ export function TerminalView({ windowId }: TerminalViewProps): JSX.Element {
       }
     })();
 
-    // —— 监听容器大小变化,scheduleFit 走 rAF 防抖避免反馈环 ——
-    let lastCols = cols;
-    let lastRows = rows;
-    const resizeObserver = new ResizeObserver(() => {
-      scheduleFit((newCols, newRows) => {
-        // 只在尺寸真变了才发 IPC,避免相同 cols/rows 反复 resize
+    // —— 监听容器大小变化,自动 resize ——
+    //
+    // 关键防抖三件:
+    // 1. requestAnimationFrame 合并同一帧内的多次 ResizeObserver 触发
+    //    (fit() 可能引起 xterm 内部 DOM 重排,即使 .terminal-host 用
+    //     flex:1 1 0 + overflow:hidden 隔离也尽量保险)
+    // 2. lastCols/lastRows 比较,cols/rows 没真的变化时不发 IPC,避免
+    //    cmd:session:resize 风暴 (PTY resize 是相对昂贵的系统调用)
+    // 3. fit() 失败时直接退出,避免抛错让 xterm 进入半死状态
+    let lastCols = -1;
+    let lastRows = -1;
+    let pendingFrame: number | null = null;
+    const triggerFit = (): void => {
+      if (pendingFrame !== null) return; // 已有一帧排队,等它跑完
+      pendingFrame = requestAnimationFrame(() => {
+        pendingFrame = null;
+        if (disposed) return;
+        try {
+          fitAddon.fit();
+        } catch {
+          return;
+        }
+        const newCols = term.cols;
+        const newRows = term.rows;
         if (newCols === lastCols && newRows === lastRows) return;
         lastCols = newCols;
         lastRows = newRows;
@@ -230,13 +222,18 @@ export function TerminalView({ windowId }: TerminalViewProps): JSX.Element {
             });
         }
       });
-    });
+    };
+
+    const resizeObserver = new ResizeObserver(triggerFit);
     resizeObserver.observe(container);
 
     return () => {
       disposed = true;
-      if (fitFrame !== null) cancelAnimationFrame(fitFrame);
       resizeObserver.disconnect();
+      if (pendingFrame !== null) {
+        cancelAnimationFrame(pendingFrame);
+        pendingFrame = null;
+      }
       cleanupOutput?.();
       cleanupExited?.();
       if (sessionId) {

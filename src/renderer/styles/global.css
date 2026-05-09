@@ -103,7 +103,7 @@ a {
 }
 
 .app-main {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   display: flex;
   min-height: 0;
 }
@@ -113,7 +113,7 @@ a {
 .terminal-wrapper {
   display: flex;
   flex-direction: column;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-height: 0;
   background-color: var(--base, #f0f);
 }
@@ -160,14 +160,28 @@ a {
 }
 
 .terminal-host {
-  flex: 1 1 auto;
+  /*
+   * 关键: flex-basis = 0 + min-height: 0 + overflow: hidden 三件套,确保
+   * .terminal-host 自身尺寸完全由父级 flex 计算决定,不被 xterm 内部
+   * DOM 撑大反弹。否则 fitAddon.fit() → term.resize() → xterm DOM
+   * 高度变 → ResizeObserver 又触发 → 死循环,表现为终端区域闪烁。
+   *
+   * position: relative 给 .xterm 一个 positioning context,我们用
+   * absolute + inset 让 xterm 完全脱离 .terminal-host 的 layout 影响。
+   */
+  flex: 1 1 0;
   min-height: 0;
-  padding: 8px;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
 }
 
 .terminal-host .xterm {
-  height: 100%;
-  width: 100%;
+  position: absolute;
+  inset: 8px;
+  /* xterm 的 padding 视觉效果由 inset: 8px 实现,代替原来的
+     .terminal-host { padding: 8px } —— 后者会让 .xterm 100%
+     高宽撑满 padding-box,但 padding 本身参与 ResizeObserver 抖动循环。 */
 }
 
 .terminal-host .xterm-viewport {
@@ -181,7 +195,7 @@ a {
   flex-direction: column;
   justify-content: center;
   padding: 32px;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   background-color: var(--base, #f0f);
   color: var(--text, #f0f);
 }
