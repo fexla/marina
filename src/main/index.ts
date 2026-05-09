@@ -23,6 +23,7 @@
  */
 import { app } from 'electron';
 import { WindowManager } from './window-manager';
+import { TrayManager } from './tray';
 
 /**
  * 应用是否处于"完全退出"流程中。从托盘菜单"完全退出 EasyTerm"触发后置 true。
@@ -85,10 +86,17 @@ function bootstrap(): void {
     isQuitting = true;
   });
 
+  const trayManager = new TrayManager(windowManager);
+
   app.whenReady().then(() => {
-    // CP-1 后续 commit 加入: TrayManager + PtyController
-    // 此处先创建首个窗口验证 WindowManager 链路
+    trayManager.init();
+    // CP-1 后续 commit 加入: PtyController
     windowManager.createWindow();
+  });
+
+  // 真退出前确保托盘图标先消失,避免短暂残留
+  app.on('will-quit', () => {
+    trayManager.destroy();
   });
 }
 
