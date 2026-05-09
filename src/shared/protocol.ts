@@ -4,19 +4,24 @@
  *   确保两端对消息 schema 的理解完全一致。
  *
  * @关键设计:
- * - Channel 命名严格遵守 docs/ipc-protocol.md 第 2.1 节的 `<kind>:<domain>:<action>` 格式
- * - 每个命令的 payload 类型与返回值类型成对定义,便于在 ipc-client.ts 中泛型推导
+ * - Channel 命名严格遵守 docs/ipc-protocol.md 第 2.1 节的
+ *   `<kind>:<domain>:<action>` 格式
+ * - 每个命令的 payload 类型与返回值类型成对定义
  * - 所有 payload 必须 JSON 可序列化 (ipc-protocol.md 1.3 节)
  * - 这个文件不引入任何运行时代码,纯类型 + 常量
  *
  * @对应文档章节: docs/ipc-protocol.md 全部
- *
- * @CP-1 范围:
- * - app:get-protocol-version (handshake)
- * - session:create / send-input / resize / close (一窗一 PowerShell PTY 简化模型)
- * - evt:session:output / exited
- * 其余 channel (snapshot / bookmark / template / settings) 在 CP-2/3/4 加入。
  */
+import type {
+  AppSnapshot,
+  Bookmark,
+  PathTree,
+  SessionInfo,
+  Settings,
+  Template,
+  WindowInfo,
+} from './types';
+import type { DeepPartial } from './types-helpers';
 
 /**
  * 协议版本号。Main 与 Renderer 不匹配时拒绝 handshake。
@@ -36,12 +41,33 @@ export const COMMAND_CHANNELS = {
   // Window 域
   WINDOW_CREATE: 'cmd:window:create',
   WINDOW_CLOSE_SELF: 'cmd:window:close-self',
+  WINDOW_CLOSE_ALL: 'cmd:window:close-all',
+  WINDOW_FOCUS: 'cmd:window:focus',
 
-  // Session 域 (CP-1 一窗一 PTY 简化版,CP-3 完整 SessionManager 接管)
+  // Session 域
   SESSION_CREATE: 'cmd:session:create',
+  SESSION_CLOSE: 'cmd:session:close',
+  SESSION_CLAIM: 'cmd:session:claim',
+  SESSION_RELEASE: 'cmd:session:release',
+  SESSION_FOCUS_OWNER: 'cmd:session:focus-owner',
   SESSION_SEND_INPUT: 'cmd:session:send-input',
   SESSION_RESIZE: 'cmd:session:resize',
-  SESSION_CLOSE: 'cmd:session:close',
+
+  // Bookmark / Path 域
+  BOOKMARK_ADD: 'cmd:bookmark:add',
+  BOOKMARK_REMOVE: 'cmd:bookmark:remove',
+  BOOKMARK_RENAME: 'cmd:bookmark:rename',
+  BOOKMARK_REORDER: 'cmd:bookmark:reorder',
+  BOOKMARK_SET_DEFAULT_TEMPLATE: 'cmd:bookmark:set-default-template',
+  BOOKMARK_PICK_FOLDER: 'cmd:bookmark:pick-folder',
+  PATH_REMOVE_FROM_RECENT: 'cmd:path:remove-from-recent',
+
+  // Settings 域
+  SETTINGS_GET: 'cmd:settings:get',
+  SETTINGS_UPDATE: 'cmd:settings:update',
+
+  // System 域
+  SYSTEM_SHOW_IN_EXPLORER: 'cmd:system:show-in-explorer',
 } as const;
 
 export type CommandChannel = (typeof COMMAND_CHANNELS)[keyof typeof COMMAND_CHANNELS];
@@ -50,28 +76,38 @@ export type CommandChannel = (typeof COMMAND_CHANNELS)[keyof typeof COMMAND_CHAN
  * 所有事件通道的命名常量。
  */
 export const EVENT_CHANNELS = {
+  // App / Window
+  APP_STATE_CHANGED: 'evt:app:state-changed',
+  WINDOW_ASSIGNED_ID: 'evt:window:assigned-id',
   WINDOW_LIST_UPDATED: 'evt:window:list-updated',
+  WINDOW_FOCUS_REQUESTED: 'evt:window:focus-requested',
 
-  // Session 字节流与生命周期 (CP-1 子集,CP-3 扩展)
+  // Session
+  SESSION_CREATED: 'evt:session:created',
+  SESSION_STATE_CHANGED: 'evt:session:state-changed',
   SESSION_OUTPUT: 'evt:session:output',
   SESSION_EXITED: 'evt:session:exited',
+  SESSION_OWNER_CHANGED: 'evt:session:owner-changed',
+  SESSION_DESTROYED: 'evt:session:destroyed',
+
+  // Path / Bookmark / Settings
+  PATH_TREE_UPDATED: 'evt:path:tree-updated',
+  BOOKMARKS_UPDATED: 'evt:bookmarks:updated',
+  SETTINGS_CHANGED: 'evt:settings:changed',
 } as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
 
-/**
- * 命令信封 (ipc-protocol.md 2.3 节)。
- * Renderer 端 invoke 时会自动包装,Main 端 handle 时会自动解包。
- */
+// ──────────────────────────────────────────────────────────────────
+// Envelope
+// ──────────────────────────────────────────────────────────────────
+
 export interface CommandEnvelope<P = unknown> {
   windowId: string;
   requestId: string;
   payload: P;
 }
 
-/**
- * 事件信封 (ipc-protocol.md 2.4 节)。
- */
 export interface EventEnvelope<P = unknown> {
   eventId: string;
   timestamp: number;
@@ -79,48 +115,98 @@ export interface EventEnvelope<P = unknown> {
 }
 
 // ──────────────────────────────────────────────────────────────────
-// App 域 payload / response
+// App 域
 // ──────────────────────────────────────────────────────────────────
 
-/**
- * cmd:app:get-protocol-version 的返回类型。
- */
 export interface GetProtocolVersionResponse {
   protocolVersion: typeof PROTOCOL_VERSION;
-  /** 应用版本号,从 package.json 读 */
   buildVersion: string;
 }
 
+export interface GetSnapshotPayload {
+  /** 发起方窗口 ID,用于校验 */
+  myWindowId: string;
+}
+
+export type GetSnapshotResponse = AppSnapshot;
+
+export interface QuitPayload {
+  /** CP-2 暂未使用,CP-3 加入 session 在跑时的二次确认时启用 */
+  skipConfirmation?: boolean;
+}
+
+export interface QuitResponse {
+  cancelled: boolean;
+}
+
 // ──────────────────────────────────────────────────────────────────
-// Session 域 payload / response (CP-1 简化版)
+// Window 域
 // ──────────────────────────────────────────────────────────────────
 
-/**
- * cmd:session:create payload。CP-1 一窗一 PTY 简化:
- * - 不传 pathId / templateId,自动用默认 shell 与用户主目录
- * - 创建后该 session 的 owner 即为发起的 window
- *
- * CP-3 引入 SessionManager 后会扩展此 payload 兼容多 session/path/template。
- */
+export interface CreateWindowPayload {
+  /** 可选:新窗口启动时聚焦的 sessionId (CP-3 加入,CP-2 忽略) */
+  selectSessionId?: string;
+}
+
+export interface CreateWindowResponse {
+  windowId: string;
+  windowNumber: number;
+}
+
+export interface FocusWindowPayload {
+  windowId: string;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Session 域
+// ──────────────────────────────────────────────────────────────────
+
 export interface CreateSessionPayload {
-  /** 终端尺寸初始值 (cols * rows),来自 xterm fit 后的实际值 */
+  /** 启动 session 的 path id (= 该 path 的 normalize 后绝对路径)。
+   *  缺省时 SessionManager 会用 homedir,主要用于 CP-1 兼容期。 */
+  pathId?: string;
+  /** 启动模板 id。CP-2 仅 'shell',CP-3 起接 TemplateManager */
+  templateId?: string;
+  /** 是否本窗口接管 ownership。默认 true */
+  takeOwnership?: boolean;
+  /** 终端尺寸初始值 */
   cols: number;
   rows: number;
 }
 
 export interface CreateSessionResponse {
+  session: SessionInfo;
+  /** 是否触发了 path 树变化 (临时分类等) */
+  pathTreeChanged: boolean;
+}
+
+export interface CloseSessionPayload {
   sessionId: string;
-  /** PTY 子进程的 PID,用于诊断 */
-  pid: number;
-  /** 启动用的 shell 可执行文件绝对路径 */
-  shellPath: string;
-  /** 启动时的工作目录 */
-  cwd: string;
+  /** 强制 kill (默认 false 即 SIGTERM) */
+  force?: boolean;
+}
+
+export interface ClaimSessionPayload {
+  sessionId: string;
+}
+
+export interface ClaimSessionResponse {
+  /** CP-3 接入 scrollback ring buffer 后,新 owner 通过此返回值拉历史。
+   *  CP-2 暂时为空字符串。 */
+  scrollback: string;
+}
+
+export interface ReleaseSessionPayload {
+  sessionId: string;
+}
+
+export interface FocusSessionOwnerPayload {
+  sessionId: string;
 }
 
 export interface SendInputPayload {
   sessionId: string;
-  /** 字节流,base64 编码 (避免控制字符在 JSON 中失真) */
+  /** 字节流,base64 编码 */
   data: string;
 }
 
@@ -130,18 +216,105 @@ export interface ResizeSessionPayload {
   rows: number;
 }
 
-export interface CloseSessionPayload {
-  sessionId: string;
+// ──────────────────────────────────────────────────────────────────
+// Bookmark / Path 域
+// ──────────────────────────────────────────────────────────────────
+
+export interface AddBookmarkPayload {
+  path: string;
+  displayName?: string;
+  defaultTemplateId?: string;
+}
+
+export interface AddBookmarkResponse {
+  bookmark: Bookmark;
+}
+
+export interface RemoveBookmarkPayload {
+  pathId: string;
+}
+
+export interface RenameBookmarkPayload {
+  pathId: string;
+  newDisplayName: string;
+}
+
+export interface ReorderBookmarksPayload {
+  orderedPathIds: string[];
+}
+
+export interface SetDefaultTemplateForBookmarkPayload {
+  pathId: string;
+  templateId: string | null;
+}
+
+export interface PickFolderPayload {
+  defaultPath?: string;
+}
+
+export interface PickFolderResponse {
+  /** 用户取消 → null */
+  path: string | null;
+}
+
+export interface RemoveFromRecentPayload {
+  path: string;
 }
 
 // ──────────────────────────────────────────────────────────────────
-// Session 域 event payload
+// Settings 域
 // ──────────────────────────────────────────────────────────────────
 
-/**
- * evt:session:output — PTY 输出字节流。
- * 仅推送给 owner window (CP-1 即创建该 session 的 window)。
- */
+export interface GetSettingsResponse {
+  settings: Settings;
+}
+
+export interface UpdateSettingsPayload {
+  partial: DeepPartial<Settings>;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// System 域
+// ──────────────────────────────────────────────────────────────────
+
+export interface ShowInExplorerPayload {
+  path: string;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// 事件 payload
+// ──────────────────────────────────────────────────────────────────
+
+export interface AppStateChangedPayload {
+  hasWindows: boolean;
+  totalSessions: number;
+  activeSessions: number;
+}
+
+export interface WindowAssignedIdPayload {
+  windowId: string;
+  windowNumber: number;
+}
+
+export interface WindowListUpdatedPayload {
+  windows: WindowInfo[];
+}
+
+export interface WindowFocusRequestedPayload {
+  reason: 'session-click' | 'tray-click' | 'manual';
+  selectSessionId?: string;
+}
+
+export interface SessionCreatedPayload {
+  session: SessionInfo;
+}
+
+export interface SessionStateChangedPayload {
+  sessionId: string;
+  changes: Partial<SessionInfo>;
+  full: SessionInfo;
+}
+
 export interface SessionOutputPayload {
   sessionId: string;
   /** base64 编码的字节流 */
@@ -150,15 +323,42 @@ export interface SessionOutputPayload {
   seq: number;
 }
 
-/**
- * evt:session:exited — PTY 进程退出。
- *
- * 注:node-pty 给的 signal 是数字 (POSIX signal number),Windows 上通常没有
- * 真正的 signal 概念,exitCode 才是主要信息。CP-3 会把数字翻译成 'SIGTERM' 等
- * 字符串名称以便日志可读。
- */
 export interface SessionExitedPayload {
   sessionId: string;
   exitCode: number;
+  /** node-pty 给的是 signal number,Windows 上通常没有 */
   signal?: number;
+}
+
+export interface SessionOwnerChangedPayload {
+  sessionId: string;
+  oldOwnerWindowId: string | null;
+  newOwnerWindowId: string | null;
+}
+
+export interface SessionDestroyedPayload {
+  sessionId: string;
+  reason: 'tombstone-expired' | 'user-closed' | 'app-quit' | 'pty-exited';
+}
+
+export interface PathTreeUpdatedPayload {
+  tree: PathTree;
+}
+
+export interface BookmarksUpdatedPayload {
+  bookmarks: Bookmark[];
+}
+
+export interface SettingsChangedPayload {
+  settings: Settings;
+  /** 变化的字段路径,如 ["appearance.theme"];renderer 可基于此局部更新 */
+  changedKeys: string[];
+}
+
+/**
+ * 模板列表更新 (CP-2 阶段不发,因为模板未持久化;CP-3 起启用)。
+ */
+export interface TemplateListUpdatedPayload {
+  templates: Template[];
+  defaultTemplateId: string;
 }

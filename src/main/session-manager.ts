@@ -108,11 +108,17 @@ export class SessionManager extends EventEmitter {
   private readonly sessions = new Map<string, ManagedSession>();
 
   constructor(
-    private readonly windowManager: WindowManager,
+    /**
+     * 持有 WindowManager 引用主要为后续 CP-3 cwd 跟踪与 owner 路由用,
+     * CP-2 阶段未直接使用 (IPC 层在 owner 切换时自己查 WindowManager)。
+     * 留接口避免 CP-3 时反复改 constructor 签名。
+     */
+    private readonly _windowManager: WindowManager,
     private readonly pathManager: PathManager,
     private readonly spawnFn: PtySpawnFn = defaultSpawnPty,
   ) {
     super();
+    void this._windowManager; // 抑制 noUnusedLocals
   }
 
   // ──────────────────────────────────────────────────────────────────

@@ -20,7 +20,10 @@
  */
 import { EventEmitter } from 'node:events';
 import type { Settings, ThemeId } from '@shared/types';
+import type { DeepPartial } from '@shared/types-helpers';
 import type { JsonStore } from './persistence';
+
+export type { DeepPartial };
 
 /**
  * 默认设置 (软件定义书 11.1 settings.json)。
@@ -82,10 +85,6 @@ export class SettingsError extends Error {
     this.name = 'SettingsError';
   }
 }
-
-export type DeepPartial<T> = {
-  [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K];
-};
 
 export class SettingsManager extends EventEmitter {
   private settings: Settings = DEFAULT_SETTINGS;
