@@ -60,17 +60,23 @@ CP-3 行为变化(与 CP-2 / 早期 V1 设计不同):
 
 ---
 
-## 测试 2:状态点(active / idle / exited)(预计 2 分钟)
+## 测试 2:状态点(active / idle / exited)(预计 3 分钟)
 
-1. 在某收藏路径双击启动 PowerShell。
-2. **预期**(CP-3 勘误 #3 修订):
-   - 启动后头 5 秒(grace 期),状态点**保持绿色**(active),即使 PowerShell 中间停几秒也不会闪到 idle
-   - 这是为消除 Claude Code 等"启动期吐 banner→停一下→出 prompt"的"绿黄绿"闪烁噪声
-3. 等 ~8 秒后不动键盘(grace 5s + 默认阈值 3s),状态点应变成**黄色**(idle)。
-4. 在终端里敲一个回车 → shell echo 一行 → 立刻变回**绿色**(active)。
-5. 在终端里输入 `exit` 回车 → PTY 死掉,但 **tab 不消失**,变成**灰色 ⚫**;tab 标题旁有 `⚫` 小图标;鼠标悬停 tab 看 tooltip 显示 "已退出 (exitCode=0)"。
-6. 终端区状态条也显示 `· 已退出 (exitCode=0)`,scrollback 仍可见(向上滚看历史)。
-7. 在那个灰显的 tab 上右键 → "关闭" → tab 消失,session 真销毁。
+### 2.1 单 session 基本转移
+1. 在某收藏路径双击启动 PowerShell。状态点**绿色**(active)。
+2. 等 ~3 秒不动键盘(默认 idle 阈值 2 秒),状态点应变**黄色**(idle)。
+3. 在终端里敲一个回车 → shell echo 一行 → 立刻变回**绿色**(active)。
+4. 在终端里输入 `exit` 回车 → PTY 死掉,但 **tab 不消失**,变成**灰色 ⚫**;tab 标题旁有 `⚫` 小图标;鼠标悬停 tab 看 tooltip 显示 "已退出 (exitCode=0)"。
+5. 终端区状态条也显示 `· 已退出 (exitCode=0)`,scrollback 仍可见(向上滚看历史)。
+6. 在那个灰显的 tab 上右键 → "关闭" → tab 消失,session 真销毁。
+
+### 2.2 切到 idle session 不应闪绿(CP-3 勘误 #3 v2 验收点)
+1. 启动一个 session,等 ~3 秒让它进 idle(黄点)。
+2. 开第二个窗口(托盘"打开新窗口")。在窗口 2 切到同一 path。
+3. 在窗口 2 点击该 session 的灰显 tab → 接管。
+4. **预期**:tab 接管成 mine,状态点**保持黄色**(idle)。**不应该**闪一下绿再回黄。
+5. **失败现象**:tab 切过来时短暂闪绿(~3 秒),说明 resize quiet 窗口没生效或被 0 短路了。
+6. 拖窗口边改尺寸时也类似 — resize 期间 idle session 不应被 ConPTY 重绘扯成 active。
 
 > 关于状态点的设计意图(勘误 #2):状态点反映"PTY 是否在产生输出"。用户输入(键盘按键)本身**不直接**影响状态,但 shell 会 echo 用户输入,所以输入会通过 echo 间接触发 active。这是 PTY 的固有特性,不是 bug。
 

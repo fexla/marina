@@ -73,14 +73,21 @@ const CWD_GRACE_MS = 5000;
 const CWD_POLL_INTERVAL_MS = 5000;
 
 /**
- * 状态机启动 grace:session 创建后 N 毫秒内不切 idle (CP-3 勘误 #3)。
+ * Resize quiet 窗口 (CP-3 勘误 #3 v2)。
  *
- * 解决 Claude Code 等"启动期吐很多东西然后停一下又吐"的场景下用户感知到
- * 的"绿→黄→绿"闪烁噪声 — claude 进入 prompt 前的 sleep 可能超过 idle 阈值,
- * 导致刚启动就切 idle 然后又切回 active。grace 期内 idle 计时器即使到点
- * 也不真正切。
+ * 解决:用户在另一窗口持有的 idle session tab 上点击 → 主进程改 owner → 渲染
+ * 端 mount TerminalView → xterm fit → cmd:session:resize → Windows ConPTY
+ * 收到 resize 把屏幕 buffer 按新尺寸重新排版,**整屏字节流再发一遍**(已知问题
+ * docs/known-issues.md KI-001 同一机制,这里关心的是状态副作用而非视觉副作用)
+ * → handlePtyData 误触 markActive → tab 闪一下绿色再回黄色。
+ *
+ * 修复:resize 后的 RESIZE_QUIET_MS 内 PTY 出来的字节认为是 ConPTY/SIGWINCH
+ * 重绘的回声,**不触发 markActive**(但仍然写 scrollback、仍然 emit
+ * sessionOutput,xterm 视觉上要正常看到重绘内容)。
+ *
+ * 500ms 是足够 ConPTY 完成重排 + child SIGWINCH 重绘的"安静期"。
  */
-const STATE_STARTUP_GRACE_MS = 5000;
+const RESIZE_QUIET_MS = 500;
 
 /**
  * spawn 工厂,与 node-pty 的 spawn 兼容。测试中用 mock 替换。
@@ -175,6 +182,12 @@ interface ManagedSession {
   cwdPollTimer: NodeJS.Timeout | null;
   /** 是否已收到过任意 OSC 1337。一旦 true,所有 cwd 兜底永久关闭 */
   oscReceived: boolean;
+  /**
+   * Resize quiet 窗口截止时间戳 (ms epoch)。
+   * 详见 RESIZE_QUIET_MS 注释 (CP-3 勘误 #3 v2)。
+   * 0 = 无窗口 (从未 resize)。
+   */
+  resizeQuietUntil: number;
 }
 
 export interface CreateSessionInput {
@@ -212,10 +225,11 @@ export interface SessionManagerOptions {
   platformAdapter?: PlatformAdapter;
   hookFileResolver?: (shellId: string) => string;
   /**
-   * 状态机启动 grace 时长 (ms)。生产 5000;测试通常传 0 (跳过 grace,
-   * 走纯 idle 阈值逻辑)。详见 STATE_STARTUP_GRACE_MS 注释。
+   * Resize 后的 quiet 窗口时长 (ms)。生产 500;测试可传 0 跳过窗口逻辑,
+   * 让 resize 之后立刻就回到正常的 markActive 路径,便于测试断言 markActive
+   * 行为不被该窗口干扰。详见 RESIZE_QUIET_MS 注释。
    */
-  startupGraceMs?: number;
+  resizeQuietMs?: number;
 }
 
 export class SessionManager extends EventEmitter {
@@ -224,7 +238,7 @@ export class SessionManager extends EventEmitter {
   private readonly spawnFn: PtySpawnFn;
   private readonly platformAdapter: PlatformAdapter;
   private readonly hookFileResolver: (shellId: string) => string;
-  private readonly startupGraceMs: number;
+  private readonly resizeQuietMs: number;
 
   /**
    * 缓存 detectShells 结果。首次 createSession 时填充,后续复用。
@@ -246,7 +260,7 @@ export class SessionManager extends EventEmitter {
       options.platformAdapter ??
       (process.platform === 'win32' ? getPlatformAdapter() : createNoopAdapter());
     this.hookFileResolver = options.hookFileResolver ?? defaultHookFileResolver;
-    this.startupGraceMs = options.startupGraceMs ?? STATE_STARTUP_GRACE_MS;
+    this.resizeQuietMs = options.resizeQuietMs ?? RESIZE_QUIET_MS;
   }
 
   // ──────────────────────────────────────────────────────────────────
@@ -335,6 +349,7 @@ export class SessionManager extends EventEmitter {
       cwdGraceTimer: null,
       cwdPollTimer: null,
       oscReceived: false,
+      resizeQuietUntil: 0,
     };
     this.sessions.set(sessionId, managed);
 
@@ -492,13 +507,22 @@ export class SessionManager extends EventEmitter {
 
   /**
    * 调整 PTY 终端尺寸。session 不存在 / exited 时静默。
+   *
+   * 顺手开"resize quiet 窗口" (CP-3 勘误 #3 v2):窗口期内 PTY 出来的字节
+   * 视作 ConPTY/SIGWINCH 重绘回声,不触发 markActive,避免 idle session 在
+   * 切窗口/接管时 tab 状态点闪绿。详见 RESIZE_QUIET_MS。
    */
   resize(sessionId: string, cols: number, rows: number): void {
     const managed = this.sessions.get(sessionId);
     if (!managed || !managed.pty) return;
     const dims = validateDimensions(cols, rows);
+    if (dims.cols === managed.info.cols && dims.rows === managed.info.rows) {
+      // 同尺寸 no-op,不开 quiet 窗口 (避免有人无谓地反复调 resize 反而压制活跃)
+      return;
+    }
     managed.info.cols = dims.cols;
     managed.info.rows = dims.rows;
+    managed.resizeQuietUntil = Date.now() + this.resizeQuietMs;
     try {
       managed.pty.resize(dims.cols, dims.rows);
     } catch (err) {
@@ -575,8 +599,12 @@ export class SessionManager extends EventEmitter {
       };
       this.emit('sessionOutput', payload);
 
-      // 状态机:有输出 → active,重置 idle 计时器
-      this.markActive(managed);
+      // 状态机:有输出 → active,重置 idle 计时器。
+      // 但 resize quiet 窗口内的字节视作 ConPTY 重绘回声,不动状态
+      // (CP-3 勘误 #3 v2:scrollback / sessionOutput 仍正常,只跳过 markActive)。
+      if (Date.now() >= managed.resizeQuietUntil) {
+        this.markActive(managed);
+      }
     }
   }
 
@@ -675,12 +703,7 @@ export class SessionManager extends EventEmitter {
   private scheduleIdleCheck(managed: ManagedSession): void {
     if (managed.idleTimer) clearTimeout(managed.idleTimer);
     const thresholdSec = this.settingsManager.get().advanced.activeIdleThresholdSeconds;
-    const baseMs = Math.max(100, thresholdSec * 1000);
-    // 启动 grace (CP-3 勘误 #3):session 创建后头 startupGraceMs 内
-    // 即使 idle 计时器到点也不切。把 timeout 推到 max(baseMs, gracetail)。
-    const elapsed = Date.now() - managed.info.createdAt;
-    const remainGrace = Math.max(0, this.startupGraceMs - elapsed);
-    const ms = Math.max(baseMs, remainGrace);
+    const ms = Math.max(100, thresholdSec * 1000);
     managed.idleTimer = setTimeout(() => {
       managed.idleTimer = null;
       if (managed.info.state === 'active') {

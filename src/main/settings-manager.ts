@@ -59,10 +59,7 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   advanced: {
     logLevel: 'INFO',
-    // CP-3 勘误 #3:默认 2 秒太敏感,Claude Code 等启动期会出现"绿→黄→绿"
-    // 闪烁噪声。3 秒能让常见的启动序列稳定显示 active 不切 idle 后又切回。
-    // 用户可在设置里调小到 1 (CP-4 设置 UI 接通)。
-    activeIdleThresholdSeconds: 3,
+    activeIdleThresholdSeconds: 2,
   },
 };
 

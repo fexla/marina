@@ -229,8 +229,8 @@ function makeManager(
     spawnFn?: PtySpawnFn;
     adapter?: PlatformAdapter;
     settings?: SettingsManager;
-    /** 默认 0 — 测试不走启动 grace,让 idle 计时器只受阈值约束 */
-    startupGraceMs?: number;
+    /** 默认 0 — 测试不走 resize quiet 窗口,避免每个测试都要算时序 */
+    resizeQuietMs?: number;
   } = {},
 ): {
   mgr: SessionManager;
@@ -246,7 +246,7 @@ function makeManager(
     spawnFn: opts.spawnFn ?? fakeSpawn,
     platformAdapter: opts.adapter ?? makeFakeAdapter(),
     hookFileResolver: () => 'C:\\fake\\hook.ps1',
-    startupGraceMs: opts.startupGraceMs ?? 0,
+    resizeQuietMs: opts.resizeQuietMs ?? 0,
   });
   return { mgr, win, path };
 }
@@ -406,9 +406,9 @@ describe('SessionManager — 状态机 (active / idle / exited)', () => {
     expect(idleChange).toBeDefined();
   });
 
-  it('启动 grace 期内不切 idle (CP-3 勘误 #3,即使阈值已到也不动)', async () => {
+  it('resize 后 quiet 窗口内 ConPTY 重绘字节不触发 markActive (CP-3 勘误 #3 v2)', async () => {
     const settings = makeStubSettingsManager({ activeIdleThresholdSeconds: 1 });
-    const { mgr } = makeManager({ settings, startupGraceMs: 5000 });
+    const { mgr } = makeManager({ settings, resizeQuietMs: 500 });
     const info = await mgr.createSession({
       pathId: '/p',
       templateId: 'shell',
@@ -417,13 +417,66 @@ describe('SessionManager — 状态机 (active / idle / exited)', () => {
       rows: 24,
     });
     const fp = FakePty.instances[0]!;
-    fp.emitData('boot');
-    // 推进到阈值 (1s),理论上应切 idle,但 grace=5s 应该挡住
-    vi.advanceTimersByTime(1500);
-    expect(mgr.get(info.id)?.state).toBe('active');
-    // 推进到 grace 之后,再多等阈值,这次应切 idle
-    vi.advanceTimersByTime(5500); // 总 7s,超过 grace 5s + 阈值 1s
+    // 让 session 进入 idle
+    fp.emitData('hi');
+    vi.advanceTimersByTime(1100);
     expect(mgr.get(info.id)?.state).toBe('idle');
+
+    // 模拟切窗口/接管时的流程:resize 一下,然后 PTY 立刻重发屏幕内容
+    // (Windows ConPTY 在 resize 时的标准行为)。
+    mgr.resize(info.id, 100, 30);
+    fp.emitData('CONPTY-REDRAW-CONTENT');
+    // quiet 窗口内仍是 idle,不闪绿
+    expect(mgr.get(info.id)?.state).toBe('idle');
+
+    // scrollback 仍正常追加 (重绘内容用户视觉上要看到)
+    const sb = mgr.getScrollback(info.id);
+    expect(Buffer.from(sb.data, 'base64').toString('utf8')).toContain(
+      'CONPTY-REDRAW-CONTENT',
+    );
+  });
+
+  it('resize 后超过 quiet 窗口,后续输出仍正常触发 markActive', async () => {
+    const settings = makeStubSettingsManager({ activeIdleThresholdSeconds: 1 });
+    const { mgr } = makeManager({ settings, resizeQuietMs: 500 });
+    const info = await mgr.createSession({
+      pathId: '/p',
+      templateId: 'shell',
+      ownerWindowId: 'w',
+      cols: 80,
+      rows: 24,
+    });
+    const fp = FakePty.instances[0]!;
+    fp.emitData('hi');
+    vi.advanceTimersByTime(1100);
+    expect(mgr.get(info.id)?.state).toBe('idle');
+
+    mgr.resize(info.id, 100, 30);
+    // 推进超过 quiet 窗口
+    vi.advanceTimersByTime(600);
+    fp.emitData('真实用户活动');
+    expect(mgr.get(info.id)?.state).toBe('active');
+  });
+
+  it('同尺寸 resize 不开 quiet 窗口 (避免无谓压制活跃)', async () => {
+    const settings = makeStubSettingsManager({ activeIdleThresholdSeconds: 1 });
+    const { mgr } = makeManager({ settings, resizeQuietMs: 500 });
+    const info = await mgr.createSession({
+      pathId: '/p',
+      templateId: 'shell',
+      ownerWindowId: 'w',
+      cols: 80,
+      rows: 24,
+    });
+    const fp = FakePty.instances[0]!;
+    fp.emitData('hi');
+    vi.advanceTimersByTime(1100);
+    expect(mgr.get(info.id)?.state).toBe('idle');
+
+    mgr.resize(info.id, 80, 24); // 与当前尺寸完全一致
+    fp.emitData('user types');
+    // 同尺寸不开窗口,所以这次输出应该触发 markActive
+    expect(mgr.get(info.id)?.state).toBe('active');
   });
 
   it('idle 后再有输出 → state=active', async () => {
