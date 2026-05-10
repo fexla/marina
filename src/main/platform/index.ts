@@ -37,10 +37,20 @@ export interface PlatformAdapter {
   /** 检测系统中可用的 shell */
   detectShells(): Promise<ShellInfo[]>;
 
-  /** 给定一个 shell,返回启动它时注入 OSC 1337 hook 所需的额外参数和环境变量 */
+  /**
+   * 给定一个 shell,返回启动它时注入 OSC 1337 hook 所需的额外参数和环境变量。
+   *
+   * 当 `commandToRun` 提供时,hook 注入完成后还要 exec 该命令。具体如何
+   * 串接由各 shell 决定:
+   *   - PowerShell: 把 command 追加到 -Command 字符串末尾
+   *   - cmd: 用 /K 起 shell + 命令
+   *   - bash: 在 rcfile 后追加 -c "..."
+   * 命令不存在 / 报错由 shell 自然吐到 PTY 字节流 (不弹对话框)。
+   */
   buildShellLaunchParams(
     shell: ShellInfo,
     hookFilePath: string,
+    commandToRun?: { command: string; args: string[] },
   ): { args: string[]; env: Record<string, string> };
 
   /** 注册 / 注销文件管理器右键集成 (V1.2 启用) */
