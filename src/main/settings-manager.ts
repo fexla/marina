@@ -59,7 +59,6 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   advanced: {
     logLevel: 'INFO',
-    sessionTombstoneMinutes: 5,
     activeIdleThresholdSeconds: 2,
   },
 };
@@ -258,12 +257,6 @@ export function validateSettings(s: Settings): void {
   checkRange('appearance.terminalFontSize', s.appearance.terminalFontSize, 8, 24);
   checkRange('appearance.terminalLineHeight', s.appearance.terminalLineHeight, 1.0, 2.0);
   checkRange('appearance.uiZoom', s.appearance.uiZoom, 0.75, 1.5);
-  checkRange(
-    'advanced.sessionTombstoneMinutes',
-    s.advanced.sessionTombstoneMinutes,
-    1,
-    60 * 24,
-  );
   checkRange(
     'advanced.activeIdleThresholdSeconds',
     s.advanced.activeIdleThresholdSeconds,

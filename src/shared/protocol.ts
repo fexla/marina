@@ -95,6 +95,7 @@ export const EVENT_CHANNELS = {
   PATH_TREE_UPDATED: 'evt:path:tree-updated',
   BOOKMARKS_UPDATED: 'evt:bookmarks:updated',
   SETTINGS_CHANGED: 'evt:settings:changed',
+  TEMPLATES_UPDATED: 'evt:templates:updated',
 } as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
@@ -354,7 +355,13 @@ export interface SessionOwnerChangedPayload {
 
 export interface SessionDestroyedPayload {
   sessionId: string;
-  reason: 'tombstone-expired' | 'user-closed' | 'app-quit' | 'pty-exited';
+  /**
+   * 销毁触发源。v1.2 起没有 'tombstone-expired' (砍墓地,见 ADR-008);
+   * 'pty-exited' 仅在应用启动 / 异常 race 中出现 — 正常 PTY 退出不再立即
+   * destroy,而是进入 'exited' 状态 (sessionExited 事件已涵盖),由用户
+   * 主动关闭触发 'user-closed' destroy。
+   */
+  reason: 'user-closed' | 'app-quit' | 'pty-exited';
 }
 
 export interface PathTreeUpdatedPayload {

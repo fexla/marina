@@ -23,12 +23,15 @@ export type PathCategory = 'bookmarked' | 'temporary' | 'recent';
 
 /**
  * Session 的运行时状态 (软件定义书 8.3 节状态机)。
- * V1 只有 active / idle / tombstoned 三种,V1.1 后会扩展 waiting-input / error。
  *
- * CP-2 阶段:active / idle / tombstoned 字段保留,但 idle 与 tombstoned 的
- * 实际转移在 CP-3 才接通 (CP-2 不实现墓地)。
+ * v1.2 起 (ADR-008):状态机砍掉了 tombstoned (5 分钟自动过期 + 重启)。
+ * PTY 进程退出后直接进入 'exited',无时限等待用户主动关闭。
+ *
+ * - active:近 N 秒有 PTY 字节输出
+ * - idle:活着但 N 秒无输出 (默认 N=2,见 settings.advanced.activeIdleThresholdSeconds)
+ * - exited:PTY 进程已结束 (正常或异常),scrollback 仍持有,等待用户右键关闭
  */
-export type SessionState = 'active' | 'idle' | 'tombstoned';
+export type SessionState = 'active' | 'idle' | 'exited';
 
 /**
  * 应用整体生命周期状态 (软件定义书 8.1 节)。
@@ -97,11 +100,23 @@ export interface WindowInfo {
  */
 export interface SessionInfo {
   id: string;
-  /** 当前归属的 path id (随 cwd 变化迁移,CP-3 接入) */
+  /**
+   * Session 创建时确定的 path id,**生命周期内永不变** (ADR-008)。
+   * cd 等 cwd 变化不会让 session 在 UI 上换 path,只触发 currentCwd ⚠️ 提示。
+   */
   pathId: string;
   templateId: string;
-  /** 当前 cwd,CP-3 起随 OSC 1337 实时更新;CP-2 阶段为创建时的 cwd */
-  cwd: string;
+  /**
+   * Session 创建时的 cwd,等于该 session 所属 path 的 path 字段,
+   * 生命周期内永不变 (ADR-008)。
+   */
+  originalCwd: string;
+  /**
+   * Session 内 OSC 1337 实时报告的工作目录。
+   * 启动时初值 = originalCwd;之后随 OSC 1337 序列更新。
+   * 仅用于 UI:currentCwd ≠ originalCwd 时 tab 显示 ⚠️ + tooltip。
+   */
+  currentCwd: string;
   /** 终端尺寸,renderer fit 后通过 cmd:session:resize 同步 */
   cols: number;
   rows: number;
@@ -112,10 +127,10 @@ export interface SessionInfo {
   /** 当前持有该 session 的 owner window;null 表示无主 */
   ownerWindowId: string | null;
   state: SessionState;
-  /** 进入墓地的时间 (CP-3 接入,CP-2 总是 undefined) */
-  tombstonedAt?: number;
-  /** 退出码 (墓地状态时有值) */
+  /** 退出码 (state === 'exited' 时有值) */
   exitCode?: number;
+  /** PTY 进程退出时间 (Unix ms,state === 'exited' 时有值) */
+  exitedAt?: number;
   /** 创建时间 (Unix ms) */
   createdAt: number;
 }
@@ -189,8 +204,8 @@ export interface Settings {
 
   advanced: {
     logLevel: 'INFO' | 'DEBUG';
-    sessionTombstoneMinutes: number;
     activeIdleThresholdSeconds: number;
+    // 注:v1.2 起 sessionTombstoneMinutes 已删除 (砍墓地,见 ADR-008)
   };
 }
 
