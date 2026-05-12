@@ -162,7 +162,7 @@ function makeStubSettingsManager(
     version: 1,
     appearance: {
       theme: 'rose-pine',
-      followSystemTheme: false,
+      windowStyle: 'windows',
       terminalFontFamily: '',
       terminalFontSize: 13,
       terminalLineHeight: 1.2,
@@ -231,6 +231,8 @@ function makeManager(
     settings?: SettingsManager;
     /** 默认 0 — 测试不走 resize quiet 窗口,避免每个测试都要算时序 */
     resizeQuietMs?: number;
+    /** M1-I:默认 0 — 同上,测试默认跳过启动期 grace,markActive 立即生效 */
+    startupGraceMs?: number;
   } = {},
 ): {
   mgr: SessionManager;
@@ -247,6 +249,7 @@ function makeManager(
     platformAdapter: opts.adapter ?? makeFakeAdapter(),
     hookFileResolver: () => 'C:\\fake\\hook.ps1',
     resizeQuietMs: opts.resizeQuietMs ?? 0,
+    startupGraceMs: opts.startupGraceMs ?? 0,
   });
   return { mgr, win, path };
 }

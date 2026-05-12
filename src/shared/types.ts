@@ -60,6 +60,18 @@ export type ThemeId =
   | 'windows-terminal';
 
 /**
+ * 窗口外观风格 (M1-A 引入,Milestone 1)。
+ *
+ * - 'windows':传统 Windows 风格 — 控制按钮(最小化/最大化/关闭)在右,
+ *   方形按钮 + lucide 图标。`titleBarOverlay` 由主题色驱动。
+ * - 'macos':macOS 风格 — 三色 traffic light 按钮在左(红黄绿),圆形,
+ *   悬浮渲染于内容之上;右侧让位给标题与窗口编号。整个 chrome 更紧凑。
+ *
+ * 该字段控制布局 + 控件位置,**不**控制配色(配色仍走 theme)。
+ */
+export type WindowStyle = 'windows' | 'macos';
+
+/**
  * 终端右键行为 (软件定义书 6.6.2 行为)。
  */
 export type TerminalRightClick = 'menu' | 'paste';
@@ -176,12 +188,25 @@ export interface Settings {
 
   appearance: {
     theme: ThemeId;
-    followSystemTheme: boolean;
+    windowStyle: WindowStyle;             // M1-A:窗口风格 (windows / macos)
     terminalFontFamily: string;
     terminalFontSize: number;
     terminalLineHeight: number;
     uiFontFamily: string;
     uiZoom: number;
+  };
+
+  /**
+   * 窗口位置/尺寸记忆 (M1-G)。
+   * V1 全局单一组,不区分 windowId — 新窗口都按这组开,关窗时把"最后一个"窗口的 bounds 写回。
+   * 不存在 = 第一次启动 / 上次窗口都被外部干掉,fallback 1200x800 居中。
+   */
+  windowDefaults?: {
+    width: number;
+    height: number;
+    x?: number;
+    y?: number;
+    maximized?: boolean;
   };
 
   shell: {

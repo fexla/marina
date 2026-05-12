@@ -8,7 +8,7 @@
  * - 加载: 主文件 JSON 解析失败 → 尝试 .bak → 都失败用默认值
  * - 写入 debounce 500ms 合并高频变更 (软件定义书 6.6.1 即改即生效但不写
  *   过快;以及 PathManager 在多个改动后只写一次)
- * - 数据目录: app.getPath('userData') (跨平台,Win 下是 %APPDATA%\EasyTerm)
+ * - 数据目录: app.getPath('userData') (跨平台,Win 下是 %APPDATA%\Marina)
  *
  * @对应文档章节: 软件定义书.md 11.1、11.3;AGENTS.md 5.3 (持久化必测)
  *
@@ -224,10 +224,10 @@ export class JsonStore<T> {
 /**
  * 创建一个临时数据目录 (测试用)。
  *
- * AGENTS.md 9.1 强约束:测试**永远不许**用真实 EasyTerm 数据目录,
+ * AGENTS.md 9.1 强约束:测试**永远不许**用真实 Marina 数据目录,
  * 必须每次创建新的 temp dir,测试结束清理。
  */
-export async function createTempDataDir(prefix = 'easyterm-test-'): Promise<string> {
+export async function createTempDataDir(prefix = 'marina-test-'): Promise<string> {
   return fs.mkdtemp(join(tmpdir(), prefix));
 }
 

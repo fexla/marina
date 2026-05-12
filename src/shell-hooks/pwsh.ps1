@@ -1,4 +1,4 @@
-# EasyTerm PowerShell hook
+# Marina PowerShell hook (原 EasyTerm,v1.5 改名)
 #
 # 注入此 hook 后,每个 prompt 出现前会发送 OSC 1337 序列报告当前 cwd,
 # 让 Main 进程实时跟踪 session 的工作目录变化 (软件定义书 5.1.8、ADR-003)。
@@ -19,22 +19,22 @@ if (Test-Path $PROFILE) {
     try {
         . $PROFILE
     } catch {
-        Write-Host "[EasyTerm] 用户 PowerShell profile 加载报错 (hook 仍生效): $_" -ForegroundColor DarkYellow
+        Write-Host "[Marina] 用户 PowerShell profile 加载报错 (hook 仍生效): $_" -ForegroundColor DarkYellow
     }
 }
 
 # 包装 prompt 函数,注入 OSC 1337 cwd 报告。
 # 用 script-scope 变量保存原 prompt 引用,避免无限递归 (用户 profile 可能
 # 已经定义过 prompt;我们把它存下来再调它)。
-$script:_easyTermOriginalPrompt = $function:prompt
+$script:_marinaOriginalPrompt = $function:prompt
 function prompt {
     $cwd = (Get-Location).Path
     # OSC 1337: \x1b ] 1337 ; CurrentDir=<cwd> \x07
     # `e 是 PowerShell 5.1+ 支持的 ESC 转义字符
     $osc = "$([char]27)]1337;CurrentDir=$cwd$([char]7)"
     [Console]::Write($osc)
-    if ($script:_easyTermOriginalPrompt) {
-        & $script:_easyTermOriginalPrompt
+    if ($script:_marinaOriginalPrompt) {
+        & $script:_marinaOriginalPrompt
     } else {
         # 默认 prompt: "PS C:\path>"
         "PS $cwd> "

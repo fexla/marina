@@ -43,6 +43,12 @@ export const COMMAND_CHANNELS = {
   WINDOW_CLOSE_SELF: 'cmd:window:close-self',
   WINDOW_CLOSE_ALL: 'cmd:window:close-all',
   WINDOW_FOCUS: 'cmd:window:focus',
+  /** M1-A:最小化自身窗口 */
+  WINDOW_MINIMIZE: 'cmd:window:minimize',
+  /** M1-A:切换最大化/还原 */
+  WINDOW_TOGGLE_MAXIMIZE: 'cmd:window:toggle-maximize',
+  /** M1-A:查询当前是否最大化 */
+  WINDOW_GET_MAX_STATE: 'cmd:window:get-max-state',
 
   // Session 域
   SESSION_CREATE: 'cmd:session:create',
@@ -53,6 +59,8 @@ export const COMMAND_CHANNELS = {
   SESSION_SEND_INPUT: 'cmd:session:send-input',
   SESSION_RESIZE: 'cmd:session:resize',
   SESSION_GET_SCROLLBACK: 'cmd:session:get-scrollback',
+  /** M1-C:重命名 session(只改 displayName,内部仍由 sessionId 标识) */
+  SESSION_RENAME: 'cmd:session:rename',
 
   // Bookmark / Path 域
   BOOKMARK_ADD: 'cmd:bookmark:add',
@@ -96,6 +104,8 @@ export const EVENT_CHANNELS = {
   WINDOW_ASSIGNED_ID: 'evt:window:assigned-id',
   WINDOW_LIST_UPDATED: 'evt:window:list-updated',
   WINDOW_FOCUS_REQUESTED: 'evt:window:focus-requested',
+  /** M1-A:本窗口的 maximize / unmaximize 状态变化(供 renderer 切按钮图标 + 圆角) */
+  WINDOW_MAX_STATE_CHANGED: 'evt:window:max-state-changed',
 
   // Session
   SESSION_CREATED: 'evt:session:created',
@@ -169,6 +179,21 @@ export interface CreateWindowResponse {
   windowNumber: number;
 }
 
+/**
+ * M1-A:WINDOW_MINIMIZE / WINDOW_TOGGLE_MAXIMIZE 没有 payload(目标窗口
+ * 直接由 envelope.windowId 决定);WINDOW_GET_MAX_STATE 返回值。
+ */
+export interface GetWindowMaxStateResponse {
+  maximized: boolean;
+}
+
+/**
+ * M1-A:evt:window:max-state-changed payload。
+ */
+export interface WindowMaxStateChangedPayload {
+  maximized: boolean;
+}
+
 export interface FocusWindowPayload {
   windowId: string;
 }
@@ -194,6 +219,11 @@ export interface CreateSessionResponse {
   session: SessionInfo;
   /** 是否触发了 path 树变化 (临时分类等) */
   pathTreeChanged: boolean;
+}
+
+export interface RenameSessionPayload {
+  sessionId: string;
+  newDisplayName: string;
 }
 
 export interface CloseSessionPayload {
@@ -363,7 +393,11 @@ export interface SetDefaultTemplatePayload {
  * (AGENTS.md 1.2 边界 2)。未来加 archiver 包可平滑升级。
  */
 export interface SettingsArchiveV1 {
-  format: 'easyterm-archive';
+  /**
+   * 归档格式标签。v1.5 改名后新导出统一 'marina-archive';读侧也接受
+   * 'easyterm-archive'(改名前的旧归档)。
+   */
+  format: 'marina-archive' | 'easyterm-archive';
   version: 1;
   exportedAt: number;
   exportedFrom: string;
@@ -434,7 +468,12 @@ export interface WindowListUpdatedPayload {
 }
 
 export interface WindowFocusRequestedPayload {
-  reason: 'session-click' | 'tray-click' | 'manual';
+  reason:
+    | 'session-click'
+    | 'tray-click'
+    | 'manual'
+    | 'tray-session-click' // M1-H:托盘"正在运行的会话"子菜单点击
+    | 'tray-open-settings'; // M1-H:托盘"设置…"菜单
   selectSessionId?: string;
 }
 

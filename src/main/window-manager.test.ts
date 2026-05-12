@@ -24,7 +24,12 @@ const { MockBrowserWindow } = vi.hoisted(() => {
     static instances: MockBrowserWindow[] = [];
     static nextWebContentsId = 100;
 
-    public readonly webContents: { id: number; openDevTools: () => void };
+    public readonly webContents: {
+      id: number;
+      openDevTools: () => void;
+      toggleDevTools: () => void;
+      on: (event: string, listener: MockListener) => unknown;
+    };
     private listeners = new Map<string, MockListener[]>();
     private onceListeners = new Map<string, MockListener[]>();
     public closed = false;
@@ -36,6 +41,8 @@ const { MockBrowserWindow } = vi.hoisted(() => {
       this.webContents = {
         id: MockBrowserWindow.nextWebContentsId++,
         openDevTools: vi.fn(),
+        toggleDevTools: vi.fn(),
+        on: vi.fn(),
       };
       MockBrowserWindow.instances.push(this);
     }

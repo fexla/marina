@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# EasyTerm bash hook (留给 macOS / Linux 贡献者)
+# Marina bash hook (留给 macOS / Linux 贡献者) — 原 EasyTerm,v1.5 改名
 #
 # V1 不主动启用 (软件定义书 12.5),但已写好框架供贡献者参考与启用。
 #
@@ -16,10 +16,10 @@ if [ -f "$HOME/.bashrc" ]; then
 fi
 
 # 注入 OSC 1337 cwd hook (仅当不重复时)
-__easyterm_emit_cwd() {
+__marina_emit_cwd() {
     printf '\033]1337;CurrentDir=%s\007' "$PWD"
 }
 case ":$PROMPT_COMMAND:" in
-    *":__easyterm_emit_cwd:"*) ;;
-    *) PROMPT_COMMAND="__easyterm_emit_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
+    *":__marina_emit_cwd:"*) ;;
+    *) PROMPT_COMMAND="__marina_emit_cwd${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
 esac

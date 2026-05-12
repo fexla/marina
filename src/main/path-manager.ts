@@ -494,4 +494,21 @@ export class PathManager extends EventEmitter {
     this.emit('pathTreeUpdated', this.getTree());
     this.emit('bookmarksUpdated', this.listBookmarks());
   }
+
+  /**
+   * CP-4 勘误 #12:整体替换 bookmarks + recent (用于设置导入)。
+   * 替代"写盘后 app.relaunch"模式 — 直接 in-memory 替换并 emit,renderer
+   * 通过 evt:path:tree-updated / evt:bookmarks:updated 即时刷新,无需重启。
+   *
+   * @param input.bookmarks 新的收藏列表 (顺序保留)
+   * @param input.recent 新的最近列表 (按当前数组顺序;内部仍会再 sortRecent)
+   */
+  replaceAll(input: { bookmarks: Bookmark[]; recent: RecentEntry[] }): void {
+    this.bookmarks = input.bookmarks.slice();
+    this.recent = input.recent.slice();
+    this.sortRecent();
+    this.persistBookmarks();
+    this.persistRecent();
+    this.emitChange();
+  }
 }

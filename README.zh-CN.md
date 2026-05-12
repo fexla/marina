@@ -1,13 +1,15 @@
-# EasyTerm
+# Marina
 
 > 你的终端会话不应该因为关掉窗口就死掉。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows-blue)](https://github.com/yourusername/easyterm/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows-blue)](https://github.com/Liyue-Cheng/marina/releases)
 [![状态](https://img.shields.io/badge/状态-Alpha-orange)](#路线图)
 [![English](https://img.shields.io/badge/English-README.md-blue)](README.md)
 
 一个**以路径为中心、对 AI agent 友好**的 Windows 终端管理器。为同时运行多个长时间任务(包括 Claude Code、Codex、OpenCode 等 AI 编码助手)、需要在多个工作目录之间频繁切换、又不愿意因为关错窗口前功尽弃的开发者打造。
+
+> **改名说明**:Marina 在 alpha 阶段(CP-1 到 Milestone 1)原名为 EasyTerm,v1.5 起正式定名 Marina。`docs/` 下的历史档案会保留 EasyTerm 字样作为当时决策的快照。
 
 ---
 
@@ -20,11 +22,11 @@
 - 🌀 第三次手敲 `cd D:\projects\company\some\deeply\nested\path` 还打错了
 - 📑 试图用 Windows Terminal 的 profile 来组织工作流,最后放弃了
 
-...EasyTerm 是为你做的。
+...Marina 是为你做的。
 
 ## 解决方案
 
-EasyTerm 重新思考了"终端会话应该怎么管理"这个问题:
+Marina 重新思考了"终端会话应该怎么管理"这个问题:
 
 - **🔒 会话独立于 UI 存活** —— 关掉所有窗口,session 仍在守护进程里跑;打开任意窗口又能看到它们
 - **📍 路径是一等公民** —— 收藏工作目录,session 按"在哪干活"组织,而不是按"用了哪个 profile 启动"
@@ -33,25 +35,25 @@ EasyTerm 重新思考了"终端会话应该怎么管理"这个问题:
 
 ## 截图
 
-> 第一个稳定版会附正式截图。下面是布局示意。
+> 第一个稳定版会附正式截图。下面是布局示意(实际侧栏图标用 lucide-react,这里仅 ASCII 占位)。
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│ EasyTerm — Window 1                                  [_] [□] [×]  │
+│ Marina — Window 1                                    [_] [□] [×]  │
 ├──────────────────────┬─────────────────────────────────────────────┤
 │ [收藏] [临时] [最近] │  ┌─[claude] [shell] [pytest] [codex灰]┐    │
 │                      │  └────────────────────────────────────┘   │
-│ ▼ 📌 ~/projects/auth │   ┌──────────────────────────────────────┐  │
-│   ├─ 🟢 claude code  │   │ $ claude                             │  │
-│   ├─ 🟡 shell        │   │ ✻ Welcome to Claude Code             │  │
-│   └─ ⚫ pytest       │   │                                      │  │
-│ ▼ 📌 ~/projects/web  │   │ How can I help you today?            │  │
-│   └─ 🟢 codex        │   │ █                                    │  │
-│ ▶ 📌 ~/scripts       │   │                                      │  │
+│ ▼ ⌘ ~/projects/auth  │   ┌──────────────────────────────────────┐  │
+│   ├─ ● claude code   │   │ $ claude                             │  │
+│   ├─ ◐ shell         │   │ ✻ Welcome to Claude Code             │  │
+│   └─ ○ pytest        │   │                                      │  │
+│ ▼ ⌘ ~/projects/web   │   │ How can I help you today?            │  │
+│   └─ ● codex         │   │ █                                    │  │
+│ ▶ ⌘ ~/scripts        │   │                                      │  │
 │                      │   │                                      │  │
 │ ───── 临时 ─────     │   │                                      │  │
-│ ▼ 🕐 ~/Downloads     │   │                                      │  │
-│   └─ ⚫ shell        │   │                                      │  │
+│ ▼ ⌚ ~/Downloads     │   │                                      │  │
+│   └─ ○ shell         │   │                                      │  │
 │                      │   │                                      │  │
 │ ───── 最近 ─────     │   │                                      │  │
 │ • ~/test123          │   │                                      │  │
@@ -61,204 +63,213 @@ EasyTerm 重新思考了"终端会话应该怎么管理"这个问题:
 └──────────────────────┴─────────────────────────────────────────────┘
 ```
 
-## 为什么不直接用 [X]?
+Marina 支持两套窗口风格 — **Windows**(控制按钮在右,方形)与 **macOS**(三色 traffic light 在左,圆形) — 在"设置 → 外观"切换。
 
-| 特性 | Windows Terminal | Tabby | Wave | Warp | **EasyTerm** |
-|------|:---:|:---:|:---:|:---:|:---:|
-| 关窗后 session 不死 | ❌ | ❌ | ✅ | ❌ | ✅ |
-| 以路径组织,不是以 profile | ❌ | ❌ | ❌ | ❌ | ✅ |
-| 自动 cwd 跟踪(`cd` 后 UI 跟随) | ❌ | ❌ | ✅ | ✅ | ✅ |
+## 为什么不用 [其它]?
+
+| 特性 | Windows Terminal | Tabby | Wave | Warp | **Marina** |
+|---------|:---:|:---:|:---:|:---:|:---:|
+| 关窗不杀 session | ❌ | ❌ | ✅ | ❌ | ✅ |
+| 路径中心组织 | ❌ | ❌ | ❌ | ❌ | ✅ |
+| CWD 跟踪(漂移 ⚠ 提示) | ❌ | ❌ | ✅ | ✅ | ✅ |
 | 多窗口共享 session 池 | ❌ | ❌ | ❌ | ❌ | ✅ |
-| 关窗口不杀 session | ❌ | ❌ | ✅ | ❌ | ✅ |
-| 专为 AI agent 工作流设计 | ❌ | ❌ | ❌ | ❌ | ✅ |
-| 原生 Windows 优先 | ✅ | ✅ | ❌ | ❌ | ✅ |
-| 鼠标优先(不强制学快捷键) | ❌ | ❌ | ❌ | ❌ | ✅ |
+| 关闭窗口不影响 session | ❌ | ❌ | ✅ | ❌ | ✅ |
+| 为 AI agent 工作流设计 | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Windows 原生优先 | ✅ | ✅ | ❌ | ❌ | ✅ |
+| 鼠标优先(不强制快捷键) | ❌ | ❌ | ❌ | ❌ | ✅ |
 
-## AI Agent 用户专用说明
+## 给 AI agent 用户
 
-EasyTerm 诞生于一个具体的痛苦:同时跑多个 Claude Code / Codex / OpenCode session,然后**忘记了哪个在闲着、哪个在等输入、哪个被我关错窗口杀掉了**。
+Marina 的起源是同时跑多个 Claude Code / Codex / OpenCode 时频繁迷失 — 哪个还在跑?哪个 idle 了?哪个被我关错窗口杀了?
 
-如果你的工作流长这样:
+如果你的工作流是:
 
-- 一个 agent 在 `~/projects/frontend` 改 dashboard
-- 另一个 agent 在 `~/projects/backend` 重构 auth 模块
-- 第三个 agent 在 `~/scripts` 跑长时间数据迁移
-- 第四个在 `D:\client-work\report-tool` 调一个 flaky test
-- ……然后你已经分不清哪个是哪个了
+- 一个 agent 在 `~/projects/frontend` 重构 dashboard
+- 一个 agent 在 `~/projects/backend` 改 auth 模块
+- 一个 agent 在 `~/scripts` 跑长 migration
+- 一个 agent 在 `D:\client-work\report-tool` 修 flaky test
+- ...而你已经忘了哪个是哪个
 
-EasyTerm 给你的是:
+Marina 给你:
 
-- **常驻侧栏**,所有 agent 按所在项目路径分组
-- **状态指示**,一眼就能看出哪些在工作、哪些在闲着
-- **自动路径跟踪** —— agent 用 `cd` 切到别处,UI 跟着走
-- **内置启动模板**:`claude`、`codex`、`opencode`,也支持自定义命令模板
-- **会话不死** —— 关错窗口?session 在守护进程里照常跑。重新打开任意窗口,接着干。
+- **持久侧栏** — 所有 agent 按所在 path 分组
+- **状态指示** — 一眼看出谁还在干活、谁空闲了
+- **CWD 跟踪** — agent 在 session 里 cd 了,tab 上自动出 ⚠,悬停看真实 cwd
+- **启动模板** — `claude` / `codex` / `opencode` 内置;支持自定义模板,环境变量带遮罩(防止 API key 被旁人扫到)
+- **Session 不灭** — 不小心关掉窗口,agent 继续跑;重开窗口接着用
 
 ## 快速开始
 
-> ⚠️ EasyTerm 目前是 **Alpha** 阶段,会有粗糙的地方。计划见 [路线图](#路线图)。
+> ⚠️ Marina 处于 **Alpha** 阶段,边角会有点糙。路线图见下。
 
 ### 安装
 
-1. 从 [Releases](https://github.com/yourusername/easyterm/releases) 下载最新安装包
-2. 运行 `EasyTerm-Setup-x.y.z.exe`
-3. 从开始菜单或桌面快捷方式启动
+1. 从 [Releases](https://github.com/Liyue-Cheng/marina/releases) 下载最新安装包
+2. 跑 `Marina-Setup-x.y.z.exe`
+3. 从开始菜单或桌面启动
 
-### 第一次运行
+### 第一次跑
 
-- 一个窗口打开,侧栏是空的
-- 点击"收藏"分类旁的 **+**,选择一个文件夹加入
-- 也可以从 Windows 资源管理器直接把文件夹拖到侧栏
-- 双击收藏的路径,在该路径打开终端
-- 标签栏的 `+` 按钮启动 Claude Code / Codex / shell 等 session
+- 窗口出现,侧栏是空的
+- 点"收藏"右边的 **+** 选一个文件夹加入
+- 或者直接从资源管理器拖一个文件夹到侧栏(或终端区)
+- 双击收藏路径,在该目录开终端
+- 点 tab bar 的 `+` 选模板(Claude Code / Codex / Shell …)
 
-### 体验"关键差异"
+### 试试"魔法"
 
-要感受 EasyTerm 和其他终端的不同:
+体验 Marina 的独特之处:
 
-1. 在 2-3 个不同路径下分别开 session
-2. 关闭整个窗口(点 ×)
-3. 看一下系统托盘 —— EasyTerm 还在跑
-4. 单击托盘图标 —— 一个新窗口打开,所有 session 都还在
+1. 在不同路径开 2-3 个 session
+2. 关掉窗口(右上角 ×)
+3. 看系统托盘 — Marina 还活着
+4. 点托盘图标 — 重开窗口,所有 session 还在原位
 
-就这么简单。这就是产品。
+就这样。这就是产品。
 
-## 核心功能
+## 核心特性
 
-### V1(当前版本)
+### V1(当前 alpha)
 
-- ✅ **路径管理**:收藏、重命名、调序;自动维护"临时"和"最近"分类
-- ✅ **会话生命周期**:创建、关闭、墓地恢复(5 分钟保留期内可复活)
-- ✅ **启动模板**:内置 4 种(Shell / Claude Code / Codex / OpenCode)+ 自定义
-- ✅ **多窗口**:任意多个完全平等的窗口;关窗即托盘;跨窗口可见 session
-- ✅ **CWD 跟踪**:OSC 1337 hook 支持 PowerShell 和 cmd.exe
-- ✅ **5 套主题**:Rose Pine(默认)、Rose Pine Dawn、Rose Pine Moon、Cutie、Business
-- ✅ **设置即改即生效**,无保存按钮;支持配置导入导出
-- ✅ **系统托盘常驻**:每个 session 快捷访问;退出有诚实的二次确认
+- ✅ **路径管理**:收藏 / 重命名 / 排序;"临时" 与 "最近" 自动跟
+- ✅ **Session 生命周期**:`active / idle / exited` 三态;**已退出 session 无时限保留**,用户手动右键关闭才销毁(ADR-008)
+- ✅ **启动模板**:内置(Shell / Claude Code / Codex / OpenCode)+ 自定义
+- ✅ **多窗口**:任意数量平等窗口;关窗即托盘模式;跨窗口 session 可见
+- ✅ **CWD 跟踪**:OSC 1337 hook 注入 PowerShell + cmd.exe
+- ✅ **7 套主题**:Rose Pine(默认) / Rose Pine Dawn / Rose Pine Moon / Cutie / Business / Ubuntu / Windows Terminal
+- ✅ **窗口风格**:Windows / macOS 双布局(只影响标题栏 chrome,不影响配色)
+- ✅ **设置即改即生效**,无保存按钮;导出 / 导入归档(支持敏感字段擦除选项)
+- ✅ **系统托盘**:常驻,含"正在运行的会话"子菜单 + 设置 + 完全退出二次确认
+- ✅ **拖文件夹到终端区**:直接在该路径开新 session
+- ✅ **多行粘贴防护**:粘贴含换行时弹确认,防止误粘脚本被立即执行
+- ✅ **终端搜索**(Ctrl+F)显示命中数
+- ✅ **持久日志**:`%APPDATA%\Marina\logs\`
 
-### V1.1(规划中)
+### V1.1 计划
 
-- 通过 OSC 1337 命令完成事件支持"等待输入"/ "出错"等状态指示
-- session 状态变化时的系统通知
-- 完整的终端右键菜单
+- 状态识别扩展("等待输入" / "错误",基于 OSC 1337 命令完成事件)
+- 系统通知(状态变化时,可选)
+- 代码签名
 
-### V1.2(规划中)
+### V1.2 计划
 
-- 资源管理器右键集成("在 EasyTerm 中打开")
+- Explorer 右键集成("在 Marina 中打开此文件夹")
 - 标签页拖拽改顺序
-- 标签页拖出窗口 = 拆分到新窗口
+- 标签页拖出 = 拆分到新窗口
 
-### V2.0(社区贡献为主)
+### V2.0(社区驱动)
 
 - macOS 支持
 - Linux 支持
 - WSL session 集成
 
-## 架构概要
+## 架构(简述)
 
-EasyTerm 基于 **Electron + TypeScript + React + node-pty + xterm.js** 构建。
+Marina 基于 **Electron 31 + TypeScript + React 18 + node-pty + xterm.js** 构建。
 
 - **主进程** = 守护进程:持有所有 PTY、所有数据、系统托盘
-- 每个**窗口是独立的 Renderer 进程**,各自的 React UI
-- 窗口是纯观察者 —— 关闭它们绝不影响任何 session
-- 通信用 Electron IPC,有严格的类型化协议
+- **每个窗口 = 一个 Renderer 进程**:独立 React UI
+- 窗口是纯粹的观察者 — 关掉它绝对不影响 session
+- 主 / Renderer 之间走 Electron IPC,有严格的类型化协议(`docs/ipc-protocol.md`)
 
-详细文档:
+详见:
 
-- [软件定义书](docs/软件定义书.md) —— EasyTerm 是什么、为什么这么做
-- [IPC 协议](docs/ipc-protocol.md) —— 主进程和渲染进程之间的契约
-- [AGENTS.md](AGENTS.md) —— 给参与构建的 AI agent 看的规约
+- [软件定义书](docs/软件定义书.md) — Marina 是什么 + 为什么
+- [IPC 协议](docs/ipc-protocol.md) — main 与 renderer 之间的契约
+- [AGENTS.md](AGENTS.md) — 给为 Marina 贡献代码的 AI agent 看的
 
 ## 从源码构建
 
 ```bash
 # 前置:Node.js 20+,Windows 10/11
-git clone https://github.com/yourusername/easyterm.git
-cd easyterm
+git clone https://github.com/Liyue-Cheng/marina.git
+cd marina
 npm install
-npm run dev      # 开发模式,带热重载
-npm run build    # 构建安装包,产物在 dist/
-npm test         # 跑后端测试套件
+npm run dev      # 带热重载的开发模式
+npm run build    # 打包安装程序到 release/
+npm test         # 跑后端测试
 ```
 
-## 招募贡献者
+## Help Wanted
 
-EasyTerm 由一个人在业余时间维护,目前只专注 Windows。**架构有意做成跨平台 ready** —— 见 [`src/main/platform/`](src/main/platform/) —— 但我不会自己实现也不会测试其他平台。非常欢迎贡献:
+Marina 由我一个人构建维护,目前只关注 Windows。**架构已经为跨平台准备好** — 见 [`src/main/platform/`](src/main/platform/) — 但我不会自己实现或测试其它平台。欢迎贡献:
 
 ### 高优先级
 
-- [ ] **macOS 平台支持** —— 实现 `src/main/platform/macos.ts`
-- [ ] **Linux 平台支持** —— 实现 `src/main/platform/linux.ts`
+- [ ] **macOS 支持** — 实现 `src/main/platform/macos.ts`
+- [ ] **Linux 支持** — 实现 `src/main/platform/linux.ts`
 - [ ] **WSL session 集成**
 
 ### 中优先级
 
 - [ ] Fish / Nushell shell hook
 - [ ] 标签页拖拽
-- [ ] 更多主题(我做的 5 套对我够了,但欢迎扩展)
-- [ ] i18n 国际化(目前只有中英)
+- [ ] 更多主题(7 套对我够用,但欢迎加)
+- [ ] 中英以外的 i18n
 
 ### 低优先级
 
-- [ ] 启动时恢复"重要" session(用户标记)
-- [ ] 性能基准测试
+- [ ] 启动时恢复"重要"session(用户标记)
+- [ ] 性能基线测试
 
-如果以上任何一项打动你,先看 [CONTRIBUTING.md](CONTRIBUTING.md),里面讲了平台抽象层的设计哲学,以及怎么在不动核心代码的前提下加新平台。
+如果上述任意一条吸引你,具体如何加新平台不破坏核心代码请看后续 `CONTRIBUTING.md`(待补)。
 
 ## 设计哲学
 
-如果你想理解 EasyTerm 为什么做出这些选择,四条核心原则是:
+如果想理解 Marina 为什么这样做选择,四条原则:
 
-1. **Path 是稳定的,Session 是廉价的,UI 是临时的** —— 工作以 path 流动,session 来去如风,窗口是用完即弃的观察者
-2. **不让用户输入路径,只让用户点击路径** —— `cd` 命令是 1971 年的设计,不应该是必须的
-3. **用户决策最少化** —— 自动分类、自动跟踪、自动 resize;用户只挑路径和模板,其他全自动
-4. **窗口与应用解耦** —— 关闭窗口零成本;应用住在托盘里,直到你明确退出它
+1. **路径是稳定的,Session 是廉价的,UI 是临时的** — 工作以路径为锚,session 来去自如,窗口是用完即抛的观察工具
+2. **不让用户输入路径,只让用户点击路径** — `cd` 是 1971 年的设计,应该是可选项
+3. **用户决策最少化** — 自动分类 / 自动跟踪 / 自动调整尺寸;用户选路径和模板,其它工具自己搞
+4. **窗口与应用解耦** — 关窗口是零成本的;应用住在托盘里,直到你显式退出
 
-完整推理见 [软件定义书](docs/软件定义书.md) 第 2 章。
+完整推导见[软件定义书](docs/软件定义书.md)第 2 章。
 
-## EasyTerm **不是**什么
+## Marina 不是什么
 
-替你节省时间:
+为了节省你时间:
 
-- ❌ **不是终端模拟器替代品** —— 我们和别人一样用 xterm.js
-- ❌ **不是 tmux 的竞争对手** —— tmux 是 TUI,EasyTerm 是 GUI,服务不同人群
-- ❌ **不是项目管理工具** —— 没有 kanban,没有团队功能,没有 workspace 概念
-- ❌ **不是 SSH 客户端** —— 只管本地 session
-- ❌ **不是文件编辑器** —— 在 session 里 `code .` 即可
-- ❌ **不是给追求"满屏快捷键"的硬核用户** —— 如果你喜欢在终端管理器里用 vim 键位,会觉得 EasyTerm 的鼠标优先很烦人。这是 feature,不是 bug。
+- ❌ **不是终端模拟器替代品** — 我们和大家一样用 xterm.js
+- ❌ **不是 tmux 竞品** — tmux 是 TUI,Marina 是 GUI,目标用户不同
+- ❌ **不是项目管理工具** — 没有 kanban,没有团队功能,没有 workspace 概念
+- ❌ **不是 SSH 客户端** — 只跑本地 session
+- ❌ **不是文件编辑器** — 想编辑就在 session 里 `code .`
+- ❌ **不是"把一切都瓦片化"的极客工具** — 如果你喜欢在终端管理器里用 vim 快捷键,你会觉得 Marina 的鼠标优先很烦。这是设计,不是 bug。
 
 ## 路线图
 
 | 阶段 | 内容 | 时间 |
-|------|------|------|
-| Phase 1 | V1:个人内部工具,仅 Windows | 进行中 |
-| Phase 2 | 开源发布、文档完善 | V1 稳定后 |
-| Phase 3 | V1.x:状态指示、通知、Explorer 集成 | 发布后迭代 |
-| Phase 4 | V2.0:跨平台,主要靠社区贡献 | TBD |
+|-------|------|------|
+| Phase 1 | V1:内部使用,只 Windows | 进行中 |
+| Phase 2 | 开源、打磨 | V1 稳定后 |
+| Phase 3 | V1.x:状态识别 / 通知 / Explorer 集成 | 发布后 |
+| Phase 4 | V2.0:跨平台(社区驱动) | TBD |
 
-这是一个业余时间的个人项目。背后没有公司、没有 SLA、没有承诺的时间表。如果它解决了你的问题,很好;如果没有,fork 它。
+这是个个人项目,业余时间做。没有公司,没有 SLA,没有承诺时间。能解决你的问题最好,不能就 fork。
 
 ## License
 
-MIT —— 见 [LICENSE](LICENSE).
+MIT — 见 [LICENSE](LICENSE)。
 
 ## 致谢
 
-EasyTerm 站在以下巨人的肩膀上:
+Marina 站在这些项目的肩膀上:
 
-- [Electron](https://www.electronjs.org/) —— 应用框架
-- [xterm.js](https://xtermjs.org/) —— 终端渲染
-- [node-pty](https://github.com/microsoft/node-pty) —— PTY 绑定(微软出品)
-- [React](https://react.dev/) —— UI 框架
-- [Rose Pine](https://rosepinetheme.com/) —— 色板灵感
-- [霞鹜文楷 (LXGW WenKai)](https://github.com/lxgw/LxgwWenKai) —— UI 字体
+- [Electron](https://www.electronjs.org/) — 应用框架
+- [electron-vite + Vite](https://electron-vite.org/) — 构建工具
+- [xterm.js](https://xtermjs.org/) — 终端渲染器
+- [node-pty](https://github.com/microsoft/node-pty) — PTY 绑定(Microsoft)
+- [React](https://react.dev/) — UI 框架
+- [lucide-react](https://lucide.dev/) — 图标库
+- [Rose Pine](https://rosepinetheme.com/) — 配色灵感
+- [霞鹜文楷 (LXGW WenKai)](https://github.com/lxgw/LxgwWenKai) — UI 中文字体
 
 灵感来源:
 
-- [Wave Terminal](https://www.waveterm.dev/) —— 证明了"session 持久化"在精致 GUI 里也能做到
-- [tmux](https://github.com/tmux/tmux) —— 证明了 session 应该比它的 UI 活得长
-- [iTerm2](https://iterm2.com/) —— OSC 1337 的发明者,cwd 跟踪的无名英雄
+- [Wave Terminal](https://www.waveterm.dev/) — 证明了"session 持久化 + 精美 GUI"是可能的
+- [tmux](https://github.com/tmux/tmux) — 证明了 session 应该比 UI 活得久
+- [iTerm2](https://iterm2.com/) — OSC 1337 的源头,cwd 跟踪的无名英雄
 
 ---
 
-> 做这个东西是因为 Windows Terminal 四年都没把 close-to-tray 做出来。
+> 这个项目存在的原因是 Windows Terminal 花了四年也没有发布 close-to-tray。

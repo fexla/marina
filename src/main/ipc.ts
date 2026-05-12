@@ -179,7 +179,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   ipcMain.handle(
     COMMAND_CHANNELS.WINDOW_CREATE,
     (_e, _envelope: CommandEnvelope<CreateWindowPayload>): CreateWindowResponse => {
-      const info = windowManager.createWindow();
+      const info = windowManager.createWindowFromFactory();
       return { windowId: info.id, windowNumber: info.number };
     },
   );
@@ -195,6 +195,28 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     COMMAND_CHANNELS.WINDOW_CLOSE_ALL,
     (_e, _envelope: CommandEnvelope<undefined>): void => {
       windowManager.closeAll();
+    },
+  );
+
+  // M1-A:自绘标题栏配套的窗口控制
+  ipcMain.handle(
+    COMMAND_CHANNELS.WINDOW_MINIMIZE,
+    (_e, envelope: CommandEnvelope<undefined>): void => {
+      windowManager.minimizeWindow(envelope.windowId);
+    },
+  );
+
+  ipcMain.handle(
+    COMMAND_CHANNELS.WINDOW_TOGGLE_MAXIMIZE,
+    (_e, envelope: CommandEnvelope<undefined>): void => {
+      windowManager.toggleMaximizeWindow(envelope.windowId);
+    },
+  );
+
+  ipcMain.handle(
+    COMMAND_CHANNELS.WINDOW_GET_MAX_STATE,
+    (_e, envelope: CommandEnvelope<undefined>) => {
+      return { maximized: windowManager.isMaximized(envelope.windowId) };
     },
   );
 
@@ -248,6 +270,14 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     COMMAND_CHANNELS.SESSION_CLOSE,
     (_e, envelope: CommandEnvelope<CloseSessionPayload>): void => {
       sessionManager.closeSession(envelope.payload.sessionId);
+    },
+  );
+
+  // M1-C
+  ipcMain.handle(
+    COMMAND_CHANNELS.SESSION_RENAME,
+    (_e, envelope: CommandEnvelope<{ sessionId: string; newDisplayName: string }>): void => {
+      sessionManager.renameSession(envelope.payload.sessionId, envelope.payload.newDisplayName);
     },
   );
 
@@ -464,7 +494,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   ipcMain.handle(
     COMMAND_CHANNELS.SYSTEM_OPEN_DATA_DIR,
     async (_e, _envelope: CommandEnvelope<undefined>): Promise<void> => {
-      // app.getPath('userData') = %APPDATA%\EasyTerm
+      // app.getPath('userData') = %APPDATA%\Marina
       await shell.openPath(app.getPath('userData'));
     },
   );
@@ -472,7 +502,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   ipcMain.handle(
     COMMAND_CHANNELS.SYSTEM_OPEN_LOGS_DIR,
     async (_e, _envelope: CommandEnvelope<undefined>): Promise<void> => {
-      // logs 目录:%APPDATA%\EasyTerm\logs (CP-4 实际不一定存在 — V1 我们
+      // logs 目录:%APPDATA%\Marina\logs (M1-D 起 logger.ts 实际会写;空目录也可打开)
       // 还没接通日志框架,但目录能打开,空就空)。
       const logsDir = joinPath(app.getPath('userData'), 'logs');
       try {
@@ -544,18 +574,54 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       _envelope: CommandEnvelope<undefined>,
     ): Promise<ExportSettingsResponse> => {
       const fromWindow = BrowserWindow.fromWebContents(_e.sender);
-      const result = await dialog.showSaveDialog(
-        fromWindow ?? BrowserWindow.getFocusedWindow()!,
-        {
-          title: '导出 EasyTerm 配置',
-          defaultPath: `easyterm-config-${formatDateForFilename(new Date())}.json`,
-          filters: [{ name: 'EasyTerm Archive (JSON)', extensions: ['json'] }],
-        },
+      const owner = fromWindow ?? BrowserWindow.getFocusedWindow()!;
+
+      // M1-F:先弹隐私警告 — 模板可能含 API key (env);用户三选一:
+      // 取消 / 仅导出公开字段(env 清空) / 完整导出(含敏感凭据)
+      const tmpls = deps.templatesManager.list();
+      const hasEnvKeys = tmpls.some(
+        (t) => t.env && Object.keys(t.env).length > 0,
       );
+      let includeSecrets = false;
+      if (hasEnvKeys) {
+        const askRes = await dialog.showMessageBox(owner, {
+          type: 'warning',
+          title: '导出敏感凭据?',
+          message: '归档将包含启动模板里的环境变量,可能含 API key、token 等敏感凭据。',
+          detail:
+            '"仅公开字段":导出时清空所有模板的环境变量,适合分享。\n' +
+            '"包含敏感凭据":完整导出,只在你信任的设备间转移时再用。',
+          buttons: ['取消', '仅公开字段', '包含敏感凭据'],
+          defaultId: 1,
+          cancelId: 0,
+        });
+        if (askRes.response === 0) return { filePath: null };
+        includeSecrets = askRes.response === 2;
+      } else {
+        // 无敏感字段时不打扰
+        includeSecrets = true;
+      }
+
+      const suffix = hasEnvKeys
+        ? includeSecrets
+          ? '-with-secrets'
+          : '-public'
+        : '';
+      const result = await dialog.showSaveDialog(owner, {
+        title: '导出 Marina 配置',
+        defaultPath: `marina-config-${formatDateForFilename(new Date())}${suffix}.json`,
+        filters: [{ name: 'Marina Archive (JSON)', extensions: ['json'] }],
+      });
       if (result.canceled || !result.filePath) {
         return { filePath: null };
       }
       const archive = await buildArchive(deps);
+      if (!includeSecrets) {
+        // 清空所有模板的 env(M1-F 公开模式)
+        for (const t of archive.templates.templates) {
+          t.env = {};
+        }
+      }
       await fs.writeFile(result.filePath, JSON.stringify(archive, null, 2), 'utf-8');
       return { filePath: result.filePath };
     },
@@ -571,9 +637,9 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       const result = await dialog.showOpenDialog(
         fromWindow ?? BrowserWindow.getFocusedWindow()!,
         {
-          title: '导入 EasyTerm 配置',
+          title: '导入 Marina 配置',
           properties: ['openFile'],
-          filters: [{ name: 'EasyTerm Archive (JSON)', extensions: ['json'] }],
+          filters: [{ name: 'Marina Archive (JSON)', extensions: ['json'] }],
         },
       );
       if (result.canceled || result.filePaths.length === 0) {
@@ -591,15 +657,15 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
           errorMessage: err instanceof Error ? err.message : String(err),
         };
       }
-      // 二次确认 — 清楚告知用户"会重启应用,运行中的终端会被关"。
+      // 二次确认 — 不再重启应用 (CP-4 勘误 #12)。
       const confirmRes = await dialog.showMessageBox(
         fromWindow ?? BrowserWindow.getFocusedWindow()!,
         {
           type: 'warning',
           title: '确认导入',
           message: '导入将完全覆盖现有配置(收藏 / 最近 / 模板 / 设置)。',
-          detail: '应用会重启,运行中的所有终端会被关闭。是否继续?',
-          buttons: ['取消', '继续导入并重启'],
+          detail: '运行中的终端不会被关,继续后所有窗口立即看到新配置。是否继续?',
+          buttons: ['取消', '继续导入'],
           defaultId: 0,
           cancelId: 0,
         },
@@ -608,17 +674,13 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
         return { status: 'cancelled' };
       }
       try {
-        await applyArchive(archive);
+        await applyArchiveInMemory(deps, archive);
       } catch (err) {
         return {
           status: 'error',
           errorMessage: err instanceof Error ? err.message : String(err),
         };
       }
-      // 重启 — 内置 sessionManager 此时还没 shutdown,但 will-quit 会处理
-      app.relaunch();
-      setQuitting();
-      app.quit();
       return { status: 'imported' };
     },
   );
@@ -659,7 +721,8 @@ async function buildArchive(deps: IpcLayerDeps): Promise<SettingsArchiveV1> {
     templates: deps.templatesManager.list(),
   };
   return {
-    format: 'easyterm-archive',
+    // v1.5 起统一用 'marina-archive';读侧同时接受 'easyterm-archive' 旧值(向后兼容)。
+    format: 'marina-archive',
     version: 1,
     exportedAt: Date.now(),
     exportedFrom: app.getVersion(),
@@ -672,14 +735,17 @@ async function buildArchive(deps: IpcLayerDeps): Promise<SettingsArchiveV1> {
 }
 
 function validateArchive(input: unknown): asserts input is SettingsArchiveV1 {
+  // 接受新名 'marina-archive' 和旧名 'easyterm-archive'(v1.5 改名前的归档)。
+  // 都是同一 schema,只是 format 标签不同。
+  const fmt = (input as SettingsArchiveV1 | null)?.format;
   if (
     !input ||
     typeof input !== 'object' ||
-    (input as SettingsArchiveV1).format !== 'easyterm-archive' ||
+    (fmt !== 'marina-archive' && fmt !== 'easyterm-archive') ||
     (input as SettingsArchiveV1).version !== 1
   ) {
     throw new Error(
-      '不是合法的 EasyTerm 归档:format/version 不匹配 (期望 easyterm-archive v1)',
+      '不是合法的归档:format/version 不匹配 (期望 marina-archive v1,旧 easyterm-archive v1 也接受)',
     );
   }
   const i = input as SettingsArchiveV1;
@@ -689,34 +755,68 @@ function validateArchive(input: unknown): asserts input is SettingsArchiveV1 {
 }
 
 /**
- * 把归档的内容写到 userData 下的 4 个 JSON 文件。
- * 写完后,调用方应该 app.relaunch() + app.quit() 让全部 manager 重新加载。
+ * CP-4 勘误 #12:不再 fs.writeFile + app.relaunch (dev 模式下 relaunch 与
+ * Vite HMR daemon 协作不稳,导致用户看到"导入后无法正常渲染")。改成走每个
+ * Manager 暴露的 replaceAll() 方法 — 内存替换 + JsonStore 持久化 + emit 事件
+ * → 所有窗口通过 evt:settings:changed / evt:templates:updated /
+ *   evt:path:tree-updated / evt:bookmarks:updated 实时刷新 UI。
+ *
+ * 优点:
+ * - 不重启应用,运行中的 PTY session 不被关 (符合软件定义书"窗口零成本开关",
+ *   而 session 持久化是设计上不允许的,所以 import 不应当杀已活的 session)
+ * - 不依赖 app.relaunch 在 dev 模式工作
+ * - settings.appearance.theme 等"即改即生效"路径自然走通
  */
-async function applyArchive(archive: SettingsArchiveV1): Promise<void> {
-  const dataDir = app.getPath('userData');
-  const writes: Array<Promise<void>> = [
-    fs.writeFile(
-      joinPath(dataDir, 'settings.json'),
-      JSON.stringify(archive.settings, null, 2),
-      'utf-8',
-    ),
-    fs.writeFile(
-      joinPath(dataDir, 'bookmarks.json'),
-      JSON.stringify({ version: 1, ...archive.bookmarks }, null, 2),
-      'utf-8',
-    ),
-    fs.writeFile(
-      joinPath(dataDir, 'recent.json'),
-      JSON.stringify({ version: 1, ...archive.recent }, null, 2),
-      'utf-8',
-    ),
-    fs.writeFile(
-      joinPath(dataDir, 'templates.json'),
-      JSON.stringify({ version: 1, ...archive.templates }, null, 2),
-      'utf-8',
-    ),
-  ];
-  await Promise.all(writes);
+async function applyArchiveInMemory(
+  deps: IpcLayerDeps,
+  archive: SettingsArchiveV1,
+): Promise<void> {
+  // M1-L:事务化 — 先 dry-run validate(都走各 Manager 的 validate),全部通过
+  // 才正式 commit。否则中途 settings 已替换但 templates 失败,会出现一边新
+  // 一边旧的"半应用"状态。
+  //
+  // Manager 暴露的 replaceAll 已经内置 validate;无法在不 commit 的前提下
+  // 单独 validate(它们直接 emit)。折衷:用 validateSettings / validateTemplate
+  // 等独立函数预检 — 但 PathManager 没有公开 validate,bookmarks/recent 的
+  // 校验在 IPC 层做(原 archive validateArchive 已确认 schema)。
+  //
+  // 风险层面:即使分步 commit,失败也只是中间状态可见(reducer 已 emit),
+  // 用户看到的是部分应用而不是数据损坏 — 重新导入或重置即可恢复。所以
+  // 这一层事务化主要是"日志清楚 + 错误信息能定位失败点",而不是真原子。
+
+  // 1) settings replaceAll(包含 deepMerge + validate)
+  try {
+    deps.settingsManager.replaceAll(archive.settings);
+  } catch (err) {
+    throw new Error(`settings: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // 2) templates replaceAll(mergeBuiltins + 自带校验)
+  try {
+    deps.templatesManager.replaceAll({
+      defaultTemplateId: archive.templates.defaultTemplateId,
+      templates: archive.templates.templates,
+    });
+  } catch (err) {
+    throw new Error(`templates: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // 3) bookmarks + recent
+  try {
+    deps.pathManager.replaceAll({
+      bookmarks: archive.bookmarks.paths,
+      recent: archive.recent.paths,
+    });
+  } catch (err) {
+    throw new Error(`paths: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // 等待所有 store debounce 落盘
+  await Promise.all([
+    deps.settingsManager.flush(),
+    deps.pathManager.flush(),
+    deps.templatesManager.flush(),
+  ]);
 }
 
 // ──────────────────────────────────────────────────────────────────

@@ -1,10 +1,22 @@
-# EasyTerm IPC 协议规格
+# Marina IPC 协议规格
+
+> Marina 在 alpha 阶段(CP-1 ~ Milestone 1)的开发代号为 EasyTerm,v1.5 起正式定名 Marina。详见软件定义书 ADR-012。
 
 > 主进程(守护进程)与渲染进程(每个窗口)之间的通信契约。
 > 这份文档定义所有消息的 schema、语义、错误码、时序约束。
 > 实现代码必须严格遵循,不允许"自由发挥"。
 
-文档版本:1.0 · 最后更新:2026-05-09
+文档版本:1.2 · 最后更新:2026-05-12
+
+> **v1.2 变更**(Milestone 1 内部上线):
+> - 删除全部 `tombstoned` / `墓地` 相关命令、事件、错误码(ADR-008,自 CP-3 起就不存在了,本文档之前未跟进)
+> - state 字面量统一为 `'active' | 'idle' | 'exited'`
+> - 新增命令:`cmd:window:minimize` / `cmd:window:toggle-maximize` / `cmd:window:get-max-state` / `cmd:session:rename`(自绘标题栏 + 重命名 UI)
+> - 新增事件:`evt:window:max-state-changed`
+> - 完整化既有但未文档化的命令:`cmd:settings:export` / `cmd:settings:import` / `cmd:template:add|update|delete|set-default` / `cmd:bookmark:pick-folder|set-default-template` / `cmd:system:open-data-dir|open-logs-dir|open-external`
+> - 移除 `appearance.followSystemTheme` 副作用描述(ADR-009)
+>
+> **v1.1 变更**(2026-05-11,CP-4 勘误回合):一处 `followSystemTheme` 描述修正(完整对齐推后到 v1.2)。
 
 ---
 
@@ -178,6 +190,9 @@ function sendTo<P>(windowId: string, channel: string, payload: P) {
 | `cmd:window:close-self` | 关闭当前窗口 |
 | `cmd:window:close-all` | 关闭所有窗口(进入纯托盘模式) |
 | `cmd:window:focus` | 聚焦指定 windowId 的窗口 |
+| `cmd:window:minimize` | **(M1-A)** 最小化当前窗口(自绘标题栏配套) |
+| `cmd:window:toggle-maximize` | **(M1-A)** 切换当前窗口最大化/还原 |
+| `cmd:window:get-max-state` | **(M1-A)** 查询当前窗口是否最大化 |
 | `cmd:session:create` | 新建一个 session |
 | `cmd:session:close` | 关闭一个 session |
 | `cmd:session:claim` | 把一个 session 的 owner 设为本窗口 |
@@ -185,8 +200,7 @@ function sendTo<P>(windowId: string, channel: string, payload: P) {
 | `cmd:session:focus-owner` | 聚焦某 session 的 owner 窗口 |
 | `cmd:session:send-input` | 向 session 发送键盘输入 |
 | `cmd:session:resize` | 通知 session 终端尺寸变化 |
-| `cmd:session:rename` | 重命名 session 的显示名 |
-| `cmd:session:restart-from-tombstone` | 从墓地恢复 session |
+| `cmd:session:rename` | **(M1-C)** 重命名 session 的显示名 |
 | `cmd:session:get-scrollback` | 获取 session 的 scrollback 缓冲(切换 owner 时用) |
 | `cmd:bookmark:add` | 添加收藏路径 |
 | `cmd:bookmark:remove` | 移除收藏 |
@@ -195,21 +209,23 @@ function sendTo<P>(windowId: string, channel: string, payload: P) {
 | `cmd:bookmark:set-default-template` | 设置某收藏路径的默认模板 |
 | `cmd:bookmark:pick-folder` | 调起文件夹选择器,返回选择的路径 |
 | `cmd:path:remove-from-recent` | 从"最近"中移除某路径 |
-| `cmd:template:list` | 列出所有启动模板 |
-| `cmd:template:create` | 创建自定义模板 |
-| `cmd:template:update` | 修改模板 |
-| `cmd:template:delete` | 删除自定义模板 |
+| `cmd:template:add` | 创建自定义模板 |
+| `cmd:template:update` | 修改模板(含内置部分字段) |
+| `cmd:template:delete` | 删除自定义模板(内置不可删) |
 | `cmd:template:set-default` | 设置全局默认模板 |
 | `cmd:settings:get` | 获取当前设置(Renderer 启动后通常调一次) |
 | `cmd:settings:update` | 更新设置(部分更新) |
 | `cmd:settings:reset` | 重置为出厂(危险) |
-| `cmd:settings:export` | 导出设置为 zip,返回文件路径 |
-| `cmd:settings:import` | 从 zip 导入设置 |
-| `cmd:settings:open-data-dir` | 在 Explorer 中打开数据目录 |
-| `cmd:settings:open-log-dir` | 在 Explorer 中打开日志目录 |
-| `cmd:settings:detect-shells` | 重新检测系统中可用的 shell |
+| `cmd:settings:list-shells` | 列出启动期检测到的所有可用 shell |
+| `cmd:settings:get-auto-start` | 查询当前是否开机启动 |
+| `cmd:settings:export` | 导出全部配置为 JSON 归档(M1-F:可选含/不含 env 敏感字段) |
+| `cmd:settings:import` | 从 JSON 归档导入(in-memory replace,不重启应用,ADR-009) |
 | `cmd:system:show-in-explorer` | 在 Explorer 中显示某路径 |
-| `cmd:system:show-context-menu` | 显示右键菜单(详见 5.x) |
+| `cmd:system:open-data-dir` | 在 Explorer 中打开 `%APPDATA%\Marina` |
+| `cmd:system:open-logs-dir` | 在 Explorer 中打开日志目录 |
+| `cmd:system:open-external` | 用系统默认浏览器打开 URL(仅 http(s)/mailto) |
+
+> v1.2 起删除:`cmd:template:list` (用 `cmd:app:get-snapshot` 拿到)、`cmd:session:restart-from-tombstone` (ADR-008 砍墓地)、`cmd:settings:detect-shells` (并入 `cmd:settings:list-shells`)、`cmd:settings:open-data-dir/open-log-dir` (并入 `cmd:system:open-data-dir/open-logs-dir`)、`cmd:system:show-context-menu` (renderer 端自绘菜单,不需要 main 端 popup)。
 
 ### 3.2 事件(Main → Renderer)
 
@@ -219,19 +235,19 @@ function sendTo<P>(windowId: string, channel: string, payload: P) {
 | `evt:window:assigned-id` | 仅目标窗口(初始化用) |
 | `evt:window:list-updated` | 全部 |
 | `evt:window:focus-requested` | 仅目标窗口 |
+| `evt:window:max-state-changed` | **(M1-A)** 仅目标窗口;通知 maximize/unmaximize 状态变化 |
 | `evt:session:created` | 全部 |
-| `evt:session:state-changed` | 全部 |
+| `evt:session:state-changed` | 全部(单事件涵盖 state / currentCwd / displayName / exitCode 等子集变化) |
 | `evt:session:output` | 仅 owner |
 | `evt:session:exited` | 全部 |
-| `evt:session:cwd-changed` | 全部 |
 | `evt:session:owner-changed` | 全部 |
-| `evt:session:tombstoned` | 全部 |
 | `evt:session:destroyed` | 全部 |
 | `evt:path:tree-updated` | 全部 |
 | `evt:bookmarks:updated` | 全部 |
-| `evt:template:list-updated` | 全部 |
+| `evt:templates:updated` | 全部 |
 | `evt:settings:changed` | 全部 |
-| `evt:tray:menu-action` | 单个目标窗口或 broadcast(看 action) |
+
+> v1.2 起删除:`evt:session:tombstoned` (ADR-008)、`evt:session:cwd-changed` (并入 `evt:session:state-changed` 的 changes.currentCwd 子字段,ADR-008)、`evt:template:list-updated` (重命名为 `evt:templates:updated`,代码一直是后者,文档之前不一致)、`evt:tray:menu-action` (托盘菜单 click handler 直接在 main 端执行,renderer 不参与)。
 
 ---
 
@@ -269,7 +285,7 @@ Renderer 启动
 ```typescript
 interface ProtocolVersionResponse {
   protocolVersion: number;     // 当前协议主版本
-  buildVersion: string;         // EasyTerm 应用版本号(用于诊断)
+  buildVersion: string;         // Marina 应用版本号(用于诊断)
 }
 ```
 
@@ -409,6 +425,53 @@ interface FocusWindowPayload {
 - Main 调用目标窗口的 `BrowserWindow.focus()` 和必要时 `restore()`
 - 推送 `evt:window:focus-requested` 给目标窗口(Renderer 可借此切换到合适视图)
 
+---
+
+#### `cmd:window:minimize` (M1-A)
+最小化发起命令的窗口。
+
+```typescript
+// Payload: undefined
+// Response: void
+```
+
+**Errors**:无(目标窗口已销毁时静默 no-op)
+
+**Side Effects**:
+- 调用本窗口的 `BrowserWindow.minimize()`
+- 通常会跟一个 `evt:window:max-state-changed`(若状态确变)
+
+---
+
+#### `cmd:window:toggle-maximize` (M1-A)
+切换发起命令的窗口的最大化/还原。
+
+```typescript
+// Payload: undefined
+// Response: void
+```
+
+**Errors**:无
+
+**Side Effects**:
+- 调用 `maximize()` 或 `unmaximize()`
+- 推送 `evt:window:max-state-changed` 给本窗口
+
+---
+
+#### `cmd:window:get-max-state` (M1-A)
+查询发起命令的窗口当前是否最大化。
+
+```typescript
+// Payload: undefined
+// Response
+interface GetWindowMaxStateResponse {
+  maximized: boolean;
+}
+```
+
+WindowChrome 初次挂载时调一次拿到初值,之后通过订阅 `evt:window:max-state-changed` 跟踪。
+
 ### 5.2 Session
 
 #### `cmd:session:create`
@@ -460,11 +523,11 @@ interface CloseSessionPayload {
 **Errors**:
 - `SessionNotFound`
 
-**Side Effects**:
-- 发 SIGTERM(force = false 时),5 秒超时后 SIGKILL
-- 进入 tombstoned 状态(墓地期 5 分钟)
-- 广播 `evt:session:tombstoned`、`evt:session:state-changed`
-- 5 分钟后或用户主动销毁:`evt:session:destroyed`、可能触发 `evt:path:tree-updated`
+**Side Effects** (v1.2 ADR-008 后):
+- 调 `node-pty` 的 `kill()`,Windows ConPTY 立即终止子进程(无 SIGTERM/grace)
+- 销毁 session,广播 `evt:session:destroyed`,可能触发 `evt:path:tree-updated`(如果该 path 因此变空 → 走 临时→最近 状态机)
+
+> v1.2 起:`cmd:session:close` 等同于"销毁"(同步删 session)。**已退出**的 session(state='exited')也由 close 销毁。墓地 5 分钟自动过期已不存在,见 ADR-008。
 
 ---
 
@@ -552,9 +615,7 @@ interface SendInputPayload {
 ```
 
 **Errors**:
-- `SessionNotFound`
-- `NotOwner`:本窗口不是 owner(只有 owner 能发送输入)
-- `SessionTombstoned`:session 进程已退出
+- 实际实现是"竞态时静默" — 不存在 / 已退出的 session 调 send-input 不报错也不动 PTY(规避 close/HMR 时的小窗期)
 
 **Side Effects**:
 - PTY 收到输入
@@ -590,51 +651,28 @@ interface ResizeSessionPayload {
 
 ---
 
-#### `cmd:session:rename`
-重命名 session 的显示名(不影响实际命令)。
+#### `cmd:session:rename` (M1-C)
+重命名 session 的显示名(不影响实际命令 / PTY / pathId)。
 
 ```typescript
 // Payload
 interface RenameSessionPayload {
   sessionId: string;
-  newName: string;              // 1-50 字符
+  newDisplayName: string;       // trim 后 1+ 字符;空字符串 throw
 }
-// Response: {}
+// Response: void
 ```
 
 **Errors**:
-- `SessionNotFound`
-- `InvalidName`:超长或含非法字符
+- 不存在的 sessionId 静默 no-op(竞态时一致语义)
+- 空名抛 SessionManagerError
 
 **Side Effects**:
-- 广播 `evt:session:state-changed`(name 字段变了)
+- 广播 `evt:session:state-changed`(`changes.displayName` 在内)
 
 ---
 
-#### `cmd:session:restart-from-tombstone`
-从墓地恢复 session。
-
-```typescript
-// Payload
-interface RestartSessionPayload {
-  sessionId: string;            // 必须处于 tombstoned 状态
-  takeOwnership?: boolean;      // 默认 true
-}
-// Response
-interface RestartSessionResponse {
-  session: SessionInfo;         // 重启后的 session(同一个 id,新的 PTY)
-}
-```
-
-**Errors**:
-- `SessionNotFound`
-- `SessionNotTombstoned`:session 不处于墓地状态
-- `PtySpawnFailed`
-
-**Side Effects**:
-- 销毁旧 PTY 引用
-- 启动新 PTY,使用相同模板和 cwd
-- 广播 `evt:session:state-changed`
+> v1.2 起 `cmd:session:restart-from-tombstone` 已删除(ADR-008)。如需"再跑一次相同模板",在同一 path 下 `cmd:session:create` 即可。
 
 ---
 
@@ -881,8 +919,9 @@ interface UpdateSettingsPayload {
 - 广播 `evt:settings:changed` 给所有窗口
 - 某些设置变化触发副作用:
   - `behavior.autoStart` 变 → 调用 PlatformAdapter.setAutoStart
-  - `appearance.followSystemTheme` 变 → 主题立即重算
   - `systemIntegration.explorerContextMenu` 变(V1.2)→ 调注册表
+
+> **v1.3 起 `appearance.followSystemTheme` 已删除**(见软件定义书 ADR-009);renderer 不再发送此字段,main 端 schema 也不接受。
 
 ---
 
@@ -1058,7 +1097,7 @@ interface SessionCreatedPayload {
 ---
 
 #### `evt:session:state-changed`
-状态(active/idle/tombstoned)、name、cwd 等变化。
+状态(active/idle/exited)、displayName、currentCwd、exitCode 等任意 SessionInfo 字段子集变化。
 
 ```typescript
 interface SessionStateChangedPayload {
@@ -1088,34 +1127,21 @@ interface SessionOutputPayload {
 ---
 
 #### `evt:session:exited`
-PTY 进程退出。
+PTY 进程退出。session 进入 'exited' 状态,**不立即销毁**(ADR-008:无时限保留直到用户右键关闭)。
 
 ```typescript
 interface SessionExitedPayload {
   sessionId: string;
-  exitCode: number;              // 退出码,信号导致的退出可能是 -1 + signalName
-  signal?: string;               // 'SIGTERM' / 'SIGKILL' 等
-  unexpected: boolean;           // 是否非用户主动关闭(用于状态指示)
+  exitCode: number;              // 退出码;信号导致的退出 exitCode 可能为 0,signal 字段补充信息
+  signal?: number;               // node-pty 给的 signal number,Windows ConPTY 一般 undefined
 }
 ```
 
-随后通常会跟 `evt:session:tombstoned`。
+随后会跟 `evt:session:state-changed`(state='exited' + exitCode + exitedAt 在 changes 里)。**不再有** `evt:session:tombstoned`。
 
 ---
 
-#### `evt:session:cwd-changed`
-通过 OSC 1337 检测到 session 内 cwd 变化。
-
-```typescript
-interface SessionCwdChangedPayload {
-  sessionId: string;
-  oldCwd: string;
-  newCwd: string;
-  newPathId: string;             // 该 session 现在归属的 path id
-}
-```
-
-通常会和 `evt:path:tree-updated` 一起出现。
+> v1.2 起删除:`evt:session:cwd-changed` — cwd 变化已合并到 `evt:session:state-changed`(`changes.currentCwd`)。ADR-008 之后 cwd 变化**不再驱动 path 迁移**,所以 newPathId 字段也不再有意义。
 
 ---
 
@@ -1132,16 +1158,7 @@ interface SessionOwnerChangedPayload {
 
 ---
 
-#### `evt:session:tombstoned`
-Session 进入墓地状态。
-
-```typescript
-interface SessionTombstonedPayload {
-  sessionId: string;
-  tombstonedAt: number;          // Unix ms
-  retentionUntil: number;        // 何时自动销毁
-}
-```
+> v1.2 起删除:`evt:session:tombstoned` — ADR-008 砍掉墓地态,session 进程退出后直接进 'exited',无中间过渡。
 
 ---
 
@@ -1151,9 +1168,11 @@ Session 真正销毁(从内存和 UI 中消失)。
 ```typescript
 interface SessionDestroyedPayload {
   sessionId: string;
-  reason: 'tombstone-expired' | 'user-closed' | 'app-quit';
+  reason: 'user-closed' | 'pty-exited' | 'app-quit';
 }
 ```
+
+> v1.2 起 reason 字面量改:`'tombstone-expired'` 已删除;`'pty-exited'` 仅在内部 destroySession 调用链中出现(实际 V1 路径里 PTY 退出走的是 'exited' 状态,不直接 destroy,所以 renderer 实际只会看到 user-closed / app-quit 两种)。
 
 ### 6.3 Path / Bookmark / Template
 
@@ -1255,8 +1274,8 @@ class IPCError extends Error {
 | **Session** | | |
 | `SessionNotFound` | 指定 sessionId 不存在 | session 已销毁 |
 | `SessionAlreadyOwned` | session 已有 owner,不能 claim | 用 focus-owner 代替 |
-| `SessionNotTombstoned` | session 不处于墓地,无法 restart | 状态错乱 |
-| `SessionTombstoned` | session 在墓地,无法操作 | 用户已关闭,只能 restart 或销毁 |
+| ~~`SessionNotTombstoned`~~ | v1.2 起删除(ADR-008) | — |
+| ~~`SessionTombstoned`~~ | v1.2 起删除(ADR-008) | — |
 | `NotOwner` | 当前窗口不是 owner | 无权对此 session 做操作 |
 | `PtySpawnFailed` | node-pty 启动失败 | shell 不存在 / 权限 / native 模块 |
 | `ShellNotFound` | 指定 shell 不存在 | 系统未安装 |
@@ -1361,20 +1380,21 @@ V1 不暴露 scrollback 大小给用户配置,V1.1 可加。
 下列命令是**幂等**的(重复调用结果相同):
 - `cmd:settings:update`(同样的 partial)
 - `cmd:bookmark:remove`(再次调用第一次后:返回 BookmarkNotFound,但状态正确)
-- `cmd:session:close`(已 tombstoned 的 session 再 close:返回 SessionTombstoned)
+- `cmd:session:close`(不存在 / 已退出的 session 静默 no-op,见 SessionManager.closeSession)
 - 所有 `*:get-*`
 
 下列命令**不幂等**,Renderer 必须确保不重复发送:
 - `cmd:session:create`
 - `cmd:bookmark:add`
-- `cmd:template:create`
+- `cmd:template:add`
 
 实现建议:Renderer 在发起这些命令时,**禁用对应 UI 控件直到响应回来**。
 
 ### 9.3 事件顺序
 
 Main 保证事件按时间顺序推送,但 Renderer 不能假设事件原子到达:
-- `evt:session:cwd-changed` 和 `evt:path:tree-updated` 可能分两次到达,Renderer 应该 idempotent 处理
+- `evt:session:state-changed`(含 `changes.currentCwd`)与 `evt:path:tree-updated`(若 path 因此变化)可能分两次到达;ADR-008 后 path 实际不再因 cwd 变化迁移,所以更少见。Renderer 仍应 idempotent 处理。
+- `evt:session:created` 与 `evt:path:tree-updated`(若新 path 因此进入临时分类)可能分两次到达。
 
 ### 9.4 Snapshot 与增量事件的竞争
 
@@ -1451,7 +1471,7 @@ Renderer handshake 时检查:
 const { protocolVersion } = await invoke('cmd:app:get-protocol-version', {});
 if (protocolVersion !== PROTOCOL_VERSION) {
   // 显示错误页面:
-  // "EasyTerm 守护进程是版本 X,但当前 UI 是版本 Y。请重启应用。"
+  // "Marina 守护进程是版本 X,但当前 UI 是版本 Y。请重启应用。"
   // 不要继续 handshake。
 }
 ```
@@ -1618,5 +1638,5 @@ async function handleSessionTabClick(sessionId: string) {
 
 **文档结束**
 
-> 本协议文档与 `软件定义书.md` 共同构成 EasyTerm V1 的完整设计契约。
+> 本协议文档与 `软件定义书.md` 共同构成 Marina V1 的完整设计契约。
 > 协议版本号在 `src/shared/protocol.ts` 中维护,每次有不兼容变更必须 bump 版本号并更新本文档。

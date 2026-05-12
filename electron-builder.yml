@@ -4,9 +4,14 @@
 # macOS / Linux 配置保留但不在 npm run build 触发,留给社区贡献者。
 #
 # 对应文档:软件定义书.md 第 14 章 (开源策略)、AGENTS.md 4.2 (CP-4 打包要求)
+#
+# 改名变更 (v1.5,2026-05-12):产品名从 EasyTerm 改为 Marina。
+# appId 变更会让 Windows 把它视为新产品(独立安装项 + 独立 userData 目录),
+# 旧 EasyTerm 数据目录 %APPDATA%\EasyTerm 需手动迁移到 %APPDATA%\Marina,
+# 详见 docs/marina-改名工作记录-20260512.md。
 
-appId: com.liyue-cheng.easyterm
-productName: EasyTerm
+appId: com.liyue-cheng.marina
+productName: Marina
 copyright: Copyright (c) 2026 Liyue-Cheng
 
 directories:
@@ -27,9 +32,9 @@ asarUnpack:
 
 # Windows: V1 唯一发布目标
 #
-# CP-4 注:V1 不打专门设计的图标,使用 Electron 默认图标。
-# Phase 2 开源准备阶段(CP-5)再补 build/icon.ico 等设计资产。
-# 一旦补上,把下方 icon: 注释取消即可。
+# M1-E:source 设计图标 build/icon.svg 已就位;.ico 需要离线转换一次,
+# 见 build/README.md。.ico 出来后取消 icon: 行注释即可一次性接通三处
+# (win 主图标 / nsis 安装器 / nsis 卸载器)。
 win:
   target:
     - target: nsis
@@ -46,7 +51,7 @@ nsis:
   perMachine: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: EasyTerm
+  shortcutName: Marina
   # installerIcon: build/icon.ico
   # uninstallerIcon: build/icon.ico
 

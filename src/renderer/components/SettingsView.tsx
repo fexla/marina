@@ -45,15 +45,19 @@ import type {
   Template,
   TerminalRightClick,
   ThemeId,
+  WindowStyle,
 } from '@shared/types';
 import type { DeepPartial } from '@shared/types-helpers';
 import type { Settings } from '@shared/types';
 import { useAppDispatch, useAppState } from '../store';
 import {
-  TERMINAL_FONT_WHITELIST,
-  UI_FONT_WHITELIST,
+  RECOMMENDED_TERMINAL_FONTS,
+  RECOMMENDED_UI_FONTS,
+  listAllFonts,
   probeFonts,
+  type FontEntry,
 } from './font-detection';
+import { Icon, type IconName } from './icons';
 
 type CategoryId =
   | 'appearance'
@@ -66,18 +70,19 @@ type CategoryId =
 
 interface CategoryDef {
   id: CategoryId;
-  icon: string;
+  iconName: IconName;
   title: string;
 }
 
+// CP-4 勘误 #11:用 lucide 图标替换原有 Emoji
 const CATEGORIES: CategoryDef[] = [
-  { id: 'appearance', icon: '🎨', title: '外观' },
-  { id: 'shell', icon: '🖥️', title: 'Shell 与启动' },
-  { id: 'behavior', icon: '🚪', title: '行为' },
-  { id: 'data', icon: '💾', title: '数据' },
-  { id: 'system-integration', icon: '🔗', title: '系统集成' },
-  { id: 'advanced', icon: '🔧', title: '高级' },
-  { id: 'about', icon: 'ℹ️', title: '关于' },
+  { id: 'appearance', iconName: 'appearance', title: '外观' },
+  { id: 'shell', iconName: 'shell', title: 'Shell 与启动' },
+  { id: 'behavior', iconName: 'behavior', title: '行为' },
+  { id: 'data', iconName: 'data', title: '数据' },
+  { id: 'system-integration', iconName: 'systemIntegration', title: '系统集成' },
+  { id: 'advanced', iconName: 'advanced', title: '高级' },
+  { id: 'about', iconName: 'about', title: '关于' },
 ];
 
 // 把 settings update 走 IPC 的副作用集中,所有控件都用这个
@@ -117,7 +122,7 @@ export function SettingsView(): JSX.Element {
         <h1 className="settings-title">设置</h1>
         {errorMsg && (
           <span className="settings-error" role="alert">
-            ⚠ {errorMsg}
+            <Icon name="alertTriangle" size={12} /> {errorMsg}
           </span>
         )}
       </header>
@@ -131,7 +136,7 @@ export function SettingsView(): JSX.Element {
               onClick={() => setActive(c.id)}
             >
               <span className="settings-nav-icon" aria-hidden="true">
-                {c.icon}
+                <Icon name={c.iconName} size={14} />
               </span>
               <span className="settings-nav-label">{c.title}</span>
             </button>
@@ -193,15 +198,39 @@ function AppearancePanel({
   const state = useAppState();
   const a = state.settings.appearance;
   const theme = a?.theme ?? 'rose-pine';
-  const followSystemTheme = a?.followSystemTheme ?? false;
+  const windowStyle: WindowStyle = a?.windowStyle ?? 'windows';
   const terminalFontFamily = a?.terminalFontFamily ?? '';
   const terminalFontSize = a?.terminalFontSize ?? 13;
   const terminalLineHeight = a?.terminalLineHeight ?? 1.2;
   const uiFontFamily = a?.uiFontFamily ?? '';
   const uiZoom = a?.uiZoom ?? 1;
 
-  const terminalFonts = useMemo(() => probeFonts(TERMINAL_FONT_WHITELIST), []);
-  const uiFonts = useMemo(() => probeFonts(UI_FONT_WHITELIST), []);
+  // CP-4 勘误 #3:用 queryLocalFonts 真实枚举系统字体,推荐字体置顶。
+  // 异步加载,装载前用 probeFonts(推荐) 快速兜底,UX 上看是"先出推荐再补全"。
+  const [terminalFonts, setTerminalFonts] = useState<FontEntry[]>(() =>
+    probeFonts(RECOMMENDED_TERMINAL_FONTS),
+  );
+  const [uiFonts, setUiFonts] = useState<FontEntry[]>(() =>
+    probeFonts(RECOMMENDED_UI_FONTS),
+  );
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([
+      listAllFonts(RECOMMENDED_TERMINAL_FONTS, true),
+      listAllFonts(RECOMMENDED_UI_FONTS, false),
+    ])
+      .then(([term, ui]) => {
+        if (cancelled) return;
+        setTerminalFonts(term);
+        setUiFonts(ui);
+      })
+      .catch((err) => {
+        console.warn('[Appearance] listAllFonts failed', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <section className="settings-panel">
@@ -209,11 +238,7 @@ function AppearancePanel({
 
       <SettingRow
         label="主题"
-        hint={
-          followSystemTheme
-            ? '已开启"跟随系统主题",手动切换会被系统覆盖'
-            : '所有窗口立即同步;xterm 颜色与 UI 同步切换'
-        }
+        hint="所有窗口立即同步;xterm 颜色与 UI 同步切换"
       >
         <div className="settings-theme-grid">
           {THEMES.map((t) => (
@@ -246,25 +271,44 @@ function AppearancePanel({
       </SettingRow>
 
       <SettingRow
-        label="跟随系统主题"
-        hint="开启后系统切换深 / 浅色时自动切对应主题(深色用 Rose Pine,浅色用 Rose Pine Dawn)"
+        label="窗口风格"
+        hint="影响标题栏布局与窗口控制按钮位置(不影响主题配色)"
       >
-        <label className="settings-checkbox">
-          <input
-            type="checkbox"
-            checked={followSystemTheme}
-            onChange={(e) =>
-              void updateSettings(
-                { appearance: { followSystemTheme: e.target.checked } },
-                setError,
-              )
-            }
-          />
-          <span>跟随系统</span>
-        </label>
+        <div className="settings-radio-group">
+          <label className="settings-radio">
+            <input
+              type="radio"
+              name="window-style"
+              value="windows"
+              checked={windowStyle === 'windows'}
+              onChange={() =>
+                void updateSettings(
+                  { appearance: { windowStyle: 'windows' as WindowStyle } },
+                  setError,
+                )
+              }
+            />
+            Windows(按钮在右,方形)
+          </label>
+          <label className="settings-radio">
+            <input
+              type="radio"
+              name="window-style"
+              value="macos"
+              checked={windowStyle === 'macos'}
+              onChange={() =>
+                void updateSettings(
+                  { appearance: { windowStyle: 'macos' as WindowStyle } },
+                  setError,
+                )
+              }
+            />
+            macOS(三色 traffic light 在左,圆形)
+          </label>
+        </div>
       </SettingRow>
 
-      <SettingRow label="终端字体" hint="探测的等宽字体白名单 + 自定义">
+      <SettingRow label="终端字体" hint="系统已安装的等宽字体 + 推荐字体">
         <FontPicker
           value={terminalFontFamily}
           fonts={terminalFonts}
@@ -693,7 +737,7 @@ function TemplateEditor({
         />
       </SettingRow>
 
-      <SettingRow label="命令" hint="留空表示启动纯 shell;不要写 shell 路径,EasyTerm 会自动注入 shell">
+      <SettingRow label="命令" hint="留空表示启动纯 shell;不要写 shell 路径,Marina 会自动注入 shell">
         <input
           type="text"
           className="settings-input"
@@ -713,15 +757,11 @@ function TemplateEditor({
         />
       </SettingRow>
 
-      <SettingRow label="环境变量" hint="每行一个 KEY=VALUE">
-        <textarea
-          className="settings-input"
-          value={envText}
-          onChange={(e) => setEnvText(e.target.value)}
-          placeholder="ANTHROPIC_API_KEY=sk-..."
-          rows={4}
-          style={{ minWidth: 320, fontFamily: 'var(--terminal-font-family, monospace)' }}
-        />
+      <SettingRow
+        label="环境变量"
+        hint="每行一个 KEY=VALUE。默认遮罩,点👁切显示(防被旁人看到 API key)"
+      >
+        <EnvTextarea value={envText} onChange={setEnvText} />
       </SettingRow>
 
       <SettingRow
@@ -879,7 +919,7 @@ function BehaviorPanel({
 
       <SettingRow
         label="开机启动"
-        hint="Windows 启动时自动启动 EasyTerm(写 Run 注册表)"
+        hint="Windows 启动时自动启动 Marina(写 Run 注册表)"
       >
         <label className="settings-checkbox">
           <input
@@ -1038,9 +1078,9 @@ function DataPanel({
     <section className="settings-panel">
       <h2 className="settings-panel-title">数据</h2>
 
-      <SettingRow label="数据目录" hint="所有 EasyTerm 配置文件存放处">
+      <SettingRow label="数据目录" hint="所有 Marina 配置文件存放处">
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <span className="settings-info-text">%APPDATA%\EasyTerm</span>
+          <span className="settings-info-text">%APPDATA%\Marina</span>
           <button type="button" className="settings-button" onClick={handleOpenDataDir}>
             在 Explorer 中打开
           </button>
@@ -1096,7 +1136,7 @@ function SystemIntegrationPanel(): JSX.Element {
 
       <SettingRow
         label="Explorer 右键集成"
-        hint='"在 EasyTerm 中打开此文件夹"(V1.2 启用,V1 占位)'
+        hint='"在 Marina 中打开此文件夹"(V1.2 启用,V1 占位)'
       >
         <label className="settings-checkbox">
           <input type="checkbox" disabled checked={false} readOnly />
@@ -1182,7 +1222,7 @@ function AdvancedPanel({
         </div>
       </SettingRow>
 
-      <SettingRow label="日志目录" hint="%APPDATA%\EasyTerm\logs">
+      <SettingRow label="日志目录" hint="%APPDATA%\Marina\logs">
         <button type="button" className="settings-button" onClick={handleOpenLogs}>
           打开日志目录
         </button>
@@ -1230,16 +1270,18 @@ function AdvancedPanel({
 // 关于分类
 // ──────────────────────────────────────────────────────────────────
 
-const GITHUB_REPO = 'https://github.com/Liyue-Cheng/easyterm';
+const GITHUB_REPO = 'https://github.com/Liyue-Cheng/marina';
 const GITHUB_RELEASES = `${GITHUB_REPO}/releases`;
 
 const ACKNOWLEDGEMENTS: Array<{ name: string; url: string; tone: string }> = [
-  { name: 'Electron', url: 'https://www.electronjs.org/', tone: '应用框架' },
-  { name: 'React', url: 'https://react.dev/', tone: 'UI 库' },
-  { name: 'xterm.js', url: 'https://xtermjs.org/', tone: '终端模拟器' },
-  { name: 'node-pty', url: 'https://github.com/microsoft/node-pty', tone: 'PTY 绑定' },
-  { name: 'Rose Pine theme', url: 'https://rosepinetheme.com/', tone: '默认主题灵感' },
-  { name: '霞鹜文楷 (LXGW WenKai)', url: 'https://github.com/lxgw/LxgwWenKai', tone: '中文字体' },
+  { name: 'Electron', url: 'https://www.electronjs.org/', tone: '应用框架 (MIT)' },
+  { name: 'React', url: 'https://react.dev/', tone: 'UI 库 (MIT)' },
+  { name: 'electron-vite + Vite', url: 'https://electron-vite.org/', tone: '构建工具 (MIT)' },
+  { name: 'xterm.js', url: 'https://xtermjs.org/', tone: '终端模拟器 (MIT)' },
+  { name: 'node-pty', url: 'https://github.com/microsoft/node-pty', tone: 'PTY 绑定 (MIT)' },
+  { name: 'lucide-react', url: 'https://lucide.dev/', tone: 'UI 图标库 (ISC)' },
+  { name: 'Rose Pine theme', url: 'https://rosepinetheme.com/', tone: '默认主题灵感 (MIT)' },
+  { name: '霞鹜文楷 (LXGW WenKai)', url: 'https://github.com/lxgw/LxgwWenKai', tone: '中文字体 (OFL)' },
 ];
 
 function AboutPanel(): JSX.Element {
@@ -1314,7 +1356,7 @@ function AboutPanel(): JSX.Element {
         <span className="settings-info-text">MIT</span>
       </SettingRow>
 
-      <SettingRow label="致谢" hint="EasyTerm 站在这些项目的肩上">
+      <SettingRow label="致谢" hint="Marina 站在这些项目的肩上">
         <ul className="acknowledgements-list">
           {ACKNOWLEDGEMENTS.map((a) => (
             <li key={a.name}>
@@ -1426,17 +1468,66 @@ function NumberInput({
   );
 }
 
+/**
+ * M1-I:模板编辑器环境变量输入框 — 默认遮罩(显示 ***),点眼睛切真实。
+ * 模糊视觉用 CSS filter blur,真值始终在 input value 里,不影响保存。
+ * 复制粘贴时浏览器拿真值;肉眼看不见。
+ */
+function EnvTextarea({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}): JSX.Element {
+  const [revealed, setRevealed] = useState(false);
+  return (
+    <span style={{ display: 'inline-flex', gap: 6, alignItems: 'flex-start' }}>
+      <textarea
+        className="settings-input"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="ANTHROPIC_API_KEY=sk-..."
+        rows={4}
+        style={{
+          minWidth: 320,
+          fontFamily: 'var(--terminal-font-family, monospace)',
+          filter: revealed ? 'none' : 'blur(4px)',
+          transition: 'filter 120ms ease',
+        }}
+        // 鼠标 hover 时短暂取消遮罩(可读但操作完恢复),user-friendly
+        onMouseEnter={() => setRevealed(true)}
+        onMouseLeave={() => setRevealed(false)}
+        onFocus={() => setRevealed(true)}
+        onBlur={() => setRevealed(false)}
+      />
+      <button
+        type="button"
+        className="settings-button"
+        onClick={() => setRevealed((v) => !v)}
+        title={revealed ? '遮罩内容' : '查看明文'}
+        style={{ padding: '4px 8px' }}
+      >
+        {revealed ? '隐藏' : '显示'}
+      </button>
+    </span>
+  );
+}
+
 interface FontPickerProps {
   value: string;
-  fonts: Array<{ family: string; installed: boolean }>;
+  fonts: FontEntry[];
   onChange: (value: string) => void;
 }
 
 /**
- * 字体下拉:白名单中已装的字体 + "自定义" 选项 (打开输入框)。
+ * 字体下拉:推荐字体 + 系统已装字体 + "自定义" 选项。
+ *
+ * CP-4 勘误 #3:fonts 数组现在含 recommended 字段;UI 把它分两组显示
+ * (<optgroup>) — 推荐组在上,系统其他在下,直观且不遗漏用户已装但不在
+ * 我们推荐里的字体。
  */
 function FontPicker({ value, fonts, onChange }: FontPickerProps): JSX.Element {
-  // value 是 CSS font-family 字符串 (可能包含多个 fallback);提取首个值用作 select 的 value
   const firstFamily = useMemo(() => extractFirstFontFamily(value), [value]);
   const knownFamily = fonts.find((f) => f.family === firstFamily);
   const [isCustom, setIsCustom] = useState<boolean>(!knownFamily);
@@ -1446,6 +1537,17 @@ function FontPicker({ value, fonts, onChange }: FontPickerProps): JSX.Element {
     setCustomText(value);
     setIsCustom(!fonts.find((f) => f.family === extractFirstFontFamily(value)));
   }, [value, fonts]);
+
+  // 分组:推荐 vs 系统其他
+  const { recommended, others } = useMemo(() => {
+    const rec: FontEntry[] = [];
+    const oth: FontEntry[] = [];
+    for (const f of fonts) {
+      if (f.recommended) rec.push(f);
+      else oth.push(f);
+    }
+    return { recommended: rec, others: oth };
+  }, [fonts]);
 
   if (isCustom) {
     return (
@@ -1481,16 +1583,31 @@ function FontPicker({ value, fonts, onChange }: FontPickerProps): JSX.Element {
         onChange(e.target.value);
       }}
     >
-      {fonts.map((f) => (
-        <option
-          key={f.family}
-          value={f.family}
-          style={{ fontFamily: `"${f.family}", monospace` }}
-        >
-          {f.family}
-          {f.installed ? '' : ' (未装)'}
-        </option>
-      ))}
+      <optgroup label="推荐">
+        {recommended.map((f) => (
+          <option
+            key={f.family}
+            value={f.family}
+            style={{ fontFamily: `"${f.family}", monospace` }}
+          >
+            {f.family}
+            {f.installed ? '' : ' (未装)'}
+          </option>
+        ))}
+      </optgroup>
+      {others.length > 0 && (
+        <optgroup label={`系统已安装 (${others.length})`}>
+          {others.map((f) => (
+            <option
+              key={f.family}
+              value={f.family}
+              style={{ fontFamily: `"${f.family}", monospace` }}
+            >
+              {f.family}
+            </option>
+          ))}
+        </optgroup>
+      )}
       <option value="__custom__">— 自定义 —</option>
     </select>
   );

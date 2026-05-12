@@ -1,22 +1,22 @@
 /**
  * @file src/renderer/components/font-detection.ts
- * @purpose 用 Canvas measureText 探测系统中是否真装了某个字体。
+ * @purpose 列出"系统已安装的字体"+"推荐字体",供设置页字体下拉框使用。
  *
- *   软件定义书 6.6.2 要求"终端字体"下拉显示"从系统检测的等宽字体列表"。
- *   真枚举系统字体需要 Win32 EnumFontFamiliesEx 或 npm 包 (font-list 等),
- *   会引入新依赖 (AGENTS.md 1.2 边界 2 禁止)。改用预设白名单 + Canvas
- *   probe 的折衷:零依赖、足够实用、未来可升级到真枚举。
+ * @CP-4 勘误 #3:
+ *   原版只有写死白名单 + Canvas measureText 探测,用户报告"应该展示所有
+ *   已安装字体,并保留推荐字体置顶"。改用 Chrome 的 Local Font Access API
+ *   (window.queryLocalFonts) 真实枚举系统字体;主进程已自动放行
+ *   'local-fonts' 权限 (src/main/index.ts)。
  *
- * @检测原理:
- *   测量同一段文字在 (1) "目标字体" + sentinel fallback 下的宽度
- *   vs (2) 单独 sentinel fallback 下的宽度。如果系统真装了目标字体,
- *   渲染会用它,宽度通常与 fallback 不同;否则两者一致 (都用了 fallback)。
- *   这是浏览器侧字体探测的标准技巧。
+ * @检测策略:
+ *   1. 优先 window.queryLocalFonts():拿到完整 family 列表 (去重)
+ *   2. 失败 / 不可用 → 回退到老白名单 + Canvas probe (零依赖兜底)
  *
- * @限制:
- *   - 字体度量恰好与 fallback 完全一致的字体会被误判为"未装"
- *     (V1 接受这一边角)
- *   - sentinel 选 monospace + serif + sans-serif 三个,任一不同就视为存在
+ *   两套策略都返回 { family, installed, recommended } 列表。recommended=true
+ *   的项 UI 会置顶显示 (用户决策对齐)。
+ *
+ * @注意:queryLocalFonts 是异步,settings UI 用 useEffect + setState 装载;
+ *   首次加载完成前下拉框只显示推荐字体 (UX 上看起来是"推荐先 + 加载中")。
  */
 
 const PROBE_TEXT = 'mmmmmmmmmlli';
@@ -40,7 +40,6 @@ function getProbeContext(): ProbeContext {
   }
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
-  // 用相对大字号让差异放大
   const baseline = new Map<string, number>();
   for (const sentinel of SENTINELS) {
     ctx.font = `40px ${sentinel}`;
@@ -51,16 +50,11 @@ function getProbeContext(): ProbeContext {
 }
 
 /**
- * 探测系统是否安装了指定字体。
- *
- * @param family 字体名 (如 "Cascadia Mono")
- * @returns true 表示三个 sentinel 中至少一个测量结果与 baseline 不同
+ * Canvas probe — 用于回退路径与命中检测。
  */
 export function isFontAvailable(family: string): boolean {
   if (!family) return false;
-  // 系统泛型字体永远算"装了"(monospace / serif 等)
   if (SENTINELS.includes(family.toLowerCase())) return true;
-
   let probe: ProbeContext;
   try {
     probe = getProbeContext();
@@ -78,32 +72,27 @@ export function isFontAvailable(family: string): boolean {
 }
 
 /**
- * 终端等宽字体白名单 (按用户偏好顺序)。
- * 探测命中的展示给用户;命中后保留原样;未命中也展示但加 "(未装)" 标注。
+ * 终端推荐等宽字体 (按用户偏好顺序)。无论系统是否真装,都置顶展示;
+ * 实际安装由 Canvas probe 标 installed=true。
  */
-export const TERMINAL_FONT_WHITELIST: string[] = [
+export const RECOMMENDED_TERMINAL_FONTS: string[] = [
   'Cascadia Mono',
   'Cascadia Code',
-  'Cascadia Code PL',
   'JetBrains Mono',
-  'JetBrains Mono NL',
   'Consolas',
   'Source Code Pro',
   'Fira Code',
-  'Fira Mono',
   'Hack',
   'IBM Plex Mono',
   'Roboto Mono',
   'LXGW WenKai Mono',
   'Sarasa Mono SC',
-  'Lucida Console',
-  'Courier New',
 ];
 
 /**
- * UI 字体白名单 (中英文兼顾,含中文体)。
+ * UI 推荐字体。
  */
-export const UI_FONT_WHITELIST: string[] = [
+export const RECOMMENDED_UI_FONTS: string[] = [
   'LXGW WenKai',
   'Microsoft YaHei UI',
   'Microsoft YaHei',
@@ -116,14 +105,133 @@ export const UI_FONT_WHITELIST: string[] = [
 ];
 
 /**
- * 探测一个白名单中的所有字体,返回 { family, installed } 列表。
- * 顺序保留白名单顺序。
+ * 探测结果项。
  */
-export function probeFonts(
-  whitelist: string[],
-): Array<{ family: string; installed: boolean }> {
+export interface FontEntry {
+  family: string;
+  installed: boolean;
+  recommended: boolean;
+}
+
+/**
+ * 老接口:沿用 V1 ShellPanel/UI 的"白名单 probe" 行为 — 即把
+ * recommended 列表全部展示,标 installed (Canvas probe);未安装也展示。
+ * 仍保留是为向后兼容 (其它地方用到 probeFonts() 时无需改动)。
+ */
+export function probeFonts(whitelist: string[]): FontEntry[] {
   return whitelist.map((family) => ({
     family,
     installed: isFontAvailable(family),
+    recommended: true,
   }));
+}
+
+/**
+ * 旧白名单常量 (保留不删,部分代码引用)。新代码请用 RECOMMENDED_*。
+ */
+export const TERMINAL_FONT_WHITELIST = RECOMMENDED_TERMINAL_FONTS;
+export const UI_FONT_WHITELIST = RECOMMENDED_UI_FONTS;
+
+// queryLocalFonts 的最小类型 (TS lib.dom 截至 2026-05 还没收录该 API,
+// 自己声明,避免 typecheck 报红。)
+interface LocalFontDataLike {
+  family: string;
+  fullName: string;
+  postscriptName: string;
+  style: string;
+}
+interface QueryLocalFontsFn {
+  (options?: { postscriptNames?: string[] }): Promise<LocalFontDataLike[]>;
+}
+
+/**
+ * 真枚举系统字体。返回值已按 family 去重并排序:
+ * - 推荐字体置顶 (RECOMMENDED_*),即使系统未装也保留 (installed=false)
+ * - 其余为系统真实安装的全部 family,installed=true,字母升序
+ *
+ * @param recommendedList 推荐字体列表 (RECOMMENDED_TERMINAL_FONTS 或 _UI_*)
+ * @param filterMonospace 仅保留等宽字体 (用 Canvas probe 检测字宽差异);
+ *   终端字体下拉用 true,UI 字体用 false
+ *
+ * @注意:Local Font Access API 仅 Chromium 103+ 支持 + 需要 'local-fonts'
+ *   权限。Electron 主进程 setPermissionRequestHandler 已放行。
+ *   非 Electron / 旧 Chromium → 回退到 probeFonts(recommendedList)。
+ */
+export async function listAllFonts(
+  recommendedList: string[],
+  filterMonospace: boolean,
+): Promise<FontEntry[]> {
+  const recommendedSet = new Set(recommendedList);
+
+  // queryLocalFonts 探测
+  const queryFn = (window as unknown as { queryLocalFonts?: QueryLocalFontsFn })
+    .queryLocalFonts;
+  if (typeof queryFn !== 'function') {
+    return probeFonts(recommendedList);
+  }
+
+  let localFonts: LocalFontDataLike[];
+  try {
+    localFonts = await queryFn();
+  } catch (err) {
+    console.warn('[font-detection] queryLocalFonts failed, fallback to probe', err);
+    return probeFonts(recommendedList);
+  }
+
+  // 去重 family;同 family 多个变体 (Bold/Italic) 只保留一项
+  const familySet = new Set<string>();
+  for (const f of localFonts) {
+    if (f.family) familySet.add(f.family);
+  }
+
+  // 等宽过滤:对每个 family 用 Canvas probe 比较 'i' 和 'm' 的字宽,
+  // 等宽字体两者宽度相等,变宽字体 'm' 远大于 'i'。
+  const filterFn = filterMonospace
+    ? (family: string): boolean => isMonospaceFamily(family)
+    : (): boolean => true;
+
+  const installed: FontEntry[] = [];
+  const familiesSorted = [...familySet].sort((a, b) =>
+    a.localeCompare(b, 'en', { sensitivity: 'base' }),
+  );
+  for (const family of familiesSorted) {
+    if (!filterFn(family)) continue;
+    installed.push({
+      family,
+      installed: true,
+      recommended: recommendedSet.has(family),
+    });
+  }
+
+  // 按推荐顺序构造首段 (置顶);未装的也保留显示 (installed=false)
+  const head: FontEntry[] = [];
+  const installedFamilies = new Set(installed.map((e) => e.family));
+  for (const r of recommendedList) {
+    head.push({
+      family: r,
+      installed: installedFamilies.has(r),
+      recommended: true,
+    });
+  }
+  // 系统装着但不在推荐里的,排到下面
+  const tail = installed.filter((e) => !recommendedSet.has(e.family));
+  return [...head, ...tail];
+}
+
+/**
+ * 用 Canvas 测两个字符 'i' (窄) 与 'M' (宽) 的渲染宽度,差距 < 1px 视为等宽。
+ * 误判率不为零 (条件等宽字体可能误判为变宽,反之亦然),但作为下拉默认筛选
+ * 已足够实用 — 用户切到"自定义"输入框可绕过。
+ */
+function isMonospaceFamily(family: string): boolean {
+  let probe: ProbeContext;
+  try {
+    probe = getProbeContext();
+  } catch {
+    return false;
+  }
+  probe.ctx.font = `40px "${family}", monospace`;
+  const widthI = probe.ctx.measureText('iiiiiiiiii').width;
+  const widthM = probe.ctx.measureText('MMMMMMMMMM').width;
+  return Math.abs(widthI - widthM) < 4;
 }

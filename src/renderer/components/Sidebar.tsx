@@ -18,13 +18,9 @@
 import {
   useState,
   useMemo,
-  useEffect,
-  createContext,
-  useContext,
-  useCallback,
+  useRef,
   type DragEvent,
   type MouseEvent,
-  type ReactNode,
 } from 'react';
 import {
   COMMAND_CHANNELS,
@@ -34,6 +30,9 @@ import {
 } from '@shared/protocol';
 import type { PathNode, SessionInfo } from '@shared/types';
 import { findMyOwnedSessionId, useAppDispatch, useAppState } from '../store';
+import { Icon, type IconName } from './icons';
+import { useContextMenuApi, type ContextMenuItem } from './ContextMenu';
+import { useToast } from './Toast';
 
 /**
  * 状态点颜色 (软件定义书 6.2.4 状态指示):
@@ -51,111 +50,9 @@ const STATE_DOT_COLOR: Record<SessionInfo['state'], string> = {
 };
 
 // ──────────────────────────────────────────────────────────────────
-// 简易 Context Menu (CP-3 勘误 #4)
-//
-// Electron 默认会忽略 window.prompt / alert 这种 web 标准 API,所以原
-// CP-3 用 prompt 实现的"设默认模板"完全没反应。这里用 React 渲染一个
-// fixed 定位的菜单,点击外部 / Esc 关闭。
-//
-// CP-4 时若加更多右键交互 (复制路径 / Explorer 中显示 / 重命名),把这个
-// 抽出 components/ContextMenu.tsx 复用。CP-3 阶段只用一处,内联即可。
+// M1-C:全局 ContextMenuProvider 提到 App.tsx,这里只 useContextMenuApi。
+// 旧版内嵌 provider 已删除,文件因此短了 100+ 行。
 // ──────────────────────────────────────────────────────────────────
-
-interface ContextMenuItem {
-  /** 显示文本;支持 emoji 前缀 */
-  label: string;
-  /** 鼠标悬停 tooltip,可选 */
-  hint?: string;
-  /** 当前是否选中 (用于显示 ✓ 前缀) */
-  checked?: boolean;
-  /** 点击触发的副作用 */
-  onSelect: () => void;
-}
-
-interface ContextMenuState {
-  x: number;
-  y: number;
-  items: ContextMenuItem[];
-  /** 顶部小标题,可选 */
-  title?: string;
-}
-
-interface ContextMenuApi {
-  open(state: ContextMenuState): void;
-  close(): void;
-}
-
-const ContextMenuApiContext = createContext<ContextMenuApi | null>(null);
-
-function useContextMenuApi(): ContextMenuApi {
-  const v = useContext(ContextMenuApiContext);
-  if (!v) throw new Error('[Sidebar] ContextMenuApi 必须在 ContextMenuProvider 内使用');
-  return v;
-}
-
-function ContextMenuProvider({ children }: { children: ReactNode }): JSX.Element {
-  const [menu, setMenu] = useState<ContextMenuState | null>(null);
-  const close = useCallback(() => setMenu(null), []);
-  const api = useMemo<ContextMenuApi>(
-    () => ({
-      open: (state) => setMenu(state),
-      close,
-    }),
-    [close],
-  );
-
-  // Esc / 全局点击 / 滚轮 都关菜单
-  useEffect(() => {
-    if (!menu) return undefined;
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') close();
-    };
-    const onClickAway = (): void => close();
-    const onScroll = (): void => close();
-    window.addEventListener('keydown', onKey);
-    // mousedown 比 click 早一个 phase,在浮层"自己消失"前就拿到事件;
-    // 浮层内部的 mousedown 用 stopPropagation 阻止冒泡到这里。
-    window.addEventListener('mousedown', onClickAway);
-    window.addEventListener('wheel', onScroll, { passive: true });
-    return () => {
-      window.removeEventListener('keydown', onKey);
-      window.removeEventListener('mousedown', onClickAway);
-      window.removeEventListener('wheel', onScroll);
-    };
-  }, [menu, close]);
-
-  return (
-    <ContextMenuApiContext.Provider value={api}>
-      {children}
-      {menu && (
-        <div
-          className="ctx-menu"
-          style={{ left: menu.x, top: menu.y }}
-          // 内部 mousedown 不冒泡到 window onClickAway
-          onMouseDown={(e) => e.stopPropagation()}
-          role="menu"
-        >
-          {menu.title && <div className="ctx-menu-title">{menu.title}</div>}
-          {menu.items.map((it, idx) => (
-            <button
-              key={idx}
-              type="button"
-              className={`ctx-menu-item${it.checked ? ' checked' : ''}`}
-              title={it.hint}
-              onClick={() => {
-                it.onSelect();
-                close();
-              }}
-            >
-              <span className="ctx-menu-check">{it.checked ? '✓' : ' '}</span>
-              <span className="ctx-menu-label">{it.label}</span>
-            </button>
-          ))}
-        </div>
-      )}
-    </ContextMenuApiContext.Provider>
-  );
-}
 
 export function Sidebar(): JSX.Element {
   const state = useAppState();
@@ -213,43 +110,42 @@ export function Sidebar(): JSX.Element {
   };
 
   return (
-    <ContextMenuProvider>
-      <aside className="sidebar">
-        <div
-          className={`sidebar-bookmarks-dropzone${dragOver ? ' drag-over' : ''}`}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={(e) => void handleDrop(e)}
+    <aside className="sidebar">
+      <div
+        className={`sidebar-bookmarks-dropzone${dragOver ? ' drag-over' : ''}`}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={(e) => void handleDrop(e)}
+      >
+        <Category
+          title="收藏"
+          iconName="bookmark"
+          paths={state.pathTree.bookmarks}
+          actionLabel="+"
+          actionTitle="选择文件夹添加到收藏"
+          onAction={() => void handlePickFolder()}
+        />
+        <Category title="临时" iconName="clock" paths={state.pathTree.temporary} />
+        <Category title="最近" iconName="history" paths={state.pathTree.recent} />
+      </div>
+      <div className="sidebar-footer">
+        <button
+          type="button"
+          className="settings-entry"
+          onClick={() => dispatch({ type: 'view/enter-settings' })}
+          title="设置"
         >
-          <Category
-            title="收藏"
-            icon="📌"
-            paths={state.pathTree.bookmarks}
-            actionLabel="+"
-            actionTitle="选择文件夹添加到收藏"
-            onAction={() => void handlePickFolder()}
-          />
-          <Category title="临时" icon="🕐" paths={state.pathTree.temporary} />
-          <Category title="最近" icon="•" paths={state.pathTree.recent} />
-        </div>
-        <div className="sidebar-footer">
-          <button
-            type="button"
-            className="settings-entry"
-            onClick={() => dispatch({ type: 'view/enter-settings' })}
-            title="设置"
-          >
-            ⚙ 设置
-          </button>
-        </div>
-      </aside>
-    </ContextMenuProvider>
+          <Icon name="settings" size={14} />
+          <span>设置</span>
+        </button>
+      </div>
+    </aside>
   );
 }
 
 interface CategoryProps {
   title: string;
-  icon: string;
+  iconName: IconName;
   paths: PathNode[];
   actionLabel?: string;
   actionTitle?: string;
@@ -258,7 +154,7 @@ interface CategoryProps {
 
 function Category({
   title,
-  icon,
+  iconName,
   paths,
   actionLabel,
   actionTitle,
@@ -269,7 +165,7 @@ function Category({
       <header className="sidebar-category-header">
         <span className="sidebar-category-title">
           <span className="sidebar-category-icon" aria-hidden="true">
-            {icon}
+            <Icon name={iconName} size={12} />
           </span>
           {title}
         </span>
@@ -302,6 +198,7 @@ function PathItem({ node }: { node: PathNode }): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
   const ctxMenu = useContextMenuApi();
+  const toast = useToast();
   const expanded = state.expandedPathIds.has(node.id);
   const selected = state.selectedPathId === node.id;
   const sessions = useMemo(
@@ -311,7 +208,39 @@ function PathItem({ node }: { node: PathNode }): JSX.Element {
   const activeCount = sessions.length;
   const displayName = node.displayName ?? lastSegmentOf(node.path);
 
+  // M1-C:行内重命名 (仅收藏支持)
+  const [renaming, setRenaming] = useState(false);
+  const [renameText, setRenameText] = useState(displayName);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+
+  const beginRename = (): void => {
+    setRenameText(displayName);
+    setRenaming(true);
+    requestAnimationFrame(() => {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    });
+  };
+
+  const commitRename = (): void => {
+    const v = renameText.trim();
+    setRenaming(false);
+    if (!v || v === displayName) return;
+    window.api
+      .invoke(COMMAND_CHANNELS.BOOKMARK_RENAME, {
+        pathId: node.path,
+        newDisplayName: v,
+      })
+      .catch((err: unknown) => {
+        toast.push({
+          kind: 'error',
+          message: `重命名失败:${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+  };
+
   const handleSelect = (): void => {
+    if (renaming) return;
     dispatch({ type: 'view/select-path', pathId: node.id });
   };
 
@@ -341,36 +270,128 @@ function PathItem({ node }: { node: PathNode }): JSX.Element {
       dispatch({ type: 'view/select-path', pathId: node.id });
       dispatch({ type: 'view/select-session', sessionId: res.session.id });
     } catch (err) {
-      console.error('[Sidebar] doubleclick create-session failed', err);
+      // M1-K:不可达路径 / spawn 失败 → toast + (收藏路径) 提供"移除收藏"
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.push({
+        kind: 'error',
+        message: `打开终端失败 (${node.path}):${msg}`,
+        durationMs: 10000,
+      });
     }
   };
 
+  // M1-C:复制到剪贴板帮助器
+  const copyToClipboard = (text: string, label: string): void => {
+    navigator.clipboard
+      .writeText(text)
+      .then(() => toast.push({ kind: 'success', message: `已复制 ${label}` }))
+      .catch(() => toast.push({ kind: 'error', message: '复制失败' }));
+  };
+
+  // M1-C:右键菜单 — 按分类组装条目
   const handleContextMenu = (e: MouseEvent<HTMLDivElement>): void => {
-    // CP-3 勘误 #4:仅收藏路径支持右键菜单 (软件定义书 6.2.2)。
-    // 临时 / 最近的右键菜单 (加入收藏 / 从最近移除等) 是 CP-4 范围。
-    if (node.category !== 'bookmarked') return;
     e.preventDefault();
     e.stopPropagation();
+    const items: ContextMenuItem[] = [];
 
-    const items = state.templates.map((t) => ({
-      label: `${t.icon} ${t.name}`,
-      hint: t.command ? `启动命令: ${t.command}` : '系统默认 shell',
-      checked: t.id === node.defaultTemplateId,
+    // 通用项
+    items.push({
+      label: '复制路径',
+      onSelect: () => copyToClipboard(node.path, '路径'),
+    });
+    items.push({
+      label: '在 Explorer 中显示',
       onSelect: () => {
         window.api
-          .invoke(COMMAND_CHANNELS.BOOKMARK_SET_DEFAULT_TEMPLATE, {
-            pathId: node.path,
-            templateId: t.id,
-          })
-          .catch((err) =>
-            console.error('[Sidebar] set-default-template failed', err),
+          .invoke(COMMAND_CHANNELS.SYSTEM_SHOW_IN_EXPLORER, { path: node.path })
+          .catch((err: unknown) =>
+            toast.push({
+              kind: 'error',
+              message: `打开 Explorer 失败:${err instanceof Error ? err.message : String(err)}`,
+            }),
           );
       },
-    }));
+    });
+
+    if (node.category === 'bookmarked') {
+      items.push({ divider: true, label: '' });
+      items.push({ label: '重命名…', onSelect: beginRename });
+      items.push({
+        label: '移除收藏',
+        danger: true,
+        onSelect: () => {
+          window.api
+            .invoke(COMMAND_CHANNELS.BOOKMARK_REMOVE, { pathId: node.path })
+            .then(() => toast.push({ kind: 'success', message: `已移除收藏 ${displayName}` }))
+            .catch((err: unknown) =>
+              toast.push({
+                kind: 'error',
+                message: `移除失败:${err instanceof Error ? err.message : String(err)}`,
+              }),
+            );
+        },
+      });
+
+      // 设默认模板(沿用 CP-4 既有逻辑)— 作为子菜单的扁平展开
+      items.push({ divider: true, label: '' });
+      for (const t of state.templates) {
+        items.push({
+          label: `${t.icon} 设默认模板:${t.name}`,
+          hint: t.command ? `启动命令: ${t.command}` : '系统默认 shell',
+          checked: t.id === node.defaultTemplateId,
+          onSelect: () => {
+            window.api
+              .invoke(COMMAND_CHANNELS.BOOKMARK_SET_DEFAULT_TEMPLATE, {
+                pathId: node.path,
+                templateId: t.id,
+              })
+              .catch((err: unknown) =>
+                toast.push({
+                  kind: 'error',
+                  message: `设置默认模板失败:${err instanceof Error ? err.message : String(err)}`,
+                }),
+              );
+          },
+        });
+      }
+    } else if (node.category === 'temporary' || node.category === 'recent') {
+      items.push({ divider: true, label: '' });
+      items.push({
+        label: '加入收藏',
+        onSelect: () => {
+          window.api
+            .invoke(COMMAND_CHANNELS.BOOKMARK_ADD, { path: node.path })
+            .then(() => toast.push({ kind: 'success', message: `已加入收藏 ${displayName}` }))
+            .catch((err: unknown) =>
+              toast.push({
+                kind: 'error',
+                message: `加入收藏失败:${err instanceof Error ? err.message : String(err)}`,
+              }),
+            );
+        },
+      });
+      if (node.category === 'recent') {
+        items.push({
+          label: '从最近移除',
+          danger: true,
+          onSelect: () => {
+            window.api
+              .invoke(COMMAND_CHANNELS.PATH_REMOVE_FROM_RECENT, { path: node.path })
+              .catch((err: unknown) =>
+                toast.push({
+                  kind: 'error',
+                  message: `从最近移除失败:${err instanceof Error ? err.message : String(err)}`,
+                }),
+              );
+          },
+        });
+      }
+    }
+
     ctxMenu.open({
       x: e.clientX,
       y: e.clientY,
-      title: `设默认模板 — ${node.displayName ?? lastSegmentOf(node.path)}`,
+      title: displayName,
       items,
     });
   };
@@ -395,8 +416,29 @@ function PathItem({ node }: { node: PathNode }): JSX.Element {
         ) : (
           <span className="path-expand-arrow placeholder" />
         )}
-        <span className="path-name">{displayName}</span>
-        {activeCount > 0 && (
+        {renaming ? (
+          <input
+            ref={renameInputRef}
+            type="text"
+            className="path-name-rename-input"
+            value={renameText}
+            onChange={(e) => setRenameText(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                commitRename();
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                setRenaming(false);
+              }
+            }}
+            onClick={(e) => e.stopPropagation()}
+          />
+        ) : (
+          <span className="path-name">{displayName}</span>
+        )}
+        {activeCount > 0 && !renaming && (
           <span className="path-session-count" title={`${activeCount} 个终端`}>
             {activeCount}
           </span>
@@ -416,12 +458,99 @@ function PathItem({ node }: { node: PathNode }): JSX.Element {
 function SessionItem({ session }: { session: SessionInfo }): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
+  const ctxMenu = useContextMenuApi();
+  const toast = useToast();
   const isMine = session.ownerWindowId === state.myWindowId;
   const ownedByOther =
     session.ownerWindowId !== null && session.ownerWindowId !== state.myWindowId;
   const selected = state.selectedSessionId === session.id;
 
+  // M1-C:行内重命名
+  const [renaming, setRenaming] = useState(false);
+  const [renameText, setRenameText] = useState(session.displayName);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+
+  const beginRename = (): void => {
+    setRenameText(session.displayName);
+    setRenaming(true);
+    requestAnimationFrame(() => {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    });
+  };
+  const commitRename = (): void => {
+    const v = renameText.trim();
+    setRenaming(false);
+    if (!v || v === session.displayName) return;
+    window.api
+      .invoke(COMMAND_CHANNELS.SESSION_RENAME, {
+        sessionId: session.id,
+        newDisplayName: v,
+      })
+      .catch((err: unknown) =>
+        toast.push({
+          kind: 'error',
+          message: `重命名失败:${err instanceof Error ? err.message : String(err)}`,
+        }),
+      );
+  };
+
+  const copyToClipboard = (text: string, label: string): void => {
+    navigator.clipboard
+      .writeText(text)
+      .then(() => toast.push({ kind: 'success', message: `已复制 ${label}` }))
+      .catch(() => toast.push({ kind: 'error', message: '复制失败' }));
+  };
+
+  const handleContextMenu = (e: MouseEvent<HTMLLIElement>): void => {
+    e.preventDefault();
+    e.stopPropagation();
+    const tpl = state.templates.find((t) => t.id === session.templateId);
+    const fullCmd = tpl
+      ? `${tpl.command || '(纯 shell)'} ${tpl.args.join(' ')}`.trim()
+      : '(模板未找到)';
+
+    ctxMenu.open({
+      x: e.clientX,
+      y: e.clientY,
+      title: session.displayName,
+      items: [
+        { label: '重命名…', disabled: !isMine, onSelect: beginRename },
+        {
+          label: '复制 cwd',
+          onSelect: () => copyToClipboard(session.currentCwd, 'cwd'),
+        },
+        {
+          label: `复制 PID${session.pid > 0 ? ` (${session.pid})` : ''}`,
+          disabled: session.pid <= 0,
+          onSelect: () => copyToClipboard(String(session.pid), 'PID'),
+        },
+        {
+          label: `完整命令:${fullCmd}`,
+          disabled: true,
+          hint: fullCmd,
+        },
+        { divider: true, label: '' },
+        {
+          label: '关闭',
+          danger: true,
+          onSelect: () => {
+            window.api
+              .invoke(COMMAND_CHANNELS.SESSION_CLOSE, { sessionId: session.id })
+              .catch((err: unknown) =>
+                toast.push({
+                  kind: 'error',
+                  message: `关闭失败:${err instanceof Error ? err.message : String(err)}`,
+                }),
+              );
+          },
+        },
+      ],
+    });
+  };
+
   const handleClick = (): void => {
+    if (renaming) return;
     // 本窗口已是 owner → 仅切 view
     if (isMine) {
       dispatch({ type: 'view/select-path', pathId: session.pathId });
@@ -497,27 +626,53 @@ function SessionItem({ session }: { session: SessionInfo }): JSX.Element {
         ownedByOther ? ' owned-by-other' : ''
       }${session.state === 'exited' ? ' exited' : ''}`}
       onClick={() => void handleClick()}
+      onContextMenu={handleContextMenu}
       title={fullTitle}
     >
       <span
         className="session-state-dot"
         style={{ backgroundColor: STATE_DOT_COLOR[session.state] }}
       />
-      <span className="session-name">{session.displayName}</span>
-      {cwdDrifted && (
+      {renaming ? (
+        <input
+          ref={renameInputRef}
+          type="text"
+          className="session-name-rename-input"
+          value={renameText}
+          onChange={(e) => setRenameText(e.target.value)}
+          onBlur={commitRename}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              commitRename();
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              setRenaming(false);
+            }
+          }}
+          onClick={(e) => e.stopPropagation()}
+        />
+      ) : (
+        <span className="session-name">{session.displayName}</span>
+      )}
+      {cwdDrifted && !renaming && (
         <span className="session-cwd-drift" aria-label="当前目录已变" title={session.currentCwd}>
-          ⚠
+          <Icon name="alertTriangle" size={11} />
         </span>
       )}
-      {session.state === 'exited' && (
+      {session.state === 'exited' && !renaming && (
         <span
           className="session-exit-code"
           title={`已退出 (exitCode=${session.exitCode ?? 0})`}
         >
-          ⚫
+          <Icon name="circleDot" size={11} />
         </span>
       )}
-      {ownedByOther && <span className="session-owned-by-other">↗</span>}
+      {ownedByOther && !renaming && (
+        <span className="session-owned-by-other" title="在其他窗口持有">
+          <Icon name="externalLink" size={11} />
+        </span>
+      )}
     </li>
   );
 }

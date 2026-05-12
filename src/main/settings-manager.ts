@@ -35,7 +35,7 @@ export const DEFAULT_SETTINGS: Settings = {
   version: 1,
   appearance: {
     theme: 'rose-pine',
-    followSystemTheme: false,
+    windowStyle: 'windows',
     terminalFontFamily:
       "'Cascadia Mono', 'JetBrains Mono', 'Consolas', 'LXGW WenKai Mono', monospace",
     terminalFontSize: 13,
@@ -164,6 +164,34 @@ export class SettingsManager extends EventEmitter {
   }
 
   /**
+   * CP-4 勘误 #12:整体替换 settings (设置导入用)。
+   *
+   * 走和 initialize 同样的 deep-merge 路径,这样导入的归档若缺新增字段
+   * 会自动用 DEFAULT_SETTINGS 补齐;然后 validate + commit + emit,所有
+   * 窗口通过 evt:settings:changed 立即同步,无需 app.relaunch。
+   */
+  replaceAll(newSettings: Partial<Settings>): void {
+    const merged = deepMerge(DEFAULT_SETTINGS, newSettings as DeepPartial<Settings>);
+    if (merged.version !== 1) {
+      throw new SettingsError(
+        'IncompatibleVersion',
+        `Settings version=${merged.version} 不被当前应用支持 (期望 1)`,
+      );
+    }
+    validateSettings(merged);
+    const oldSettings = this.settings;
+    this.settings = merged;
+    this.store.set(structuredClone(merged));
+    const changedKeys = diffKeys('', oldSettings, merged);
+    if (changedKeys.length > 0) {
+      this.emit('settingsChanged', {
+        settings: structuredClone(merged),
+        changedKeys,
+      });
+    }
+  }
+
+  /**
    * 等所有待写入落盘 (退出前调)。
    */
   async flush(): Promise<void> {
@@ -252,6 +280,12 @@ export function validateSettings(s: Settings): void {
       'InvalidSettings',
       `appearance.theme="${s.appearance.theme}" 不是合法主题,允许: ${VALID_THEMES.join(', ')}`,
       { field: 'appearance.theme', got: s.appearance.theme, allowed: VALID_THEMES },
+    );
+  }
+  if (!['windows', 'macos'].includes(s.appearance.windowStyle)) {
+    throw new SettingsError(
+      'InvalidSettings',
+      `appearance.windowStyle="${s.appearance.windowStyle}" 必须是 windows 或 macos`,
     );
   }
   checkRange('appearance.terminalFontSize', s.appearance.terminalFontSize, 8, 24);

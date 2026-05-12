@@ -15,6 +15,9 @@ import { AppStateProvider, useAppState, useIpcSync } from './store';
 import { Sidebar } from './components/Sidebar';
 import { MainPane } from './components/MainPane';
 import { SettingsView } from './components/SettingsView';
+import { WindowChrome } from './components/WindowChrome';
+import { ContextMenuProvider } from './components/ContextMenu';
+import { ToastProvider } from './components/Toast';
 
 type HandshakeState =
   | { status: 'pending' }
@@ -55,13 +58,13 @@ export function App(): JSX.Element {
   }, []);
 
   if (handshake.status === 'pending') {
-    return <FullPagePlaceholder title="EasyTerm" subtitle="正在握手…" />;
+    return <FullPagePlaceholder title="Marina" subtitle="正在握手…" />;
   }
 
   if (handshake.status === 'mismatch') {
     return (
       <FullPagePlaceholder
-        title="EasyTerm"
+        title="Marina"
         subtitle="协议版本不匹配"
         body={`主进程协议版本 ${handshake.mainVersion},渲染端 ${handshake.rendererVersion}。请重启应用或重装。`}
         variant="error"
@@ -72,7 +75,7 @@ export function App(): JSX.Element {
   if (handshake.status === 'error') {
     return (
       <FullPagePlaceholder
-        title="EasyTerm"
+        title="Marina"
         subtitle="启动失败"
         body={handshake.message}
         variant="error"
@@ -96,6 +99,7 @@ function ConnectedShell({ buildVersion }: { buildVersion: string }): JSX.Element
   const state = useAppState();
 
   const currentTheme = state.settings.appearance?.theme ?? 'rose-pine';
+  const windowStyle = state.settings.appearance?.windowStyle ?? 'windows';
   const uiZoom = state.settings.appearance?.uiZoom ?? 1;
 
   // 即时同步 uiZoom 到 webFrame.setZoomFactor (preload 桥)。
@@ -109,7 +113,7 @@ function ConnectedShell({ buildVersion }: { buildVersion: string }): JSX.Element
   if (sync.error) {
     return (
       <FullPagePlaceholder
-        title="EasyTerm"
+        title="Marina"
         subtitle="加载 snapshot 失败"
         body={sync.error}
         variant="error"
@@ -118,25 +122,29 @@ function ConnectedShell({ buildVersion }: { buildVersion: string }): JSX.Element
   }
 
   if (!sync.ready) {
-    return <FullPagePlaceholder title="EasyTerm" subtitle="加载状态…" />;
+    return <FullPagePlaceholder title="Marina" subtitle="加载状态…" />;
   }
 
   return (
-    <div className="app-root with-shell" data-theme={currentTheme}>
-      <header className="app-header">
-        <span className="app-title">EasyTerm</span>
-        <span className="app-window-badge">Window {state.myWindowNumber || '?'}</span>
-        <span className="app-version">v{buildVersion}</span>
-      </header>
-      {state.inSettingsView ? (
-        <SettingsView />
-      ) : (
-        <div className="app-body">
-          <Sidebar />
-          <MainPane />
+    <ToastProvider>
+      <ContextMenuProvider>
+        <div
+          className="app-root with-shell"
+          data-theme={currentTheme}
+          data-window-style={windowStyle}
+        >
+          <WindowChrome windowStyle={windowStyle} buildVersion={buildVersion} />
+          {state.inSettingsView ? (
+            <SettingsView />
+          ) : (
+            <div className="app-body">
+              <Sidebar />
+              <MainPane />
+            </div>
+          )}
         </div>
-      )}
-    </div>
+      </ContextMenuProvider>
+    </ToastProvider>
   );
 }
 

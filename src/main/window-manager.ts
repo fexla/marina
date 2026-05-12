@@ -25,9 +25,9 @@
  * getByElectronId / getMostRecentlyActive。
  * CP-1 还不需要 session-window 的关系管理,该功能在 CP-3 加入。
  */
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, screen } from 'electron';
 import { randomUUID } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import type { WindowInfo } from '@shared/types';
 
@@ -48,8 +48,27 @@ interface ManagedWindow {
   lastFocusedAt: number;
 }
 
+/** 创建窗口时的可选初始 bounds (来自 settings.windowDefaults — M1-G)。 */
+export interface CreateWindowOptions {
+  initialBounds?: {
+    width: number;
+    height: number;
+    x?: number;
+    y?: number;
+    maximized?: boolean;
+  };
+  /** 关窗前调,把当前 bounds 写回 settings (M1-G)。 */
+  onBeforeClose?: (bounds: {
+    width: number;
+    height: number;
+    x: number;
+    y: number;
+    maximized: boolean;
+  }) => void;
+}
+
 export interface IWindowManager {
-  createWindow(): WindowInfo;
+  createWindow(options?: CreateWindowOptions): WindowInfo;
   closeWindow(windowId: string): boolean;
   list(): WindowInfo[];
   focus(windowId: string): boolean;
@@ -77,8 +96,14 @@ export class WindowManager implements IWindowManager {
    * 新开一个窗口。
    *
    * @throws Error('MaxWindowsReached') 已达 V1 上限 (20 个窗口)
+   *
+   * @M1-A: frame:false + 自绘标题栏 (含 macOS / Windows 两套布局,由 renderer 端
+   *   读 settings.appearance.windowStyle 决定)。Electron 默认 application menu 由
+   *   index.ts 端 Menu.setApplicationMenu(null) 全局禁。
+   * @M1-G: 接受 options.initialBounds 作为初始位置 / 尺寸 (来自 settings.windowDefaults),
+   *   close 前通过 onBeforeClose 回调把最终 bounds 写回。
    */
-  createWindow(): WindowInfo {
+  createWindow(options: CreateWindowOptions = {}): WindowInfo {
     if (this.windows.size >= MAX_WINDOWS) {
       throw new Error(
         `[WindowManager] MaxWindowsReached: 已达窗口数上限 ${MAX_WINDOWS}。` +
@@ -89,21 +114,35 @@ export class WindowManager implements IWindowManager {
     const windowId = randomUUID();
     const windowNumber = this.nextWindowNumber++;
 
+    // 解析初始 bounds,做多显示器越界校验 (M1-G):若上次 bounds 已超出现在可用屏幕区
+    // (例如外接显示器拔了),回退到主屏幕居中。
+    const initial = options.initialBounds;
+    const resolved = resolveInitialBounds(initial);
+
     const win = new BrowserWindow({
-      width: 1200,
-      height: 800,
+      width: resolved.width,
+      height: resolved.height,
+      ...(resolved.x !== undefined ? { x: resolved.x } : {}),
+      ...(resolved.y !== undefined ? { y: resolved.y } : {}),
       minWidth: 600,
       minHeight: 400,
       show: false,
-      title: `EasyTerm — Window ${windowNumber}`,
+      title: `Marina — Window ${windowNumber}`,
       backgroundColor: '#191724', // Rose Pine base — 软件定义书 5.1.9
+      // M1-A:自绘标题栏。frame:false 把整条 OS 标题栏拿掉,renderer 端用
+      // -webkit-app-region:drag 实现拖动,用 cmd:window:* 实现按钮动作。
+      frame: false,
       webPreferences: {
         preload: resolve(__dirname, '../preload/index.mjs'),
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false, // node-pty 等原生模块需要,后续 CP-3 接入
+        sandbox: false, // node-pty 等原生模块需要
       },
     });
+
+    if (resolved.maximized) {
+      win.maximize();
+    }
 
     const info: WindowInfo = {
       id: windowId,
@@ -120,6 +159,42 @@ export class WindowManager implements IWindowManager {
 
     win.on('focus', () => {
       managed.lastFocusedAt = Date.now();
+    });
+
+    // M1-A:把 maximize 状态变化通过 IPC 事件推给 renderer,renderer 据此切
+    // "最大化 / 还原" 按钮图标 + 窗口外圆角(最大化时无圆角)。
+    const sendMaxState = (): void => {
+      if (win.isDestroyed()) return;
+      win.webContents.send('evt:window:max-state-changed', {
+        eventId: randomUUID(),
+        timestamp: Date.now(),
+        payload: { maximized: win.isMaximized() },
+      });
+    };
+    win.on('maximize', sendMaxState);
+    win.on('unmaximize', sendMaxState);
+    // ready-to-show 后也发一次,renderer 初始就知道状态
+    win.once('ready-to-show', () => {
+      sendMaxState();
+    });
+
+    // M1-G:窗口关闭前把当前 bounds 写回 settings (经 onBeforeClose 回调)。
+    // 注意 'close' 在 'closed' 之前;'closed' 时 win 已销毁拿不到 bounds。
+    win.on('close', () => {
+      try {
+        if (options.onBeforeClose && !win.isDestroyed()) {
+          const b = win.getNormalBounds(); // 不含最大化时的扩展尺寸
+          options.onBeforeClose({
+            width: b.width,
+            height: b.height,
+            x: b.x,
+            y: b.y,
+            maximized: win.isMaximized(),
+          });
+        }
+      } catch (err) {
+        console.warn('[WindowManager] onBeforeClose save bounds failed:', err);
+      }
     });
 
     // 窗口关闭后清理映射。'closed' 在 webContents 销毁后触发,此时 win
@@ -140,35 +215,66 @@ export class WindowManager implements IWindowManager {
       win.show();
     });
 
+    // F12 / Ctrl+Shift+I 切换 DevTools — dev / packed 都生效。
+    // packed 应用没有 application menu (我们故意不设),所以 Chromium 不会
+    // 自动绑定这个快捷键,需要在主进程主动拦截 webContents 输入事件。
+    // 这是诊断 packed 模式蓝屏 / renderer 错误的唯一通道。
+    win.webContents.on('before-input-event', (event, input) => {
+      const isToggle =
+        input.key === 'F12' ||
+        (input.control && input.shift && input.key.toLowerCase() === 'i');
+      if (isToggle && input.type === 'keyDown') {
+        win.webContents.toggleDevTools();
+        event.preventDefault();
+      }
+    });
+
     // dev 模式从 Vite dev server 拉,build 后从本地文件加载
     const queryString = `?windowId=${encodeURIComponent(windowId)}&windowNumber=${windowNumber}`;
     if (isDev && process.env.ELECTRON_RENDERER_URL) {
       void win.loadURL(process.env.ELECTRON_RENDERER_URL + queryString);
-
-      // DevTools 默认完全不自动打开:
-      // - 每次 DevTools UI 启动 Chromium 会试着调 Autofill.enable /
-      //   Autofill.setAddresses (Chrome 私有协议,Electron 不实现),
-      //   抛 stderr 噪音。这是 Chromium 顽疾,不在我们代码控制范围内。
-      // - 多窗口测试时不堆 detached DevTools 窗口
-      // 用户要 DevTools 自己按 F12 / Ctrl+Shift+I,那次的 Autofill 噪音
-      // 是用户主动操作的副作用,可接受。
-      // 环境变量覆盖:
-      //   EASYTERM_DEVTOOLS=first  → 只为第一个窗口自动开
-      //   EASYTERM_DEVTOOLS=always → 每个窗口都自动开 (最早的默认)
-      //   未设置或其他值          → 不自动开 (新默认)
-      const devtoolsMode = process.env['EASYTERM_DEVTOOLS'];
-      const isFirstWindow = windowNumber === 1;
-      const shouldOpenDevTools =
-        devtoolsMode === 'always' ||
-        (devtoolsMode === 'first' && isFirstWindow);
-      if (shouldOpenDevTools) {
-        win.webContents.openDevTools({ mode: 'detach' });
-      }
     } else {
-      void win.loadFile(resolve(__dirname, '../renderer/index.html'), {
-        search: queryString.slice(1), // loadFile 的 search 不要前导 ?
-      });
+      // packed 模式:用 pathToFileURL 显式构造 file:// URL,然后追加 query string
+      // (loadFile + search 选项在 packed asar 里有 bug:query 会被当作路径一部分,
+      //  生成 "index.html?windowId=..." 这种非法路径,触发
+      //  "Not allowed to load local resource"。直接走 loadURL 是稳的)
+      const indexPath = resolve(__dirname, '../renderer/index.html');
+      const indexUrl = pathToFileURL(indexPath).toString() + queryString;
+      void win.loadURL(indexUrl);
     }
+
+    // EASYTERM_DEVTOOLS 环境变量:dev / packed 都支持。诊断启动期 renderer
+    // 错误时,启动前 set EASYTERM_DEVTOOLS=always 即可让每个窗口自启 DevTools。
+    //   first  → 只为第一个窗口自动开
+    //   always → 每个窗口都自动开
+    //   未设置 → 不自动开
+    const devtoolsMode = process.env['EASYTERM_DEVTOOLS'];
+    const isFirstWindow = windowNumber === 1;
+    const shouldOpenDevTools =
+      devtoolsMode === 'always' ||
+      (devtoolsMode === 'first' && isFirstWindow);
+    if (shouldOpenDevTools) {
+      win.webContents.openDevTools({ mode: 'detach' });
+    }
+
+    // 主动捕获 renderer 进程崩溃 / 未捕获错误,印到 main stderr。
+    // 用户从 PowerShell 启动 packed exe 时能看到诊断信息,无需 DevTools。
+    win.webContents.on('render-process-gone', (_e, details) => {
+      console.error(
+        `[WindowManager] renderer process gone (window ${windowNumber}): reason=${details.reason} exitCode=${details.exitCode}`,
+      );
+    });
+    win.webContents.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL) => {
+      console.error(
+        `[WindowManager] did-fail-load (window ${windowNumber}): code=${errorCode} desc=${errorDescription} url=${validatedURL}`,
+      );
+    });
+    win.webContents.on('preload-error', (_e, preloadPath, error) => {
+      console.error(
+        `[WindowManager] preload-error (window ${windowNumber}): preload="${preloadPath}"`,
+        error,
+      );
+    });
 
     for (const handler of this.onCreatedHandlers) {
       try {
@@ -255,9 +361,111 @@ export class WindowManager implements IWindowManager {
   }
 
   /**
+   * M1-G:全局工厂注入。所有"新建窗口"入口(IPC `cmd:window:create`、托盘
+   * "打开新窗口"等)都应走 setCreateOptionsProvider 提供的 options,这样
+   * 持久化 bounds 等横切关注点不必散落到每个调用方。
+   *
+   * 不调 setCreateOptionsProvider 时 createWindow() 退化成默认行为。
+   */
+  private createOptionsProvider: (() => CreateWindowOptions) | null = null;
+  setCreateOptionsProvider(provider: () => CreateWindowOptions): void {
+    this.createOptionsProvider = provider;
+  }
+
+  /**
+   * 工厂入口:使用 createOptionsProvider 提供的 options 创建窗口。
+   * IPC / 托盘等"非首窗"创建路径应调这个,而不是直接 createWindow()。
+   */
+  createWindowFromFactory(): WindowInfo {
+    const opts = this.createOptionsProvider ? this.createOptionsProvider() : {};
+    return this.createWindow(opts);
+  }
+
+  /**
    * 注册回调:每次窗口关闭后触发。
    */
   onWindowClosed(handler: (windowId: string) => void): void {
     this.onClosedHandlers.push(handler);
   }
+
+  /**
+   * M1-A:供 IPC 调用的窗口控制 — 最小化 / 切换最大化。
+   * 失败静默(窗口已销毁 / 不存在);返回是否真触发了动作。
+   */
+  minimizeWindow(windowId: string): boolean {
+    const m = this.windows.get(windowId);
+    if (!m || m.electronWindow.isDestroyed()) return false;
+    m.electronWindow.minimize();
+    return true;
+  }
+
+  toggleMaximizeWindow(windowId: string): boolean {
+    const m = this.windows.get(windowId);
+    if (!m || m.electronWindow.isDestroyed()) return false;
+    if (m.electronWindow.isMaximized()) m.electronWindow.unmaximize();
+    else m.electronWindow.maximize();
+    return true;
+  }
+
+  isMaximized(windowId: string): boolean {
+    const m = this.windows.get(windowId);
+    return !!m && !m.electronWindow.isDestroyed() && m.electronWindow.isMaximized();
+  }
+}
+
+/**
+ * M1-G:解析持久化的初始 bounds,做越界 / 多显示器缺失的回退。
+ * 输入为空 → 主屏幕居中默认 1200×800。
+ * 输入超出所有显示器并集 → 同上回退。
+ * 输入合法但只在副屏 → 保留(副屏存在的话)。
+ */
+function resolveInitialBounds(
+  input: CreateWindowOptions['initialBounds'],
+): { width: number; height: number; x?: number; y?: number; maximized: boolean } {
+  const DEFAULT_W = 1200;
+  const DEFAULT_H = 800;
+
+  if (!input) {
+    return { width: DEFAULT_W, height: DEFAULT_H, maximized: false };
+  }
+
+  const width = clampInt(input.width, 600, 4096, DEFAULT_W);
+  const height = clampInt(input.height, 400, 4096, DEFAULT_H);
+
+  if (input.x === undefined || input.y === undefined) {
+    return { width, height, maximized: !!input.maximized };
+  }
+
+  // 校验是否落在任意 display 的可用工作区内 (至少左上角点在某 display 内)
+  let onScreen = false;
+  try {
+    for (const d of screen.getAllDisplays()) {
+      const wa = d.workArea;
+      if (
+        input.x >= wa.x - 8 &&
+        input.x < wa.x + wa.width - 100 && // 至少留 100px 让用户看到
+        input.y >= wa.y - 8 &&
+        input.y < wa.y + wa.height - 50
+      ) {
+        onScreen = true;
+        break;
+      }
+    }
+  } catch {
+    // screen API 在 app 未 ready 前不可用 — 此处保守起见走回退
+    onScreen = false;
+  }
+
+  if (!onScreen) {
+    return { width, height, maximized: !!input.maximized };
+  }
+  return { width, height, x: input.x, y: input.y, maximized: !!input.maximized };
+}
+
+function clampInt(v: number, lo: number, hi: number, fallback: number): number {
+  if (!Number.isFinite(v)) return fallback;
+  const i = Math.round(v);
+  if (i < lo) return lo;
+  if (i > hi) return hi;
+  return i;
 }

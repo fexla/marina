@@ -3,7 +3,7 @@
  * @purpose macOS 平台适配器占位。
  *
  * 本文件存在的目的:
- * 1. 提示未来贡献者 — 实现这里的所有方法即可在 macOS 跑通 EasyTerm
+ * 1. 提示未来贡献者 — 实现这里的所有方法即可在 macOS 跑通 Marina
  * 2. 让 src/main/platform/index.ts 的 import 路径稳定
  *
  * @关键参考点 (给贡献者):

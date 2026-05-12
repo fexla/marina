@@ -20,7 +20,13 @@
  *
  * @对应文档章节: 软件定义书.md 6.3 (右侧标签页)、6.4 (终端区域)
  */
-import { useEffect, useRef, useState, type MouseEvent } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type DragEvent,
+  type MouseEvent,
+} from 'react';
 import {
   COMMAND_CHANNELS,
   type CreateSessionResponse,
@@ -34,6 +40,9 @@ import {
   useAppState,
 } from '../store';
 import { TerminalView } from './TerminalView';
+import { Icon } from './icons';
+import { useContextMenuApi } from './ContextMenu';
+import { useToast } from './Toast';
 
 export function MainPane(): JSX.Element {
   const state = useAppState();
@@ -44,6 +53,45 @@ export function MainPane(): JSX.Element {
   const containerRef = useRef<HTMLElement | null>(null);
   const fontSize = state.settings.appearance?.terminalFontSize ?? 13;
   const lineHeight = state.settings.appearance?.terminalLineHeight ?? 1.2;
+
+  // M1-B:拖 Explorer 文件夹到终端区 → 在该路径用默认模板新建终端 (spec 7.3)
+  const [dragOver, setDragOver] = useState(false);
+
+  const handleDragOver = (e: DragEvent<HTMLElement>): void => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(true);
+  };
+
+  const handleDragLeave = (e: DragEvent<HTMLElement>): void => {
+    // 只在真正离开容器时清,避免子元素 dragenter 引起 flash
+    if (e.currentTarget === e.target) setDragOver(false);
+  };
+
+  const handleDrop = async (e: DragEvent<HTMLElement>): Promise<void> => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(false);
+
+    const files = Array.from(e.dataTransfer.files);
+    const dims = state.lastTerminalDims;
+    for (const file of files) {
+      const path = (file as File & { path?: string }).path;
+      if (!path) continue;
+      // 默认模板:全局 default,与 Sidebar 双击行为对齐 (无 bookmark 上下文)
+      const templateId = state.defaultTemplateId ?? 'shell';
+      try {
+        const res = await window.api.invoke<unknown, CreateSessionResponse>(
+          COMMAND_CHANNELS.SESSION_CREATE,
+          { pathId: path, templateId, cols: dims.cols, rows: dims.rows },
+        );
+        dispatch({ type: 'view/select-path', pathId: res.session.pathId });
+        dispatch({ type: 'view/select-session', sessionId: res.session.id });
+      } catch (err) {
+        console.error('[MainPane] drop create-session failed', err);
+      }
+    }
+  };
 
   // ResizeObserver:把主区容器尺寸 + 字号 → 估算 cols/rows → 写入 store。
   // SESSION_CREATE 调用点统一读 store.lastTerminalDims,确保 spawn PTY 时
@@ -70,16 +118,31 @@ export function MainPane(): JSX.Element {
     return () => ro.disconnect();
   }, [dispatch, fontSize, lineHeight]);
 
+  const dropProps = {
+    onDragOver: handleDragOver,
+    onDragLeave: handleDragLeave,
+    onDrop: (e: DragEvent<HTMLElement>) => void handleDrop(e),
+  };
+
   if (!state.selectedPathId) {
     return (
-      <main className="main-pane" ref={containerRef}>
+      <main
+        className={`main-pane${dragOver ? ' drag-over' : ''}`}
+        ref={containerRef}
+        {...dropProps}
+      >
         <WelcomeState />
+        {dragOver && <DropHint />}
       </main>
     );
   }
 
   return (
-    <main className="main-pane" ref={containerRef}>
+    <main
+      className={`main-pane${dragOver ? ' drag-over' : ''}`}
+      ref={containerRef}
+      {...dropProps}
+    >
       <TabBar sessions={sessions} selectedSessionId={state.selectedSessionId} />
       {displayable ? (
         <TerminalView
@@ -91,14 +154,25 @@ export function MainPane(): JSX.Element {
       ) : (
         <EmptyPathState pathId={state.selectedPathId} />
       )}
+      {dragOver && <DropHint />}
     </main>
+  );
+}
+
+function DropHint(): JSX.Element {
+  return (
+    <div className="main-pane-drop-hint" aria-hidden="true">
+      <div className="main-pane-drop-hint-inner">
+        松开鼠标 — 在该文件夹打开新终端
+      </div>
+    </div>
   );
 }
 
 function WelcomeState(): JSX.Element {
   return (
     <div className="welcome-state">
-      <h2>EasyTerm</h2>
+      <h2>Marina</h2>
       <p>从左侧选一个路径开始,或点击 <strong>收藏 +</strong> 添加文件夹。</p>
     </div>
   );
@@ -247,6 +321,8 @@ interface TabProps {
 function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
+  const ctxMenu = useContextMenuApi();
+  const toast = useToast();
 
   // Variant 由 session.ownerWindowId 自决,不再由父级分组传入。这样 tab
   // 即使移动 (虽然现在不再重排) 也不会丢 variant。
@@ -256,6 +332,88 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
       : session.ownerWindowId === null
         ? 'orphan'
         : 'other';
+
+  const copyToClipboard = (text: string, label: string): void => {
+    navigator.clipboard
+      .writeText(text)
+      .then(() => toast.push({ kind: 'success', message: `已复制 ${label}` }))
+      .catch(() => toast.push({ kind: 'error', message: '复制失败' }));
+  };
+
+  const handleContextMenu = (e: MouseEvent<HTMLButtonElement>): void => {
+    e.preventDefault();
+    e.stopPropagation();
+    const path =
+      state.pathTree.bookmarks.find((p) => p.id === session.pathId)?.path ||
+      state.pathTree.temporary.find((p) => p.id === session.pathId)?.path ||
+      state.pathTree.recent.find((p) => p.id === session.pathId)?.path ||
+      session.originalCwd;
+
+    ctxMenu.open({
+      x: e.clientX,
+      y: e.clientY,
+      title: session.displayName,
+      items: [
+        {
+          label: '重命名…',
+          disabled: variant !== 'mine',
+          ...(variant !== 'mine' ? { hint: '本窗口不是持有者,无法重命名' } : {}),
+          onSelect: () => {
+            const next = window.prompt('新名称', session.displayName);
+            if (!next) return;
+            window.api
+              .invoke(COMMAND_CHANNELS.SESSION_RENAME, {
+                sessionId: session.id,
+                newDisplayName: next,
+              })
+              .catch((err: unknown) =>
+                toast.push({
+                  kind: 'error',
+                  message: `重命名失败:${err instanceof Error ? err.message : String(err)}`,
+                }),
+              );
+          },
+        },
+        {
+          label: '复制路径',
+          onSelect: () => copyToClipboard(path, '路径'),
+        },
+        {
+          label: '复制 cwd',
+          onSelect: () => copyToClipboard(session.currentCwd, 'cwd'),
+        },
+        {
+          label: '在 Explorer 中显示',
+          onSelect: () => {
+            window.api
+              .invoke(COMMAND_CHANNELS.SYSTEM_SHOW_IN_EXPLORER, { path })
+              .catch((err: unknown) =>
+                toast.push({
+                  kind: 'error',
+                  message: `打开 Explorer 失败:${err instanceof Error ? err.message : String(err)}`,
+                }),
+              );
+          },
+        },
+        { divider: true, label: '' },
+        {
+          label: '关闭',
+          danger: true,
+          disabled: variant === 'other',
+          onSelect: () => {
+            window.api
+              .invoke(COMMAND_CHANNELS.SESSION_CLOSE, { sessionId: session.id })
+              .catch((err: unknown) =>
+                toast.push({
+                  kind: 'error',
+                  message: `关闭失败:${err instanceof Error ? err.message : String(err)}`,
+                }),
+              );
+          },
+        },
+      ],
+    });
+  };
 
   const handleClick = (e: MouseEvent<HTMLButtonElement>): void => {
     e.preventDefault();
@@ -354,6 +512,7 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
         (session.state === 'active' ? ' active' : '')
       }
       onClick={handleClick}
+      onContextMenu={handleContextMenu}
       title={tooltipParts.join('\n')}
     >
       <span
@@ -363,7 +522,7 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
       <span className="tab-name">{session.displayName}</span>
       {cwdDrifted && (
         <span className="tab-cwd-drift" aria-label="当前目录已变">
-          ⚠
+          <Icon name="alertTriangle" size={11} />
         </span>
       )}
       {variant !== 'other' && (

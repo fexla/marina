@@ -284,6 +284,22 @@ export class TemplatesManager extends EventEmitter {
     await this.store.flush();
   }
 
+  /**
+   * CP-4 勘误 #12:整体替换全部模板 + defaultTemplateId (设置导入用)。
+   * 走 mergeBuiltins 保证内置模板齐全 + defaultId 合法,然后 persist + emit,
+   * 让所有窗口立即看到新数据 — 避免 app.relaunch 在 dev 模式失效的坑。
+   */
+  replaceAll(input: { defaultTemplateId: string; templates: Template[] }): void {
+    const { templates, defaultId } = mergeBuiltins(
+      input.templates,
+      input.defaultTemplateId || DEFAULT_TEMPLATE_ID,
+    );
+    this.templates = templates;
+    this.defaultTemplateId = defaultId;
+    this.persist();
+    this.emitUpdated();
+  }
+
   // ──────────────────────────────────────────────────────────────────
   // 内部
   // ──────────────────────────────────────────────────────────────────

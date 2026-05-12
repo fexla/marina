@@ -115,7 +115,11 @@ export type AppAction =
   | { type: 'view/expand-path'; pathId: string }
   | { type: 'view/enter-settings' }
   | { type: 'view/exit-settings' }
-  | { type: 'view/focus-requested'; selectSessionId?: string }
+  | {
+      type: 'view/focus-requested';
+      selectSessionId?: string;
+      enterSettings?: boolean;
+    }
   | { type: 'view/update-terminal-dims'; dims: { cols: number; rows: number } };
 
 // ──────────────────────────────────────────────────────────────────
@@ -282,19 +286,25 @@ function reducer(state: AppState, action: AppAction): AppState {
     case 'view/exit-settings':
       return { ...state, inSettingsView: false };
 
-    case 'view/focus-requested':
-      // session-click / tray-click 等 main 推送的聚焦请求
+    case 'view/focus-requested': {
+      // session-click / tray-click / tray-session-click / tray-open-settings 等 main 推送的聚焦请求
+      let next = state;
       if (action.selectSessionId) {
         const session = state.sessions.get(action.selectSessionId);
         if (session) {
-          return {
-            ...state,
+          next = {
+            ...next,
             selectedPathId: session.pathId,
             selectedSessionId: action.selectSessionId,
+            inSettingsView: false, // 选 session 隐含退出 settings
           };
         }
       }
-      return state;
+      if (action.enterSettings) {
+        next = { ...next, inSettingsView: true };
+      }
+      return next;
+    }
 
     case 'view/update-terminal-dims': {
       const { cols, rows } = action.dims;
@@ -503,6 +513,7 @@ export function useIpcSync(): { ready: boolean; error: string | null } {
               dispatch({
                 type: 'view/focus-requested',
                 ...(p.selectSessionId ? { selectSessionId: p.selectSessionId } : {}),
+                ...(p.reason === 'tray-open-settings' ? { enterSettings: true } : {}),
               }),
           ),
         );

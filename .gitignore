@@ -52,5 +52,11 @@ coverage/
 # OS-specific
 desktop.ini
 
-# User-local app data dumps (NEVER commit anything from %APPDATA%\EasyTerm)
+# User-local app data dumps (NEVER commit anything from %APPDATA%\Marina or
+# legacy %APPDATA%\EasyTerm)
+Marina-userdata-*/
 EasyTerm-userdata-*/
+
+# Claude Code / Cursor / agent local state (machine-specific, includes user
+# permission grants and other non-shareable settings)
+.claude/

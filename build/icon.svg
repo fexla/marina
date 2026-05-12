@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!--
+    EasyTerm 应用图标 (M1-E)。
+    设计:Rose Pine 深紫圆角方块底,Iris 紫色 ">_" 终端提示符前景。
+    256 是 .ico 的最大尺寸,electron-icon-builder 等工具可从此 SVG 转出
+    多尺寸 .ico / .icns / .png(见 build/README.md)。
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1f1d2e"/>
+      <stop offset="100%" stop-color="#191724"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" ry="56" fill="url(#bg)"/>
+  <!-- 内部边框,营造立体感 -->
+  <rect x="8" y="8" width="240" height="240" rx="48" ry="48"
+        fill="none" stroke="#26233a" stroke-width="2"/>
+  <!-- ">_" 提示符 -->
+  <g stroke="#c4a7e7" stroke-width="20" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <polyline points="72,92 116,128 72,164"/>
+    <line x1="140" y1="172" x2="196" y2="172"/>
+  </g>
+  <!-- 光标小方块 (gold) -->
+  <rect x="140" y="92" width="20" height="44" fill="#f6c177" rx="3" ry="3"/>
+</svg>

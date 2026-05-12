@@ -3,7 +3,7 @@
  * @purpose Linux 平台适配器占位。
  *
  * 本文件存在的目的:
- * 1. 提示未来贡献者 — 实现这里的所有方法即可在 Linux 跑通 EasyTerm
+ * 1. 提示未来贡献者 — 实现这里的所有方法即可在 Linux 跑通 Marina
  * 2. 让 src/main/platform/index.ts 的 import 路径稳定
  *
  * @关键参考点 (给贡献者):
@@ -11,7 +11,7 @@
  * - getProcessCwd: readlink /proc/<pid>/cwd (需要权限,正常用户对自己进程没问题)
  * - registerFileManagerIntegration: 各 DE 各做 (Nautilus / Dolphin / Thunar / ...),
  *   建议先支持 Nautilus 因为占用率最高
- * - setAutoStart: ~/.config/autostart/easyterm.desktop (XDG 标准)
+ * - setAutoStart: ~/.config/autostart/marina.desktop (XDG 标准)
  *
  * @对应文档章节: 软件定义书.md 12.2;CONTRIBUTING.md (待添加)
  *

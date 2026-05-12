@@ -1,6 +1,8 @@
 # CP-1 自测报告
 
-**完成日期**：2026-05-09
+> **历史档案**:本文件创建于 alpha 阶段,产品当时叫 EasyTerm,自 v1.5 起更名为 Marina(见软件定义书 ADR-012)。下文 "EasyTerm" 字样保留作为时间点快照。
+
+**完成日期**:2026-05-09
 **对应分支**：`checkpoint-1`
 **最新 commit**：见 `git log --oneline checkpoint-1`
 

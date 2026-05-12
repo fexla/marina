@@ -1,7 +1,7 @@
 /**
  * @file src/main/tray.ts
  * @purpose 系统托盘管理。常驻托盘图标、右键菜单、单击聚焦最近活动窗口、
- *   "完全退出 EasyTerm"流程。
+ *   "完全退出 Marina"流程。
  *
  * @关键设计:
  * - 托盘是应用"始终在线"的代表 (软件定义书 6.5)
@@ -23,48 +23,106 @@
  *   软件定义书 7.4.3)
  * - 不要直接调 BrowserWindow API (通过 WindowManager)
  */
-import { app, dialog, Menu, nativeImage, Tray, type NativeImage } from 'electron';
+import {
+  app,
+  dialog,
+  Menu,
+  nativeImage,
+  Tray,
+  type MenuItemConstructorOptions,
+  type NativeImage,
+} from 'electron';
+import { EVENT_CHANNELS } from '@shared/protocol';
+import { randomUUID } from 'node:crypto';
 import type { WindowManager } from './window-manager';
+import type { SessionInfo } from '@shared/types';
 import type { SessionManager } from './session-manager';
 import type { SettingsManager } from './settings-manager';
+import { logger } from './logger';
 import { setQuitting } from './index';
 
 /**
- * 程序化生成一个 16x16 Rose Pine 风格的托盘占位图标。
+ * 程序化生成 16×16 RGBA 托盘占位图标。
  *
- * 设计:深紫色边框 (base #191724) + 浅紫色内填 (iris #c4a7e7),
- * 在浅色与深色 Windows 任务栏下都有一定辨识度。
+ * M1-E 起,接受 variant 区分三态(spec 6.5.1):
+ *   - 'default':静态深紫,Iris 紫色 ">" 内填 — 无 session 或 idle
+ *   - 'active':绿色光点 — 至少一个 session 处于 active
  *
- * 不用外部 .ico 文件的理由:
- * - CP-1 不引入二进制资源,git 历史更清爽
- * - CP-4 打包阶段会有真正的设计图标
- * - createFromBitmap 在 Win/mac/Linux 都能跑
+ * variant='build-icon' 时优先尝试从 build/icon.ico 读取真实设计图标(打包后用)。
+ * 读取失败统一 fallback 到 default 程序生成版,确保始终有图标显示。
  */
-function generatePlaceholderTrayIcon(): NativeImage {
+function generateTrayIcon(variant: 'default' | 'active'): NativeImage {
   const size = 16;
-  const buffer = Buffer.alloc(size * size * 4);
+  const buf = Buffer.alloc(size * size * 4);
+
+  // Rose Pine 色板
+  const BASE = [0x19, 0x17, 0x24]; // 背景
+  const IRIS = [0xc4, 0xa7, 0xe7]; // 提示符
+  const PINE = [0x31, 0x74, 0x8f]; // active 光点
+
+  // 圆角矩形背景
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const i = (y * size + x) * 4;
-      const isBorder = x === 0 || x === size - 1 || y === 0 || y === size - 1;
-      if (isBorder) {
-        buffer[i] = 0x19; // base R
-        buffer[i + 1] = 0x17; // G
-        buffer[i + 2] = 0x24; // B
-        buffer[i + 3] = 0xff;
+      // 四角去角
+      const corner =
+        (x < 2 && y < 2) ||
+        (x >= size - 2 && y < 2) ||
+        (x < 2 && y >= size - 2) ||
+        (x >= size - 2 && y >= size - 2);
+      if (corner) {
+        buf[i] = 0;
+        buf[i + 1] = 0;
+        buf[i + 2] = 0;
+        buf[i + 3] = 0;
       } else {
-        buffer[i] = 0xc4; // iris R
-        buffer[i + 1] = 0xa7; // G
-        buffer[i + 2] = 0xe7; // B
-        buffer[i + 3] = 0xff;
+        buf[i] = BASE[0]!;
+        buf[i + 1] = BASE[1]!;
+        buf[i + 2] = BASE[2]!;
+        buf[i + 3] = 0xff;
       }
     }
   }
-  return nativeImage.createFromBitmap(buffer, { width: size, height: size });
+
+  // 画 ">" 提示符 (在 (4-9, 5-11) 区域用 IRIS 色)
+  const promptPixels: ReadonlyArray<readonly [number, number]> = [
+    [4, 5], [5, 6], [6, 7], [7, 8], [6, 9], [5, 10], [4, 11],
+  ];
+  for (const [px, py] of promptPixels) {
+    const i = (py * size + px) * 4;
+    buf[i] = IRIS[0]!;
+    buf[i + 1] = IRIS[1]!;
+    buf[i + 2] = IRIS[2]!;
+    buf[i + 3] = 0xff;
+    // 加粗一像素
+    const i2 = (py * size + px + 1) * 4;
+    buf[i2] = IRIS[0]!;
+    buf[i2 + 1] = IRIS[1]!;
+    buf[i2 + 2] = IRIS[2]!;
+    buf[i2 + 3] = 0xff;
+  }
+
+  // active 时右下角加 3×3 绿光点
+  if (variant === 'active') {
+    for (let y = 11; y < 14; y++) {
+      for (let x = 11; x < 14; x++) {
+        const i = (y * size + x) * 4;
+        buf[i] = PINE[0]!;
+        buf[i + 1] = PINE[1]!;
+        buf[i + 2] = PINE[2]!;
+        buf[i + 3] = 0xff;
+      }
+    }
+  }
+
+  return nativeImage.createFromBitmap(buf, { width: size, height: size });
 }
 
 export class TrayManager {
   private tray: Tray | null = null;
+  /** M1-H:状态变化节流,避免高频抖动 */
+  private rebuildTimer: NodeJS.Timeout | null = null;
+  private currentIconVariant: 'default' | 'active' = 'default';
 
   constructor(
     private readonly windowManager: WindowManager,
@@ -82,19 +140,55 @@ export class TrayManager {
       this.tray = null;
     }
 
-    const icon = generatePlaceholderTrayIcon();
-    this.tray = new Tray(icon);
-    this.tray.setToolTip('EasyTerm');
+    this.tray = new Tray(generateTrayIcon('default'));
+    this.tray.setToolTip('Marina');
 
     this.tray.on('click', () => this.handleSingleClick());
     // 双击在 Windows 等同于单击 (软件定义书 6.5.2: "避免双击意外行为")
     this.tray.on('double-click', () => this.handleSingleClick());
 
     this.rebuildContextMenu();
+    this.refreshIcon();
 
-    // 窗口数变化时菜单某些项 (例如未来的"显示所有 / 关闭所有") 需要刷新
-    this.windowManager.onWindowCreated(() => this.rebuildContextMenu());
-    this.windowManager.onWindowClosed(() => this.rebuildContextMenu());
+    // 窗口 / session 变化都触发菜单 + 图标重建(节流 300ms)
+    this.windowManager.onWindowCreated(() => this.scheduleRebuild());
+    this.windowManager.onWindowClosed(() => this.scheduleRebuild());
+    this.sessionManager?.on('sessionCreated', () => this.scheduleRebuild());
+    this.sessionManager?.on('sessionDestroyed', () => this.scheduleRebuild());
+    this.sessionManager?.on('sessionStateChanged', () => this.scheduleRebuild());
+    this.sessionManager?.on('sessionOwnerChanged', () => this.scheduleRebuild());
+  }
+
+  private scheduleRebuild(): void {
+    if (this.rebuildTimer) return;
+    this.rebuildTimer = setTimeout(() => {
+      this.rebuildTimer = null;
+      this.rebuildContextMenu();
+      this.refreshIcon();
+    }, 300);
+  }
+
+  /**
+   * M1-H:刷新图标与 tooltip,根据当前 session 集合判断 active/idle。
+   */
+  private refreshIcon(): void {
+    if (!this.tray) return;
+    const sessions = this.sessionManager?.list() ?? [];
+    const total = sessions.length;
+    const live = sessions.filter((s) => s.state !== 'exited').length;
+    const active = sessions.filter((s) => s.state === 'active').length;
+    const desired: 'default' | 'active' = active > 0 ? 'active' : 'default';
+    if (desired !== this.currentIconVariant) {
+      this.currentIconVariant = desired;
+      try {
+        this.tray.setImage(generateTrayIcon(desired));
+      } catch (err) {
+        logger.warn('TrayManager', 'setImage failed', err);
+      }
+    }
+    this.tray.setToolTip(
+      `Marina — ${total} 个会话${total > 0 ? ` (${live} 运行中,${active} 活跃)` : ''}`,
+    );
   }
 
   /**
@@ -118,42 +212,162 @@ export class TrayManager {
       return;
     }
     try {
-      this.windowManager.createWindow();
+      this.windowManager.createWindowFromFactory();
     } catch (err) {
       console.error('[TrayManager] handleSingleClick: createWindow failed', err);
     }
   }
 
   /**
-   * 重建右键菜单。每次窗口数变化时调用。
-   *
-   * CP-1 阶段菜单非常精简,完整版本 (软件定义书 6.5.3) 在后续 CP 加入:
-   *   - "显示所有窗口" (CP-1 用不到,只有 1-N 个窗口都已可见)
-   *   - "关闭所有窗口" (CP-2 加,用于多窗口场景)
-   *   - "正在运行的会话" 子菜单 (CP-3 加,需要 SessionManager)
-   *   - "设置" (CP-4 加,需要 SettingsManager 路由)
+   * 重建右键菜单。M1-H 完整化(spec 6.5.3):
+   *   - 打开新窗口
+   *   - 显示所有窗口(>=1 窗口时)
+   *   - 关闭所有窗口(>=1 窗口时)
+   *   - --
+   *   - 正在运行的会话(子菜单,>=1 session 时)
+   *   - --
+   *   - 设置
+   *   - 完全退出 Marina
    */
   private rebuildContextMenu(): void {
     if (!this.tray) return;
 
-    const menu = Menu.buildFromTemplate([
-      {
-        label: '打开新窗口',
+    const sessions = this.sessionManager?.list() ?? [];
+    const liveSessions = sessions.filter((s) => s.state !== 'exited');
+    const windowCount = this.windowManager.count();
+
+    const items: MenuItemConstructorOptions[] = [];
+
+    items.push({
+      label: '打开新窗口',
+      click: () => {
+        try {
+          this.windowManager.createWindowFromFactory();
+        } catch (err) {
+          logger.error('TrayManager', 'open new window failed', err);
+        }
+      },
+    });
+
+    if (windowCount > 0) {
+      items.push({
+        label: '显示所有窗口',
         click: () => {
-          try {
-            this.windowManager.createWindow();
-          } catch (err) {
-            console.error('[TrayManager] open new window failed', err);
+          for (const info of this.windowManager.list()) {
+            const w = this.windowManager.getById(info.id);
+            if (!w || w.isDestroyed()) continue;
+            if (w.isMinimized()) w.restore();
+            w.show();
           }
         },
-      },
-      { type: 'separator' },
-      {
-        label: '完全退出 EasyTerm',
-        click: () => this.quitApp(),
-      },
-    ]);
-    this.tray.setContextMenu(menu);
+      });
+      items.push({
+        label: `关闭所有窗口 (${windowCount})`,
+        click: () => {
+          // 关闭所有窗口 — 不影响 session,应用进入"纯托盘模式"
+          for (const info of this.windowManager.list()) {
+            this.windowManager.closeWindow(info.id);
+          }
+        },
+      });
+    }
+
+    items.push({ type: 'separator' });
+
+    // 正在运行的会话子菜单
+    if (sessions.length > 0) {
+      const submenu: MenuItemConstructorOptions[] = sessions.map((s) =>
+        this.buildSessionMenuItem(s),
+      );
+      items.push({
+        label: `正在运行的会话 (${sessions.length})`,
+        submenu,
+      });
+      items.push({ type: 'separator' });
+    }
+
+    items.push({
+      label: '设置…',
+      click: () => this.openSettings(),
+    });
+
+    items.push({ type: 'separator' });
+
+    items.push({
+      label: `完全退出 Marina${liveSessions.length > 0 ? ` (${liveSessions.length} 个会话运行中)` : ''}`,
+      click: () => this.quitApp(),
+    });
+
+    this.tray.setContextMenu(Menu.buildFromTemplate(items));
+  }
+
+  /**
+   * 构造"正在运行的会话"子菜单中的单项。
+   * 状态符号:● active / ◐ idle / ○ exited;点击 → 聚焦 owner 窗口并选中该 session。
+   */
+  private buildSessionMenuItem(s: SessionInfo): MenuItemConstructorOptions {
+    const symbol = s.state === 'active' ? '●' : s.state === 'idle' ? '◐' : '○';
+    const cwd = s.currentCwd || s.originalCwd;
+    const cwdShort = cwd.length > 50 ? '…' + cwd.slice(-47) : cwd;
+    return {
+      label: `${symbol} ${s.displayName}   ${cwdShort}`,
+      click: () => this.focusSession(s),
+    };
+  }
+
+  private focusSession(s: SessionInfo): void {
+    try {
+      const ownerId = s.ownerWindowId;
+      if (ownerId) {
+        const win = this.windowManager.getById(ownerId);
+        if (win && !win.isDestroyed()) {
+          if (win.isMinimized()) win.restore();
+          win.focus();
+          win.webContents.send(EVENT_CHANNELS.WINDOW_FOCUS_REQUESTED, {
+            eventId: randomUUID(),
+            timestamp: Date.now(),
+            payload: { reason: 'tray-session-click', selectSessionId: s.id },
+          });
+          return;
+        }
+      }
+      // 无 owner:新开窗口并发选中事件
+      const info = this.windowManager.createWindowFromFactory();
+      const win = this.windowManager.getById(info.id);
+      // 窗口 ready 后才发(否则 webContents.send 没人接);用 once webContents.did-finish-load
+      win?.webContents.once('did-finish-load', () => {
+        if (win.isDestroyed()) return;
+        win.webContents.send(EVENT_CHANNELS.WINDOW_FOCUS_REQUESTED, {
+          eventId: randomUUID(),
+          timestamp: Date.now(),
+          payload: { reason: 'tray-session-click', selectSessionId: s.id },
+        });
+      });
+    } catch (err) {
+      logger.error('TrayManager', 'focusSession failed', err);
+    }
+  }
+
+  private openSettings(): void {
+    try {
+      let recent = this.windowManager.getMostRecentlyActive();
+      if (!recent) {
+        const info = this.windowManager.createWindowFromFactory();
+        recent = this.windowManager.getById(info.id);
+      }
+      if (!recent || recent.isDestroyed()) return;
+      if (recent.isMinimized()) recent.restore();
+      recent.focus();
+      // 让 renderer 切到 settings 视图。当前没有 cmd:view:enter-settings,
+      // 复用 WINDOW_FOCUS_REQUESTED + 一个特殊 reason,renderer 端识别即切。
+      recent.webContents.send(EVENT_CHANNELS.WINDOW_FOCUS_REQUESTED, {
+        eventId: randomUUID(),
+        timestamp: Date.now(),
+        payload: { reason: 'tray-open-settings' },
+      });
+    } catch (err) {
+      logger.error('TrayManager', 'openSettings failed', err);
+    }
   }
 
   /**
@@ -178,7 +392,7 @@ export class TrayManager {
       const owner = this.windowManager.getMostRecentlyActive();
       const result = await dialog.showMessageBox(owner ?? undefined as never, {
         type: 'warning',
-        title: '完全退出 EasyTerm?',
+        title: '完全退出 Marina?',
         message: `还有 ${liveCount} 个终端在运行,完全退出会关掉它们。`,
         detail: '如果只想隐藏窗口,请关闭窗口而不是"完全退出"。',
         buttons: ['取消', '完全退出'],

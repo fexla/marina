@@ -210,53 +210,172 @@ button:disabled {
   background-color: var(--base, #f0f);
 }
 
-.app-header {
+/* ── M1-A 自绘标题栏 ────────────────────────────────────────────── */
+
+.app-titlebar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 16px;
+  height: 36px;
+  flex: 0 0 auto;
   background-color: var(--surface, #f0f);
   border-bottom: 1px solid var(--overlay, #f0f);
-  font-size: 13px;
+  font-size: 12px;
+  /* 整个 titlebar 默认非可拖区(button 在上),具体可拖部分由 .titlebar-drag 标识 */
+  -webkit-app-region: no-drag;
+  user-select: none;
+}
+
+.titlebar-drag {
+  -webkit-app-region: drag;
+}
+
+.titlebar-spacer {
+  flex: 1 1 0;
+}
+
+.titlebar-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  color: var(--text, #f0f);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.titlebar-app-name {
+  color: var(--iris, #f0f);
+  letter-spacing: 0.4px;
+  font-weight: 600;
+}
+
+.titlebar-window-badge {
+  padding: 1px 6px;
+  background-color: var(--overlay, #f0f);
+  color: var(--gold, #f0f);
+  border-radius: 3px;
+  font-family: var(--terminal-font-family, monospace);
+  font-size: 10px;
+  -webkit-app-region: drag;
+}
+
+.titlebar-version {
+  color: var(--muted, #f0f);
+  font-family: var(--terminal-font-family, monospace);
+  font-size: 10px;
+  padding: 0 10px;
+}
+
+/* ── Windows 风格:控制按钮在右,方形 lucide 图标 ── */
+
+.app-titlebar-windows .titlebar-controls {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+  -webkit-app-region: no-drag;
   flex: 0 0 auto;
 }
 
-.app-title {
-  font-weight: 600;
-  color: var(--iris, #f0f);
-  letter-spacing: 0.5px;
-}
-
-.app-window-badge {
-  padding: 2px 8px;
-  background-color: var(--overlay, #f0f);
-  color: var(--gold, #f0f);
-  border-radius: 4px;
-  font-family: var(--terminal-font-family, monospace);
-  font-size: 11px;
-}
-
-.theme-cycle-btn {
+.titlebar-btn {
+  width: 44px;
+  height: 100%;
   background: transparent;
-  border: 1px solid var(--overlay, #f0f);
-  color: var(--foam, #f0f);
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-family: var(--terminal-font-family, monospace);
+  border: none;
+  color: var(--text, #f0f);
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background-color 80ms ease;
+  -webkit-app-region: no-drag;
 }
 
-.theme-cycle-btn:hover {
-  background-color: var(--highlight-low, #f0f);
-  border-color: var(--iris, #f0f);
+.titlebar-btn:hover {
+  background-color: var(--highlight-med, #f0f);
 }
 
-.app-version {
-  margin-left: auto;
-  color: var(--muted, #f0f);
-  font-family: var(--terminal-font-family, monospace);
-  font-size: 11px;
+.titlebar-btn.close:hover {
+  background-color: var(--love, #f0f);
+  color: var(--base, #f0f);
+}
+
+/* 最大化时取消应用外圆角 — 让贴边时铺满显示器 */
+.app-root[data-maximized='true'] {
+  border-radius: 0;
+}
+
+/* ── macOS 风格:左侧 traffic light,标题居中 ── */
+
+.app-titlebar-macos {
+  /* macOS 标题栏更紧凑 */
+  height: 32px;
+  padding-left: 0;
+}
+
+.app-titlebar-macos .titlebar-title {
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--subtle, #f0f);
+  /* 居中显示,不要左对齐 */
+  text-align: center;
+}
+
+.titlebar-traffic {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  -webkit-app-region: no-drag;
+  flex: 0 0 auto;
+}
+
+.titlebar-traffic-btn {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgb(0 0 0 / 55%); /* 内部符号:深灰,默认隐藏 */
+  transition: filter 80ms ease;
+}
+
+.titlebar-traffic-btn svg {
+  opacity: 0;
+  transition: opacity 80ms ease;
+}
+
+.titlebar-traffic:hover .titlebar-traffic-btn svg {
+  opacity: 1;
+}
+
+.titlebar-traffic-btn.close {
+  background-color: #ff5f57;
+}
+
+.titlebar-traffic-btn.min {
+  background-color: #febc2e;
+}
+
+.titlebar-traffic-btn.max {
+  background-color: #28c840;
+}
+
+.titlebar-traffic-btn:hover {
+  filter: brightness(0.92);
+}
+
+/* 应用未聚焦时 macOS 三圆点统一变灰 */
+.app-root[data-window-focused='false']
+  .app-titlebar-macos
+  .titlebar-traffic-btn {
+  background-color: #4d4d4d;
 }
 
 .app-body {
@@ -405,6 +524,21 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
+/* M1-C:Sidebar 路径 / session 行内重命名输入框 */
+.path-name-rename-input,
+.session-name-rename-input {
+  flex: 1 1 auto;
+  background-color: var(--base, #f0f);
+  color: var(--text, #f0f);
+  border: 1px solid var(--iris, #f0f);
+  padding: 1px 6px;
+  font-size: inherit;
+  font-family: inherit;
+  border-radius: 3px;
+  outline: none;
+  min-width: 0;
+}
+
 .path-session-count {
   font-family: var(--terminal-font-family, monospace);
   font-size: 10px;
@@ -475,12 +609,32 @@ button:disabled {
   padding: 4px 6px;
   width: 100%;
   text-align: left;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .settings-entry:hover:not(:disabled) {
   color: var(--text, #f0f);
   background-color: var(--highlight-low, #f0f);
   border-radius: 3px;
+}
+
+/* CP-4 勘误 #11:lucide 图标尺寸节制 — 在 sidebar / 右键 / nav 等处需要
+ * 与文本基线对齐 + flex 收缩可控 */
+.settings-nav-icon svg,
+.sidebar-category-icon svg,
+.ctx-menu-check svg,
+.session-cwd-drift svg,
+.session-exit-code svg,
+.session-owned-by-other svg,
+.tab-cwd-drift svg,
+.settings-entry svg,
+.settings-error svg,
+.status-cwd svg {
+  display: inline-block;
+  vertical-align: -0.15em;
+  flex: 0 0 auto;
 }
 
 /* ── Main pane ── */
@@ -491,6 +645,33 @@ button:disabled {
   flex-direction: column;
   min-width: 0;
   background-color: var(--base, #f0f);
+  position: relative;
+}
+
+/* M1-B:拖 Explorer 文件夹到终端区 */
+.main-pane.drag-over {
+  background-color: var(--highlight-low, #f0f);
+}
+
+.main-pane-drop-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgb(0 0 0 / 30%);
+  pointer-events: none;
+  z-index: 200;
+}
+
+.main-pane-drop-hint-inner {
+  padding: 16px 28px;
+  background-color: var(--surface, #f0f);
+  color: var(--iris, #f0f);
+  border: 2px dashed var(--iris, #f0f);
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .welcome-state {
@@ -685,6 +866,21 @@ button:disabled {
   color: var(--iris, #f0f);
 }
 
+.ctx-menu-item.danger {
+  color: var(--love, #f0f);
+}
+
+.ctx-menu-item.danger:hover:not(:disabled) {
+  background-color: var(--love, #f0f);
+  color: var(--base, #f0f);
+}
+
+.ctx-menu-divider {
+  height: 1px;
+  background-color: var(--overlay, #f0f);
+  margin: 4px 6px;
+}
+
 .ctx-menu-check {
   width: 12px;
   flex: 0 0 auto;
@@ -876,27 +1072,54 @@ button:disabled {
   background-color: var(--surface, #f0f);
 }
 
-/* 通用容器滚动条 (sidebar 等) */
+/* 通用容器滚动条 (sidebar / tab-bar / 设置页主体与导航 / 模板编辑器 textarea 等)
+ * CP-4 勘误 #1:之前漏给 settings-detail / settings-nav / textarea 设置滚动条样式,
+ * 设置页面在内容溢出时露出 Chromium 默认白色滚动条 (主题泄露)。这里统一覆盖。*/
 .sidebar-bookmarks-dropzone::-webkit-scrollbar,
-.tab-bar::-webkit-scrollbar {
+.tab-bar::-webkit-scrollbar,
+.settings-detail::-webkit-scrollbar,
+.settings-nav::-webkit-scrollbar,
+.settings-input::-webkit-scrollbar,
+textarea.settings-input::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
 .sidebar-bookmarks-dropzone::-webkit-scrollbar-track,
-.tab-bar::-webkit-scrollbar-track {
+.tab-bar::-webkit-scrollbar-track,
+.settings-detail::-webkit-scrollbar-track,
+.settings-nav::-webkit-scrollbar-track,
+.settings-input::-webkit-scrollbar-track,
+textarea.settings-input::-webkit-scrollbar-track {
   background-color: transparent;
 }
 
 .sidebar-bookmarks-dropzone::-webkit-scrollbar-thumb,
-.tab-bar::-webkit-scrollbar-thumb {
+.tab-bar::-webkit-scrollbar-thumb,
+.settings-detail::-webkit-scrollbar-thumb,
+.settings-nav::-webkit-scrollbar-thumb,
+.settings-input::-webkit-scrollbar-thumb,
+textarea.settings-input::-webkit-scrollbar-thumb {
   background-color: var(--highlight-med, #f0f);
   border-radius: 4px;
 }
 
 .sidebar-bookmarks-dropzone::-webkit-scrollbar-thumb:hover,
-.tab-bar::-webkit-scrollbar-thumb:hover {
+.tab-bar::-webkit-scrollbar-thumb:hover,
+.settings-detail::-webkit-scrollbar-thumb:hover,
+.settings-nav::-webkit-scrollbar-thumb:hover,
+.settings-input::-webkit-scrollbar-thumb:hover,
+textarea.settings-input::-webkit-scrollbar-thumb:hover {
   background-color: var(--highlight-high, #f0f);
+}
+
+.sidebar-bookmarks-dropzone::-webkit-scrollbar-corner,
+.tab-bar::-webkit-scrollbar-corner,
+.settings-detail::-webkit-scrollbar-corner,
+.settings-nav::-webkit-scrollbar-corner,
+.settings-input::-webkit-scrollbar-corner,
+textarea.settings-input::-webkit-scrollbar-corner {
+  background-color: transparent;
 }
 
 /* ── Settings View (CP-4) ─────────────────────────────────────── */
@@ -1150,10 +1373,33 @@ button:disabled {
   font-family: inherit;
 }
 
+/* CP-4 勘误 #4:select 原生下拉箭头在深色主题下露白,改自绘 (用 SVG data URI
+ * 嵌入,颜色由 stroke 决定;深 / 浅色主题都可用 var(--text) 但 background-image
+ * 不能直接读 CSS 变量,这里用偏中性的灰色,与所有主题都协调)。
+ * appearance:none 关闭原生 UI;padding-right 留给箭头位置。 */
+select.settings-input {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 28px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none' stroke='%23908caa' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='1.5,1.5 6,6 10.5,1.5'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 10px 7px;
+  cursor: pointer;
+}
+
 .settings-input:focus {
   outline: 1px solid var(--iris, #f0f);
   outline-offset: -1px;
   border-color: var(--iris, #f0f);
+}
+
+/* select 的 option 在 Chromium 下展开后是 OS 原生窗口,无法用 CSS 主题完全覆盖
+ * (Windows 一直是黑底白字,深浅色主题下都还可接受)。我们至少把 option 的
+ * 背景与文字色显式给出来,避免极端浅色主题下不可读。*/
+select.settings-input option {
+  background-color: var(--surface, #f0f);
+  color: var(--text, #f0f);
 }
 
 .settings-input.numeric {
@@ -1350,6 +1596,18 @@ button:disabled {
   width: 220px;
 }
 
+/* CP-4 勘误 #7:搜索命中计数 */
+.terminal-search-count {
+  display: inline-flex;
+  align-items: center;
+  min-width: 48px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-family: var(--terminal-font-family, monospace);
+  color: var(--muted, #f0f);
+  white-space: nowrap;
+}
+
 .terminal-search-input:focus {
   outline: 1px solid var(--iris, #f0f);
   outline-offset: -1px;
@@ -1391,6 +1649,109 @@ button:disabled {
 .ctx-menu-item:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+/* ── Toast 通知 (M1-J) ───────────────────────────────────────── */
+
+.toast-container {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 9999;
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background-color: var(--surface, #f0f);
+  color: var(--text, #f0f);
+  border-left: 3px solid var(--foam, #f0f);
+  border-radius: 4px;
+  font-size: 12px;
+  min-width: 260px;
+  max-width: 420px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 35%);
+  cursor: default;
+  animation: toast-in 160ms ease-out;
+}
+
+@keyframes toast-in {
+  from {
+    transform: translateX(40px);
+    opacity: 0;
+  }
+
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.toast-info {
+  border-left-color: var(--foam, #f0f);
+}
+
+.toast-success {
+  border-left-color: var(--pine, #f0f);
+}
+
+.toast-warn {
+  border-left-color: var(--gold, #f0f);
+}
+
+.toast-error {
+  border-left-color: var(--love, #f0f);
+}
+
+.toast-icon {
+  flex: 0 0 auto;
+  color: var(--muted, #f0f);
+}
+
+.toast-info .toast-icon {
+  color: var(--foam, #f0f);
+}
+
+.toast-success .toast-icon {
+  color: var(--pine, #f0f);
+}
+
+.toast-warn .toast-icon {
+  color: var(--gold, #f0f);
+}
+
+.toast-error .toast-icon {
+  color: var(--love, #f0f);
+}
+
+.toast-message {
+  flex: 1 1 auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.toast-close {
+  background: transparent;
+  border: none;
+  color: var(--muted, #f0f);
+  padding: 2px;
+  cursor: pointer;
+  border-radius: 3px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+}
+
+.toast-close:hover {
+  background-color: var(--highlight-low, #f0f);
+  color: var(--text, #f0f);
 }
 
 /* ── Bootstrap / 错误占位 ── */

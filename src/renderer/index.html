@@ -2,10 +2,11 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy"
-          content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:;" />
+    <!-- CSP 通过 main 进程的 webRequest.onHeadersReceived 响应头注入 (CP-4 勘误 #13);
+         Vite dev 需要 unsafe-eval / unsafe-inline 给 React Fast Refresh,而生产构建
+         走严格策略,两套都在主进程按 isDev 分发,这里不再写 meta CSP 避免双重源冲突。 -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>EasyTerm</title>
+    <title>Marina</title>
   </head>
   <body>
     <div id="root"></div>

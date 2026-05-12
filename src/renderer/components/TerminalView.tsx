@@ -35,6 +35,15 @@
  * - 直接粘贴 — 当 settings.behavior.terminalRightClick='paste'
  * - 选中即复制 — settings.behavior.selectOnCopy=true 时
  *
+ * @CP-4 勘误:
+ * - #6/#9: Ctrl+F / Esc 通过 term.attachCustomKeyEventHandler 拦截,避免 xterm
+ *   把它们透传成 ^F / 0x1B 字节给 PTY (原 React onKeyDown 在 wrapper div 上,
+ *   xterm 内部的 keydown 优先消费,所以 Ctrl+F 在终端 focus 时只会渲染成 ^F)
+ * - #7: SearchAddon.onDidChangeResults 暴露命中数 → 搜索栏显示 "x / N"
+ * - #8: 搜索按钮 / Enter 改用 ref 中的最新 searchText,避免 useCallback 闭包
+ *   抓到旧值导致"按 Enter 跳的是上一次的关键字"
+ * - #10: 多行粘贴前弹原生 confirm 警告,允许用户取消(类 Windows Terminal)
+ *
  * @对应文档章节:
  *   软件定义书.md 5.1.4 (终端体验)、5.1.9 (主题)、6.6.2 (行为)、8.4 (owner);
  *   ipc-protocol.md 5.2、6.2、第 8 (字节流)
@@ -45,8 +54,8 @@ import {
   useMemo,
   useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type WheelEvent as ReactWheelEvent,
 } from 'react';
 import { Terminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -61,6 +70,7 @@ import {
 } from '@shared/protocol';
 import type { SessionInfo, ThemeId } from '@shared/types';
 import { useAppDispatch, useAppState } from '../store';
+import { Icon, type IconName } from './icons';
 import '@xterm/xterm/css/xterm.css';
 
 /**
@@ -281,7 +291,18 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
   const [searchVisible, setSearchVisible] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
+  const [searchResults, setSearchResults] = useState<{
+    matches: number;
+    current: number;
+  }>({ matches: 0, current: 0 });
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  // 把搜索状态镜像到 ref,attachCustomKeyEventHandler 等长期闭包能读最新值
+  const searchVisibleRef = useRef(searchVisible);
+  searchVisibleRef.current = searchVisible;
+  const searchTextRef = useRef(searchText);
+  searchTextRef.current = searchText;
+  const searchCaseSensitiveRef = useRef(searchCaseSensitive);
+  searchCaseSensitiveRef.current = searchCaseSensitive;
 
   // 右键菜单状态
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
@@ -302,6 +323,24 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
     try {
       const text = await navigator.clipboard.readText();
       if (!text) return;
+      // CP-4 勘误 #10:多行粘贴警告。剪贴板含换行 (\r 或 \n) → 弹确认,
+      // 防止意外把整段脚本喂给 shell 触发执行。普通单行粘贴不打扰。
+      // 行数估算:把 \r\n 归一化后按 \n 切。
+      const normalized = text.replace(/\r\n?/g, '\n');
+      const lineCount = normalized.split('\n').length;
+      if (lineCount > 1) {
+        const preview =
+          normalized.length > 200
+            ? normalized.slice(0, 200) + '…'
+            : normalized;
+        const ok = window.confirm(
+          `即将粘贴 ${lineCount} 行内容到终端。\n\n` +
+            `多行内容可能被 shell 当成多条命令立即执行。\n\n` +
+            `预览:\n${preview}\n\n` +
+            `继续粘贴?`,
+        );
+        if (!ok) return;
+      }
       const base64 = encodeStringToBase64(text);
       await window.api.invoke(COMMAND_CHANNELS.SESSION_SEND_INPUT, {
         sessionId: session.id,
@@ -328,22 +367,38 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
   }, []);
 
   const handleCloseSearch = useCallback(() => {
+    // 先清掉 SearchAddon 的高亮,否则关搜索栏后高亮还残留
+    try {
+      searchRef.current?.clearDecorations();
+    } catch {
+      /* ignore */
+    }
     setSearchVisible(false);
     setSearchText('');
+    setSearchResults({ matches: 0, current: 0 });
     // 关闭搜索后让焦点回到终端
     termRef.current?.focus();
   }, []);
 
-  const performSearch = useCallback(
-    (direction: 'next' | 'previous'): void => {
-      const search = searchRef.current;
-      if (!search || !searchText) return;
-      const opts = { caseSensitive: searchCaseSensitive };
-      if (direction === 'next') search.findNext(searchText, opts);
-      else search.findPrevious(searchText, opts);
-    },
-    [searchText, searchCaseSensitive],
-  );
+  // CP-4 勘误 #8:performSearch 通过 ref 读最新 searchText/caseSensitive,
+  // 避免 useCallback 闭包抓到旧 searchText 导致"按 Enter 跳的是上一次的关键字"。
+  // 同时打开 decorations 让命中处在 viewport 上有高亮 + minimap marker。
+  const performSearch = useCallback((direction: 'next' | 'previous'): void => {
+    const search = searchRef.current;
+    const text = searchTextRef.current;
+    if (!search || !text) return;
+    const opts = {
+      caseSensitive: searchCaseSensitiveRef.current,
+      decorations: {
+        matchBackground: '#7d6c00',
+        matchOverviewRuler: '#f6c177',
+        activeMatchBackground: '#bd6500',
+        activeMatchColorOverviewRuler: '#eb6f92',
+      },
+    };
+    if (direction === 'next') search.findNext(text, opts);
+    else search.findPrevious(text, opts);
+  }, []);
 
   // ── xterm 实例生命周期 ──
   useEffect(() => {
@@ -371,6 +426,47 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
     term.loadAddon(searchAddon);
     fitRef.current = fitAddon;
     searchRef.current = searchAddon;
+
+    // CP-4 勘误 #6/#9:Ctrl+F、Esc 必须在 xterm 把它们转成 ^F / 0x1B 字节
+    // 之前拦下来。React 在 wrapper div 上的 onKeyDown 优先级低 (xterm 内部
+    // 直接读 keydown,转成字节写 PTY)。attachCustomKeyEventHandler 是 xterm
+    // 给的官方拦截点:返回 false 即"我已处理,xterm 不要继续"。
+    term.attachCustomKeyEventHandler((ev) => {
+      if (ev.type !== 'keydown') return true;
+      // Ctrl+F (Cmd+F on macOS) → 唤出搜索栏
+      if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && !ev.shiftKey) {
+        const key = ev.key.toLowerCase();
+        if (key === 'f') {
+          handleOpenSearch();
+          return false;
+        }
+      }
+      // Esc:仅在搜索栏可见时拦截 — 否则 Esc 应正常透传给终端 (vim 等需要)
+      if (ev.key === 'Escape' && searchVisibleRef.current) {
+        handleCloseSearch();
+        return false;
+      }
+      return true; // 其他键交给 xterm 默认处理
+    });
+
+    // SearchAddon 暴露 onDidChangeResults — 用它拿命中数 + 当前位置 (#7)
+    const searchResultsDisposable = searchAddon.onDidChangeResults?.(
+      (results) => {
+        if (!results) {
+          setSearchResults({ matches: 0, current: 0 });
+          return;
+        }
+        // xterm 的 ISearchAddonResult: { resultIndex: number, resultCount: number }
+        // resultIndex 为 -1 表示无命中
+        const count = results.resultCount ?? 0;
+        const idx = results.resultIndex ?? -1;
+        setSearchResults({
+          matches: count,
+          current: count > 0 && idx >= 0 ? idx + 1 : 0,
+        });
+      },
+    );
+
     term.open(container);
 
     try {
@@ -502,6 +598,7 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
       resizeObserver.disconnect();
       cleanupOutput();
       dataHandler.dispose();
+      searchResultsDisposable?.dispose();
       searchAddon.dispose();
       term.dispose();
       termRef.current = null;
@@ -535,6 +632,25 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
     }
   }, [fontFamily, fontSize, lineHeight]);
 
+  // CP-4 勘误 #7:输入框内容 / 大小写切换 → 立即触发一次 findNext,
+  // 这样用户每键入一个字母就能看到当前命中数;同时清空时清掉高亮。
+  useEffect(() => {
+    const search = searchRef.current;
+    if (!search) return;
+    if (!searchVisible) return;
+    if (!searchText) {
+      try {
+        search.clearDecorations();
+      } catch {
+        /* ignore */
+      }
+      setSearchResults({ matches: 0, current: 0 });
+      return;
+    }
+    // findNext 在没找到时不会丢命中位置;重新搜索时从头开始
+    performSearch('next');
+  }, [searchText, searchCaseSensitive, searchVisible, performSearch]);
+
   // 选中即复制 (settings.behavior.selectOnCopy)
   useEffect(() => {
     const term = termRef.current;
@@ -550,18 +666,9 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
     return () => disp.dispose();
   }, [selectOnCopy, session.id]);
 
-  // Ctrl+F 唤出搜索栏 — 注册在 wrapper div,这样搜索栏 input 也接收到
-  // 即可关闭(虽然搜索栏自己也有 Esc 监听)
-  const handleWrapperKeyDown = useCallback(
-    (e: ReactKeyboardEvent<HTMLDivElement>) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
-        e.preventDefault();
-        e.stopPropagation();
-        handleOpenSearch();
-      }
-    },
-    [handleOpenSearch],
-  );
+  // CP-4 勘误 #6/#9:Ctrl+F / Esc 走 attachCustomKeyEventHandler (见 xterm
+  // mount effect),不再用 wrapper 的 onKeyDown — 后者优先级低于 xterm 内部
+  // keydown,在终端 focus 时根本拿不到。
 
   // 右键菜单 / 直接粘贴 — 取决于 settings.behavior.terminalRightClick
   const handleContextMenu = useCallback(
@@ -576,6 +683,21 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
       setCtxMenu({ x: e.clientX, y: e.clientY, hasSelection });
     },
     [rightClickMode, handlePaste],
+  );
+
+  // M1-I:Ctrl + 滚轮调节字号 (spec 7.2.2)
+  const handleWheel = useCallback(
+    (e: ReactWheelEvent<HTMLDivElement>) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const delta = e.deltaY < 0 ? 1 : -1;
+      const next = Math.max(8, Math.min(24, fontSize + delta));
+      if (next === fontSize) return;
+      void window.api.invoke(COMMAND_CHANNELS.SETTINGS_UPDATE, {
+        partial: { appearance: { terminalFontSize: next } },
+      });
+    },
+    [fontSize],
   );
 
   // 关闭右键菜单 — 全局点击 / Esc / 滚动
@@ -607,12 +729,7 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
         : 'status-dot active';
 
   return (
-    <div
-      className="terminal-wrapper"
-      onKeyDown={handleWrapperKeyDown}
-      // wrapper 接键盘事件需要 tabIndex 让它可获焦 (xterm 内部已处理)
-      tabIndex={-1}
-    >
+    <div className="terminal-wrapper">
       <div className="terminal-statusbar">
         <span className={statusDotClass} />
         <span className="status-text">
@@ -628,7 +745,8 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
               : session.currentCwd
           }
         >
-          {cwdDrifted && '⚠ '}
+          {cwdDrifted && <Icon name="alertTriangle" size={11} />}
+          {cwdDrifted && ' '}
           {session.currentCwd}
         </span>
       </div>
@@ -636,6 +754,7 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
         className="terminal-host"
         ref={containerRef}
         onContextMenu={handleContextMenu}
+        onWheel={handleWheel}
       />
       {searchVisible && (
         <div className="terminal-search-bar" role="search" aria-label="终端搜索">
@@ -649,19 +768,37 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
             onKeyDown={(e) => {
               if (e.key === 'Escape') {
                 e.preventDefault();
+                e.stopPropagation();
                 handleCloseSearch();
               } else if (e.key === 'Enter') {
                 e.preventDefault();
+                e.stopPropagation();
                 performSearch(e.shiftKey ? 'previous' : 'next');
               }
             }}
           />
+          {/* CP-4 勘误 #7:命中数显示 (来自 SearchAddon.onDidChangeResults) */}
+          <span
+            className="terminal-search-count"
+            title={
+              searchText
+                ? `${searchResults.matches} 个匹配,当前第 ${searchResults.current}`
+                : '输入关键字开始搜索'
+            }
+          >
+            {searchText
+              ? searchResults.matches > 0
+                ? `${searchResults.current}/${searchResults.matches}`
+                : '无匹配'
+              : '—'}
+          </span>
           <button
             type="button"
             className="terminal-search-btn"
             onClick={() => performSearch('previous')}
             title="上一个 (Shift+Enter)"
             aria-label="上一个匹配"
+            disabled={!searchText || searchResults.matches === 0}
           >
             ↑
           </button>
@@ -671,6 +808,7 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
             onClick={() => performSearch('next')}
             title="下一个 (Enter)"
             aria-label="下一个匹配"
+            disabled={!searchText || searchResults.matches === 0}
           >
             ↓
           </button>
@@ -726,30 +864,36 @@ function TerminalContextMenu({
   onSearch,
   onClose,
 }: TerminalContextMenuProps): JSX.Element {
+  // CP-4 勘误 #11:右键菜单图标改用 lucide,不再 emoji
   const items: Array<{
+    iconName: IconName;
     label: string;
     hint?: string;
     disabled?: boolean;
     onSelect: () => void | Promise<void>;
   }> = [
     {
-      label: '📋 复制',
+      iconName: 'copy',
+      label: '复制',
       hint: state.hasSelection ? '复制选中文字' : '没有选中文字',
       disabled: !state.hasSelection,
       onSelect: onCopy,
     },
     {
-      label: '📥 粘贴',
+      iconName: 'paste',
+      label: '粘贴',
       hint: '从剪贴板粘贴文字到终端',
       onSelect: onPaste,
     },
     {
-      label: '🧹 清屏',
+      iconName: 'clear',
+      label: '清屏',
       hint: '清空当前显示(scrollback 保留)',
       onSelect: onClear,
     },
     {
-      label: '🔍 搜索',
+      iconName: 'search',
+      label: '搜索',
       hint: 'Ctrl+F',
       onSelect: onSearch,
     },
@@ -774,7 +918,9 @@ function TerminalContextMenu({
             onClose();
           }}
         >
-          <span className="ctx-menu-check"> </span>
+          <span className="ctx-menu-check">
+            <Icon name={it.iconName} size={13} />
+          </span>
           <span className="ctx-menu-label">{it.label}</span>
         </button>
       ))}
