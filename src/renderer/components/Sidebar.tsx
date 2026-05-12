@@ -515,7 +515,18 @@ function SessionItem({ session }: { session: SessionInfo }): JSX.Element {
       y: e.clientY,
       title: session.displayName,
       items: [
-        { label: '重命名…', disabled: !isMine, onSelect: beginRename },
+        {
+          // 与 Tab 同口径:仅"其他窗口持有"时灰显;orphan / 本窗口持有 都允许。
+          // 原 `disabled: !isMine` 把 orphan 也灰掉,与 spec 6.3 不符。
+          label: '重命名…',
+          disabled: ownedByOther,
+          ...(ownedByOther ? { hint: '其他窗口持有,无法重命名' } : {}),
+          onSelect: beginRename,
+        },
+        {
+          label: '复制路径',
+          onSelect: () => copyToClipboard(session.pathId, '路径'),
+        },
         {
           label: '复制 cwd',
           onSelect: () => copyToClipboard(session.currentCwd, 'cwd'),
@@ -526,6 +537,20 @@ function SessionItem({ session }: { session: SessionInfo }): JSX.Element {
           onSelect: () => copyToClipboard(String(session.pid), 'PID'),
         },
         {
+          label: '在 Explorer 中显示',
+          onSelect: () => {
+            window.api
+              .invoke(COMMAND_CHANNELS.SYSTEM_SHOW_IN_EXPLORER, { path: session.pathId })
+              .catch((err: unknown) =>
+                toast.push({
+                  kind: 'error',
+                  message: `打开 Explorer 失败:${err instanceof Error ? err.message : String(err)}`,
+                }),
+              );
+          },
+        },
+        { divider: true, label: '' },
+        {
           label: `完整命令:${fullCmd}`,
           disabled: true,
           hint: fullCmd,
@@ -534,6 +559,7 @@ function SessionItem({ session }: { session: SessionInfo }): JSX.Element {
         {
           label: '关闭',
           danger: true,
+          disabled: ownedByOther,
           onSelect: () => {
             window.api
               .invoke(COMMAND_CHANNELS.SESSION_CLOSE, { sessionId: session.id })

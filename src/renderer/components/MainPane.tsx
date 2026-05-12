@@ -47,6 +47,7 @@ import { useToast } from './Toast';
 export function MainPane(): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
+  const toast = useToast();
   const sessions = getSessionsInSelectedPath(state);
   const displayable = getDisplayableSession(state);
 
@@ -67,6 +68,18 @@ export function MainPane(): JSX.Element {
     // 只在真正离开容器时清,避免子元素 dragenter 引起 flash
     if (e.currentTarget === e.target) setDragOver(false);
   };
+
+  // 用户报告:有时拖到外面松手,dragleave 不会在我们的容器触发,
+  // dragOver 状态卡住,半透明遮罩消不掉。挂全局 dragend 兜底强制清。
+  useEffect(() => {
+    const clear = (): void => setDragOver(false);
+    window.addEventListener('dragend', clear);
+    window.addEventListener('drop', clear);
+    return () => {
+      window.removeEventListener('dragend', clear);
+      window.removeEventListener('drop', clear);
+    };
+  }, []);
 
   const handleDrop = async (e: DragEvent<HTMLElement>): Promise<void> => {
     e.preventDefault();
@@ -89,6 +102,10 @@ export function MainPane(): JSX.Element {
         dispatch({ type: 'view/select-session', sessionId: res.session.id });
       } catch (err) {
         console.error('[MainPane] drop create-session failed', err);
+        toast.push({
+          kind: 'error',
+          message: `在 "${path}" 新建终端失败:${err instanceof Error ? err.message : String(err)}`,
+        });
       }
     }
   };
@@ -181,6 +198,7 @@ function WelcomeState(): JSX.Element {
 function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
+  const toast = useToast();
   const [creating, setCreating] = useState(false);
 
   // CP-3:每个模板按钮直接用对应模板创建 session。
@@ -199,6 +217,12 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
       dispatch({ type: 'view/select-session', sessionId: res.session.id });
     } catch (err) {
       console.error('[MainPane] create-session failed', err);
+      // 不可达路径 / cwd 不存在 / spawn 错都走这条 — 必须给 toast,
+      // 否则用户只看到加号按钮恢复可点、无任何反馈。
+      toast.push({
+        kind: 'error',
+        message: `新建终端失败:${err instanceof Error ? err.message : String(err)}`,
+      });
     } finally {
       setCreating(false);
     }
@@ -256,6 +280,7 @@ interface TabBarProps {
 function TabBar({ sessions, selectedSessionId }: TabBarProps): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
+  const toast = useToast();
 
   const handleNewTab = async (): Promise<void> => {
     if (!state.selectedPathId) return;
@@ -275,6 +300,10 @@ function TabBar({ sessions, selectedSessionId }: TabBarProps): JSX.Element {
       dispatch({ type: 'view/select-session', sessionId: res.session.id });
     } catch (err) {
       console.error('[TabBar] new tab failed', err);
+      toast.push({
+        kind: 'error',
+        message: `新建标签失败:${err instanceof Error ? err.message : String(err)}`,
+      });
     }
   };
 
@@ -355,9 +384,13 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
       title: session.displayName,
       items: [
         {
+          // 用户测试发现"始终灰显":原代码用 `variant !== 'mine'`,
+          // 把 orphan(无主)session 也灰掉了。spec 6.3 与 milestone-1
+          // 工作记录 §2.3 描述是"**不是本窗口持有时**灰显"。orphan 不属
+          // 于"他人持有",应可重命名。改为仅 'other' 时灰显。
           label: '重命名…',
-          disabled: variant !== 'mine',
-          ...(variant !== 'mine' ? { hint: '本窗口不是持有者,无法重命名' } : {}),
+          disabled: variant === 'other',
+          ...(variant === 'other' ? { hint: '其他窗口持有,无法重命名' } : {}),
           onSelect: () => {
             const next = window.prompt('新名称', session.displayName);
             if (!next) return;
@@ -381,6 +414,11 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
         {
           label: '复制 cwd',
           onSelect: () => copyToClipboard(session.currentCwd, 'cwd'),
+        },
+        {
+          label: `复制 PID${session.pid > 0 ? ` (${session.pid})` : ''}`,
+          disabled: session.pid <= 0,
+          onSelect: () => copyToClipboard(String(session.pid), 'PID'),
         },
         {
           label: '在 Explorer 中显示',
