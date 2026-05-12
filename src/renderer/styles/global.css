@@ -220,11 +220,24 @@ button:disabled {
   background-color: var(--surface, #f0f);
   border-bottom: 1px solid var(--overlay, #f0f);
   font-size: 12px;
-  /* 整个 titlebar 默认非可拖区(button 在上),具体可拖部分由 .titlebar-drag 标识 */
-  -webkit-app-region: no-drag;
+
+  /*
+   * 整个 titlebar 默认可拖。可交互控件(buttons / traffic light)各自 no-drag。
+   * 历史上反过来写"父 no-drag,子加 .titlebar-drag",但子元素的 drag region 只覆盖
+   * 各自内容盒;.titlebar-spacer 没内容(0px 高)+ 父 align-items:center 把 title 文字
+   * 居中后上下各留 ~10px 空隙 → 这些空隙是父容器领地,no-drag → 实际只有文字那条
+   * 窄带能拖。改成"父 drag,控件 no-drag"是 Electron 标准范式,一次性把整个 36px
+   * 高度的整行横向覆盖到位。
+   */
+  -webkit-app-region: drag;
   user-select: none;
 }
 
+/*
+ * 保留 .titlebar-drag class 以兼容已有 JSX 标记 — 父容器已 drag,这里只是
+ * 在被嵌套到 no-drag 容器内时显式恢复 drag。当前布局下与父容器同值,可以删
+ * 但留着不损耗。
+ */
 .titlebar-drag {
   -webkit-app-region: drag;
 }
@@ -319,6 +332,7 @@ button:disabled {
   font-weight: 500;
   font-size: 12px;
   color: var(--subtle, #f0f);
+
   /* 居中显示,不要左对齐 */
   text-align: center;
 }
@@ -1074,7 +1088,7 @@ button:disabled {
 
 /* 通用容器滚动条 (sidebar / tab-bar / 设置页主体与导航 / 模板编辑器 textarea 等)
  * CP-4 勘误 #1:之前漏给 settings-detail / settings-nav / textarea 设置滚动条样式,
- * 设置页面在内容溢出时露出 Chromium 默认白色滚动条 (主题泄露)。这里统一覆盖。*/
+ * 设置页面在内容溢出时露出 Chromium 默认白色滚动条 (主题泄露)。这里统一覆盖。 */
 .sidebar-bookmarks-dropzone::-webkit-scrollbar,
 .tab-bar::-webkit-scrollbar,
 .settings-detail::-webkit-scrollbar,
@@ -1396,7 +1410,7 @@ select.settings-input {
 
 /* select 的 option 在 Chromium 下展开后是 OS 原生窗口,无法用 CSS 主题完全覆盖
  * (Windows 一直是黑底白字,深浅色主题下都还可接受)。我们至少把 option 的
- * 背景与文字色显式给出来,避免极端浅色主题下不可读。*/
+ * 背景与文字色显式给出来,避免极端浅色主题下不可读。 */
 select.settings-input option {
   background-color: var(--surface, #f0f);
   color: var(--text, #f0f);
