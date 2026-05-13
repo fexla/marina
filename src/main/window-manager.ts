@@ -257,12 +257,30 @@ export class WindowManager implements IWindowManager {
       win.webContents.openDevTools({ mode: 'detach' });
     }
 
-    // 主动捕获 renderer 进程崩溃 / 未捕获错误,印到 main stderr。
-    // 用户从 PowerShell 启动 packed exe 时能看到诊断信息,无需 DevTools。
+    // CRA-1:renderer 进程崩溃自动 reload + 记录日志。
+    //
+    // 历史:监听器只 console.error,窗口看着像活的(最后一帧画面)但所有
+    // 交互无反应,用户必须关掉窗口重开。
+    //
+    // 现在:reason 非 clean-exit(crashed/oom/killed/launch-failed/...)时
+    // 主动 webContents.reload() — 拉回干净 renderer + handshake + IPC sync。
+    // 用户感知"窗口闪一下重新加载",但所有 session(在 main 端)继续活,
+    // PTY 不受影响,scrollback 通过 get-scrollback 重新拉到新 renderer。
     win.webContents.on('render-process-gone', (_e, details) => {
       console.error(
         `[WindowManager] renderer process gone (window ${windowNumber}): reason=${details.reason} exitCode=${details.exitCode}`,
       );
+      if (details.reason === 'clean-exit' || win.isDestroyed()) return;
+      // 防御:reload 自身可能失败(罕见,通常 renderer 进程刚崩 reload
+      // 立即拉一个新的);try/catch 保护避免主进程被异常终止。
+      try {
+        win.webContents.reload();
+      } catch (err) {
+        console.error(
+          `[WindowManager] reload after crash failed (window ${windowNumber}):`,
+          err,
+        );
+      }
     });
     win.webContents.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL) => {
       console.error(

@@ -1123,7 +1123,7 @@ describe('SessionManager — sendInput / resize', () => {
     vi.useFakeTimers();
     try {
       const { mgr } = makeManager({ emitBatchMs: 8 });
-      const info = await mgr.createSession({
+      await mgr.createSession({
         pathId: '/p',
         templateId: 'shell',
         ownerWindowId: 'w',
@@ -1156,7 +1156,7 @@ describe('SessionManager — sendInput / resize', () => {
 
   it('emitBatchMs=0(默认测试)时每个 chunk 立即 emit', async () => {
     const { mgr } = makeManager(); // emitBatchMs=0
-    const info = await mgr.createSession({
+    await mgr.createSession({
       pathId: '/p',
       templateId: 'shell',
       ownerWindowId: 'w',
