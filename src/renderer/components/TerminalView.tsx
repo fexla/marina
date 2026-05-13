@@ -358,7 +358,14 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
     if (!term) return;
     const sel = term.getSelection();
     if (sel) {
-      void writeClipboardText(sel);
+      // CPB-C4:Windows 平台多行复制用 CRLF,符合 Notepad / Office 等
+      // 原生程序对换行的预期(xterm getSelection 默认只给 LF)。
+      // 平台分支:process.platform 在 renderer 走 preload 不可读,
+      // 用 navigator.platform 判断 win(包含 'win32' / 'windows' 兼容)。
+      // 跨平台时 macOS/Linux 拷贝走 LF 不动。
+      const onWindows = navigator.platform.toLowerCase().includes('win');
+      const finalText = onWindows ? sel.replace(/\n/g, '\r\n') : sel;
+      void writeClipboardText(finalText);
     }
     // CPB-C1:复制完归还焦点 — 避免右键菜单选"复制"后菜单关闭 → 焦点
     // 漂到 body → 用户敲键无反应的反馈
@@ -599,6 +606,11 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
         }
         if (!ev.shiftKey && key === 'c' && hasSel) {
           handleCopy();
+          // CPB-C3:Ctrl+C 复制后立即清选区 — 否则用户运行死循环想
+          // Ctrl+C 终止时,前一次拖选的残留 selection 让 hasSel=true,
+          // Ctrl+C 永远走"复制"分支不发 ^C → 程序停不下来。清掉
+          // 选区后,下次 Ctrl+C 一定能发 SIGINT。
+          termRef.current?.clearSelection();
           return false;
         }
         // 粘贴:Ctrl+Shift+V
@@ -860,16 +872,31 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
   // 选中即复制 (settings.behavior.selectOnCopy)
   // 勘误第二轮:同 handleCopy/handlePaste,走 IPC clipboard 桥而非
   // navigator.clipboard,避开 web 权限拒绝。
+  //
+  // CPB-C2:trailing debounce 100ms — 避免拖选 50 字符触发 50 次 IPC
+  // 写剪贴板(Windows 剪贴板 OLE 锁让输入法 / Quicker / Ditto 等剪贴板
+  // 管理器频繁闪动)。trailing 让"拖完才写"语义,与原生选中即复制
+  // 体验一致。
   useEffect(() => {
     const term = termRef.current;
     if (!term || !selectOnCopy) return undefined;
-    // xterm 的 onSelectionChange 在选区变化时触发;空选区也会触发(选区清空)
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onWindows = navigator.platform.toLowerCase().includes('win');
     const disp = term.onSelectionChange(() => {
-      const sel = term.getSelection();
-      if (!sel) return;
-      void writeClipboardText(sel);
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        const sel = term.getSelection();
+        if (!sel) return;
+        // 同 handleCopy 的 CPB-C4:Windows 走 CRLF。
+        const finalText = onWindows ? sel.replace(/\n/g, '\r\n') : sel;
+        void writeClipboardText(finalText);
+      }, 100);
     });
-    return () => disp.dispose();
+    return () => {
+      if (timer) clearTimeout(timer);
+      disp.dispose();
+    };
   }, [selectOnCopy, session.id]);
 
   // CP-4 勘误 #6/#9:Ctrl+F / Esc 走 attachCustomKeyEventHandler (见 xterm
