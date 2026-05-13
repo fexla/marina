@@ -136,7 +136,20 @@ export class WindowManager implements IWindowManager {
         preload: resolve(__dirname, '../preload/index.mjs'),
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false, // node-pty 等原生模块需要
+        // SEC-1:启用 sandbox。
+        //
+        // 历史注释"node-pty 等原生模块需要"实际上是误解 — node-pty 只在
+        // **main** 进程使用,renderer 进程不直接接触 node-pty。preload 用
+        // 的 contextBridge / ipcRenderer / webFrame 在 sandbox=true 下都
+        // 可用,clipboard 走 IPC 也不依赖 renderer 直 require。
+        //
+        // 收益:renderer 进程获得 V8 sandbox 隔离层 — 即使 xterm bug /
+        // OSC 注入 / WebGL context 漏洞被利用,也无法逃出 sandbox 访问
+        // 系统资源。配合 contextIsolation 是 Electron 官方推荐姿势。
+        //
+        // 风险:若 preload 后续被改成需要 node API(如 require 'fs')会
+        // 在启动期报错。设置 ELECTRON_DEBUG_LOG 可看具体错。
+        sandbox: true,
       },
     });
 
