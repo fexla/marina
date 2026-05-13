@@ -571,6 +571,11 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
     // ↓ 这一段 effect 内部先占位,真正 load 放到 term.open 之后(见下面)
     let webglAddon: WebglAddon | null = null;
 
+    // disposed 标志在 cleanup 内被置 true,其他异步路径(webfont ready /
+    // scrollback chunked write / replay then)读它决定要不要继续 — 必须
+    // 在所有这些路径之前声明(let 是块作用域,TDZ 不允许后向引用)。
+    let disposed = false;
+
     // CP-4 勘误 #6/#9:Ctrl+F、Esc 必须在 xterm 把它们转成 ^F / 0x1B 字节
     // 之前拦下来。React 在 wrapper div 上的 onKeyDown 优先级低 (xterm 内部
     // 直接读 keydown,转成字节写 PTY)。attachCustomKeyEventHandler 是 xterm
@@ -692,6 +697,21 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
       /* 忽略极小窗口 fit 错误 */
     }
 
+    // XTM-9:webfont 首次加载完成时 measure 字符宽度才准。用户切自定义
+    // terminalFontFamily 后第一次 mount 会用 fallback metrics 算 fit,
+    // 边缘可能空 1-2 列;字体加载完成后主动 re-fit。
+    // document.fonts.ready 是 promise,resolve 时所有 @font-face 已就位。
+    if (typeof document !== 'undefined' && document.fonts?.ready) {
+      void document.fonts.ready.then(() => {
+        if (disposed) return;
+        try {
+          fitAddon.fit();
+        } catch {
+          /* ignore */
+        }
+      });
+    }
+
     // FOC-1:mount 后立即抢焦点 — 修复"切 tab/创建 session/接管 orphan/
     // 退出 settings 后必须再点一次终端区才能打字"。xterm 的 helper-textarea
     // 在 open() 后才存在,所以 focus 必须在 open() 之后调。
@@ -726,7 +746,6 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
     let replayed = false;
     let pending: Array<{ seq: number; bytes: Uint8Array }> = [];
     let lastReplayedSeq = -1;
-    let disposed = false;
 
     const cleanupOutput = window.api.on<SessionOutputPayload>(
       EVENT_CHANNELS.SESSION_OUTPUT,

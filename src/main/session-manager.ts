@@ -1132,20 +1132,32 @@ function sanitizeTitle(raw: string): string {
 }
 
 /**
- * 把 OSC 1337 报告的 cwd 规范化:trim、~ 展开、转绝对。失败时原样返回。
+ * 把 OSC 1337 报告的 cwd 规范化:trim、~ 展开、PSDrive 前缀剥离、转绝对。
+ * 失败时原样返回。
+ *
+ * FLK-9:PowerShell 在某些 PSDrive(自定义、PSProvider 加载)上下文里
+ * 会发 `Microsoft.PowerShell.Core\FileSystem::C:\foo` 这种全限定形式,
+ * normalize 不一致让 cwdDrifted 比较抖动 — 每个 prompt 都"变 → 复原"
+ * 让 statusbar ⚠️ 图标闪一下。剥离 PSDrive 前缀让等价路径归一。
  */
 function normalizeCwd(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed) return trimmed;
+  let value = raw.trim();
+  if (!value) return value;
+  // FLK-9:剥 PSDrive PSProvider 前缀(模式 `<Provider>::<path>`)
+  // PowerShell 标准模式:Microsoft.PowerShell.Core\FileSystem::C:\xxx
+  // 通用模式:任何 `\w+\.[\w.]+\\\w+::` 后跟实际路径
+  const psDriveMatch = value.match(/^[\w.]+\\[\w.]+::(.+)$/);
+  if (psDriveMatch) {
+    value = psDriveMatch[1]!;
+  }
   // ~ 展开 (有的 shell hook 在 git-bash 下可能会发 ~/...)
-  let value = trimmed;
   if (value.startsWith('~')) {
     value = value.replace(/^~/, homedir());
   }
   try {
     return resolvePath(value);
   } catch {
-    return trimmed;
+    return value;
   }
 }
 
