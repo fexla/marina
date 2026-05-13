@@ -294,6 +294,14 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     },
   );
 
+  // STM-3:清除手动重命名标记
+  ipcMain.handle(
+    COMMAND_CHANNELS.SESSION_CLEAR_MANUAL_RENAME,
+    (_e, envelope: CommandEnvelope<{ sessionId: string }>): void => {
+      sessionManager.clearManualRename(envelope.payload.sessionId);
+    },
+  );
+
   ipcMain.handle(
     COMMAND_CHANNELS.SESSION_CLAIM,
     (

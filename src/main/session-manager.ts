@@ -571,6 +571,18 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
+   * STM-3:清除 manuallyRenamed 标记,让 OSC 0/1/2 标题事件重新覆盖
+   * displayName。用户主动放弃手动命名以恢复 Claude Code 等持续刷新的
+   * 自动标题。幂等(标记本来就 false 时 no-op)。
+   * 不存在的 sessionId 静默(与 sendInput / resize 一致)。
+   */
+  clearManualRename(sessionId: string): void {
+    const managed = this.sessions.get(sessionId);
+    if (!managed) return;
+    managed.manuallyRenamed = false;
+  }
+
+  /**
    * 关闭并销毁 session — 用户右键"关闭"或应用退出时调。
    *
    * 与 CP-2 不同:exited 状态的 session 也由此销毁 (软件定义书 8.3 ADR-008

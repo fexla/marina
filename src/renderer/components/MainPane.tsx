@@ -467,6 +467,33 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
           },
         },
         {
+          // STM-3:恢复 OSC 标题自动更新 — 用户手改名后,Claude Code 等
+          // 持续刷标题的程序被锁(manuallyRenamed=true),此项重置标志位
+          // 让 OSC 0/1/2 标题事件再次生效。仅在 'mine' / 'orphan' 显示
+          // (与 '重命名' 同条件)。
+          label: '恢复自动标题',
+          disabled: variant === 'other',
+          ...(variant === 'other' ? { hint: '其他窗口持有,无法修改' } : {}),
+          onSelect: () => {
+            window.api
+              .invoke(COMMAND_CHANNELS.SESSION_CLEAR_MANUAL_RENAME, {
+                sessionId: session.id,
+              })
+              .then(() => {
+                toast.push({
+                  kind: 'info',
+                  message: '已恢复 — shell / agent 的标题将再次自动更新',
+                });
+              })
+              .catch((err: unknown) =>
+                toast.push({
+                  kind: 'error',
+                  message: `恢复失败:${err instanceof Error ? err.message : String(err)}`,
+                }),
+              );
+          },
+        },
+        {
           label: '复制路径',
           onSelect: () => copyToClipboard(path, '路径'),
         },

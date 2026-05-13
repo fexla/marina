@@ -61,6 +61,12 @@ export const COMMAND_CHANNELS = {
   SESSION_GET_SCROLLBACK: 'cmd:session:get-scrollback',
   /** M1-C:重命名 session(只改 displayName,内部仍由 sessionId 标识) */
   SESSION_RENAME: 'cmd:session:rename',
+  /**
+   * STM-3:清除手动重命名标记,让 OSC 0/1/2 标题事件重新覆盖 displayName。
+   * 用户右键"恢复自动标题"调,典型场景是用户希望 Claude Code 持续刷新
+   * 的任务进度标题重新生效。
+   */
+  SESSION_CLEAR_MANUAL_RENAME: 'cmd:session:clear-manual-rename',
 
   // Bookmark / Path 域
   BOOKMARK_ADD: 'cmd:bookmark:add',
