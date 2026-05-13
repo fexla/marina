@@ -125,29 +125,27 @@ export function MainPane(): JSX.Element {
   // 现在:主区不处理 drop 事件,事件穿透到 .terminal-host,xterm 沿用默认行为。
   // 加文件夹到收藏仍由 Sidebar 处理。
 
-  // ResizeObserver:把主区容器尺寸 + 字号 → 估算 cols/rows → 写入 store。
-  // SESSION_CREATE 调用点统一读 store.lastTerminalDims,确保 spawn PTY 时
-  // 尺寸接近 xterm fit 后的值,避免 ConPTY 重画 banner 重复进 ring buffer。
+  // FLK-2:把主区容器尺寸 + 字号 → 估算 cols/rows → 写入 store。
+  //
+  // 历史:原版本挂 ResizeObserver 持续 dispatch dims,会和 TerminalView
+  // 内部的 RO 双写抖动 — 拖窗时 chrome 每帧 layout 更新但 xterm 网格滞后
+  // 150ms,体感"周边在跳但终端慢半拍"。
+  //
+  // 现在:只在 mount 时算一次,作为"PTY spawn 前的兜底估算"用,后续真实
+  // 尺寸完全由 TerminalView mount 后的 fitAddon.fit() 写回 store
+  // (TerminalView 是单一权威)。
+  //
+  // 字号 / 行高变化触发重算 — 用户改字号后再新建 session 时尺寸更准。
   useEffect(() => {
     const el = containerRef.current;
-    if (!el) return undefined;
-    const update = (): void => {
-      // monospace 字宽 ≈ 字号 × 0.6;cell 高 = 字号 × lineHeight。
-      // 这是粗估 (xterm 真实算法考虑 letterSpacing 等),首次创建时差几列
-      // 不致命;TerminalView 一旦 mount 会用 fit 后的精确值覆盖。
-      const charWidth = fontSize * 0.6;
-      const cellHeight = fontSize * lineHeight;
-      // 主区扣掉 statusbar (约 24px) 和 padding (8px*2),保留有效区域
-      const usableW = Math.max(0, el.clientWidth - 16);
-      const usableH = Math.max(0, el.clientHeight - 56);
-      const cols = Math.max(20, Math.floor(usableW / charWidth));
-      const rows = Math.max(5, Math.floor(usableH / cellHeight));
-      dispatch({ type: 'view/update-terminal-dims', dims: { cols, rows } });
-    };
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    return () => ro.disconnect();
+    if (!el) return;
+    const charWidth = fontSize * 0.6;
+    const cellHeight = fontSize * lineHeight;
+    const usableW = Math.max(0, el.clientWidth - 16);
+    const usableH = Math.max(0, el.clientHeight - 56);
+    const cols = Math.max(20, Math.floor(usableW / charWidth));
+    const rows = Math.max(5, Math.floor(usableH / cellHeight));
+    dispatch({ type: 'view/update-terminal-dims', dims: { cols, rows } });
   }, [dispatch, fontSize, lineHeight]);
 
   if (!state.selectedPathId) {

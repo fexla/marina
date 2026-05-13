@@ -748,11 +748,25 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
         COMMAND_CHANNELS.SESSION_GET_SCROLLBACK,
         { sessionId: session.id },
       )
-      .then((res) => {
+      .then(async (res) => {
         if (disposed) return;
         if (res.data) {
-          term.write(decodeBase64ToBytes(res.data));
+          // FLK-1:分片 write 避免 2MB scrollback 同步阻塞主线程 100-300ms
+          // (用户看到的"切 session 后黑屏一下,然后内容瞬间涌出"卡顿)。
+          // 16KB 切片 + setTimeout(0) 让出主线程,让 xterm RAF 和 IPC 都有
+          // 机会运行,期间用户敲键的回显也能正常显示。
+          const all = decodeBase64ToBytes(res.data);
+          const CHUNK = 16 * 1024;
+          for (let i = 0; i < all.length; i += CHUNK) {
+            if (disposed) return;
+            term.write(all.subarray(i, i + CHUNK));
+            // 大于一片才让出 — 小 scrollback 一次过完
+            if (all.length > CHUNK && i + CHUNK < all.length) {
+              await new Promise((r) => setTimeout(r, 0));
+            }
+          }
         }
+        if (disposed) return;
         lastReplayedSeq = res.lastSeq;
         for (const c of pending) {
           if (c.seq > lastReplayedSeq) term.write(c.bytes);
