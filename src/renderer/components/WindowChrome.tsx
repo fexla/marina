@@ -86,6 +86,11 @@ export function WindowChrome({ windowStyle, buildVersion }: Props): JSX.Element 
         className="app-titlebar app-titlebar-macos"
         onDoubleClick={handleDragRegionDblClick}
       >
+        {/*
+          勘误第二轮:红绿灯按钮内部不再渲染图标。原 macOS-style hover 时显示
+          ×/−/⤢ 视觉过重且与 Marina 自身的极简风格不一致;用户明确要求"不显
+          示悬浮图标"。三圆点纯色 + tooltip 已能传达足够信息。
+        */}
         <div className="titlebar-traffic" aria-label="窗口控制(macOS 风格)">
           <button
             type="button"
@@ -93,27 +98,21 @@ export function WindowChrome({ windowStyle, buildVersion }: Props): JSX.Element 
             onClick={callClose}
             title="关闭"
             aria-label="关闭窗口"
-          >
-            <X size={8} strokeWidth={2.5} />
-          </button>
+          />
           <button
             type="button"
             className="titlebar-traffic-btn min"
             onClick={callMin}
             title="最小化"
             aria-label="最小化窗口"
-          >
-            <Minus size={8} strokeWidth={2.5} />
-          </button>
+          />
           <button
             type="button"
             className="titlebar-traffic-btn max"
             onClick={callToggleMax}
             title={maximized ? '还原' : '最大化'}
             aria-label={maximized ? '还原窗口' : '最大化窗口'}
-          >
-            {maximized ? <RestoreIcon size={8} strokeWidth={2.5} /> : <Square size={8} strokeWidth={2.5} />}
-          </button>
+          />
         </div>
         <div className="titlebar-spacer titlebar-drag" />
         <div className="titlebar-title titlebar-drag">{title}</div>

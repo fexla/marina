@@ -12,7 +12,9 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -22,8 +24,13 @@ export interface ContextMenuItem {
   label: string;
   /** 悬停 tooltip */
   hint?: string;
-  /** ✓ 标记(单选组场景) */
+  /** ✓ 标记(单选组场景);与 icon 互斥,icon 优先 */
   checked?: boolean;
+  /**
+   * 自定义前置图标(替代 ✓ 槽位)。用于终端"复制/粘贴/清屏/搜索"等
+   * 行为型菜单。提供后 checked 字段被忽略。
+   */
+  icon?: ReactNode;
   /** 灰显 + 不响应点击 */
   disabled?: boolean;
   /** 视觉为危险(红色) — 用于"删除"等 */
@@ -58,9 +65,17 @@ export function useContextMenuApi(): ContextMenuApi {
 
 export function ContextMenuProvider({ children }: { children: ReactNode }): JSX.Element {
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const close = useCallback(() => setMenu(null), []);
   const api = useMemo<ContextMenuApi>(
-    () => ({ open: setMenu, close }),
+    () => ({
+      open: (s) => {
+        setPos(null);
+        setMenu(s);
+      },
+      close,
+    }),
     [close],
   );
 
@@ -82,13 +97,40 @@ export function ContextMenuProvider({ children }: { children: ReactNode }): JSX.
     };
   }, [menu, close]);
 
+  // 视口边缘越界修正:测量实际尺寸后,优先翻转到点击点反向,再做夹紧兜底
+  useLayoutEffect(() => {
+    if (!menu) return;
+    const el = menuRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const margin = 4;
+    let nx = menu.x;
+    let ny = menu.y;
+    if (nx + rect.width > vw - margin) {
+      const flipped = menu.x - rect.width;
+      nx = flipped >= margin ? flipped : Math.max(margin, vw - rect.width - margin);
+    }
+    if (ny + rect.height > vh - margin) {
+      const flipped = menu.y - rect.height;
+      ny = flipped >= margin ? flipped : Math.max(margin, vh - rect.height - margin);
+    }
+    setPos({ x: nx, y: ny });
+  }, [menu]);
+
   return (
     <Ctx.Provider value={api}>
       {children}
       {menu && (
         <div
+          ref={menuRef}
           className="ctx-menu"
-          style={{ left: menu.x, top: menu.y }}
+          style={{
+            left: pos ? pos.x : menu.x,
+            top: pos ? pos.y : menu.y,
+            visibility: pos ? 'visible' : 'hidden',
+          }}
           onMouseDown={(e) => e.stopPropagation()}
           role="menu"
         >
@@ -114,7 +156,9 @@ export function ContextMenuProvider({ children }: { children: ReactNode }): JSX.
                   close();
                 }}
               >
-                <span className="ctx-menu-check">{it.checked ? '✓' : ' '}</span>
+                <span className="ctx-menu-check">
+                  {it.icon ?? (it.checked ? '✓' : ' ')}
+                </span>
                 <span className="ctx-menu-label">{it.label}</span>
               </button>
             );

@@ -16,6 +16,7 @@
  * @对应文档章节: 软件定义书.md 6.2 (左侧栏)、7.3 (拖拽规格)
  */
 import {
+  memo,
   useState,
   useMemo,
   useRef,
@@ -25,11 +26,17 @@ import {
 import {
   COMMAND_CHANNELS,
   type AddBookmarkResponse,
-  type PickFolderResponse,
   type CreateSessionResponse,
+  type PickFolderResponse,
 } from '@shared/protocol';
 import type { PathNode, SessionInfo } from '@shared/types';
-import { findMyOwnedSessionId, useAppDispatch, useAppState } from '../store';
+import {
+  findMyOwnedSessionId,
+  useAppDispatch,
+  useAppState,
+  useAppStateRef,
+} from '../store';
+import { writeClipboardText } from '../clipboard';
 import { Icon, type IconName } from './icons';
 import { useContextMenuApi, type ContextMenuItem } from './ContextMenu';
 import { useToast } from './Toast';
@@ -57,6 +64,7 @@ const STATE_DOT_COLOR: Record<SessionInfo['state'], string> = {
 export function Sidebar(): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
+  const toast = useToast();
   const [dragOver, setDragOver] = useState(false);
 
   const handlePickFolder = async (): Promise<void> => {
@@ -72,6 +80,40 @@ export function Sidebar(): JSX.Element {
       );
     } catch (err) {
       console.error('[Sidebar] pick-folder + add-bookmark failed', err);
+    }
+  };
+
+  /**
+   * 勘误第二轮 #6:临时栏 + 按钮 — 选文件夹后直接在该路径起一个 session。
+   * 临时分类完全从 PathManager.sessionToPath 推导,所以"加入临时"=" 在该
+   * 路径起一个 session 后让它自然出现在临时栏"。配合默认模板 (全局默认)。
+   */
+  const handlePickFolderForTemp = async (): Promise<void> => {
+    try {
+      const result = await window.api.invoke<unknown, PickFolderResponse>(
+        COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER,
+        {},
+      );
+      if (result.path === null) return;
+      const templateId = state.defaultTemplateId ?? 'shell';
+      const dims = state.lastTerminalDims;
+      const res = await window.api.invoke<unknown, CreateSessionResponse>(
+        COMMAND_CHANNELS.SESSION_CREATE,
+        {
+          pathId: result.path,
+          templateId,
+          cols: dims.cols,
+          rows: dims.rows,
+        },
+      );
+      // session 创建后:store reducer 自动 select 它(因 ownerWindowId === myWindowId)。
+      // 这里再显式 dispatch 一次 select-path,防御性把视图切到该路径。
+      dispatch({ type: 'view/select-path', pathId: res.session.pathId });
+    } catch (err) {
+      toast.push({
+        kind: 'error',
+        message: `打开文件夹失败:${err instanceof Error ? err.message : String(err)}`,
+      });
     }
   };
 
@@ -125,7 +167,14 @@ export function Sidebar(): JSX.Element {
           actionTitle="选择文件夹添加到收藏"
           onAction={() => void handlePickFolder()}
         />
-        <Category title="临时" iconName="clock" paths={state.pathTree.temporary} />
+        <Category
+          title="临时"
+          iconName="clock"
+          paths={state.pathTree.temporary}
+          actionLabel="+"
+          actionTitle="选择文件夹并新建一个临时终端"
+          onAction={() => void handlePickFolderForTemp()}
+        />
         <Category title="最近" iconName="history" paths={state.pathTree.recent} />
       </div>
       <div className="sidebar-footer">
@@ -281,11 +330,15 @@ function PathItem({ node }: { node: PathNode }): JSX.Element {
   };
 
   // M1-C:复制到剪贴板帮助器
+  // 勘误第二轮:走 main 端 Electron clipboard (绕开 web Permission 权限拒绝)
   const copyToClipboard = (text: string, label: string): void => {
-    navigator.clipboard
-      .writeText(text)
-      .then(() => toast.push({ kind: 'success', message: `已复制 ${label}` }))
-      .catch(() => toast.push({ kind: 'error', message: '复制失败' }));
+    void writeClipboardText(text).then((ok) => {
+      toast.push(
+        ok
+          ? { kind: 'success', message: `已复制 ${label}` }
+          : { kind: 'error', message: '复制失败' },
+      );
+    });
   };
 
   // M1-C:右键菜单 — 按分类组装条目
@@ -447,7 +500,12 @@ function PathItem({ node }: { node: PathNode }): JSX.Element {
       {expanded && sessions.length > 0 && (
         <ul className="session-list">
           {sessions.map((s) => (
-            <SessionItem key={s.id} session={s} />
+            <SessionItem
+              key={s.id}
+              session={s}
+              myWindowId={state.myWindowId}
+              selected={state.selectedSessionId === s.id}
+            />
           ))}
         </ul>
       )}
@@ -455,15 +513,34 @@ function PathItem({ node }: { node: PathNode }): JSX.Element {
   );
 }
 
-function SessionItem({ session }: { session: SessionInfo }): JSX.Element {
-  const state = useAppState();
+interface SessionItemProps {
+  session: SessionInfo;
+  /** 父级传入 — 避免本组件订阅 state.myWindowId 触发无关重渲 */
+  myWindowId: string;
+  /** 父级传入 — 同上,避免订阅 state.selectedSessionId */
+  selected: boolean;
+}
+
+/**
+ * 抖动源 D 的破法:本组件**不**调 useAppState()。
+ *
+ * 通过 props 拿渲染需要的 myWindowId / selected;事件回调里通过
+ * useAppStateRef 拿最新 state(templates / 其他 session 列表 等)。
+ * 用 React.memo 包裹后,sessions/state-changed 仅会让"那个真正变化的
+ * session"对应的 SessionItem 重渲,其余引用未变的 props 被 memo 跳过。
+ */
+function SessionItemImpl({
+  session,
+  myWindowId,
+  selected,
+}: SessionItemProps): JSX.Element {
   const dispatch = useAppDispatch();
   const ctxMenu = useContextMenuApi();
   const toast = useToast();
-  const isMine = session.ownerWindowId === state.myWindowId;
+  const stateRef = useAppStateRef();
+  const isMine = session.ownerWindowId === myWindowId;
   const ownedByOther =
-    session.ownerWindowId !== null && session.ownerWindowId !== state.myWindowId;
-  const selected = state.selectedSessionId === session.id;
+    session.ownerWindowId !== null && session.ownerWindowId !== myWindowId;
 
   // M1-C:行内重命名
   const [renaming, setRenaming] = useState(false);
@@ -495,17 +572,23 @@ function SessionItem({ session }: { session: SessionInfo }): JSX.Element {
       );
   };
 
+  // 勘误第二轮:走 main 端 Electron clipboard (绕开 web Permission 权限拒绝)。
+  // Sidebar 里有两个同名 helper(PathItem 与 SessionItem),早一处已迁移,这处
+  // 漏掉了 → 用户右键 session 复制 PID/cwd 仍走 navigator.clipboard 静默 reject。
   const copyToClipboard = (text: string, label: string): void => {
-    navigator.clipboard
-      .writeText(text)
-      .then(() => toast.push({ kind: 'success', message: `已复制 ${label}` }))
-      .catch(() => toast.push({ kind: 'error', message: '复制失败' }));
+    void writeClipboardText(text).then((ok) => {
+      toast.push(
+        ok
+          ? { kind: 'success', message: `已复制 ${label}` }
+          : { kind: 'error', message: '复制失败' },
+      );
+    });
   };
 
   const handleContextMenu = (e: MouseEvent<HTMLLIElement>): void => {
     e.preventDefault();
     e.stopPropagation();
-    const tpl = state.templates.find((t) => t.id === session.templateId);
+    const tpl = stateRef.current.templates.find((t) => t.id === session.templateId);
     const fullCmd = tpl
       ? `${tpl.command || '(纯 shell)'} ${tpl.args.join(' ')}`.trim()
       : '(模板未找到)';
@@ -594,8 +677,7 @@ function SessionItem({ session }: { session: SessionInfo }): JSX.Element {
     }
     // 无主 → 乐观接管 (与 Tab.handleClick orphan 分支同协议:本地立即
     // 改 owner + select,消除 EmptyPathState 闪烁;失败回滚)
-    const myWindowId = state.myWindowId;
-    const prevOwnedId = findMyOwnedSessionId(state);
+    const prevOwnedId = findMyOwnedSessionId(stateRef.current);
     if (prevOwnedId && prevOwnedId !== session.id) {
       dispatch({
         type: 'sessions/owner-changed',
@@ -658,6 +740,7 @@ function SessionItem({ session }: { session: SessionInfo }): JSX.Element {
       <span
         className="session-state-dot"
         style={{ backgroundColor: STATE_DOT_COLOR[session.state] }}
+        aria-label={`状态: ${session.state}`}
       />
       {renaming ? (
         <input
@@ -702,6 +785,16 @@ function SessionItem({ session }: { session: SessionInfo }): JSX.Element {
     </li>
   );
 }
+
+/**
+ * React.memo 包裹 SessionItem — 仅当 session 引用 / myWindowId / selected
+ * 任一变化时才重渲。
+ *
+ * 关键前提:reducer 在 sessions/state-changed 时做的是 `new Map(state.sessions)`
+ * + `sessions.set(id, merged)`,**只换那个变化的 session 的引用**,其它
+ * session 引用保持不变 — 默认浅比较即可正确跳过无关项重渲。
+ */
+const SessionItem = memo(SessionItemImpl);
 
 /**
  * 比较两个路径是否指向同一目录。Windows 大小写无关,POSIX 大小写敏感。

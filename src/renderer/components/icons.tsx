@@ -15,7 +15,9 @@
 import type { ReactElement } from 'react';
 import {
   AlertTriangle,
+  Atom,
   Bookmark,
+  Box,
   ChevronRight,
   CircleDot,
   Clipboard,
@@ -24,6 +26,7 @@ import {
   Database,
   Eraser,
   ExternalLink,
+  GitBranch,
   History,
   Info,
   Link2,
@@ -33,6 +36,10 @@ import {
   Search,
   Settings,
   Sliders,
+  Sparkles,
+  SquareTerminal,
+  Terminal,
+  TerminalSquare,
   Wrench,
   X,
 } from 'lucide-react';
@@ -78,6 +85,20 @@ export const Icons = {
   circleDot: CircleDot,
   close: X,
   plus: Plus,
+
+  // 勘误第二轮 #4:内置模板 / shell 的"官方"图标。
+  // 没有真品牌 SVG 时退而求其次:用语义贴近的 lucide vector icon 替原 emoji
+  // (🐚🤖⚡📦 → 矢量图标),至少视觉上一致、矢量化、随主题色变。
+  templateShell: Terminal,
+  templateClaudeCode: Sparkles, // 与 Claude 品牌星形相近
+  templateCodex: Atom,           // OpenAI 圆轨道意象
+  templateOpenCode: Box,         // 与 OpenCode 立方体 logo 相近
+
+  // shell 图标:不同 shell 用不同 lucide 区分
+  shellPwsh: SquareTerminal,         // PowerShell 7,带框 — 与 Windows 11 PowerShell 图标神似
+  shellPowershell: TerminalSquare,   // Windows PowerShell 5.1
+  shellCmd: Terminal,
+  shellGitBash: GitBranch,
 } as const;
 
 export type IconName = keyof typeof Icons;

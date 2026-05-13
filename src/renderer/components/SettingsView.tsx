@@ -32,9 +32,12 @@ import {
   COMMAND_CHANNELS,
   type AddTemplatePayload,
   type AddTemplateResponse,
+  type ExplorerIntegrationStatus,
+  type GetPsCommandsResponse,
   type ImportSettingsResponse,
   type ListShellsResponse,
   type ExportSettingsResponse,
+  type SetExplorerIntegrationResponse,
   type UpdateTemplatePayload,
   type UpdateTemplateResponse,
 } from '@shared/protocol';
@@ -1126,7 +1129,11 @@ function DataPanel({
 }
 
 // ──────────────────────────────────────────────────────────────────
-// 系统集成分类 — Explorer 右键 "在 Marina 终端中打开"(M1 提前)
+// 系统集成分类 — Explorer 右键 "在 Marina 终端中打开"
+//
+// 经典菜单(HKCU 注册表)和 Win11 新菜单(MSIX + 证书)各自独立卡片,
+// 独立开关。状态来自现场查 HKCU / Get-AppxPackage(IPC),不进 settings.json。
+// 仅 installed 构建可写;dev / portable 全部置灰。
 // ──────────────────────────────────────────────────────────────────
 
 function SystemIntegrationPanel({
@@ -1136,32 +1143,125 @@ function SystemIntegrationPanel({
 }): JSX.Element {
   const state = useAppState();
   const sys = state.settings?.systemIntegration;
-  const enabled = sys?.explorerContextMenu ?? false;
   const openIn = sys?.explorerOpenIn ?? 'new-window';
+
+  const [status, setStatus] = useState<ExplorerIntegrationStatus | null>(null);
+  const [busy, setBusy] = useState<'classic' | 'modern' | null>(null);
+  const [psCommands, setPsCommands] = useState<GetPsCommandsResponse | null>(null);
+
+  const refreshStatus = useCallback(async () => {
+    try {
+      const s = await window.api.invoke<undefined, ExplorerIntegrationStatus>(
+        COMMAND_CHANNELS.EXPLORER_INTEGRATION_GET_STATUS,
+        undefined,
+      );
+      setStatus(s);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [setError]);
+
+  useEffect(() => {
+    void refreshStatus();
+    void window.api
+      .invoke<undefined, GetPsCommandsResponse>(
+        COMMAND_CHANNELS.EXPLORER_INTEGRATION_GET_PS_COMMANDS,
+        undefined,
+      )
+      .then(setPsCommands)
+      .catch(() => {
+        /* PS 命令展示是可选功能,失败静默 */
+      });
+  }, [refreshStatus]);
+
+  const handleSet = async (
+    kind: 'classic' | 'modern',
+    enabled: boolean,
+  ): Promise<void> => {
+    setError(null);
+    setBusy(kind);
+    try {
+      const channel =
+        kind === 'classic'
+          ? COMMAND_CHANNELS.EXPLORER_INTEGRATION_SET_CLASSIC
+          : COMMAND_CHANNELS.EXPLORER_INTEGRATION_SET_MODERN;
+      const res = await window.api.invoke<
+        { enabled: boolean },
+        SetExplorerIntegrationResponse
+      >(channel, { enabled });
+      setStatus(res.status);
+      if (!res.ok) {
+        setError(res.message || `操作失败 (${kind})`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const copyToClipboard = async (text: string, label: string): Promise<void> => {
+    try {
+      const ok = await window.api.clipboard.writeText(text);
+      if (!ok) throw new Error('写入剪贴板失败');
+      setError(`已复制 ${label} 到剪贴板`);
+      // 1.5 秒后清掉这个"伪错误"提示
+      setTimeout(() => setError(null), 1500);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   return (
     <section className="settings-panel">
       <h2 className="settings-panel-title">系统集成</h2>
 
-      <SettingRow
-        label="Explorer 右键集成"
-        hint='在文件夹或其空白处右键 → "在 Marina 终端中打开" (写 HKCU 注册表,需手动安装/卸载时再次切换)'
-      >
-        <label className="settings-checkbox">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(e) =>
-              void updateSettings(
-                { systemIntegration: { explorerContextMenu: e.target.checked } },
-                setError,
-              )
-            }
-          />
-          <span>启用</span>
-        </label>
-      </SettingRow>
+      {/* —— Win11 新菜单卡片 —— */}
+      <ExplorerIntegrationCard
+        title="Win11 新菜单"
+        subtitle="圆角右键菜单,无需展开「显示更多选项」;走 IExplorerCommand,需 MSIX 包 + 证书"
+        status={status?.modern}
+        unsupportedReason={status?.modernUnsupportedReason ?? null}
+        busy={busy === 'modern'}
+        onToggle={(next) => void handleSet('modern', next)}
+        detail={
+          status?.modern === 'enabled' && status.package ? (
+            <div className="explorer-integration-meta">
+              <div>
+                <strong>包:</strong> {status.package.name} {status.package.version}
+              </div>
+              <div className="text-muted" style={{ wordBreak: 'break-all' }}>
+                {status.package.installLocation}
+              </div>
+            </div>
+          ) : null
+        }
+        certInfo={status?.cert ?? null}
+        psInstallCommand={psCommands?.installModern ?? null}
+        psUninstallCommand={psCommands?.uninstallModern ?? null}
+        psLabelInstall="安装命令"
+        psLabelUninstall="卸载命令"
+        onCopy={(text, label) => void copyToClipboard(text, label)}
+      />
 
+      {/* —— 经典右键菜单卡片 —— */}
+      <ExplorerIntegrationCard
+        title="经典右键菜单"
+        subtitle="HKCU 注册表项,藏在「显示更多选项」内;Win10 / Win11 通用,无 UAC、无证书"
+        status={status?.classic}
+        unsupportedReason={status?.classicUnsupportedReason ?? null}
+        busy={busy === 'classic'}
+        onToggle={(next) => void handleSet('classic', next)}
+        detail={null}
+        certInfo={null}
+        psInstallCommand={psCommands?.installClassic ?? null}
+        psUninstallCommand={psCommands?.uninstallClassic ?? null}
+        psLabelInstall="注册命令"
+        psLabelUninstall="移除命令"
+        onCopy={(text, label) => void copyToClipboard(text, label)}
+      />
+
+      {/* —— 打开方式(纯偏好,保留在 settings.json) —— */}
       <SettingRow
         label="打开方式"
         hint="Marina 已在运行时,从 Explorer 触发的新会话开在哪里"
@@ -1172,7 +1272,6 @@ function SystemIntegrationPanel({
               type="radio"
               name="explorer-open-in"
               value="new-window"
-              disabled={!enabled}
               checked={openIn === 'new-window'}
               onChange={() =>
                 void updateSettings(
@@ -1188,7 +1287,6 @@ function SystemIntegrationPanel({
               type="radio"
               name="explorer-open-in"
               value="recent-window-tab"
-              disabled={!enabled}
               checked={openIn === 'recent-window-tab'}
               onChange={() =>
                 void updateSettings(
@@ -1204,6 +1302,110 @@ function SystemIntegrationPanel({
         </div>
       </SettingRow>
     </section>
+  );
+}
+
+interface ExplorerIntegrationCardProps {
+  title: string;
+  subtitle: string;
+  status: ExplorerIntegrationStatus['classic'] | undefined;
+  unsupportedReason: string | null;
+  busy: boolean;
+  onToggle: (enabled: boolean) => void;
+  detail: ReactNode;
+  certInfo: ExplorerIntegrationStatus['cert'];
+  psInstallCommand: string | null;
+  psUninstallCommand: string | null;
+  psLabelInstall: string;
+  psLabelUninstall: string;
+  onCopy: (text: string, label: string) => void;
+}
+
+function ExplorerIntegrationCard({
+  title,
+  subtitle,
+  status,
+  unsupportedReason,
+  busy,
+  onToggle,
+  detail,
+  certInfo,
+  psInstallCommand,
+  psUninstallCommand,
+  psLabelInstall,
+  psLabelUninstall,
+  onCopy,
+}: ExplorerIntegrationCardProps): JSX.Element {
+  const isUnsupported = status === 'unsupported';
+  const isEnabled = status === 'enabled';
+  const disabled = isUnsupported || busy || status === undefined;
+
+  const statusLabel = (() => {
+    if (status === undefined) return '查询中…';
+    if (status === 'unsupported') return '不可用';
+    if (status === 'enabled') return '已启用';
+    return '未启用';
+  })();
+
+  return (
+    <div className="explorer-integration-card">
+      <div className="explorer-integration-header">
+        <div>
+          <div className="explorer-integration-title">{title}</div>
+          <div className="explorer-integration-subtitle">{subtitle}</div>
+        </div>
+        <label className="settings-checkbox">
+          <input
+            type="checkbox"
+            checked={isEnabled}
+            disabled={disabled}
+            onChange={(e) => onToggle(e.target.checked)}
+          />
+          <span>{busy ? '处理中…' : statusLabel}</span>
+        </label>
+      </div>
+
+      {isUnsupported && unsupportedReason && (
+        <div className="explorer-integration-unsupported">{unsupportedReason}</div>
+      )}
+
+      {detail}
+
+      {certInfo && (
+        <div className="explorer-integration-meta">
+          <div>
+            <strong>证书:</strong> {certInfo.subject}
+          </div>
+          <div className="text-muted">
+            指纹 {certInfo.thumbprint.slice(0, 8)}…{certInfo.thumbprint.slice(-4)} · 至{' '}
+            {new Date(certInfo.notAfter).toISOString().slice(0, 10)} · 已信任
+          </div>
+        </div>
+      )}
+
+      {(psInstallCommand || psUninstallCommand) && (
+        <div className="explorer-integration-actions">
+          {psInstallCommand && (
+            <button
+              type="button"
+              className="settings-button"
+              onClick={() => onCopy(psInstallCommand, psLabelInstall)}
+            >
+              复制 {psLabelInstall}
+            </button>
+          )}
+          {psUninstallCommand && (
+            <button
+              type="button"
+              className="settings-button"
+              onClick={() => onCopy(psUninstallCommand, psLabelUninstall)}
+            >
+              复制 {psLabelUninstall}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

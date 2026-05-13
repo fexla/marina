@@ -22,7 +22,9 @@ import {
   useEffect,
   useMemo,
   useReducer,
+  useRef,
   type Dispatch,
+  type MutableRefObject,
   type ReactNode,
 } from 'react';
 import {
@@ -375,6 +377,12 @@ interface AppContextValue {
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
+/**
+ * 独立暴露一个永远指向最新 state 的 ref(value 引用永久稳定,消费者不会
+ * 因为 state 变更触发重渲)。配合 React.memo 用,可以让列表项组件在事件
+ * 回调里读全局 state、但渲染时不订阅 state — 抖动源 D 的破法。
+ */
+const AppStateRefContext = createContext<MutableRefObject<AppState> | null>(null);
 
 export function AppStateProvider({
   myWindowId,
@@ -387,7 +395,17 @@ export function AppStateProvider({
 }): JSX.Element {
   const [state, dispatch] = useReducer(reducer, makeDefaultState(myWindowId, myWindowNumber));
   const value = useMemo(() => ({ state, dispatch }), [state]);
-  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+  // Render-phase ref 赋值:跨 commit 让 useAppStateRef 的消费者总能读到
+  // 最新 state。React 文档允许 useRef 在 render 阶段被赋值 — 是 idiomatic
+  // 的 "外部可变" 容器用法,不触发 re-render,也不破坏 concurrent rendering
+  // (我们用 React 18 严格模式 mount 时会赋两次,值仍正确)。
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  return (
+    <AppStateRefContext.Provider value={stateRef}>
+      <AppContext.Provider value={value}>{children}</AppContext.Provider>
+    </AppStateRefContext.Provider>
+  );
 }
 
 export function useAppState(): AppState {
@@ -400,6 +418,22 @@ export function useAppDispatch(): Dispatch<AppAction> {
   const ctx = useContext(AppContext);
   if (!ctx) throw new Error('[store] useAppDispatch 必须在 AppStateProvider 内使用');
   return ctx.dispatch;
+}
+
+/**
+ * 返回一个 ref,ref.current 永远指向最新 AppState。
+ *
+ * **只能在事件回调 / effect 里读 ref.current**;在渲染阶段读 ref.current
+ * 拿到的值跟 useAppState() 一致,但 ref 的更新不会触发本组件重渲。
+ *
+ * 使用场景:列表项组件用 React.memo + 精确 props 跳过无关重渲,但其
+ * onClick / onContextMenu 仍需要全局 state(如 templates、其他 session
+ * 列表)。把这部分通过 stateRef 拿,渲染不订阅,事件读最新。
+ */
+export function useAppStateRef(): MutableRefObject<AppState> {
+  const ref = useContext(AppStateRefContext);
+  if (!ref) throw new Error('[store] useAppStateRef 必须在 AppStateProvider 内使用');
+  return ref;
 }
 
 // ──────────────────────────────────────────────────────────────────

@@ -24,14 +24,14 @@ import {
   useEffect,
   useRef,
   useState,
-  type DragEvent,
   type MouseEvent,
 } from 'react';
 import {
   COMMAND_CHANNELS,
   type CreateSessionResponse,
+  type ListShellsResponse,
 } from '@shared/protocol';
-import type { SessionInfo } from '@shared/types';
+import type { SessionInfo, Template } from '@shared/types';
 import {
   findMyOwnedSessionId,
   getDisplayableSession,
@@ -40,14 +40,60 @@ import {
   useAppState,
 } from '../store';
 import { TerminalView } from './TerminalView';
-import { Icon } from './icons';
+import { writeClipboardText } from '../clipboard';
+import { Icon, type IconName } from './icons';
 import { useContextMenuApi } from './ContextMenu';
 import { useToast } from './Toast';
+
+interface DetectedShell {
+  id: string;
+  displayName: string;
+  executablePath: string;
+}
+
+/**
+ * 勘误第二轮 #4:把内置模板 id 映射到 lucide 图标。已知 builtin 走矢量图标
+ * (templateShell/templateClaudeCode/templateCodex/templateOpenCode);
+ * 未知 / 自定义 模板回退到 template.icon emoji 字符串。
+ */
+function builtinTemplateIcon(id: string): IconName | null {
+  switch (id) {
+    case 'shell':
+      return 'templateShell';
+    case 'claude-code':
+      return 'templateClaudeCode';
+    case 'codex':
+      return 'templateCodex';
+    case 'opencode':
+      return 'templateOpenCode';
+    default:
+      return null;
+  }
+}
+
+/**
+ * shell id → lucide 图标。WindowsAdapter.getShellCandidates 用的 id
+ * (pwsh / powershell / cmd / git-bash) 都有对应映射;其他平台未来扩展时
+ * 落到 templateShell 兜底。
+ */
+function shellIcon(id: string): IconName {
+  switch (id) {
+    case 'pwsh':
+      return 'shellPwsh';
+    case 'powershell':
+      return 'shellPowershell';
+    case 'cmd':
+      return 'shellCmd';
+    case 'git-bash':
+      return 'shellGitBash';
+    default:
+      return 'templateShell';
+  }
+}
 
 export function MainPane(): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
-  const toast = useToast();
   const sessions = getSessionsInSelectedPath(state);
   const displayable = getDisplayableSession(state);
 
@@ -55,60 +101,11 @@ export function MainPane(): JSX.Element {
   const fontSize = state.settings.appearance?.terminalFontSize ?? 13;
   const lineHeight = state.settings.appearance?.terminalLineHeight ?? 1.2;
 
-  // M1-B:拖 Explorer 文件夹到终端区 → 在该路径用默认模板新建终端 (spec 7.3)
-  const [dragOver, setDragOver] = useState(false);
-
-  const handleDragOver = (e: DragEvent<HTMLElement>): void => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragOver(true);
-  };
-
-  const handleDragLeave = (e: DragEvent<HTMLElement>): void => {
-    // 只在真正离开容器时清,避免子元素 dragenter 引起 flash
-    if (e.currentTarget === e.target) setDragOver(false);
-  };
-
-  // 用户报告:有时拖到外面松手,dragleave 不会在我们的容器触发,
-  // dragOver 状态卡住,半透明遮罩消不掉。挂全局 dragend 兜底强制清。
-  useEffect(() => {
-    const clear = (): void => setDragOver(false);
-    window.addEventListener('dragend', clear);
-    window.addEventListener('drop', clear);
-    return () => {
-      window.removeEventListener('dragend', clear);
-      window.removeEventListener('drop', clear);
-    };
-  }, []);
-
-  const handleDrop = async (e: DragEvent<HTMLElement>): Promise<void> => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragOver(false);
-
-    const files = Array.from(e.dataTransfer.files);
-    const dims = state.lastTerminalDims;
-    for (const file of files) {
-      const path = (file as File & { path?: string }).path;
-      if (!path) continue;
-      // 默认模板:全局 default,与 Sidebar 双击行为对齐 (无 bookmark 上下文)
-      const templateId = state.defaultTemplateId ?? 'shell';
-      try {
-        const res = await window.api.invoke<unknown, CreateSessionResponse>(
-          COMMAND_CHANNELS.SESSION_CREATE,
-          { pathId: path, templateId, cols: dims.cols, rows: dims.rows },
-        );
-        dispatch({ type: 'view/select-path', pathId: res.session.pathId });
-        dispatch({ type: 'view/select-session', sessionId: res.session.id });
-      } catch (err) {
-        console.error('[MainPane] drop create-session failed', err);
-        toast.push({
-          kind: 'error',
-          message: `在 "${path}" 新建终端失败:${err instanceof Error ? err.message : String(err)}`,
-        });
-      }
-    }
-  };
+  // 勘误第二轮:移除"拖文件夹到主区 → 新建终端"自定义。原 M1-B 的 onDragOver
+  // preventDefault 把整个 main-pane 变成 droptarget,xterm 元素接不到 drop
+  // 事件,Windows Terminal-风格的"拖文件到终端 → 粘贴路径"默认行为被吃掉。
+  // 现在:主区不处理 drop 事件,事件穿透到 .terminal-host,xterm 沿用默认行为。
+  // 加文件夹到收藏仍由 Sidebar 处理。
 
   // ResizeObserver:把主区容器尺寸 + 字号 → 估算 cols/rows → 写入 store。
   // SESSION_CREATE 调用点统一读 store.lastTerminalDims,确保 spawn PTY 时
@@ -135,32 +132,21 @@ export function MainPane(): JSX.Element {
     return () => ro.disconnect();
   }, [dispatch, fontSize, lineHeight]);
 
-  const dropProps = {
-    onDragOver: handleDragOver,
-    onDragLeave: handleDragLeave,
-    onDrop: (e: DragEvent<HTMLElement>) => void handleDrop(e),
-  };
-
   if (!state.selectedPathId) {
     return (
-      <main
-        className={`main-pane${dragOver ? ' drag-over' : ''}`}
-        ref={containerRef}
-        {...dropProps}
-      >
+      <main className="main-pane" ref={containerRef}>
         <WelcomeState />
-        {dragOver && <DropHint />}
       </main>
     );
   }
 
   return (
-    <main
-      className={`main-pane${dragOver ? ' drag-over' : ''}`}
-      ref={containerRef}
-      {...dropProps}
-    >
-      <TabBar sessions={sessions} selectedSessionId={state.selectedSessionId} />
+    <main className="main-pane" ref={containerRef}>
+      <TabBar
+        sessions={sessions}
+        selectedSessionId={state.selectedSessionId}
+        showBlankTab={!displayable}
+      />
       {displayable ? (
         <TerminalView
           // 用 sessionId 作 key,确保切换时彻底重建 xterm 实例
@@ -171,18 +157,7 @@ export function MainPane(): JSX.Element {
       ) : (
         <EmptyPathState pathId={state.selectedPathId} />
       )}
-      {dragOver && <DropHint />}
     </main>
-  );
-}
-
-function DropHint(): JSX.Element {
-  return (
-    <div className="main-pane-drop-hint" aria-hidden="true">
-      <div className="main-pane-drop-hint-inner">
-        松开鼠标 — 在该文件夹打开新终端
-      </div>
-    </div>
   );
 }
 
@@ -200,25 +175,50 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
   const dispatch = useAppDispatch();
   const toast = useToast();
   const [creating, setCreating] = useState(false);
+  // 勘误第二轮 #3:启动期拉一次 detectShells,缓存到组件状态。SessionManager
+  // 内部已 cache,所以二次以上调用是 O(1)。
+  const [shells, setShells] = useState<DetectedShell[] | null>(null);
 
-  // CP-3:每个模板按钮直接用对应模板创建 session。
-  // 加号按钮 → 用 path 自身的默认模板 (若收藏路径) 或全局默认模板。
-  const pathDefaultTemplateId = findDefaultTemplateForPath(state, pathId);
+  useEffect(() => {
+    let cancelled = false;
+    window.api
+      .invoke<unknown, ListShellsResponse>(
+        COMMAND_CHANNELS.SETTINGS_LIST_SHELLS,
+        {},
+      )
+      .then((res) => {
+        if (!cancelled) setShells(res.shells);
+      })
+      .catch((err) => {
+        console.warn('[EmptyPathState] list-shells failed', err);
+        if (!cancelled) setShells([]); // 失败 → 不显示 shell 区段,但仍允许模板按钮
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  const handleCreate = async (templateId: string): Promise<void> => {
+  const handleCreate = async (
+    templateId: string,
+    shellId?: string,
+  ): Promise<void> => {
     if (creating) return;
     setCreating(true);
     try {
       const dims = state.lastTerminalDims;
       const res = await window.api.invoke<unknown, CreateSessionResponse>(
         COMMAND_CHANNELS.SESSION_CREATE,
-        { pathId, templateId, cols: dims.cols, rows: dims.rows },
+        {
+          pathId,
+          templateId,
+          ...(shellId ? { shellId } : {}),
+          cols: dims.cols,
+          rows: dims.rows,
+        },
       );
       dispatch({ type: 'view/select-session', sessionId: res.session.id });
     } catch (err) {
       console.error('[MainPane] create-session failed', err);
-      // 不可达路径 / cwd 不存在 / spawn 错都走这条 — 必须给 toast,
-      // 否则用户只看到加号按钮恢复可点、无任何反馈。
       toast.push({
         kind: 'error',
         message: `新建终端失败:${err instanceof Error ? err.message : String(err)}`,
@@ -232,79 +232,100 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
 
   return (
     <div className="empty-path-state">
-      <button
-        type="button"
-        className="empty-create-btn"
-        onClick={() => void handleCreate(pathDefaultTemplateId)}
-        disabled={creating}
-        aria-label="在此路径用默认模板新建终端"
-        title={`默认模板:${
-          templates.find((t) => t.id === pathDefaultTemplateId)?.name ?? pathDefaultTemplateId
-        }`}
-      >
-        +
-      </button>
       <p className="empty-hint">在 <code>{pathId}</code> 新建终端</p>
-      <div className="empty-templates">
-        {templates.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            className="template-button"
-            onClick={() => void handleCreate(t.id)}
-            disabled={creating}
-            title={t.command ? `${t.name} — 启动命令: ${t.command}` : t.name}
-          >
-            <span className="template-icon">{t.icon}</span>
-            <span className="template-label">{t.name}</span>
-          </button>
-        ))}
+
+      {shells && shells.length > 0 && (
+        <div className="empty-section">
+          <div className="empty-section-title">检测到的 Shell</div>
+          <div className="empty-button-grid">
+            {shells.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                className="template-button"
+                onClick={() => void handleCreate('shell', s.id)}
+                disabled={creating}
+                title={`${s.displayName}\n${s.executablePath}`}
+              >
+                <span className="template-icon">
+                  <Icon name={shellIcon(s.id)} size={18} />
+                </span>
+                <span className="template-label">{s.displayName}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="empty-section">
+        <div className="empty-section-title">启动模板</div>
+        <div className="empty-button-grid">
+          {templates.map((t) => (
+            <TemplateLaunchButton
+              key={t.id}
+              template={t}
+              creating={creating}
+              onLaunch={() => void handleCreate(t.id)}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );
 }
 
-function findDefaultTemplateForPath(
-  state: ReturnType<typeof useAppState>,
-  pathId: string,
-): string {
-  const node = state.pathTree.bookmarks.find((p) => p.id === pathId);
-  return node?.defaultTemplateId ?? state.defaultTemplateId ?? 'shell';
+function TemplateLaunchButton({
+  template,
+  creating,
+  onLaunch,
+}: {
+  template: Template;
+  creating: boolean;
+  onLaunch: () => void;
+}): JSX.Element {
+  // 勘误第二轮 #4:已知 builtin id 走 lucide 矢量图标;其他模板(自定义)
+  // 仍渲染用户输入的 icon 字符串(emoji / 文本)。
+  const builtinIconName = builtinTemplateIcon(template.id);
+  return (
+    <button
+      type="button"
+      className="template-button"
+      onClick={onLaunch}
+      disabled={creating}
+      title={template.command ? `${template.name} — 启动命令: ${template.command}` : template.name}
+    >
+      <span className="template-icon">
+        {builtinIconName ? (
+          <Icon name={builtinIconName} size={18} />
+        ) : (
+          template.icon
+        )}
+      </span>
+      <span className="template-label">{template.name}</span>
+    </button>
+  );
 }
 
 interface TabBarProps {
   sessions: SessionInfo[];
   selectedSessionId: string | null;
+  /**
+   * 勘误第二轮 #8:当 displayable=null 时,父级 MainPane 显示 EmptyPathState
+   * 作为内容,此时 tabbar 里渲染一个"新建"占位 tab(visually selected),
+   * 让"新建终端页面"看起来像一个 chrome 空白页 tab,而不是游离在标签页之外。
+   */
+  showBlankTab: boolean;
 }
 
-function TabBar({ sessions, selectedSessionId }: TabBarProps): JSX.Element {
+function TabBar({ sessions, selectedSessionId, showBlankTab }: TabBarProps): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
-  const toast = useToast();
 
-  const handleNewTab = async (): Promise<void> => {
-    if (!state.selectedPathId) return;
-    // 用该 path 的默认模板 (收藏路径有自定义默认 → 用它)
-    const templateId = findDefaultTemplateForPath(state, state.selectedPathId);
-    try {
-      const dims = state.lastTerminalDims;
-      const res = await window.api.invoke<unknown, CreateSessionResponse>(
-        COMMAND_CHANNELS.SESSION_CREATE,
-        {
-          pathId: state.selectedPathId,
-          templateId,
-          cols: dims.cols,
-          rows: dims.rows,
-        },
-      );
-      dispatch({ type: 'view/select-session', sessionId: res.session.id });
-    } catch (err) {
-      console.error('[TabBar] new tab failed', err);
-      toast.push({
-        kind: 'error',
-        message: `新建标签失败:${err instanceof Error ? err.message : String(err)}`,
-      });
-    }
+  const handleClickBlankTab = (): void => {
+    // 已经显示 EmptyPathState → 取消选中真正的 session,确保新建页保持当前态。
+    // 多数情况下 selectedSessionId 已经是非 mine 的 session id,这里只是让
+    // dispatch 触发一次重算确保 view 一致。
+    dispatch({ type: 'view/select-session', sessionId: null });
   };
 
   // CP-3 勘误 #5:**彻底**移除"灰显抽到最右边"的分组逻辑。
@@ -312,11 +333,10 @@ function TabBar({ sessions, selectedSessionId }: TabBarProps): JSX.Element {
   // 灰显 / orphan / mine 的视觉差由 Tab 自己根据 ownerWindowId 决定 variant,
   // 与位置无关。
   //
-  // 顺序保证:sessions 来自 getSessionsInSelectedPath → path.sessionIds,
-  // 这个数组 PathManager 用 push 追加 (创建顺序);任何 owner 切换 / 状态
-  // 变化都不会 reorder,所以同一窗口的同一 path 看到的 tab 顺序在 session
-  // 生命周期内稳定。侧栏 SessionItem 也用同一数组顺序,两边自然同步。
-  // 拖拽改顺序是 V1.2 工作 (软件定义书 5.2、7.3 规划)。
+  // 勘误第二轮 #8:移除尾部 "+" 按钮 → 替换为常驻"新建" tab。新建 tab 在
+  // 用户当前持有/查看其他 session 时点击即切换到 EmptyPathState,这与 Chrome
+  // 的 new-tab 行为一致(不在被点之前消耗资源);自动选中只在已无 displayable
+  // 时才发生(showBlankTab=true)。
   return (
     <div className="tab-bar">
       <div className="tab-list">
@@ -328,15 +348,16 @@ function TabBar({ sessions, selectedSessionId }: TabBarProps): JSX.Element {
             selected={s.id === selectedSessionId}
           />
         ))}
+        <button
+          type="button"
+          className={`tab tab-blank${showBlankTab ? ' selected' : ''}`}
+          onClick={handleClickBlankTab}
+          title="新建终端 — 选择 Shell 或模板"
+        >
+          <span className="tab-blank-icon" aria-hidden="true">+</span>
+          <span className="tab-name">新建</span>
+        </button>
       </div>
-      <button
-        type="button"
-        className="tab-new-btn"
-        onClick={() => void handleNewTab()}
-        title="新建终端"
-      >
-        +
-      </button>
     </div>
   );
 }
@@ -362,11 +383,15 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
         ? 'orphan'
         : 'other';
 
+  // 勘误第二轮:走 main 端 Electron clipboard (绕开 web Permission 权限拒绝)
   const copyToClipboard = (text: string, label: string): void => {
-    navigator.clipboard
-      .writeText(text)
-      .then(() => toast.push({ kind: 'success', message: `已复制 ${label}` }))
-      .catch(() => toast.push({ kind: 'error', message: '复制失败' }));
+    void writeClipboardText(text).then((ok) => {
+      toast.push(
+        ok
+          ? { kind: 'success', message: `已复制 ${label}` }
+          : { kind: 'error', message: '复制失败' },
+      );
+    });
   };
 
   const handleContextMenu = (e: MouseEvent<HTMLButtonElement>): void => {
@@ -545,18 +570,12 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
         (selected ? ' selected' : '') +
         (variant === 'other' ? ' owned-by-other' : '') +
         (variant === 'orphan' ? ' orphan' : '') +
-        (session.state === 'exited' ? ' exited' : '') +
-        (session.state === 'idle' ? ' idle' : '') +
-        (session.state === 'active' ? ' active' : '')
+        (session.state === 'exited' ? ' exited' : '')
       }
       onClick={handleClick}
       onContextMenu={handleContextMenu}
       title={tooltipParts.join('\n')}
     >
-      <span
-        className={`tab-state-dot tab-state-${session.state}`}
-        aria-label={`状态: ${session.state}`}
-      />
       <span className="tab-name">{session.displayName}</span>
       {cwdDrifted && (
         <span className="tab-cwd-drift" aria-label="当前目录已变">

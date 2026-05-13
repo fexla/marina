@@ -54,6 +54,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type DragEvent as ReactDragEvent,
   type MouseEvent as ReactMouseEvent,
   type WheelEvent as ReactWheelEvent,
 } from 'react';
@@ -70,7 +71,9 @@ import {
 } from '@shared/protocol';
 import type { SessionInfo, ThemeId } from '@shared/types';
 import { useAppDispatch, useAppState } from '../store';
-import { Icon, type IconName } from './icons';
+import { readClipboardText, writeClipboardText } from '../clipboard';
+import { Icon } from './icons';
+import { useContextMenuApi, type ContextMenuItem } from './ContextMenu';
 import '@xterm/xterm/css/xterm.css';
 
 /**
@@ -255,12 +258,6 @@ interface TerminalViewProps {
   myWindowId: string;
 }
 
-interface ContextMenuState {
-  x: number;
-  y: number;
-  hasSelection: boolean;
-}
-
 export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -304,24 +301,32 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
   const searchCaseSensitiveRef = useRef(searchCaseSensitive);
   searchCaseSensitiveRef.current = searchCaseSensitive;
 
-  // 右键菜单状态
-  const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
+  // 右键菜单走全局 ContextMenuProvider (越界翻转 / Esc / 外部点击 / 滚轮关闭都
+  // 在 Provider 里统一处理),这里只保留 handleContextMenu 一个调用点。
+  const ctxApi = useContextMenuApi();
 
   // ── 操作:复制 / 粘贴 / 清屏 / 搜索 ──
+  //
+  // 勘误第二轮:剪贴板从 navigator.clipboard 换到 IPC 走 main 端 Electron
+  // clipboard 模块。原因:navigator.clipboard.{write,read}Text 在 Electron
+  // file:// 上下文需 Permission API 放行;我们的 setPermissionRequestHandler
+  // 早期拒掉了 clipboard-write,导致写操作静默 reject。
+  //
+  // 优先用 preload 暴露的 window.api.clipboard.* (内部也走 IPC);旧 preload
+  // 没这个字段时,直接 window.api.invoke 调同样的 IPC channel。这样 dev 模式
+  // 即便 preload 还是老版本,只要 main 重启了 IPC channel 就生效。
   const handleCopy = useCallback(() => {
     const term = termRef.current;
     if (!term) return;
     const sel = term.getSelection();
     if (sel) {
-      void navigator.clipboard.writeText(sel).catch((err) => {
-        console.warn('[TerminalView] clipboard.writeText failed', err);
-      });
+      void writeClipboardText(sel);
     }
   }, []);
 
   const handlePaste = useCallback(async () => {
     try {
-      const text = await navigator.clipboard.readText();
+      const text = await readClipboardText();
       if (!text) return;
       // CP-4 勘误 #10:多行粘贴警告。剪贴板含换行 (\r 或 \n) → 弹确认,
       // 防止意外把整段脚本喂给 shell 触发执行。普通单行粘贴不打扰。
@@ -418,6 +423,12 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
       // "You must set allowProposedApi option to true" → 错误边界。
       // xterm 这个 API 已在 5.x 稳定使用,proposed 标签只是它内部 RFC 流程慢。
       allowProposedApi: true,
+      // 勘误第二轮 #5:启用 Windows 模式。
+      // 解决:在 Windows 上(尤其 ConPTY 下),PowerShell / cmd 输出的 \r\n
+      // 与 xterm 的换行/重绘语义不完全匹配,某些字符宽度计算偏差导致行末出
+      // 现"残影"字符 / 行尾空格被吃掉。windowsMode=true 让 xterm 用 Windows
+      // 风格处理 LF / CR / 行尾,实测对 ConPTY 输出的 stability 有明显改进。
+      windowsMode: true,
     });
     termRef.current = term;
 
@@ -434,16 +445,57 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
     // 之前拦下来。React 在 wrapper div 上的 onKeyDown 优先级低 (xterm 内部
     // 直接读 keydown,转成字节写 PTY)。attachCustomKeyEventHandler 是 xterm
     // 给的官方拦截点:返回 false 即"我已处理,xterm 不要继续"。
+    //
+    // 勘误第二轮 #2:补完复制 / 粘贴键位 — 此前 Ctrl+C 永远发 ^C,Ctrl+V 不
+    // 动作,用户必须右键菜单。Windows Terminal 业界标准:
+    //   - Ctrl+Shift+C  → 复制(有 selection 时)
+    //   - Ctrl+Shift+V  → 粘贴
+    //   - Ctrl+Insert   → 复制(经典 Windows 兼容)
+    //   - Shift+Insert  → 粘贴(经典 Windows 兼容)
+    //   - Ctrl+C(有 selection)→ 复制,无 selection → 仍发 ^C
+    // 这些拦截都返回 false,xterm 不再透传字节给 PTY。
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== 'keydown') return true;
-      // Ctrl+F (Cmd+F on macOS) → 唤出搜索栏
-      if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && !ev.shiftKey) {
-        const key = ev.key.toLowerCase();
-        if (key === 'f') {
-          handleOpenSearch();
+      const isMod = ev.ctrlKey || ev.metaKey;
+      const key = ev.key.toLowerCase();
+
+      // Ctrl+F (Cmd+F on macOS) → 唤出搜索栏 — 仅在没 alt/shift 修饰时触发
+      if (isMod && !ev.altKey && !ev.shiftKey && key === 'f') {
+        handleOpenSearch();
+        return false;
+      }
+
+      // 复制(三套等价键位):
+      //   Ctrl+Shift+C / Ctrl+Insert / 有选区时的 Ctrl+C
+      // 三者都只在有 selection 时实际写剪贴板;无选区:
+      //   - Ctrl+Shift+C / Ctrl+Insert 静默(consume 掉,不发字节)
+      //   - 裸 Ctrl+C 透传给 PTY(SIGINT / ^C 标准行为)
+      if (isMod && !ev.altKey) {
+        const hasSel = !!termRef.current?.getSelection();
+        if (ev.shiftKey && key === 'c') {
+          if (hasSel) handleCopy();
+          return false;
+        }
+        if (!ev.shiftKey && ev.key === 'Insert') {
+          if (hasSel) handleCopy();
+          return false;
+        }
+        if (!ev.shiftKey && key === 'c' && hasSel) {
+          handleCopy();
+          return false;
+        }
+        // 粘贴:Ctrl+Shift+V
+        if (ev.shiftKey && key === 'v') {
+          void handlePaste();
           return false;
         }
       }
+      // 粘贴:Shift+Insert(无 Ctrl)
+      if (ev.shiftKey && !isMod && !ev.altKey && ev.key === 'Insert') {
+        void handlePaste();
+        return false;
+      }
+
       // Esc:仅在搜索栏可见时拦截 — 否则 Esc 应正常透传给终端 (vim 等需要)
       if (ev.key === 'Escape' && searchVisibleRef.current) {
         handleCloseSearch();
@@ -486,16 +538,20 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
     // 避免 ConPTY 的 spawn-then-resize 重画 banner quirk (用户勘误 #2)。
     dispatch({ type: 'view/update-terminal-dims', dims: { cols, rows } });
 
-    // 启动后立即同步初始尺寸给 PTY
-    if (cols !== session.cols || rows !== session.rows) {
-      window.api
-        .invoke(COMMAND_CHANNELS.SESSION_RESIZE, {
-          sessionId: session.id,
-          cols,
-          rows,
-        })
-        .catch(() => {});
-    }
+    // 启动后无条件同步初始尺寸给 PTY。
+    //
+    // 这里**不**做 "cols/rows 等于 session.cols/session.rows 就跳过" 的短路 —
+    // 该 IPC 同时承担"我刚被显示"的信号功能:主进程 resize() 即便接到 no-op
+    // 尺寸也会打开 RESIZE_QUIET_MS 窗口,压住切 tab / 重挂时 ConPTY 重发屏内容
+    // 引起的 idle session 闪绿(见 session-manager.ts:resize 的勘误注释)。
+    // 跳过 IPC 会让该兜底窗口永远开不起来 — 抖动源 A 的根因。
+    window.api
+      .invoke(COMMAND_CHANNELS.SESSION_RESIZE, {
+        sessionId: session.id,
+        cols,
+        rows,
+      })
+      .catch(() => {});
 
     // ── Scrollback replay 协议 ──
     let replayed = false;
@@ -655,6 +711,8 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
   }, [searchText, searchCaseSensitive, searchVisible, performSearch]);
 
   // 选中即复制 (settings.behavior.selectOnCopy)
+  // 勘误第二轮:同 handleCopy/handlePaste,走 IPC clipboard 桥而非
+  // navigator.clipboard,避开 web 权限拒绝。
   useEffect(() => {
     const term = termRef.current;
     if (!term || !selectOnCopy) return undefined;
@@ -662,9 +720,7 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
     const disp = term.onSelectionChange(() => {
       const sel = term.getSelection();
       if (!sel) return;
-      navigator.clipboard.writeText(sel).catch(() => {
-        // 失败静默 (剪贴板权限拒绝等)
-      });
+      void writeClipboardText(sel);
     });
     return () => disp.dispose();
   }, [selectOnCopy, session.id]);
@@ -683,9 +739,78 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
       }
       const term = termRef.current;
       const hasSelection = !!term?.getSelection();
-      setCtxMenu({ x: e.clientX, y: e.clientY, hasSelection });
+      const items: ContextMenuItem[] = [
+        {
+          icon: <Icon name="copy" size={13} />,
+          label: '复制',
+          hint: hasSelection ? '复制选中文字' : '没有选中文字',
+          disabled: !hasSelection,
+          onSelect: handleCopy,
+        },
+        {
+          icon: <Icon name="paste" size={13} />,
+          label: '粘贴',
+          hint: '从剪贴板粘贴文字到终端',
+          onSelect: handlePaste,
+        },
+        {
+          icon: <Icon name="clear" size={13} />,
+          label: '清屏',
+          hint: '清空当前显示(scrollback 保留)',
+          onSelect: handleClear,
+        },
+        {
+          icon: <Icon name="search" size={13} />,
+          label: '搜索',
+          hint: 'Ctrl+F',
+          onSelect: handleOpenSearch,
+        },
+      ];
+      ctxApi.open({ x: e.clientX, y: e.clientY, title: '终端', items });
     },
-    [rightClickMode, handlePaste],
+    [rightClickMode, handlePaste, handleCopy, handleClear, handleOpenSearch, ctxApi],
+  );
+
+  // Windows Terminal 风格:拖文件进终端 → 把(必要时引号包裹的)路径作为
+  // 输入发回 PTY。多文件用空格分隔。
+  // 修复:此前 .terminal-host 不处理 drop,事件透传到 Chromium/Win11 默认行
+  // 为 — Win11 屏幕顶端会弹"拖放到此处以共享"系统浮层。
+  const handleTerminalDragOver = useCallback(
+    (e: ReactDragEvent<HTMLDivElement>) => {
+      // dragover 必须 preventDefault 才能让 drop 事件真正触发;同时设
+      // dropEffect 让光标显示 "copy" 而非 "禁止"。
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'copy';
+    },
+    [],
+  );
+
+  const handleTerminalDrop = useCallback(
+    (e: ReactDragEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const files = Array.from(e.dataTransfer.files);
+      if (files.length === 0) return;
+      // file.path 在 Electron 31 上仍由扩展 File API 提供(同 Sidebar 用法);
+      // 32+ 才需要切 webUtils.getPathForFile,届时再迁移。
+      const quoted = files
+        .map((f) => (f as File & { path?: string }).path)
+        .filter((p): p is string => !!p && p.length > 0)
+        // Windows 路径不允许包含 ",所以只需对含空白的路径加双引号即可。
+        .map((p) => (/\s/.test(p) ? `"${p}"` : p))
+        .join(' ');
+      if (!quoted) return;
+      const base64 = encodeStringToBase64(quoted);
+      window.api
+        .invoke(COMMAND_CHANNELS.SESSION_SEND_INPUT, {
+          sessionId: session.id,
+          data: base64,
+        })
+        .catch((err) => console.error('[TerminalView] drop send-input failed', err));
+      termRef.current?.focus();
+    },
+    [session.id],
   );
 
   // M1-I:Ctrl + 滚轮调节字号 (spec 7.2.2)
@@ -702,23 +827,6 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
     },
     [fontSize],
   );
-
-  // 关闭右键菜单 — 全局点击 / Esc / 滚动
-  useEffect(() => {
-    if (!ctxMenu) return undefined;
-    const close = (): void => setCtxMenu(null);
-    const onKey = (ev: globalThis.KeyboardEvent): void => {
-      if (ev.key === 'Escape') close();
-    };
-    window.addEventListener('mousedown', close);
-    window.addEventListener('wheel', close, { passive: true });
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('mousedown', close);
-      window.removeEventListener('wheel', close);
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [ctxMenu]);
 
   const cwdDrifted =
     !!session.currentCwd &&
@@ -758,6 +866,8 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
         ref={containerRef}
         onContextMenu={handleContextMenu}
         onWheel={handleWheel}
+        onDragOver={handleTerminalDragOver}
+        onDrop={handleTerminalDrop}
       />
       {searchVisible && (
         <div className="terminal-search-bar" role="search" aria-label="终端搜索">
@@ -836,97 +946,6 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
           </button>
         </div>
       )}
-      {ctxMenu && (
-        <TerminalContextMenu
-          state={ctxMenu}
-          onCopy={handleCopy}
-          onPaste={handlePaste}
-          onClear={handleClear}
-          onSearch={handleOpenSearch}
-          onClose={() => setCtxMenu(null)}
-        />
-      )}
-    </div>
-  );
-}
-
-interface TerminalContextMenuProps {
-  state: ContextMenuState;
-  onCopy: () => void;
-  onPaste: () => void | Promise<void>;
-  onClear: () => void;
-  onSearch: () => void;
-  onClose: () => void;
-}
-
-function TerminalContextMenu({
-  state,
-  onCopy,
-  onPaste,
-  onClear,
-  onSearch,
-  onClose,
-}: TerminalContextMenuProps): JSX.Element {
-  // CP-4 勘误 #11:右键菜单图标改用 lucide,不再 emoji
-  const items: Array<{
-    iconName: IconName;
-    label: string;
-    hint?: string;
-    disabled?: boolean;
-    onSelect: () => void | Promise<void>;
-  }> = [
-    {
-      iconName: 'copy',
-      label: '复制',
-      hint: state.hasSelection ? '复制选中文字' : '没有选中文字',
-      disabled: !state.hasSelection,
-      onSelect: onCopy,
-    },
-    {
-      iconName: 'paste',
-      label: '粘贴',
-      hint: '从剪贴板粘贴文字到终端',
-      onSelect: onPaste,
-    },
-    {
-      iconName: 'clear',
-      label: '清屏',
-      hint: '清空当前显示(scrollback 保留)',
-      onSelect: onClear,
-    },
-    {
-      iconName: 'search',
-      label: '搜索',
-      hint: 'Ctrl+F',
-      onSelect: onSearch,
-    },
-  ];
-  return (
-    <div
-      className="ctx-menu"
-      style={{ left: state.x, top: state.y }}
-      onMouseDown={(e) => e.stopPropagation()}
-      role="menu"
-    >
-      <div className="ctx-menu-title">终端</div>
-      {items.map((it, idx) => (
-        <button
-          key={idx}
-          type="button"
-          className="ctx-menu-item"
-          disabled={it.disabled}
-          title={it.hint}
-          onClick={() => {
-            void it.onSelect();
-            onClose();
-          }}
-        >
-          <span className="ctx-menu-check">
-            <Icon name={it.iconName} size={13} />
-          </span>
-          <span className="ctx-menu-label">{it.label}</span>
-        </button>
-      ))}
     </div>
   );
 }

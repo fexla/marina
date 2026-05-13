@@ -353,20 +353,7 @@ button:disabled {
   border: none;
   padding: 0;
   cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: rgb(0 0 0 / 55%); /* 内部符号:深灰,默认隐藏 */
   transition: filter 80ms ease;
-}
-
-.titlebar-traffic-btn svg {
-  opacity: 0;
-  transition: opacity 80ms ease;
-}
-
-.titlebar-traffic:hover .titlebar-traffic-btn svg {
-  opacity: 1;
 }
 
 .titlebar-traffic-btn.close {
@@ -572,7 +559,7 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 12px 3px 32px;
+  padding: 3px 12px;
   font-size: 12px;
   color: var(--text, #f0f);
   cursor: pointer;
@@ -590,11 +577,14 @@ button:disabled {
   opacity: 0.55;
 }
 
+/* 移到行首,与 .path-expand-arrow (12px 宽) 同列:
+   9px 圆点 + 2px margin-left → 圆心 x ≈ 18px,刚好与 ▶ 字符视觉中心对齐 */
 .session-state-dot {
-  width: 6px;
-  height: 6px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   flex: 0 0 auto;
+  margin-left: 2px;
 }
 
 .session-name {
@@ -662,31 +652,8 @@ button:disabled {
   position: relative;
 }
 
-/* M1-B:拖 Explorer 文件夹到终端区 */
-.main-pane.drag-over {
-  background-color: var(--highlight-low, #f0f);
-}
-
-.main-pane-drop-hint {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background-color: rgb(0 0 0 / 30%);
-  pointer-events: none;
-  z-index: 200;
-}
-
-.main-pane-drop-hint-inner {
-  padding: 16px 28px;
-  background-color: var(--surface, #f0f);
-  color: var(--iris, #f0f);
-  border: 2px dashed var(--iris, #f0f);
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 500;
-}
+/* 勘误第二轮:.main-pane.drag-over / .main-pane-drop-hint* 已删除
+ * (移除了"拖文件夹到主区 → 新建终端"自定义,详见 MainPane.tsx 顶部注释)。 */
 
 .welcome-state {
   flex: 1 1 0;
@@ -709,36 +676,30 @@ button:disabled {
   color: var(--gold, #f0f);
 }
 
+/*
+ * 勘误第二轮 #3/#4/#8:EmptyPathState 改造为"检测到的 Shell + 启动模板"
+ * 两列网格,与 chrome 空白页 tab 风格统一。原 .empty-create-btn 大加号按钮
+ * 移除(冗余 — 模板已经在网格里,且 Tab 上常驻"新建" pill,入口已足)。
+ */
 .empty-path-state {
   flex: 1 1 0;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
-  gap: 16px;
-  padding: 24px;
-}
-
-.empty-create-btn {
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
-  border: 2px solid var(--iris, #f0f);
-  background-color: transparent;
-  color: var(--iris, #f0f);
-  font-size: 28px;
-  line-height: 1;
-}
-
-.empty-create-btn:hover:not(:disabled) {
-  background-color: var(--iris, #f0f);
-  color: var(--base, #f0f);
+  gap: 20px;
+  padding: 32px 48px;
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+  overflow-y: auto;
 }
 
 .empty-hint {
   margin: 0;
   color: var(--subtle, #f0f);
   font-size: 13px;
+  text-align: center;
 }
 
 .empty-hint code {
@@ -749,21 +710,37 @@ button:disabled {
   color: var(--gold, #f0f);
 }
 
-.empty-templates {
+.empty-section {
   display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.empty-section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--subtle, #f0f);
+}
+
+.empty-button-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
   gap: 8px;
 }
 
 .template-button {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
+  gap: 8px;
+  padding: 10px 12px;
   background-color: var(--surface, #f0f);
   border: 1px solid var(--overlay, #f0f);
   color: var(--text, #f0f);
-  border-radius: 4px;
-  font-size: 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  text-align: left;
+  transition: border-color 80ms ease, background-color 80ms ease;
 }
 
 .template-button:hover:not(:disabled) {
@@ -772,7 +749,20 @@ button:disabled {
 }
 
 .template-icon {
-  font-size: 14px;
+  flex: 0 0 auto;
+  font-size: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--iris, #f0f);
+  min-width: 20px;
+}
+
+.template-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── Tab bar ── */
@@ -829,7 +819,7 @@ button:disabled {
   font-style: italic;
 }
 
-/* ── CP-3 勘误 #4: Context Menu ───────────────────────────────── */
+/* ── CP-3 勘误 #4 + 勘误第二轮 #1: Context Menu ──────────────── */
 .ctx-menu {
   position: fixed;
   z-index: 1000;
@@ -837,9 +827,22 @@ button:disabled {
   max-width: 360px;
   background-color: var(--surface, #f0f);
   color: var(--text, #f0f);
-  border: 1px solid var(--overlay, #f0f);
+
+  /*
+   * 勘误第二轮:外边框改用 --highlight-high 替代 --overlay,与 surface 对比
+   * 更明显;主题色越浅时这种差异越关键(原 dawn / cutie 主题下边框几乎不可见,
+   * 视觉上"飘"在白底上)。
+   */
+  border: 1px solid var(--highlight-high, #f0f);
   border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+
+  /*
+   * 阴影同时叠 dark drop + theme-tinted halo:dark drop 保证深色主题下立体感,
+   * theme-tinted halo (--overlay) 让浅色主题下不至于"墨水块"突兀。
+   */
+  box-shadow:
+    0 6px 18px rgb(0 0 0 / 28%),
+    0 0 0 1px var(--overlay, #f0f);
   padding: 4px;
   font-size: 12px;
   user-select: none;
@@ -872,8 +875,15 @@ button:disabled {
   white-space: nowrap;
 }
 
-.ctx-menu-item:hover {
-  background-color: var(--highlight-low, #f0f);
+/*
+ * 勘误第二轮 #1:hover 背景从 --highlight-low 升级到 --highlight-med。
+ * 浅色主题下 highlight-low 几乎与 surface 同值,hover 看不出来 → 给用户
+ * "菜单不响应"的错觉。med 在所有 7 套主题下都有清晰反馈。
+ */
+.ctx-menu-item:hover:not(:disabled),
+.ctx-menu-item:focus-visible:not(:disabled) {
+  background-color: var(--highlight-med, #f0f);
+  outline: none;
 }
 
 .ctx-menu-item.checked {
@@ -908,27 +918,8 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
-/* ADR-008: tab 上的状态点 (active / idle / exited) 与 cwd 漂移提示 */
-.tab-state-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex: 0 0 auto;
-  background-color: var(--muted, #f0f);
-}
-
-.tab-state-active {
-  background-color: var(--pine, #f0f);
-}
-
-.tab-state-idle {
-  background-color: var(--gold, #f0f);
-}
-
-.tab-state-exited {
-  background-color: var(--muted, #f0f);
-}
-
+/* ADR-008: tab 状态点已移除,状态指示统一在侧边栏 session 行展示;
+   tab 上仅保留 exited 透明度提示 + cwd 漂移提示 */
 .tab.exited {
   opacity: 0.6;
 }
@@ -980,17 +971,32 @@ button:disabled {
   color: var(--base, #f0f);
 }
 
-.tab-new-btn {
-  background: transparent;
-  border: none;
-  color: var(--muted, #f0f);
-  padding: 0 12px;
+/*
+ * 勘误第二轮 #8:tab-blank — "新建终端"占位 tab(Chrome 空白页 pill 同义)。
+ * 不显示 close 按钮、状态点;视觉上比普通 tab 略简,但仍占据 tab 槽位,
+ * 让"新建"清晰地存在于 tab 系统内,不是游离在外的页面。
+ */
+.tab.tab-blank {
+  min-width: 80px;
+  max-width: 140px;
+  color: var(--subtle, #f0f);
+  font-style: normal;
+}
+
+.tab.tab-blank .tab-blank-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  line-height: 1;
+  color: var(--iris, #f0f);
   font-size: 16px;
   flex: 0 0 auto;
 }
 
-.tab-new-btn:hover {
-  color: var(--iris, #f0f);
+.tab.tab-blank:hover {
+  color: var(--text, #f0f);
 }
 
 /* ── Terminal ── */
@@ -1053,9 +1059,14 @@ button:disabled {
   overflow: hidden;
 }
 
+/* 视觉留白用 padding (不是 inset),fit-addon 会读 padding-* 扣到可用宽度里,
+ * 否则 .xterm-screen 会算得比 viewport.clientWidth 还宽,把右两列文字盖在
+ * 滚动条上,顺带让 mousedown 命中 .xterm-screen 而拖不动 thumb (box-sizing
+ * border-box 已经在 global * 选择器统一设过)。 */
 .terminal-host .xterm {
   position: absolute;
-  inset: 8px;
+  inset: 0;
+  padding: 8px;
 }
 
 .terminal-host .xterm-viewport {
@@ -1290,6 +1301,68 @@ textarea.settings-input::-webkit-scrollbar-corner {
 .settings-row-control {
   flex: 1 1 0;
   min-width: 0;
+}
+
+/* —— Explorer 集成卡片(Win11 新菜单 / 经典菜单) —— */
+.explorer-integration-card {
+  border: 1px solid var(--overlay, #f0f);
+  border-radius: 6px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  background: var(--surface, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.explorer-integration-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.explorer-integration-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text, #f0f);
+}
+
+.explorer-integration-subtitle {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--subtle, #f0f);
+  margin-top: 2px;
+}
+
+.explorer-integration-unsupported {
+  font-size: 11px;
+  color: var(--love, #f0f);
+  background: rgba(235, 111, 146, 0.08);
+  padding: 8px 10px;
+  border-radius: 4px;
+  border-left: 2px solid var(--love, #f0f);
+}
+
+.explorer-integration-meta {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--subtle, #f0f);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.explorer-integration-meta .text-muted {
+  color: var(--muted, #f0f);
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+}
+
+.explorer-integration-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .settings-placeholder {

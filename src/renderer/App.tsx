@@ -28,6 +28,25 @@ type HandshakeState =
 export function App(): JSX.Element {
   const [handshake, setHandshake] = useState<HandshakeState>({ status: 'pending' });
 
+  // 全窗口兜底:吃掉所有未消费的 dragover/drop。
+  // Why: 未被 preventDefault 的拖放事件会触发两个不想要的默认行为 ——
+  //   (a) Chromium 把窗口导航到 file:///... ;
+  //   (b) Win11 在屏幕顶端弹出"拖放到此处以共享"系统浮层。
+  // 真正要消费 drop 的区域(Sidebar 收藏夹、TerminalView 终端区)在自己
+  // 的 onDrop 里读 dataTransfer.files;它们的 React 合成事件在 bubble 阶
+  // 段早于此窗口监听触发,因此不冲突。
+  useEffect(() => {
+    const block = (e: globalThis.DragEvent): void => {
+      e.preventDefault();
+    };
+    window.addEventListener('dragover', block);
+    window.addEventListener('drop', block);
+    return () => {
+      window.removeEventListener('dragover', block);
+      window.removeEventListener('drop', block);
+    };
+  }, []);
+
   useEffect(() => {
     if (typeof window === 'undefined' || !window.api) {
       setHandshake({
