@@ -76,6 +76,7 @@ import { readClipboardText, writeClipboardText } from '../clipboard';
 import { Icon } from './icons';
 import { useContextMenuApi, type ContextMenuItem } from './ContextMenu';
 import { useToast } from './Toast';
+import { useModal } from './Modal';
 import '@xterm/xterm/css/xterm.css';
 
 /**
@@ -332,6 +333,7 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
   // 在 Provider 里统一处理),这里只保留 handleContextMenu 一个调用点。
   const ctxApi = useContextMenuApi();
   const toast = useToast();
+  const modal = useModal();
   // toast 引用镜像到 ref,让 mount effect 内长期闭包(dataHandler / paste 等)
   // 能读最新 toast api(useToast 的返回 reference 在 ToastProvider 内是稳定的,
   // 但走 ref 让"未来 push 实现替换"也免改下游)。
@@ -369,6 +371,10 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
       // CP-4 勘误 #10:多行粘贴警告。剪贴板含换行 (\r 或 \n) → 弹确认,
       // 防止意外把整段脚本喂给 shell 触发执行。普通单行粘贴不打扰。
       // 行数估算:把 \r\n 归一化后按 \n 切。
+      //
+      // CPB-P2:把 window.confirm 换成自绘 Modal — 原生 dialog 关闭后
+      // Chromium 焦点归还行为不可控,自绘 Modal 显式 previousActiveElement
+      // 恢复机制 + handlePaste 末尾 focusTerminal 双重兜底。
       const normalized = text.replace(/\r\n?/g, '\n');
       const lineCount = normalized.split('\n').length;
       if (lineCount > 1) {
@@ -376,12 +382,15 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
           normalized.length > 200
             ? normalized.slice(0, 200) + '…'
             : normalized;
-        const ok = window.confirm(
-          `即将粘贴 ${lineCount} 行内容到终端。\n\n` +
-            `多行内容可能被 shell 当成多条命令立即执行。\n\n` +
-            `预览:\n${preview}\n\n` +
-            `继续粘贴?`,
-        );
+        const ok = await modal.confirm({
+          title: '多行粘贴确认',
+          message:
+            `即将粘贴 ${lineCount} 行内容到终端。\n` +
+            '多行内容可能被 shell 当成多条命令立即执行。',
+          preview,
+          confirmLabel: '粘贴',
+          cancelLabel: '取消',
+        });
         if (!ok) return;
       }
       const base64 = encodeStringToBase64(text);
@@ -393,11 +402,10 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
       console.warn('[TerminalView] paste failed', err);
     } finally {
       // CPB-P1:粘贴完成无论成功失败都归还焦点 — 修复用户主诉"粘贴后
-      // 打不进字必须关窗口"。根因 = window.confirm/原生 modal/右键菜单
-      // 关闭后 Chromium 把焦点丢到 body,handlePaste 之前没人抢回来。
+      // 打不进字必须关窗口"。Modal close 内部也会归还,这里是双保险。
       focusTerminal(termRef, searchVisibleRef);
     }
-  }, [session.id]);
+  }, [session.id, modal]);
 
   const handleClear = useCallback(() => {
     const term = termRef.current;

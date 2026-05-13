@@ -45,6 +45,7 @@ import { focusTerminalDom } from '../focus';
 import { Icon, type IconName } from './icons';
 import { useContextMenuApi } from './ContextMenu';
 import { useToast } from './Toast';
+import { useModal } from './Modal';
 
 interface DetectedShell {
   id: string;
@@ -397,6 +398,7 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
   const dispatch = useAppDispatch();
   const ctxMenu = useContextMenuApi();
   const toast = useToast();
+  const modal = useModal();
 
   // Variant 由 session.ownerWindowId 自决,不再由父级分组传入。这样 tab
   // 即使移动 (虽然现在不再重排) 也不会丢 variant。
@@ -440,13 +442,23 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
           label: '重命名…',
           disabled: variant === 'other',
           ...(variant === 'other' ? { hint: '其他窗口持有,无法重命名' } : {}),
-          onSelect: () => {
-            const next = window.prompt('新名称', session.displayName);
-            if (!next) return;
+          onSelect: async () => {
+            // CPB-P2 同款改造:window.prompt → 自绘 Modal.prompt。
+            // 原生 prompt 关闭后焦点漂到 body,这里 Modal.prompt 内置
+            // previousActiveElement 归还。
+            const next = await modal.prompt({
+              title: '重命名会话',
+              message: '为此会话指定新的显示名(不影响 sessionId)',
+              defaultValue: session.displayName,
+              confirmLabel: '保存',
+            });
+            if (next === null) return;
+            const trimmed = next.trim();
+            if (!trimmed) return;
             window.api
               .invoke(COMMAND_CHANNELS.SESSION_RENAME, {
                 sessionId: session.id,
-                newDisplayName: next,
+                newDisplayName: trimmed,
               })
               .catch((err: unknown) =>
                 toast.push({

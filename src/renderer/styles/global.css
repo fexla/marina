@@ -1837,6 +1837,150 @@ select.settings-input option {
   cursor: not-allowed;
 }
 
+/* ── App Modal (fix/robustness-pass) ───────────────────────── */
+
+/*
+ * 自绘 confirm/prompt 弹窗,替代 window.confirm/prompt。
+ * 主要修复 CPB-P2:Electron 原生 dialog 关闭后焦点归还不可控,
+ * 自绘后由 ModalProvider 显式 previousActiveElementRef.focus()。
+ *
+ * z-index 高于 Toast (9999) 但低于 nothing(modal 不应同时存在多个)。
+ */
+.app-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background-color: rgb(0 0 0 / 45%);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: app-modal-fade-in 100ms ease-out;
+}
+
+@keyframes app-modal-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.app-modal-panel {
+  min-width: 360px;
+  max-width: 560px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--surface, #f0f);
+  color: var(--text, #f0f);
+  border: 1px solid var(--highlight-high, #f0f);
+  border-radius: 6px;
+  padding: 16px 18px 14px;
+  box-shadow:
+    0 12px 36px rgb(0 0 0 / 45%),
+    0 0 0 1px var(--overlay, #f0f);
+  font-size: 13px;
+  animation: app-modal-scale-in 120ms ease-out;
+}
+
+@keyframes app-modal-scale-in {
+  from { transform: scale(0.96); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.app-modal-panel.danger {
+  border-color: var(--love, #f0f);
+}
+
+.app-modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text, #f0f);
+  margin-bottom: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-modal-message {
+  color: var(--subtle, #f0f);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-bottom: 10px;
+}
+
+.app-modal-preview {
+  background-color: var(--base, #f0f);
+  border: 1px solid var(--overlay, #f0f);
+  border-radius: 4px;
+  padding: 8px 10px;
+  max-height: 200px;
+  overflow: auto;
+  font-family: var(--terminal-font-family, monospace);
+  font-size: 11px;
+  color: var(--text, #f0f);
+  margin: 0 0 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.app-modal-input {
+  width: 100%;
+  padding: 8px 10px;
+  background-color: var(--base, #f0f);
+  color: var(--text, #f0f);
+  border: 1px solid var(--overlay, #f0f);
+  border-radius: 4px;
+  font-family: var(--ui-font-family, sans-serif);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.app-modal-input:focus {
+  outline: none;
+  border-color: var(--highlight-high, #f0f);
+}
+
+.app-modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.app-modal-button {
+  padding: 6px 14px;
+  background-color: var(--highlight-low, #f0f);
+  color: var(--text, #f0f);
+  border: 1px solid var(--overlay, #f0f);
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  min-width: 72px;
+}
+
+.app-modal-button:hover {
+  background-color: var(--highlight-med, #f0f);
+}
+
+.app-modal-button:focus-visible {
+  outline: 2px solid var(--highlight-high, #f0f);
+  outline-offset: 1px;
+}
+
+.app-modal-button-primary {
+  background-color: var(--pine, #f0f);
+  border-color: var(--pine, #f0f);
+  color: var(--base, #f0f);
+}
+
+.app-modal-button-primary:hover {
+  background-color: var(--foam, #f0f);
+  border-color: var(--foam, #f0f);
+}
+
+.app-modal-button-primary.danger {
+  background-color: var(--love, #f0f);
+  border-color: var(--love, #f0f);
+}
+
 /* ── Toast 通知 (M1-J) ───────────────────────────────────────── */
 
 .toast-container {

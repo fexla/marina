@@ -18,6 +18,7 @@ import { SettingsView } from './components/SettingsView';
 import { WindowChrome } from './components/WindowChrome';
 import { ContextMenuProvider } from './components/ContextMenu';
 import { ToastProvider } from './components/Toast';
+import { ModalProvider } from './components/Modal';
 
 type HandshakeState =
   | { status: 'pending' }
@@ -165,23 +166,25 @@ function ConnectedShell({ buildVersion }: { buildVersion: string }): JSX.Element
 
   return (
     <ToastProvider>
-      <ContextMenuProvider>
-        <div
-          className="app-root with-shell"
-          data-theme={currentTheme}
-          data-window-style={windowStyle}
-        >
-          <WindowChrome windowStyle={windowStyle} buildVersion={buildVersion} />
-          {state.inSettingsView ? (
-            <SettingsView />
-          ) : (
-            <div className="app-body">
-              <Sidebar />
-              <MainPane />
-            </div>
-          )}
-        </div>
-      </ContextMenuProvider>
+      <ModalProvider>
+        <ContextMenuProvider>
+          <div
+            className="app-root with-shell"
+            data-theme={currentTheme}
+            data-window-style={windowStyle}
+          >
+            <WindowChrome windowStyle={windowStyle} buildVersion={buildVersion} />
+            {state.inSettingsView ? (
+              <SettingsView />
+            ) : (
+              <div className="app-body">
+                <Sidebar />
+                <MainPane />
+              </div>
+            )}
+          </div>
+        </ContextMenuProvider>
+      </ModalProvider>
     </ToastProvider>
   );
 }
