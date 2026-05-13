@@ -355,8 +355,15 @@ export class SessionManager extends EventEmitter {
 
   /**
    * 缓存 detectShells 结果。首次 createSession 时填充,后续复用。
+   *
+   * PER-4:加 30s TTL — 用户装 / 卸载 PowerShell 7、改 PATH 后不必重启
+   * Marina 也能在 EmptyPathState 的"检测到的 Shell"刷出新结果。30s 既给
+   * 用户主动重新检测的及时性,又把热路径 createSession 的 detectShells
+   * 调用数压到很低。
    */
   private cachedShells: ShellInfo[] | null = null;
+  private cachedShellsAt = 0;
+  private static readonly SHELL_CACHE_TTL_MS = 30_000;
 
   constructor(
     private readonly _windowManager: WindowManager,
@@ -1149,8 +1156,15 @@ export class SessionManager extends EventEmitter {
   // ──────────────────────────────────────────────────────────────────
 
   private async getShells(): Promise<ShellInfo[]> {
-    if (this.cachedShells) return this.cachedShells;
+    const now = Date.now();
+    if (
+      this.cachedShells &&
+      now - this.cachedShellsAt < SessionManager.SHELL_CACHE_TTL_MS
+    ) {
+      return this.cachedShells;
+    }
     this.cachedShells = await this.platformAdapter.detectShells();
+    this.cachedShellsAt = now;
     return this.cachedShells;
   }
 
