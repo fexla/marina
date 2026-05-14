@@ -136,20 +136,18 @@ export class WindowManager implements IWindowManager {
         preload: resolve(__dirname, '../preload/index.mjs'),
         contextIsolation: true,
         nodeIntegration: false,
-        // SEC-1:启用 sandbox。
+        // SEC-1 回退(2026-05-14):sandbox 暂留 false。
         //
-        // 历史注释"node-pty 等原生模块需要"实际上是误解 — node-pty 只在
-        // **main** 进程使用,renderer 进程不直接接触 node-pty。preload 用
-        // 的 contextBridge / ipcRenderer / webFrame 在 sandbox=true 下都
-        // 可用,clipboard 走 IPC 也不依赖 renderer 直 require。
+        // SEC-1(4d245f7)曾尝试启用 sandbox=true,但运行时 preload 立刻
+        // 报 "Cannot use import statement outside a module" — Electron
+        // sandboxed preload 只支持 CommonJS,而当前 electron-vite 把
+        // preload 打成 ESM(index.mjs)。这不是 node API 依赖问题,而是
+        // preload 产物格式问题。
         //
-        // 收益:renderer 进程获得 V8 sandbox 隔离层 — 即使 xterm bug /
-        // OSC 注入 / WebGL context 漏洞被利用,也无法逃出 sandbox 访问
-        // 系统资源。配合 contextIsolation 是 Electron 官方推荐姿势。
-        //
-        // 风险:若 preload 后续被改成需要 node API(如 require 'fs')会
-        // 在启动期报错。设置 ELECTRON_DEBUG_LOG 可看具体错。
-        sandbox: true,
+        // 后续重启 SEC-1 的正路:让 preload rollup 输出 cjs 格式 + 改这里
+        // 的 preload 路径为 index.js。当前 preload 源码没有 top-level
+        // await 等纯 ESM 特性,转 CJS 没有阻塞。
+        sandbox: false,
       },
     });
 
