@@ -50,7 +50,11 @@ Write-Host "[3/4] MakeAppx pack -> $msix" -ForegroundColor Cyan
 if ($LASTEXITCODE -ne 0) { throw "MakeAppx pack failed" }
 
 Write-Host "[4/4] SignTool sign" -ForegroundColor Cyan
-& $signTool sign /f $pfx /p marina-dev /fd SHA256 $msix
+# RFC 3161 时间戳:即使 dev-cert.pfx 在 2029-05-12 到期,已分发的 MSIX 签名
+# 依旧有效(时间戳服务在签名当下打上的时间戳证明"这签名是在证书有效期内
+# 做的")。否则证书过期一刻,所有已装 MSIX 都会被 Add-AppxPackage 视为
+# NotValid,新装失败 + 已装重启后 Explorer 加载 DLL 失败。
+& $signTool sign /f $pfx /p marina-dev /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $msix
 if ($LASTEXITCODE -ne 0) { throw "SignTool sign failed" }
 
 Write-Host ""
