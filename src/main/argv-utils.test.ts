@@ -20,10 +20,41 @@ describe('parseOpenHere', () => {
     expect(parseOpenHere(['C:\\Marina.exe', '--open-here'])).toBeNull();
   });
 
-  it('--open-here 后紧跟另一个 flag 返回 null(防误吃)', () => {
+  it('--open-here 后无任何非 flag token 返回 null', () => {
+    // 历史测试 "防误吃" — 现在含义是 "扫完都没非 flag token"
     expect(
       parseOpenHere(['C:\\Marina.exe', '--open-here', '--auto-start']),
     ).toBeNull();
+  });
+
+  it('TIT-2: Electron 在 --open-here 后注入 Chromium flag,跳过它取真路径', () => {
+    // Electron 31 second-instance argv 实测形态
+    expect(
+      parseOpenHere([
+        'C:\\Marina.exe',
+        '--open-here',
+        '--allow-file-access-from-files',
+        'C:\\Users\\liyue\\Desktop',
+      ]),
+    ).toBe('C:\\Users\\liyue\\Desktop');
+  });
+
+  it('TIT-2: 多个注入 flag 连续出现也能跳过', () => {
+    expect(
+      parseOpenHere([
+        'exe',
+        '--open-here',
+        '--allow-file-access-from-files',
+        '--disable-features=Foo',
+        '/home/user/projects',
+      ]),
+    ).toBe('/home/user/projects');
+  });
+
+  it('TIT-2: POSIX 绝对路径(macOS/Linux 入口预留)正常返回', () => {
+    expect(parseOpenHere(['app', '--open-here', '/Users/me/code'])).toBe(
+      '/Users/me/code',
+    );
   });
 
   it('--open-here 后是空字符串 返回 null', () => {

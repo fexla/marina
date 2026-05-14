@@ -79,7 +79,14 @@ function bootstrap(): void {
   }
 
   const gotLock = app.requestSingleInstanceLock();
+  // 诊断条目保留:TIT-2 排查时这条 log 是定位 second-instance 路径的关键证据。
+  // logger.setLogDir 此时还没调,先进 pending 缓存,setLogDir 后 flush 入盘。
+  logger.info('main', 'requestSingleInstanceLock result', {
+    gotLock,
+    argv: process.argv,
+  });
   if (!gotLock) {
+    logger.info('main', 'second instance exiting (primary will handle)');
     app.quit();
     return;
   }
@@ -155,9 +162,19 @@ function bootstrap(): void {
   // second-instance:
   //   - `--open-here <path>` → 走 openPathInTerminal,按 settings.systemIntegration.explorerOpenIn 路由
   //   - 否则:已有窗口时聚焦最近活动的;否则新开 (M1-K 行为)
-  app.on('second-instance', (_event, argv) => {
+  app.on('second-instance', (_event, argv, workingDirectory, additionalData) => {
+    // TIT-2 诊断:把 second-instance 收到的全部信息落盘,定位 --open-here 丢失原因
+    logger.info('main', 'second-instance event received', {
+      argv,
+      workingDirectory,
+      additionalData,
+    });
     try {
       const requested = parseOpenHere(argv);
+      logger.info('main', 'second-instance parseOpenHere result', {
+        requested,
+        idxOfFlag: argv.indexOf('--open-here'),
+      });
       if (requested) {
         const path = sanitizeOpenHerePath(requested);
         const mode = settingsManager.get().systemIntegration.explorerOpenIn;
@@ -339,6 +356,11 @@ function bootstrap(): void {
       // 启动行为:--open-here 优先级最高 (Explorer 右键触发的冷启动 — 用户意图明确)。
       // 其次看 settings.behavior.startupBehavior:tray-only 不开窗,其他开窗。
       const startupOpenHere = parseOpenHere(process.argv);
+      // TIT-2 诊断:与 second-instance 路径对比 — 冷启动 argv 形态是什么样
+      logger.info('main', 'cold-start parseOpenHere result', {
+        startupOpenHere,
+        argv: process.argv,
+      });
       const wantWindow =
         startupOpenHere !== null ||
         settingsManager.get().behavior.startupBehavior !== 'tray-only' ||

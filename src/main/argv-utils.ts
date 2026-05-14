@@ -6,18 +6,35 @@
  */
 
 /**
- * 解析 argv,提取 `--open-here <path>` 紧跟的目录路径。
+ * 解析 argv,提取 `--open-here <path>` 后第一个非 flag token 作为目录路径。
  *
  * Explorer 右键 "在 Marina 终端中打开" 通过注册表 command 字段调用
  * `Marina.exe --open-here "<path>"`。冷启动和 second-instance handler 都会
- * 走这个 parser。packed / dev 模式 argv 形态略有不同,但 indexOf 都能正确定位。
+ * 走这个 parser。
  *
- * @returns 找到则返回紧跟的字符串;无 / 紧跟项是另一个 flag 时返回 null
+ * **TIT-2**: 不能用 `argv[idx+1]` 直接取下一项,因为 Electron 31 在
+ * Windows 上派发 `second-instance` 事件时,会把 Chromium 注入的 flag
+ * (实测 `--allow-file-access-from-files`) 插在 `--open-here` 和它的
+ * value 之间。冷启动用的 `process.argv` 是 raw argv,不受影响 — 但
+ * 既然这是 single parser 被两条路径共用,统一处理。
+ *
+ * 启发法: 从 idx+1 开始向后扫,跳过所有以 `--` 开头的 token,第一个
+ * 非 flag token 即 path。安全性论证:
+ * - Win 绝对路径 (`C:\`、`\\server`) / POSIX 绝对路径 (`/`、`~/`) 都不
+ *   以 `--` 开头,不会与 flag 撞首字符。
+ * - Chromium 注入的 flag 都是 `--key` (boolean) 或 `--key=value` (单
+ *   token),不会出现 `--key value` 两 token 形式偷吃我们的 path。
+ *
+ * @returns 找到则返回 path 字符串;无 / 后续全是 flag / 后跟空串时返回 null
  */
 export function parseOpenHere(argv: readonly string[]): string | null {
   const idx = argv.indexOf('--open-here');
-  if (idx < 0 || idx + 1 >= argv.length) return null;
-  const path = argv[idx + 1];
-  if (!path || path.startsWith('--')) return null;
-  return path;
+  if (idx < 0) return null;
+  for (let i = idx + 1; i < argv.length; i++) {
+    const tok = argv[i];
+    if (!tok) continue;
+    if (tok.startsWith('--')) continue;
+    return tok;
+  }
+  return null;
 }
