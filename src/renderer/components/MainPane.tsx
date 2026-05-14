@@ -34,18 +34,20 @@ import {
 import type { SessionInfo, Template } from '@shared/types';
 import {
   findMyOwnedSessionId,
+  findPathNode,
   getDisplayableSession,
   getSessionsInSelectedPath,
   useAppDispatch,
   useAppState,
 } from '../store';
 import { TerminalView } from './TerminalView';
-import { writeClipboardText } from '../clipboard';
 import { focusTerminalDom } from '../focus';
 import { Icon, type IconName } from './icons';
+import { TemplateIcon } from './TemplateIcon';
 import { useContextMenuApi } from './ContextMenu';
 import { useToast } from './Toast';
 import { useModal } from './Modal';
+import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 
 interface DetectedShell {
   id: string;
@@ -53,25 +55,23 @@ interface DetectedShell {
   executablePath: string;
 }
 
-/**
- * 勘误第二轮 #4:把内置模板 id 映射到 lucide 图标。已知 builtin 走矢量图标
- * (templateShell/templateClaudeCode/templateCodex/templateOpenCode);
- * 未知 / 自定义 模板回退到 template.icon emoji 字符串。
- */
-function builtinTemplateIcon(id: string): IconName | null {
-  switch (id) {
-    case 'shell':
-      return 'templateShell';
-    case 'claude-code':
-      return 'templateClaudeCode';
-    case 'codex':
-      return 'templateCodex';
-    case 'opencode':
-      return 'templateOpenCode';
-    default:
-      return null;
-  }
-}
+// ── 终端尺寸估算用常量(P2-25) ──
+// 这是"PTY spawn 前的兜底估算":xterm 实际 mount 后由 fitAddon 写回真实
+// cols/rows,本估算只在 SESSION_CREATE 还没拿到真实尺寸时给一个合理初值。
+//
+// MONO_CHAR_ASPECT:等宽字符宽 / 字号 的经验比例。Cascadia / JBM / consolas
+// 等程序员字体在多数字号下宽高比稳定在 0.55-0.62 之间,取 0.6 是中位估值。
+// 即便偏离 ±10%,估算的 cols 偏差也只是 ±10% — fitAddon mount 后立即纠正。
+const MONO_CHAR_ASPECT = 0.6;
+// TerminalView 容器周围的固定 chrome:左右各 ~8px 内边距,顶部 tabbar 32px +
+// statusbar 24px = 56px。这两个常量配合容器 clientWidth/Height 估出可用区域。
+const TERMINAL_HOST_PADDING_X = 16;
+const TERMINAL_HOST_CHROME_Y = 56;
+// 兜底下限:就算容器尺寸异常(0 或负),也至少给 PTY 一个 spawn 能跑起来的初值。
+const MIN_COLS = 20;
+const MIN_ROWS = 5;
+
+// builtinTemplateIcon 已抽到 TemplateIcon 组件复用(P2-14)。
 
 /**
  * shell id → lucide 图标。WindowsAdapter.getShellCandidates 用的 id
@@ -139,12 +139,12 @@ export function MainPane(): JSX.Element {
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const charWidth = fontSize * 0.6;
+    const charWidth = fontSize * MONO_CHAR_ASPECT;
     const cellHeight = fontSize * lineHeight;
-    const usableW = Math.max(0, el.clientWidth - 16);
-    const usableH = Math.max(0, el.clientHeight - 56);
-    const cols = Math.max(20, Math.floor(usableW / charWidth));
-    const rows = Math.max(5, Math.floor(usableH / cellHeight));
+    const usableW = Math.max(0, el.clientWidth - TERMINAL_HOST_PADDING_X);
+    const usableH = Math.max(0, el.clientHeight - TERMINAL_HOST_CHROME_Y);
+    const cols = Math.max(MIN_COLS, Math.floor(usableW / charWidth));
+    const rows = Math.max(MIN_ROWS, Math.floor(usableH / cellHeight));
     dispatch({ type: 'view/update-terminal-dims', dims: { cols, rows } });
   }, [dispatch, fontSize, lineHeight]);
 
@@ -168,7 +168,6 @@ export function MainPane(): JSX.Element {
           // 用 sessionId 作 key,确保切换时彻底重建 xterm 实例
           key={displayable.id}
           session={displayable}
-          myWindowId={state.myWindowId}
         />
       ) : (
         <EmptyPathState pathId={state.selectedPathId} />
@@ -303,9 +302,6 @@ function TemplateLaunchButton({
   creating: boolean;
   onLaunch: () => void;
 }): JSX.Element {
-  // 勘误第二轮 #4:已知 builtin id 走 lucide 矢量图标;其他模板(自定义)
-  // 仍渲染用户输入的 icon 字符串(emoji / 文本)。
-  const builtinIconName = builtinTemplateIcon(template.id);
   return (
     <button
       type="button"
@@ -315,11 +311,7 @@ function TemplateLaunchButton({
       title={template.command ? `${template.name} — 启动命令: ${template.command}` : template.name}
     >
       <span className="template-icon">
-        {builtinIconName ? (
-          <Icon name={builtinIconName} size={18} />
-        ) : (
-          template.icon
-        )}
+        <TemplateIcon template={template} size={18} />
       </span>
       <span className="template-label">{template.name}</span>
     </button>
@@ -407,25 +399,17 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
         ? 'orphan'
         : 'other';
 
-  // 勘误第二轮:走 main 端 Electron clipboard (绕开 web Permission 权限拒绝)
-  const copyToClipboard = (text: string, label: string): void => {
-    void writeClipboardText(text).then((ok) => {
-      toast.push(
-        ok
-          ? { kind: 'success', message: `已复制 ${label}` }
-          : { kind: 'error', message: '复制失败' },
-      );
-    });
-  };
+  // 复制到剪贴板 — 统一走 useCopyToClipboard hook(P2-11)。
+  const copyToClipboard = useCopyToClipboard();
 
   const handleContextMenu = (e: MouseEvent<HTMLButtonElement>): void => {
     e.preventDefault();
     e.stopPropagation();
+    // P2-13:用 store.findPathNode 替代手写 3 栏 fallback,与 store 内部
+     // 同名 helper 一致;path 不存在(temporary 已 evict / 历史路径被清等)
+     // 时回退 session.originalCwd。
     const path =
-      state.pathTree.bookmarks.find((p) => p.id === session.pathId)?.path ||
-      state.pathTree.temporary.find((p) => p.id === session.pathId)?.path ||
-      state.pathTree.recent.find((p) => p.id === session.pathId)?.path ||
-      session.originalCwd;
+      findPathNode(state.pathTree, session.pathId)?.path || session.originalCwd;
 
     ctxMenu.open({
       x: e.clientX,

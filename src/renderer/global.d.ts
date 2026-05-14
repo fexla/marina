@@ -16,9 +16,9 @@ declare global {
    * 关于页读取这两个值显示构建信息。
    */
   // eslint-disable-next-line @typescript-eslint/naming-convention, no-underscore-dangle
-  const __EASYTERM_BUILD_COMMIT__: string;
+  const __MARINA_BUILD_COMMIT__: string;
   // eslint-disable-next-line @typescript-eslint/naming-convention, no-underscore-dangle
-  const __EASYTERM_BUILD_TIME__: string;
+  const __MARINA_BUILD_TIME__: string;
 }
 
 export {};

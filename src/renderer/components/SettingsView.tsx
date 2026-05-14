@@ -24,6 +24,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ChangeEvent,
   type ReactNode,
@@ -61,6 +62,9 @@ import {
   type FontEntry,
 } from './font-detection';
 import { Icon, type IconName } from './icons';
+import { useToast } from './Toast';
+import { useModal } from './Modal';
+import { TemplateIcon } from './TemplateIcon';
 
 type CategoryId =
   | 'appearance'
@@ -522,6 +526,7 @@ function TemplateList({
   const state = useAppState();
   const templates = state.templates;
   const defaultId = state.defaultTemplateId;
+  const modal = useModal();
 
   const handleSetDefault = (id: string): void => {
     setError(null);
@@ -532,8 +537,16 @@ function TemplateList({
       });
   };
 
-  const handleDelete = (id: string): void => {
-    if (!confirm('确认删除这个自定义模板?该操作不可撤销。')) return;
+  const handleDelete = async (id: string): Promise<void> => {
+    // CPB-P2 / FOC-5 一致化:原生 confirm 关闭后焦点不可控,且不走主题样式。
+    // 统一走 modal.confirm,与项目其他危险操作风格一致。
+    const ok = await modal.confirm({
+      title: '删除自定义模板',
+      message: '该操作不可撤销。删除后任何引用此模板的会话仍可运行,但新建终端时不会再出现。',
+      confirmLabel: '删除',
+      danger: true,
+    });
+    if (!ok) return;
     setError(null);
     window.api
       .invoke(COMMAND_CHANNELS.TEMPLATE_DELETE, { id })
@@ -546,7 +559,12 @@ function TemplateList({
     <div className="template-list">
       {templates.map((t) => (
         <div key={t.id} className="template-list-item">
-          <span className="template-list-icon">{t.icon}</span>
+          <span className="template-list-icon">
+            {/* P2-14:与 MainPane.TemplateLaunchButton 一致 — builtin 走 lucide
+                矢量,自定义模板 fallback emoji。原 {t.icon} 让 builtin 列表里
+                也只显示 emoji 与启动按钮视觉脱节。 */}
+            <TemplateIcon template={t} size={16} />
+          </span>
           <span className="template-list-name">{t.name}</span>
           {t.isBuiltin && <span className="template-list-tag">内置</span>}
           {t.id === defaultId && <span className="template-list-tag default">默认</span>}
@@ -574,7 +592,7 @@ function TemplateList({
               <button
                 type="button"
                 className="settings-button danger"
-                onClick={() => handleDelete(t.id)}
+                onClick={() => void handleDelete(t.id)}
               >
                 删除
               </button>
@@ -1144,6 +1162,7 @@ function SystemIntegrationPanel({
   const state = useAppState();
   const sys = state.settings?.systemIntegration;
   const openIn = sys?.explorerOpenIn ?? 'new-window';
+  const toast = useToast();
 
   const [status, setStatus] = useState<ExplorerIntegrationStatus | null>(null);
   const [busy, setBusy] = useState<'classic' | 'modern' | null>(null);
@@ -1201,14 +1220,17 @@ function SystemIntegrationPanel({
   };
 
   const copyToClipboard = async (text: string, label: string): Promise<void> => {
+    // FBK-2:成功反馈走绿色 success toast,与项目其他成功消息一致(原实现
+    // 复用 setError 把成功消息塞进红色错误样式槽,视觉上像"出错了")。
     try {
       const ok = await window.api.clipboard.writeText(text);
       if (!ok) throw new Error('写入剪贴板失败');
-      setError(`已复制 ${label} 到剪贴板`);
-      // 1.5 秒后清掉这个"伪错误"提示
-      setTimeout(() => setError(null), 1500);
+      toast.push({ kind: 'success', message: `已复制 ${label} 到剪贴板` });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toast.push({
+        kind: 'error',
+        message: err instanceof Error ? err.message : String(err),
+      });
     }
   };
 
@@ -1550,12 +1572,12 @@ function AboutPanel(): JSX.Element {
   // build define 在 dev 模式可能未定义,做个兜底
   // (vite 实际上 dev 时也会做 string 替换,但为了万无一失)
   const commit =
-    typeof __EASYTERM_BUILD_COMMIT__ !== 'undefined'
-      ? __EASYTERM_BUILD_COMMIT__
+    typeof __MARINA_BUILD_COMMIT__ !== 'undefined'
+      ? __MARINA_BUILD_COMMIT__
       : 'dev';
   const builtAt =
-    typeof __EASYTERM_BUILD_TIME__ !== 'undefined'
-      ? __EASYTERM_BUILD_TIME__
+    typeof __MARINA_BUILD_TIME__ !== 'undefined'
+      ? __MARINA_BUILD_TIME__
       : 'dev';
 
   // app 版本号通过 handshake 已经拿到,从 store 读不太合适 (store 里没存)
@@ -1684,10 +1706,14 @@ function NumberInput({
   const [text, setText] = useState<string>(
     formatPercent ? `${Math.round(value * 100)}` : `${value}`,
   );
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
-  // value (来自 main 广播) 变化时同步内部 text — 只在不聚焦时同步,
-  // 否则用户正在输入会被覆盖。简化:每次都同步,行为略糙但 V1 可接受。
+  // value (来自 main 广播) 变化时同步内部 text。仅在 input 当前不聚焦时
+  // 同步:跨窗口场景下另一窗口在改字号/UI 缩放等会广播 SETTINGS_CHANGED,
+  // 若本地正在输入则会被无条件覆盖(FBK-3)。聚焦时跳过,blur/commit 时
+  // 自然走 onChange 路径,不丢用户输入。
   useEffect(() => {
+    if (inputRef.current && document.activeElement === inputRef.current) return;
     setText(formatPercent ? `${Math.round(value * 100)}` : `${value}`);
   }, [value, formatPercent]);
 
@@ -1713,6 +1739,7 @@ function NumberInput({
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
       <input
+        ref={inputRef}
         type="number"
         className="settings-input numeric"
         value={text}
@@ -1734,6 +1761,10 @@ function NumberInput({
  * M1-I:模板编辑器环境变量输入框 — 默认遮罩(显示 ***),点眼睛切真实。
  * 模糊视觉用 CSS filter blur,真值始终在 input value 里,不影响保存。
  * 复制粘贴时浏览器拿真值;肉眼看不见。
+ *
+ * 安全:遮罩仅靠"显示/隐藏"按钮显式切换。早期版本把 hover/focus 也作为
+ * 自动 reveal,被审计判定与 hint("防被旁人看到 API key")矛盾 — 鼠标偶然
+ * 路过即明文,违背设计意图。现回归"显式开关"。
  */
 function EnvTextarea({
   value,
@@ -1757,11 +1788,6 @@ function EnvTextarea({
           filter: revealed ? 'none' : 'blur(4px)',
           transition: 'filter 120ms ease',
         }}
-        // 鼠标 hover 时短暂取消遮罩(可读但操作完恢复),user-friendly
-        onMouseEnter={() => setRevealed(true)}
-        onMouseLeave={() => setRevealed(false)}
-        onFocus={() => setRevealed(true)}
-        onBlur={() => setRevealed(false)}
       />
       <button
         type="button"
