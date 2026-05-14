@@ -26,6 +26,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "smoke": "node scripts/smoke-launch.mjs",
+    "smoke:interactive": "node scripts/smoke-interactive.mjs",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {

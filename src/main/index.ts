@@ -321,12 +321,28 @@ function bootstrap(): void {
 
       trayManager.init();
 
+      // 交互级冒烟测试 harness。仅在 MARINA_SMOKE_INTERACTIVE=1 时装载。
+      // 完整端到端验证:真实 BrowserWindow + preload bridge + IPC handler +
+      // SessionManager + node-pty。详见 src/main/smoke-interactive.ts。
+      const smokeInteractive = process.env['MARINA_SMOKE_INTERACTIVE'] === '1';
+      if (smokeInteractive) {
+        const { installSmokeInteractiveHarness, installSmokeGlobalTimeout } =
+          await import('./smoke-interactive.js');
+        installSmokeGlobalTimeout();
+        installSmokeInteractiveHarness(() => {
+          const list = windowManager.list();
+          if (list.length === 0) return null;
+          return windowManager.getById(list[0]!.id);
+        });
+      }
+
       // 启动行为:--open-here 优先级最高 (Explorer 右键触发的冷启动 — 用户意图明确)。
       // 其次看 settings.behavior.startupBehavior:tray-only 不开窗,其他开窗。
       const startupOpenHere = parseOpenHere(process.argv);
       const wantWindow =
         startupOpenHere !== null ||
-        settingsManager.get().behavior.startupBehavior !== 'tray-only';
+        settingsManager.get().behavior.startupBehavior !== 'tray-only' ||
+        smokeInteractive;
       if (wantWindow) {
         const win = windowManager.createWindowFromFactory();
         if (startupOpenHere !== null) {
