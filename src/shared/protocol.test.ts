@@ -32,8 +32,9 @@ describe('protocol constants', () => {
   });
 
   it('all event channels start with evt: prefix', () => {
+    // v1.3 起 domain 允许 kebab-case(与 cmd 一致,为容纳 explorer-integration)
     for (const channel of Object.values(EVENT_CHANNELS)) {
-      expect(channel).toMatch(/^evt:[a-z]+:[a-z-]+$/);
+      expect(channel).toMatch(/^evt:[a-z-]+:[a-z-]+$/);
     }
   });
 

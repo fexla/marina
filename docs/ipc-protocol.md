@@ -6,8 +6,15 @@
 > 这份文档定义所有消息的 schema、语义、错误码、时序约束。
 > 实现代码必须严格遵循,不允许"自由发挥"。
 
-文档版本:1.2 · 最后更新:2026-05-12
+文档版本:1.3 · 最后更新:2026-05-14
 
+> **v1.3 变更**(Milestone 1 收尾 + 勘误第二轮回写):
+> - domain 白名单加 `explorer-integration`(原仅 9 个 domain,接 Win11 新菜单 / 经典菜单后多一个域)
+> - 新增 Section 5.7:`cmd:explorer-integration:get-status` / `set-classic` / `set-modern` / `get-ps-commands`(4 条)
+> - 5.2 Session 段补 `cmd:session:clear-manual-rename`(M1 STM-3 修复后 renderer 恢复自动标题用)
+> - 5.6 System 段补 `cmd:system:get-build-type` / `cmd:system:clipboard-read-text` / `cmd:system:clipboard-write-text`(3 条)
+> - 上述命令均自 v1.2 发布后陆续在代码中加入,文档此前未同步
+>
 > **v1.2 变更**(Milestone 1 内部上线):
 > - 删除全部 `tombstoned` / `墓地` 相关命令、事件、错误码(ADR-008,自 CP-3 起就不存在了,本文档之前未跟进)
 > - state 字面量统一为 `'active' | 'idle' | 'exited'`
@@ -77,8 +84,11 @@
 格式:`<kind>:<domain>:<action>`
 
 - `kind`:`cmd` | `evt`
-- `domain`:`app` | `window` | `session` | `path` | `bookmark` | `template` | `settings` | `tray` | `system`
+- `domain`:`app` | `window` | `session` | `path` | `bookmark` | `template` | `settings` | `tray` | `system` | `explorer-integration`
 - `action`:具体动词,kebab-case
+
+> v1.3 起 domain 允许 kebab-case(为容纳 `explorer-integration`)。protocol.ts 校验
+> 正则相应放宽到 `^cmd:[a-z-]+:[a-z-]+$` / `^evt:[a-z-]+:[a-z-]+$`。
 
 例:
 - `cmd:session:create`
@@ -669,6 +679,33 @@ interface RenameSessionPayload {
 
 **Side Effects**:
 - 广播 `evt:session:state-changed`(`changes.displayName` 在内)
+- 标记 session.manuallyRenamed = true;后续 OSC 0/1/2 标题事件不再覆盖
+  此 session 的 displayName(直到 `cmd:session:clear-manual-rename` 重置)
+
+---
+
+#### `cmd:session:clear-manual-rename` (v1.3,STM-3)
+清除手动重命名标记,让 OSC 0/1/2 标题事件重新接管 displayName。
+
+```typescript
+// Payload
+interface ClearManualRenamePayload {
+  sessionId: string;
+}
+// Response: void
+```
+
+**典型场景**:用户右键 session 选「恢复自动标题」。例如:用户在 Claude Code
+跑长任务时,Claude 通过 OSC 0/1/2 不断刷新窗口标题反映进度;之前 `rename`
+锁住了名字,这里解锁让进度标题重新生效。
+
+**Errors**:
+- 不存在的 sessionId 静默 no-op
+
+**Side Effects**:
+- 清掉 `manuallyRenamed` 标记
+- 不立即改 displayName(留待下一次 OSC 0/1/2 到来时覆盖)
+- 不广播事件(标记本身对 UI 不可见)
 
 ---
 
@@ -1023,6 +1060,186 @@ interface ShowInExplorerPayload {
 显示 OS 原生右键菜单。Renderer 可以渲染自己的菜单 UI(更轻量),也可以通过这个 API 用原生菜单(在右键复杂菜单时更顺手)。
 
 V1 实现:**Renderer 自渲染菜单为主,这个命令仅用于"在 Explorer 中显示"等需要 OS 集成的菜单项**。具体形态在实现时定。
+
+---
+
+#### `cmd:system:get-build-type` (v1.3)
+
+返回当前构建形态,供渲染端决定是否禁用「系统集成」类 UI(dev / portable
+形态下经典右键菜单 / Win11 新菜单都不支持 — 注册表 / MSIX 操作均依赖
+NSIS 安装产物)。
+
+```typescript
+// Payload: void
+// Response
+interface GetBuildTypeResponse {
+  buildType: 'dev' | 'portable' | 'installed';
+}
+```
+
+**判定逻辑** (`src/main/build-type.ts`):
+- `app.isPackaged === false` → `'dev'`
+- 进程含 `PORTABLE_EXECUTABLE_DIR` 环境变量 → `'portable'`
+- 其余 → `'installed'`
+
+**Side Effects**:无
+
+---
+
+#### `cmd:system:clipboard-read-text` (v1.3,勘误第二轮)
+
+从系统剪贴板读取文本。
+
+```typescript
+// Payload: void
+// Response
+interface ClipboardReadTextResponse {
+  text: string;                 // 空字符串表示剪贴板无文本内容
+}
+```
+
+---
+
+#### `cmd:system:clipboard-write-text` (v1.3,勘误第二轮)
+
+把文本写入系统剪贴板。
+
+```typescript
+// Payload
+interface ClipboardWriteTextPayload {
+  text: string;
+}
+// Response
+interface ClipboardWriteTextResponse {
+  ok: boolean;                  // false = 主进程层面写失败(罕见)
+}
+```
+
+**为什么走 IPC 而不是 navigator.clipboard.***:Electron 在 `file://`
+上下文下 web 权限系统会拒掉 `clipboard-write`,我们的 permission handler
+显式拒了同源以外的权限请求 → renderer 端写永远静默失败。改为走主进程
+Electron `clipboard` 模块,绕开所有 web 权限层 + dev/prod 行为一致。
+
+---
+
+### 5.7 Explorer Integration (v1.3)
+
+> Win11 新菜单(MSIX + `IExplorerCommand`)与经典菜单(HKCU 注册表)的状态
+> 查询与开关。这里的状态**不持久化到 settings.json**(它本来就是操作系统
+> 状态,不是用户偏好),每次都现场查注册表 / Appx / 证书 store。
+
+#### `cmd:explorer-integration:get-status`
+
+综合查询当前系统对 Marina 两种 Explorer 集成的状态。
+
+```typescript
+// Payload: void
+// Response
+interface ExplorerIntegrationStatus {
+  buildType: 'dev' | 'portable' | 'installed';
+  windowsBuild: string;                        // 例 "10.0.22621";非 Windows 时 ""
+  win11ModernSupported: boolean;               // build >= 22000 才支持新菜单
+  classic: 'enabled' | 'disabled' | 'unsupported';
+  modern:  'enabled' | 'disabled' | 'unsupported';
+  cert: {
+    thumbprint: string;
+    notAfter: string;                          // ISO
+    subject: string;
+    trusted: boolean;                          // Cert:\CurrentUser\TrustedPeople 是否含此证书
+  } | null;
+  package: {
+    name: string;
+    version: string;
+    installLocation: string;
+  } | null;
+  modernUnsupportedReason: string | null;      // null = 支持
+  classicUnsupportedReason: string | null;     // null = 支持
+}
+```
+
+**`enabled/disabled/unsupported` 语义**:
+- `enabled` · 当前系统状态已开启(经典 = HKCU key 存在;Modern = MSIX 已注册)
+- `disabled` · 支持但未开启
+- `unsupported` · 当前构建/系统不支持(dev / portable 一律 unsupported;经典在非 Windows 也 unsupported;Modern 还要求 build ≥ 22000)
+
+**Side Effects**:无
+
+---
+
+#### `cmd:explorer-integration:set-classic`
+
+开/关 Explorer 经典右键菜单(HKCU 注册表,无需 UAC)。
+
+```typescript
+// Payload
+interface SetExplorerIntegrationPayload {
+  enabled: boolean;
+}
+// Response
+interface SetExplorerIntegrationResponse {
+  ok: boolean;
+  message: string;                             // 失败时的可读消息;ok=true 时为空
+  status: ExplorerIntegrationStatus;           // 操作后的最新状态
+}
+```
+
+**写入位置**:
+- `HKCU\Software\Classes\Directory\shell\Marina` (右键文件夹)
+- `HKCU\Software\Classes\Directory\Background\shell\Marina` (右键文件夹空白处)
+
+**Errors**:不抛错,失败信息走 `ok=false / message`。
+
+**Side Effects**:reg.exe add/delete;Explorer 立即生效,无需重启。
+
+---
+
+#### `cmd:explorer-integration:set-modern`
+
+开/关 Win11 新菜单(MSIX 包 + 自签证书)。
+
+```typescript
+// Payload
+interface SetExplorerIntegrationPayload {
+  enabled: boolean;
+}
+// Response: SetExplorerIntegrationResponse (同 set-classic)
+```
+
+**开启流程**(`scripts/install-context-menu.ps1` 由主进程 spawn):
+1. 把 `marina-cert.cer` 导入 `Cert:\CurrentUser\TrustedPeople`(首次需 UAC)
+2. `Add-AppxPackage -Path MarinaContextMenu.msix -ExternalLocation <resources/context-menu>`
+3. Explorer 在用户下次打开右键菜单时加载新菜单条目
+
+**关闭流程**(`scripts/uninstall-context-menu.ps1`):
+1. `Get-AppxPackage Marina.ContextMenu | Remove-AppxPackage`
+2. 证书保留(下次安装免 UAC)
+
+**前置条件**(若不满足 `ok=false`):
+- `buildType === 'installed'`(dev/portable 不带 extraResources)
+- `windowsBuild >= 22000`
+- `resources/context-menu/{install.ps1,MarinaContextMenu.msix,marina-cert.cer}` 必须存在
+
+**Errors**:不抛错,详细原因走 `message`。
+
+---
+
+#### `cmd:explorer-integration:get-ps-commands`
+
+取出 set-classic / set-modern 当下会执行的等价 PowerShell 命令(供「复制
+PS 命令」按钮 — 让用户自行在 Terminal 里跑或贴到他人机器上)。
+
+```typescript
+// Payload: void
+// Response
+interface GetPsCommandsResponse {
+  installModern: string;
+  uninstallModern: string;
+  installClassic: string;
+  uninstallClassic: string;
+}
+```
+
+**Side Effects**:无
 
 ---
 
