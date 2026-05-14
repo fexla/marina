@@ -28,16 +28,34 @@ describe('WindowsAdapter — registerFileManagerIntegration', () => {
     __setRunRegImplForTest(null);
   });
 
-  it('register 先 unregister 两次,再 add 四个 key', async () => {
+  it('register 先 unregister 两次,再 add 六个 key', async () => {
     const adapter = new WindowsAdapter();
     await adapter.registerFileManagerIntegration('C:\\Program Files\\Marina\\Marina.exe');
 
-    // 2 个 unregister(Directory + Background)+ 4 个 add(2 个 menu + 2 个 command)
-    expect(calls).toHaveLength(6);
+    // 2 个 unregister(Directory + Background)+ 6 个 add
+    // (2 个 menu 文案 + 2 个 Icon 值 + 2 个 command)
+    expect(calls).toHaveLength(8);
     expect(calls.slice(0, 2)).toEqual([
       ['delete', 'HKCU\\Software\\Classes\\Directory\\shell\\Marina', '/f'],
       ['delete', 'HKCU\\Software\\Classes\\Directory\\Background\\shell\\Marina', '/f'],
     ]);
+  });
+
+  it('register 写 Icon 字段引用 exe 内嵌图标 ",0"', async () => {
+    const adapter = new WindowsAdapter();
+    await adapter.registerFileManagerIntegration('C:\\Program Files\\Marina\\Marina.exe');
+    // 两个 hive 各一条 Icon
+    const iconCalls = calls.filter(
+      (a) =>
+        a[0] === 'add' &&
+        a.includes('/v') &&
+        a[a.indexOf('/v') + 1] === 'Icon',
+    );
+    expect(iconCalls).toHaveLength(2);
+    for (const c of iconCalls) {
+      const dIdx = c.indexOf('/d');
+      expect(c[dIdx + 1]).toBe('C:\\Program Files\\Marina\\Marina.exe,0');
+    }
   });
 
   it('register 写菜单文案 "在 Marina 终端中打开"', async () => {

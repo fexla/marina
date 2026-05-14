@@ -221,22 +221,29 @@ export class WindowsAdapter implements PlatformAdapter {
   /**
    * 注册 Explorer 右键菜单"在 Marina 终端中打开"。
    *
-   * 写 HKCU(用户级,无需提升权限)下 4 个键值:
+   * 写 HKCU(用户级,无需提升权限)下 3 类键值,共 6 条 reg add:
    *   Directory\shell\Marina            (default) = 菜单文案
+   *   Directory\shell\Marina            Icon       = "<exe>,0"      ← ICN-3
    *   Directory\shell\Marina\command    (default) = "<exe>" --open-here "%1"
    *   Directory\Background\shell\Marina (default) = 菜单文案
+   *   Directory\Background\shell\Marina Icon       = "<exe>,0"      ← ICN-3
    *   Directory\Background\shell\Marina\command   = "<exe>" --open-here "%V"
+   *
+   * Icon 字段引用 exe 内嵌图标资源 ",0"(electron-builder 已经把 build/icon.ico
+   * 嵌进 Marina.exe)。Explorer 显示经典右键菜单时会在条目左侧渲染该图标,
+   * 与 Win11 新菜单(MSIX 的 menu-icon.ico)观感一致。
    *
    * 调 reg.exe 走 execFile(数组参数),由 Node 处理 Windows quoting,避免
    * cmd.exe 注入风险。每次 register 前先 unregister 一次,清掉可能残留的
    * 旧 command(例如 exe 路径变了)。
-   *
-   * Icon 字段暂不写 — build/icon.ico 还没生成,exe 内嵌图标走 Electron 默认。
-   * 后续补 icon 时只需在 register 时多加一条 "/v Icon /d <exe>,0"。
    */
   async registerFileManagerIntegration(appExePath: string): Promise<void> {
     // 先清一遍,确保不会因为旧 command 字段(路径变化)导致脏数据
     await this.unregisterFileManagerIntegration();
+
+    // exe 内嵌图标资源引用:",0" = 第一个 ICON resource(electron-builder
+    // 把 build/icon.ico 编入 PE 资源段),Explorer 自动按需缩放到 16×16。
+    const iconValue = `${appExePath},0`;
 
     for (const { hive, argToken } of EXPLORER_INTEGRATION_KEYS) {
       // 菜单文案写到根 key 的默认值
@@ -246,6 +253,16 @@ export class WindowsAdapter implements PlatformAdapter {
         '/ve',
         '/d',
         EXPLORER_INTEGRATION_MENU_TEXT,
+        '/f',
+      ]);
+      // Icon 值 — Explorer 经典菜单条目左侧图标
+      await runReg([
+        'add',
+        hive,
+        '/v',
+        'Icon',
+        '/d',
+        iconValue,
         '/f',
       ]);
       // command 子 key 的默认值 = `"<exe>" --open-here "<%1|%V>"`
@@ -297,6 +314,7 @@ export class WindowsAdapter implements PlatformAdapter {
    * 不存在 key = 用户没启用过 / 已主动关闭,不应被启动自动重新写回。
    */
   async syncFileManagerIntegrationIfPresent(appExePath: string): Promise<void> {
+    const iconValue = `${appExePath},0`;
     for (const { hive, argToken } of EXPLORER_INTEGRATION_KEYS) {
       // reg query 不存在的 key:code=1 → runReg 抛错。捕获后跳过该 hive。
       let exists = true;
@@ -313,6 +331,16 @@ export class WindowsAdapter implements PlatformAdapter {
         '/ve',
         '/d',
         commandValue,
+        '/f',
+      ]);
+      // ICN-3 backfill:老用户(register 时还没写 Icon)启动期补上。
+      await runReg([
+        'add',
+        hive,
+        '/v',
+        'Icon',
+        '/d',
+        iconValue,
         '/f',
       ]);
     }
