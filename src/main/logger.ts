@@ -140,7 +140,17 @@ async function write(entry: PendingEntry): Promise<void> {
 }
 
 function log(level: Level, module: string, message: string, ...extra: unknown[]): void {
-  void write({ level, module, message, ts: Date.now(), extra });
+  // RES-2:write 内部 await ensureStream() 可能因 fs.mkdir 失败抛错
+  // (磁盘满 / 权限 / 路径过长)。原先 `void write(...)` 会把 rejected
+  // Promise 抛丢,故障静默。这里捕获并直接 console.error,至少 dev /
+  // 启动期能看到一条诊断信息。
+  void write({ level, module, message, ts: Date.now(), extra }).catch((err) => {
+    try {
+      console.error('[logger] write failed:', err);
+    } catch {
+      /* ignore — console 也坏了就只能放弃 */
+    }
+  });
 }
 
 export const logger = {
@@ -174,14 +184,19 @@ export const logger = {
   },
 
   async flush(): Promise<void> {
+    if (!stream) return;
+    // RES-1:setImmediate 只是让出一个事件循环 tick,与 fs flush 无关 —
+    // WriteStream 内部 buffer 可能还有几行未落盘。这里写一个空字符串并
+    // 等 write 的 callback,callback 在 buffer flush 到 OS 后触发。
+    // 不 end() stream(否则下次写需要重建)。错误吞掉:flush 在 quit
+    // 路径调用,即便落盘失败也不能阻塞退出。
+    const s = stream;
     await new Promise<void>((resolve) => {
-      if (!stream) {
+      try {
+        s.write('', () => resolve());
+      } catch {
         resolve();
-        return;
       }
-      // WriteStream.write 是异步的,end 之后才能保证完全 flush
-      // 但我们不能 end stream(否则下次写需要重建),改用 nextTick 让事件循环走一圈
-      setImmediate(() => resolve());
     });
   },
 
