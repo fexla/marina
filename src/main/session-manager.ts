@@ -1304,6 +1304,11 @@ function pickDisplayName(template: Template, shell: ShellInfo): string {
 /**
  * OSC 标题"启动垃圾"识别(TIT-1):
  *
+ * ⚠️ 这是一个 workaround,不是根治。详见
+ * `docs/issues/tit-1-osc-title-shell-startup-garbage.md` —— 有用户实测体感
+ * 与代码考古结论之间未对齐的缺口,某处可能有过一道屏障后来失效了,真正
+ * 根因尚未定位。下次回归此现象时先读那份 issue 文档。
+ *
  * Windows 上 powershell.exe / cmd.exe 启动时调 Win32 SetConsoleTitle()
  * 把窗口标题设成自己的 exe 路径,ConPTY 把这次调用翻译成 OSC 0 序列发给
  * xterm 消费者;Git Bash 默认 PS1 又在每次 prompt 时主动发
