@@ -255,11 +255,12 @@ function getXtermTheme(themeId: ThemeId | undefined): ITheme {
 
 interface TerminalViewProps {
   /**
-   * 必须满足 session.ownerWindowId === myWindowId — 父组件 MainPane 通过
+   * 必须满足 session.ownerWindowId === state.myWindowId — 父组件 MainPane 通过
    * getDisplayableSession 强制保证。这里不再做 isOwner=false 的占位 UI。
+   * (myWindowId prop 已删除:本窗口生命周期内不变,不参与 effect deps;
+   *  契约由父组件强制,不需要在本组件运行时再判断。)
    */
   session: SessionInfo;
-  myWindowId: string;
 }
 
 /**
@@ -287,7 +288,7 @@ function focusTerminal(
   termRef.current?.focus();
 }
 
-export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.Element {
+export function TerminalView({ session }: TerminalViewProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -522,11 +523,30 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
     else search.findPrevious(text, opts);
   }, []);
 
+  // handlers 镜像到 ref:attachCustomKeyEventHandler 在 mount effect 内一次性
+  // 注册,deps 只 [session.id];直接闭包 handle* useCallback 会锁住"挂载那
+  // 一刻"的版本,后续 bracketedPaste / modal / rightClickMode 等设置变化
+  // 重建出的新 handle* 永远进不来 → Ctrl+Shift+V 不跟设置走(P1-1)。
+  // 同 toastRef 模式:每次渲染镜像当前函数,事件回调读 ref.current 即最新。
+  const handlersRef = useRef({
+    handleCopy,
+    handlePaste,
+    handleClear,
+    handleOpenSearch,
+    handleCloseSearch,
+  });
+  handlersRef.current = {
+    handleCopy,
+    handlePaste,
+    handleClear,
+    handleOpenSearch,
+    handleCloseSearch,
+  };
+
   // ── xterm 实例生命周期 ──
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return undefined;
-    void myWindowId;
 
     const term = new Terminal({
       fontFamily,
@@ -601,10 +621,12 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
       if (ev.isComposing || ev.keyCode === 229) return true;
       const isMod = ev.ctrlKey || ev.metaKey;
       const key = ev.key.toLowerCase();
+      // 走 ref 取最新 handler — bracketedPaste/modal 等设置变化时仍生效(P1-1)
+      const h = handlersRef.current;
 
       // Ctrl+F (Cmd+F on macOS) → 唤出搜索栏 — 仅在没 alt/shift 修饰时触发
       if (isMod && !ev.altKey && !ev.shiftKey && key === 'f') {
-        handleOpenSearch();
+        h.handleOpenSearch();
         return false;
       }
 
@@ -616,15 +638,15 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
       if (isMod && !ev.altKey) {
         const hasSel = !!termRef.current?.getSelection();
         if (ev.shiftKey && key === 'c') {
-          if (hasSel) handleCopy();
+          if (hasSel) h.handleCopy();
           return false;
         }
         if (!ev.shiftKey && ev.key === 'Insert') {
-          if (hasSel) handleCopy();
+          if (hasSel) h.handleCopy();
           return false;
         }
         if (!ev.shiftKey && key === 'c' && hasSel) {
-          handleCopy();
+          h.handleCopy();
           // CPB-C3:Ctrl+C 复制后立即清选区 — 否则用户运行死循环想
           // Ctrl+C 终止时,前一次拖选的残留 selection 让 hasSel=true,
           // Ctrl+C 永远走"复制"分支不发 ^C → 程序停不下来。清掉
@@ -634,19 +656,19 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
         }
         // 粘贴:Ctrl+Shift+V
         if (ev.shiftKey && key === 'v') {
-          void handlePaste();
+          void h.handlePaste();
           return false;
         }
       }
       // 粘贴:Shift+Insert(无 Ctrl)
       if (ev.shiftKey && !isMod && !ev.altKey && ev.key === 'Insert') {
-        void handlePaste();
+        void h.handlePaste();
         return false;
       }
 
       // Esc:仅在搜索栏可见时拦截 — 否则 Esc 应正常透传给终端 (vim 等需要)
       if (ev.key === 'Escape' && searchVisibleRef.current) {
-        handleCloseSearch();
+        h.handleCloseSearch();
         return false;
       }
       return true; // 其他键交给 xterm 默认处理
@@ -937,7 +959,7 @@ export function TerminalView({ session, myWindowId }: TerminalViewProps): JSX.El
       searchRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session.id, myWindowId]);
+  }, [session.id]);
 
   // 主题运行时切换
   useEffect(() => {

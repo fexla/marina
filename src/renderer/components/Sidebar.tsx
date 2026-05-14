@@ -36,10 +36,10 @@ import {
   useAppState,
   useAppStateRef,
 } from '../store';
-import { writeClipboardText } from '../clipboard';
 import { Icon, type IconName } from './icons';
 import { useContextMenuApi, type ContextMenuItem } from './ContextMenu';
 import { useToast } from './Toast';
+import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 
 /**
  * 状态点颜色 (软件定义书 6.2.4 状态指示):
@@ -329,17 +329,9 @@ function PathItem({ node }: { node: PathNode }): JSX.Element {
     }
   };
 
-  // M1-C:复制到剪贴板帮助器
-  // 勘误第二轮:走 main 端 Electron clipboard (绕开 web Permission 权限拒绝)
-  const copyToClipboard = (text: string, label: string): void => {
-    void writeClipboardText(text).then((ok) => {
-      toast.push(
-        ok
-          ? { kind: 'success', message: `已复制 ${label}` }
-          : { kind: 'error', message: '复制失败' },
-      );
-    });
-  };
+  // M1-C:复制到剪贴板 — 抽到 useCopyToClipboard hook(P2-11),
+  // Sidebar/MainPane/TerminalView 多处行为一致。
+  const copyToClipboard = useCopyToClipboard();
 
   // M1-C:右键菜单 — 按分类组装条目
   const handleContextMenu = (e: MouseEvent<HTMLDivElement>): void => {
@@ -572,18 +564,8 @@ function SessionItemImpl({
       );
   };
 
-  // 勘误第二轮:走 main 端 Electron clipboard (绕开 web Permission 权限拒绝)。
-  // Sidebar 里有两个同名 helper(PathItem 与 SessionItem),早一处已迁移,这处
-  // 漏掉了 → 用户右键 session 复制 PID/cwd 仍走 navigator.clipboard 静默 reject。
-  const copyToClipboard = (text: string, label: string): void => {
-    void writeClipboardText(text).then((ok) => {
-      toast.push(
-        ok
-          ? { kind: 'success', message: `已复制 ${label}` }
-          : { kind: 'error', message: '复制失败' },
-      );
-    });
-  };
+  // 同 PathItem.copyToClipboard,统一走 useCopyToClipboard hook(P2-11)。
+  const copyToClipboard = useCopyToClipboard();
 
   const handleContextMenu = (e: MouseEvent<HTMLLIElement>): void => {
     e.preventDefault();

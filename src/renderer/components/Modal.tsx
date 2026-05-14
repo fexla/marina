@@ -148,7 +148,8 @@ export function ModalProvider({ children }: { children: ReactNode }): JSX.Elemen
   );
 
   // Esc 关闭 = cancel;Enter 在 confirm modal 走确认,prompt modal 在
-  // input 自己的 onKeyDown 里处理(避免冲突)。
+  // input 自己的 onKeyDown 里处理(避免冲突)。Tab/Shift+Tab 在 panel 内循环
+  // (OVR-1 焦点 trap — 头部注释承诺过但原实现只做 mount 聚焦,Tab 仍能漏出 panel)。
   useEffect(() => {
     if (!modal) return undefined;
     const onKey = (e: KeyboardEvent): void => {
@@ -164,6 +165,30 @@ export function ModalProvider({ children }: { children: ReactNode }): JSX.Elemen
         e.preventDefault();
         modal.resolve(true);
         closeModal();
+      } else if (e.key === 'Tab') {
+        // 焦点 trap:查 panel 内所有可聚焦元素,Tab 在尾→头,Shift+Tab 在头→尾。
+        const panel = panelRef.current;
+        if (!panel) return;
+        const focusables = panel.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+        );
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (!first || !last) return;
+        const active = document.activeElement as HTMLElement | null;
+        // 焦点不在 panel 内(可能被外部脚本抢走)→ 把它拉回 panel 首项
+        if (!active || !panel.contains(active)) {
+          e.preventDefault();
+          first.focus();
+          return;
+        }
+        if (e.shiftKey && active === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && active === last) {
+          e.preventDefault();
+          first.focus();
+        }
       }
     };
     window.addEventListener('keydown', onKey);

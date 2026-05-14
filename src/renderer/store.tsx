@@ -45,6 +45,7 @@ import {
 } from '@shared/protocol';
 import type {
   Bookmark,
+  PathNode,
   PathTree,
   SessionInfo,
   Settings,
@@ -143,7 +144,9 @@ function reducer(state: AppState, action: AppAction): AppState {
         templates: s.templates,
         defaultTemplateId: s.defaultTemplateId,
         settings: s.settings,
-        bookmarks: extractBookmarks(s.pathTree),
+        // bookmarks 不从 pathTree 派生 — 完整列表由 evt:bookmarks:updated
+        // 单独同步,snapshot 期先置空,等首个 bookmarks/update 来填。
+        bookmarks: [],
         selectedPathId: state.selectedPathId ?? firstBookmark?.id ?? null,
       };
     }
@@ -325,18 +328,17 @@ function reducer(state: AppState, action: AppAction): AppState {
   }
 }
 
-function extractBookmarks(tree: PathTree): Bookmark[] {
-  // PathTree 的 bookmarks 节点不直接含 Bookmark 详情;CP-2 只用 PathNode
-  // 渲染侧栏,完整 Bookmark 列表通过 evt:bookmarks:updated 单独同步。
-  // 此处返回空,等 evt:bookmarks:updated 来填。
-  void tree;
-  return [];
-}
-
-function findPathNode(
+/**
+ * 在三栏(bookmarks / temporary / recent)里找指定 pathId 的 PathNode。
+ *
+ * 公共导出:多处需要按 pathId 拿完整 PathNode(选中路径 / Tab 右键拿 cwd /
+ * 历史搜索 等),曾经有调用方在外面重写过这条 fallback 链(MainPane Tab 内
+ * 找 path 字段,P2-13)。统一从这里导出。
+ */
+export function findPathNode(
   tree: PathTree,
   pathId: string,
-): { sessionIds: string[] } | undefined {
+): PathNode | undefined {
   return (
     tree.bookmarks.find((p) => p.id === pathId) ??
     tree.temporary.find((p) => p.id === pathId) ??

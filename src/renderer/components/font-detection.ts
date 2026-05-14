@@ -126,12 +126,6 @@ export function probeFonts(whitelist: string[]): FontEntry[] {
   }));
 }
 
-/**
- * 旧白名单常量 (保留不删,部分代码引用)。新代码请用 RECOMMENDED_*。
- */
-export const TERMINAL_FONT_WHITELIST = RECOMMENDED_TERMINAL_FONTS;
-export const UI_FONT_WHITELIST = RECOMMENDED_UI_FONTS;
-
 // queryLocalFonts 的最小类型 (TS lib.dom 截至 2026-05 还没收录该 API,
 // 自己声明,避免 typecheck 报红。)
 interface LocalFontDataLike {

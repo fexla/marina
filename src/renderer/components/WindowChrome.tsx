@@ -25,11 +25,8 @@ import {
   type WindowMaxStateChangedPayload,
 } from '@shared/protocol';
 import type { WindowStyle } from '@shared/types';
-import { Minimize2, Minus, Square, Copy as RestoreIcon, X } from 'lucide-react';
-import { useAppState } from '../store';
+import { Minus, Square, Copy as RestoreIcon, X } from 'lucide-react';
 import { focusTerminalDom } from '../focus';
-
-void Minimize2; // 暂未使用,保留 import 防止 tree-shake 误删
 
 interface Props {
   windowStyle: WindowStyle;
@@ -37,7 +34,10 @@ interface Props {
 }
 
 export function WindowChrome({ windowStyle, buildVersion }: Props): JSX.Element {
-  const state = useAppState();
+  // P2-18:本组件唯一需要的全局值是 windowNumber,而它在本窗口生命周期内不变
+  // (preload 从 URL query 解析,见 ipc-protocol.md 2.2)。直接读 window.api,
+  // 避免 useAppState 订阅整个 state 引发的无关重渲。
+  const windowNumber = window.api.windowNumber;
   const [maximized, setMaximized] = useState(false);
 
   // 初次拉一次 + 订阅变化
@@ -86,7 +86,7 @@ export function WindowChrome({ windowStyle, buildVersion }: Props): JSX.Element 
     callToggleMax();
   };
 
-  const title = `Marina — Window ${state.myWindowNumber || '?'}`;
+  const title = `Marina — Window ${windowNumber || '?'}`;
 
   if (windowStyle === 'macos') {
     return (
@@ -138,7 +138,7 @@ export function WindowChrome({ windowStyle, buildVersion }: Props): JSX.Element 
     >
       <div className="titlebar-title titlebar-drag">
         <span className="titlebar-app-name">Marina</span>
-        <span className="titlebar-window-badge">Window {state.myWindowNumber || '?'}</span>
+        <span className="titlebar-window-badge">Window {windowNumber || '?'}</span>
       </div>
       <div className="titlebar-spacer titlebar-drag" />
       <span className="titlebar-version titlebar-drag">v{buildVersion}</span>

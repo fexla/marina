@@ -29,6 +29,12 @@
     'LXGW WenKai', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
   --terminal-font-family:
     'Cascadia Mono', 'JetBrains Mono', consolas, 'LXGW WenKai Mono', monospace;
+
+  /* color-scheme 让 Chromium 的 OS 原生控件(select 弹出菜单、滚动条等)
+   * 跟随主题色调:深色主题默认 dark,浅色主题在各自 [data-theme] 块覆盖
+   * 为 light。原生 <select> 下拉无法用 CSS 完全主题化(THM-2),靠这条至少
+   * 让 native 菜单的深/浅与 app 同色相,避免"浅色 app 弹深色菜单"突兀感。 */
+  color-scheme: dark;
 }
 
 /* Rose Pine — 默认 (尚未 data-theme 设置时也用此) */
@@ -59,7 +65,11 @@
   --highlight-low: #f4ede4;
   --highlight-med: #dfdad9;
   --highlight-high: #cecacd;
-  --muted: #9893a5;
+
+  /* THM-1:原值 #9893a5 在 #fffaf3 上估算约 3.0:1,WCAG AA 正文不达标。
+   * 调暗到 #6b6680 提到 ~4.6:1,welcome-state / sidebar count / tab-close
+   * 等大量 --muted 用户主流场景上可读。 */
+  --muted: #6b6680;
   --subtle: #797593;
   --text: #575279;
   --love: #b4637a;
@@ -68,6 +78,8 @@
   --pine: #286983;
   --foam: #56949f;
   --iris: #907aa9;
+
+  color-scheme: light;
 }
 
 /* Rose Pine Moon — 中度深紫 */
@@ -97,7 +109,10 @@
   --highlight-low: #ffe9f2;
   --highlight-med: #ffccdf;
   --highlight-high: #ffb3d1;
-  --muted: #b8809e;
+
+  /* THM-1:原值 #b8809e 在 #ffeef5 上估算约 2.1:1,远不达 WCAG AA 4.5:1。
+   * 调到 #7a4566 提到 ~4.7:1 — 仍偏柔和的酒红/紫红,不破坏 cutie 调性。 */
+  --muted: #7a4566;
   --subtle: #8a4d6f;
   --text: #6b2e4f;
   --love: #ff5d9e;
@@ -106,6 +121,8 @@
   --pine: #6fcf97;
   --foam: #6ec0e8;
   --iris: #c77dff;
+
+  color-scheme: light;
 }
 
 /* Business — 商务蓝灰 (Nord 风) */
@@ -315,11 +332,6 @@ button:disabled {
   color: var(--base, #f0f);
 }
 
-/* 最大化时取消应用外圆角 — 让贴边时铺满显示器 */
-.app-root[data-maximized='true'] {
-  border-radius: 0;
-}
-
 /* ── macOS 风格:左侧 traffic light,标题居中 ── */
 
 .app-titlebar-macos {
@@ -370,13 +382,6 @@ button:disabled {
 
 .titlebar-traffic-btn:hover {
   filter: brightness(0.92);
-}
-
-/* 应用未聚焦时 macOS 三圆点统一变灰 */
-.app-root[data-window-focused='false']
-  .app-titlebar-macos
-  .titlebar-traffic-btn {
-  background-color: #4d4d4d;
 }
 
 .app-body {
@@ -846,6 +851,11 @@ button:disabled {
   padding: 4px;
   font-size: 12px;
   user-select: none;
+
+  /* OVR-2:配合 ContextMenu.tsx 的"菜单内滚轮不关闭"改造,长菜单(默认模板
+   * 列表 8+ 项)在视口下半部分弹出时可滚,不再越界屏外。 */
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
 }
 
 .ctx-menu-title {
@@ -1032,10 +1042,6 @@ button:disabled {
 
 .status-dot.active {
   background-color: var(--pine, #f0f);
-}
-
-.status-dot.pending {
-  background-color: var(--gold, #f0f);
 }
 
 .status-text {
@@ -1355,7 +1361,7 @@ textarea.settings-input::-webkit-scrollbar-corner {
 
 .explorer-integration-meta .text-muted {
   color: var(--muted, #f0f);
-  font-family: var(--font-mono, monospace);
+  font-family: var(--terminal-font-family, monospace);
   font-size: 10px;
 }
 
@@ -1882,8 +1888,15 @@ select.settings-input option {
 }
 
 @keyframes app-modal-scale-in {
-  from { transform: scale(0.96); opacity: 0; }
-  to { transform: scale(1); opacity: 1; }
+  from {
+    transform: scale(0.96);
+    opacity: 0;
+  }
+
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 .app-modal-panel.danger {
@@ -2124,4 +2137,87 @@ select.settings-input option {
   white-space: pre-wrap;
   margin: 0;
   color: var(--love, #f0f);
+}
+
+/* ──────────────────────────────────────────────────────────────────
+ * Phase B 一致化兜底层 — a11y / 浮层 / 浅色主题
+ * ──────────────────────────────────────────────────────────────── */
+
+/* B6:浅色主题下 select chevron stroke 颜色覆盖 — 原 #908caa(rose-pine
+ * subtle)在浅色背景上偏淡,把箭头换成各浅色主题自己的 subtle 值,跟主题色相。
+ * data URI 不能引 CSS var,只能逐主题覆盖。 */
+[data-theme='rose-pine-dawn'] select.settings-input {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none' stroke='%23797593' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='1.5,1.5 6,6 10.5,1.5'/></svg>");
+}
+
+[data-theme='cutie'] select.settings-input {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none' stroke='%238a4d6f' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='1.5,1.5 6,6 10.5,1.5'/></svg>");
+}
+
+/* B8:浅色主题阴影减淡 — 原硬编码 rgb(0 0 0 / 28-45%) 在浅底上呈"墨水块",
+ * 调到 12-22% 减少视觉重量。深色主题阴影不动(28-45% 在深底正好融入)。 */
+[data-theme='rose-pine-dawn'] .ctx-menu,
+[data-theme='cutie'] .ctx-menu {
+  box-shadow:
+    0 6px 18px rgb(0 0 0 / 14%),
+    0 0 0 1px var(--overlay, #f0f);
+}
+
+[data-theme='rose-pine-dawn'] .app-modal-panel,
+[data-theme='cutie'] .app-modal-panel {
+  box-shadow: 0 12px 36px rgb(0 0 0 / 18%);
+}
+
+[data-theme='rose-pine-dawn'] .toast,
+[data-theme='cutie'] .toast,
+[data-theme='rose-pine-dawn'] .terminal-search-bar,
+[data-theme='cutie'] .terminal-search-bar {
+  box-shadow: 0 4px 16px rgb(0 0 0 / 14%);
+}
+
+[data-theme='rose-pine-dawn'] .bootstrap-placeholder,
+[data-theme='cutie'] .bootstrap-placeholder {
+  box-shadow: 0 4px 24px rgb(0 0 0 / 12%);
+}
+
+/* B1:全局键盘焦点可见性(WCAG SC 2.4.7)。
+ * 原 ctx-menu-item / app-modal-button 已有专门规则,其它按钮 / nav / tab /
+ * 模板按钮 / 主题卡片等全裸,Tab 浏览看不到当前焦点。统一以 --iris 描边。 */
+:focus-visible {
+  outline: 2px solid var(--iris, #f0f);
+  outline-offset: 2px;
+  border-radius: inherit;
+}
+
+button:focus-visible,
+.settings-nav-item:focus-visible,
+.tab:focus-visible,
+.tab-close:focus-visible,
+.template-button:focus-visible,
+.settings-theme-card:focus-visible,
+.titlebar-btn:focus-visible,
+.titlebar-traffic-btn:focus-visible,
+.settings-close:focus-visible,
+.path-expand-arrow:focus-visible {
+  outline: 2px solid var(--iris, #f0f);
+  outline-offset: 2px;
+}
+
+/* B2:prefers-reduced-motion 兜底(WCAG SC 2.3.3)。
+ * 用户开启系统"减少动效"时,把所有 animation/transition 压到 0.01ms,
+ * 同时关掉 Modal backdrop-filter(GPU 合成重),避免前庭/注意力敏感
+ * 用户被微动效干扰。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .app-modal-backdrop {
+    backdrop-filter: none;
+  }
 }

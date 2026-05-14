@@ -9,7 +9,7 @@
  * - main / preload 走 Node 环境(externalize node-pty 等原生模块)
  * - renderer 走浏览器环境(React + xterm.js)
  * - CP-4 chunk 5: vite define 在编译时注入 git commit hash + 构建时间
- *   到 __EASYTERM_BUILD_INFO__ 全局,关于页读取
+ *   到 __MARINA_BUILD_COMMIT__ / __MARINA_BUILD_TIME__ 全局,关于页读取
  *
  * @对应文档章节: 软件定义书.md 第 9 章 (技术架构)、AGENTS.md 第 11 章 (工作流)
  *
@@ -44,8 +44,8 @@ function getBuildInfo(): { commit: string; builtAt: string } {
 
 const buildInfo = getBuildInfo();
 const buildInfoDefine = {
-  __EASYTERM_BUILD_COMMIT__: JSON.stringify(buildInfo.commit),
-  __EASYTERM_BUILD_TIME__: JSON.stringify(buildInfo.builtAt),
+  __MARINA_BUILD_COMMIT__: JSON.stringify(buildInfo.commit),
+  __MARINA_BUILD_TIME__: JSON.stringify(buildInfo.builtAt),
 };
 
 export default defineConfig({

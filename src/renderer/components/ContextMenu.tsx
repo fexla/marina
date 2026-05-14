@@ -125,7 +125,15 @@ export function ContextMenuProvider({ children }: { children: ReactNode }): JSX.
       if (e.key === 'Escape') close();
     };
     const onMouseDown = (): void => close();
-    const onWheel = (): void => close();
+    // OVR-2:滚轮关闭仅对菜单外触发。原实现"任意 wheel → close",触摸板
+    // 轻微 jitter 即关菜单,且长菜单(默认模板列表 8+ 项)内部无法滚动
+    // 查看 — 一滚就关。改成菜单内 wheel 透传给浏览器(配合 CSS overflow-y),
+    // 菜单外 wheel 仍按原行为关闭。
+    const onWheel = (e: WheelEvent): void => {
+      const target = e.target as Node | null;
+      if (target && menuRef.current?.contains(target)) return;
+      close();
+    };
     window.addEventListener('keydown', onKey);
     window.addEventListener('mousedown', onMouseDown);
     window.addEventListener('wheel', onWheel, { passive: true });

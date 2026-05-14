@@ -74,8 +74,13 @@ export function ToastProvider({ children }: { children: ReactNode }): JSX.Elemen
     setItems((prev) => [toast, ...prev].slice(0, 6)); // 最多堆 6 条
   }, []);
 
-  // 单一 ticker 检查每条是否到期,500ms 间隔(对 4s 时长足够精度)
+  // 单一 ticker 检查每条是否到期,500ms 间隔(对 4s 时长足够精度)。
+  // P2-19:空 items 时不启 timer — 早期实现空 deps,即便没 toast 也每 500ms
+  // 触发一次 setState(空 filter,React 浅比较跳过 re-render,但仍占 event loop)。
+  // 依赖 items.length:从 0→1 启 timer,1→0 停 timer。toast 在的期间 length 可能
+  // 变化(同时 push/dismiss),但 setInterval 重启不影响功能。
   useEffect(() => {
+    if (items.length === 0) return undefined;
     const timer = setInterval(() => {
       const now = Date.now();
       setItems((prev) =>
@@ -87,7 +92,7 @@ export function ToastProvider({ children }: { children: ReactNode }): JSX.Elemen
       );
     }, 500);
     return () => clearInterval(timer);
-  }, []);
+  }, [items.length]);
 
   const api = useMemo<ToastApi>(() => ({ push, dismiss }), [push, dismiss]);
 
