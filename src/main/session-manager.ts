@@ -448,6 +448,15 @@ export class SessionManager extends EventEmitter {
     );
 
     const env = buildSpawnEnv(process.env, SPAWN_ENV_SKIP);
+    // BETA-001:Windows 上 process.env.PATH 是启动时的快照,装新软件后不会自动
+    // 刷新。每次 spawn 前从注册表合并最新 PATH 覆写过去,确保新装的 python.exe /
+    // node.exe 立刻可用。失败回退 process.env.PATH(已在 env 里),不阻塞 spawn。
+    const refreshedPath = this.platformAdapter.getRefreshedPath();
+    if (refreshedPath) {
+      env.PATH = refreshedPath;
+      // Windows 部分组件读 Path(不是 PATH),冗余赋值一份保持兼容
+      env.Path = refreshedPath;
+    }
     Object.assign(env, launchParams.env);
     Object.assign(env, template.env);
 

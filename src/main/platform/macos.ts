@@ -44,4 +44,9 @@ export class MacOSAdapter implements PlatformAdapter {
   async isAutoStartEnabled(): Promise<boolean> {
     throw new Error(NOT_IMPLEMENTED);
   }
+  getRefreshedPath(): string {
+    // macOS 子进程从 launchd / login shell 继承 env;BETA-001 的 Windows-only
+    // 注册表广播痛点不存在,直接返回 process.env.PATH。
+    return process.env.PATH ?? '';
+  }
 }

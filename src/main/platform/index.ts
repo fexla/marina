@@ -63,6 +63,19 @@ export interface PlatformAdapter {
   /** 设置 / 查询开机启动 */
   setAutoStart(enabled: boolean): Promise<void>;
   isAutoStartEnabled(): Promise<boolean>;
+
+  /**
+   * 拉取一份最新的 PATH 环境变量(BETA-001)。
+   *
+   * Windows 上 Marina 启动时 Node 把 process.env.PATH 快照固定,之后用户安装
+   * 新软件改写注册表里的 PATH,已运行进程不会收到广播。每次 spawn 前从注册表
+   * 重新读 HKLM + HKCU 合并后的 PATH,确保新装的 python.exe / node.exe 立刻
+   * 可见。失败时回退 process.env.PATH 并写 log.warn。
+   *
+   * macOS / Linux 平台一般不需要(标准 fork/exec 已继承 shell 完整 env),
+   * 直接返回 process.env.PATH 即可。
+   */
+  getRefreshedPath(): string;
 }
 
 /**

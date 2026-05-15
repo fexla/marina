@@ -228,6 +228,10 @@ function makeFakeAdapter(opts: FakeAdapterOpts = {}): PlatformAdapter {
     async isAutoStartEnabled() {
       return false;
     },
+    getRefreshedPath() {
+      // 测试默认走 process.env.PATH,不触发 reg query。
+      return process.env.PATH ?? '';
+    },
   };
 }
 

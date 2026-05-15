@@ -45,4 +45,9 @@ export class LinuxAdapter implements PlatformAdapter {
   async isAutoStartEnabled(): Promise<boolean> {
     throw new Error(NOT_IMPLEMENTED);
   }
+  getRefreshedPath(): string {
+    // Linux 一般不需要从注册表读 — 子进程会继承调用者(login shell)完整 env。
+    // 直接返回 process.env.PATH 即可,BETA-001 的 Windows-only 痛点不存在。
+    return process.env.PATH ?? '';
+  }
 }

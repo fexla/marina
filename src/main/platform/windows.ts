@@ -18,13 +18,29 @@
  *
  * @对应文档章节: 软件定义书.md 5.1.8、12.2、ADR-003、ADR-008
  */
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { logger } from '../logger';
 import type { PlatformAdapter, ShellInfo } from './index';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * 解析 reg query 的输出,提取 Path 值。
+ *
+ * reg query 标准输出形如:
+ *   <空行>
+ *   HKEY_CURRENT_USER\Environment
+ *       Path    REG_EXPAND_SZ    C:\foo;C:\bar
+ *
+ * 字段类型可能是 REG_SZ / REG_EXPAND_SZ;\t 分隔。
+ */
+function parseRegPathOutput(stdout: string): string | null {
+  const match = stdout.match(/Path\s+REG_(?:EXPAND_)?SZ\s+(.+?)(?:\r?\n|$)/);
+  return match?.[1]?.trim() || null;
+}
 
 /**
  * Explorer 右键集成的注册表 key 列表(HKCU 用户级,无需 admin)。
@@ -403,6 +419,73 @@ export class WindowsAdapter implements PlatformAdapter {
   async isAutoStartEnabled(): Promise<boolean> {
     const { app } = await import('electron');
     return app.getLoginItemSettings().openAtLogin;
+  }
+
+  /**
+   * BETA-001:每次 spawn 前从注册表重读最新 PATH。
+   *
+   * Windows 安装新软件向 HKLM/HKCU\Environment\Path 写新值,会发 WM_SETTINGCHANGE
+   * 广播,但 Node 进程不响应该消息,process.env.PATH 仍是启动时的快照。直接 reg
+   * query 两个 hive 拿最新值,按 Windows 系统 PATH 解析顺序合并(HKLM 在前,
+   * HKCU 在后)。
+   *
+   * 失败回退 process.env.PATH(不阻塞 spawn),写 log.warn 留痕。
+   *
+   * 用 execFileSync 是因为本方法在每次 spawn 前同步调用,异步化的传染面太大。
+   * 实测一次 reg query 在 Windows 11 上 ~10-30ms,两次合并 < 60ms,在用户感
+   * 知阈值内(软件定义书 V1 性能底线第 2 条:< 1s)。
+   */
+  getRefreshedPath(): string {
+    const fallback = process.env.PATH ?? '';
+    try {
+      let hklm: string | null = null;
+      let hkcu: string | null = null;
+
+      try {
+        const out = execFileSync(
+          'reg.exe',
+          [
+            'query',
+            'HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\Environment',
+            '/v',
+            'Path',
+          ],
+          { encoding: 'utf8', windowsHide: true, timeout: 2000 },
+        );
+        hklm = parseRegPathOutput(out);
+      } catch (e) {
+        logger.warn('WindowsAdapter', 'reg query HKLM Path failed', e);
+      }
+
+      try {
+        const out = execFileSync(
+          'reg.exe',
+          ['query', 'HKCU\\Environment', '/v', 'Path'],
+          { encoding: 'utf8', windowsHide: true, timeout: 2000 },
+        );
+        hkcu = parseRegPathOutput(out);
+      } catch (e) {
+        // HKCU\Environment\Path 在干净系统上可能不存在,正常现象
+        logger.debug('WindowsAdapter', 'reg query HKCU Path miss', e);
+      }
+
+      const parts = [hklm, hkcu].filter((s): s is string => !!s);
+      if (parts.length === 0) {
+        logger.warn(
+          'WindowsAdapter',
+          'getRefreshedPath: both hives empty, fallback to process.env.PATH',
+        );
+        return fallback;
+      }
+      return parts.join(';');
+    } catch (e) {
+      logger.warn(
+        'WindowsAdapter',
+        'getRefreshedPath fatal, fallback to process.env.PATH',
+        e,
+      );
+      return fallback;
+    }
   }
 }
 
