@@ -235,7 +235,6 @@ button:disabled {
   height: 36px;
   flex: 0 0 auto;
   background-color: var(--surface, #f0f);
-  border-bottom: 1px solid var(--overlay, #f0f);
   font-size: 12px;
 
   /*
@@ -428,10 +427,15 @@ button:disabled {
   align-items: center;
   gap: 6px;
   padding: 4px 12px;
-  font-size: 11px;
+  font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.6px;
-  color: var(--subtle, #f0f);
+  color: var(--text, #f0f);
+}
+
+.sidebar-top-spacer {
+  height: 32px;
+  flex: 0 0 auto;
 }
 
 .sidebar-category-icon {
@@ -792,10 +796,11 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 10px;
+  padding: 6px 15px 6px 10px;
   background-color: transparent;
   border: none;
   border-right: 1px solid var(--overlay, #f0f);
+  border-radius: 4px 4px 0 0;
   color: var(--text, #f0f);
   font-size: 12px;
   min-width: 100px;
@@ -1042,6 +1047,14 @@ button:disabled {
 
 .status-dot.active {
   background-color: var(--pine, #f0f);
+}
+
+.status-dot.idle {
+  background-color: var(--gold, #f0f);
+}
+
+.status-dot.exited {
+  background-color: var(--muted, #f0f);
 }
 
 .status-text {

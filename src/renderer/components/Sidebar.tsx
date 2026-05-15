@@ -153,6 +153,7 @@ export function Sidebar(): JSX.Element {
 
   return (
     <aside className="sidebar">
+      <div className="sidebar-top-spacer" />
       <div
         className={`sidebar-bookmarks-dropzone${dragOver ? ' drag-over' : ''}`}
         onDragOver={handleDragOver}
