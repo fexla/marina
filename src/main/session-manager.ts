@@ -850,6 +850,29 @@ export class SessionManager extends EventEmitter {
     };
   }
 
+  /**
+   * BETA-028:返回 scrollback 的 UTF-8 字符串(供"复制全部"工具栏按钮)。
+   * 大 scrollback 用 Buffer→string 一次性转换,在 2MB 上限下可接受。
+   */
+  exportScrollback(sessionId: string): { text: string } {
+    const managed = this.sessions.get(sessionId);
+    if (!managed) return { text: '' };
+    return { text: managed.scrollback.toString('utf8') };
+  }
+
+  /**
+   * BETA-028:清空 main 端 scrollback ring buffer。配合 renderer 的
+   * term.clear() 使用 —— 否则下次 TerminalView 重挂载时会把已"看似清空"
+   * 的历史又回灌一遍。
+   *
+   * scrollbackLastSeq 不重置,保持序列号单调,避免 pending replay 出错。
+   */
+  clearScrollback(sessionId: string): void {
+    const managed = this.sessions.get(sessionId);
+    if (!managed) return;
+    managed.scrollback = Buffer.alloc(0);
+  }
+
   // ──────────────────────────────────────────────────────────────────
   // 内部:PTY 数据处理
   // ──────────────────────────────────────────────────────────────────

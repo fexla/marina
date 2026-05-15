@@ -895,6 +895,61 @@ button:disabled {
   min-width: 0;
 }
 
+/* BETA-028:终端工具栏 — Tab bar 右端嵌入 / 简易模式右上角悬浮 */
+.terminal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.terminal-toolbar-inline {
+  padding: 0 6px;
+  border-left: 1px solid var(--overlay, #f0f);
+  margin-left: auto;
+}
+
+.terminal-toolbar-floating {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 50;
+  padding: 4px;
+  background-color: var(--surface, #f0f);
+  border: 1px solid var(--overlay, #f0f);
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 18%);
+}
+
+.terminal-toolbar-btn {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: var(--subtle, #f0f);
+  cursor: pointer;
+  transition: background-color 80ms ease, color 80ms ease;
+}
+
+.terminal-toolbar-btn:hover:not(:disabled) {
+  background-color: var(--highlight-low, #f0f);
+  color: var(--text, #f0f);
+}
+
+.terminal-toolbar-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 简易模式 app-body 需要相对定位以承载浮动工具栏 */
+.app-body.simple-mode {
+  position: relative;
+}
+
 .tab {
   display: flex;
   align-items: center;

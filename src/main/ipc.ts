@@ -328,6 +328,28 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   );
 
   ipcMain.handle(
+    COMMAND_CHANNELS.SESSION_EXPORT_SCROLLBACK,
+    (
+      _e,
+      envelope: CommandEnvelope<{ sessionId: string }>,
+    ): { text: string } => {
+      // BETA-028:工具栏"复制全部"按钮 → 返回 UTF-8 字符串
+      return sessionManager.exportScrollback(envelope.payload.sessionId);
+    },
+  );
+
+  ipcMain.handle(
+    COMMAND_CHANNELS.SESSION_CLEAR_SCROLLBACK,
+    (
+      _e,
+      envelope: CommandEnvelope<{ sessionId: string }>,
+    ): void => {
+      // BETA-028:工具栏"清屏"按钮配合 term.clear() 使用
+      sessionManager.clearScrollback(envelope.payload.sessionId);
+    },
+  );
+
+  ipcMain.handle(
     COMMAND_CHANNELS.SESSION_RELEASE,
     (_e, envelope: CommandEnvelope<ReleaseSessionPayload>): void => {
       sessionManager.releaseOwner(envelope.payload.sessionId, envelope.windowId);

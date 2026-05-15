@@ -600,6 +600,27 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     });
   }, []);
 
+  // BETA-028:终端工具栏通过 window CustomEvent 触达本组件 — 清屏 / 唤搜索栏。
+  // detail.sessionId 必须匹配本实例的 session,否则忽略(多窗口时只有持有者响应)。
+  useEffect(() => {
+    const onClear = (e: Event): void => {
+      const sid = (e as CustomEvent<{ sessionId: string }>).detail?.sessionId;
+      if (sid && sid !== session.id) return;
+      handleClear();
+    };
+    const onOpenSearch = (e: Event): void => {
+      const sid = (e as CustomEvent<{ sessionId: string }>).detail?.sessionId;
+      if (sid && sid !== session.id) return;
+      handleOpenSearch();
+    };
+    window.addEventListener('marina:terminal-clear', onClear);
+    window.addEventListener('marina:terminal-open-search', onOpenSearch);
+    return () => {
+      window.removeEventListener('marina:terminal-clear', onClear);
+      window.removeEventListener('marina:terminal-open-search', onOpenSearch);
+    };
+  }, [session.id, handleClear, handleOpenSearch]);
+
   const handleCloseSearch = useCallback(() => {
     // 先清掉 SearchAddon 的高亮,否则关搜索栏后高亮还残留
     try {

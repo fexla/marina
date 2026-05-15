@@ -66,6 +66,11 @@ export interface CreateWindowOptions {
     y: number;
     maximized: boolean;
   }) => void;
+  /**
+   * BETA-027:Explorer 简易模式入口 — 注入 query mode=simple,renderer 在
+   * startup 时 dispatch view/set-simple-mode,首次渲染就跳过 Sidebar/Tab bar。
+   */
+  simpleMode?: boolean;
 }
 
 export interface IWindowManager {
@@ -242,7 +247,9 @@ export class WindowManager implements IWindowManager {
     });
 
     // dev 模式从 Vite dev server 拉,build 后从本地文件加载
-    const queryString = `?windowId=${encodeURIComponent(windowId)}&windowNumber=${windowNumber}`;
+    // BETA-027:simpleMode=true 时附加 ?mode=simple,renderer 启动时一次性 dispatch
+    const simpleFlag = options.simpleMode ? '&mode=simple' : '';
+    const queryString = `?windowId=${encodeURIComponent(windowId)}&windowNumber=${windowNumber}${simpleFlag}`;
     if (isDev && process.env.ELECTRON_RENDERER_URL) {
       void win.loadURL(process.env.ELECTRON_RENDERER_URL + queryString);
     } else {
@@ -422,10 +429,13 @@ export class WindowManager implements IWindowManager {
   /**
    * 工厂入口:使用 createOptionsProvider 提供的 options 创建窗口。
    * IPC / 托盘等"非首窗"创建路径应调这个,而不是直接 createWindow()。
+   *
+   * @param extraOpts BETA-027 起接受 { simpleMode } 等附加 opt,与 provider
+   *   返回值合并(extraOpts 优先)。
    */
-  createWindowFromFactory(): WindowInfo {
+  createWindowFromFactory(extraOpts: Partial<CreateWindowOptions> = {}): WindowInfo {
     const opts = this.createOptionsProvider ? this.createOptionsProvider() : {};
-    return this.createWindow(opts);
+    return this.createWindow({ ...opts, ...extraOpts });
   }
 
   /**

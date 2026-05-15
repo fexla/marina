@@ -11,7 +11,7 @@
  */
 import { useEffect, useState } from 'react';
 import { PROTOCOL_VERSION } from '@shared/protocol';
-import { AppStateProvider, useAppState, useIpcSync } from './store';
+import { AppStateProvider, useAppDispatch, useAppState, useIpcSync } from './store';
 import { Sidebar } from './components/Sidebar';
 import { MainPane } from './components/MainPane';
 import { SettingsView } from './components/SettingsView';
@@ -19,6 +19,7 @@ import { WindowChrome } from './components/WindowChrome';
 import { ContextMenuProvider } from './components/ContextMenu';
 import { ToastProvider } from './components/Toast';
 import { ModalProvider } from './components/Modal';
+import { TerminalToolbar } from './components/TerminalToolbar';
 
 type HandshakeState =
   | { status: 'pending' }
@@ -117,12 +118,24 @@ export function App(): JSX.Element {
 function ConnectedShell({ buildVersion }: { buildVersion: string }): JSX.Element {
   const sync = useIpcSync();
   const state = useAppState();
+  const dispatch = useAppDispatch();
 
   const currentTheme = state.settings.appearance?.theme ?? 'rose-pine';
   const windowStyle = state.settings.appearance?.windowStyle ?? 'windows';
   const uiZoom = state.settings.appearance?.uiZoom ?? 1;
   const uiFontFamily = state.settings.appearance?.uiFontFamily ?? '';
   const terminalFontFamily = state.settings.appearance?.terminalFontFamily ?? '';
+
+  // BETA-027:Explorer 简易模式入口走 query string ?mode=simple,渲染端在
+  // startup 阶段把它转成 dispatch view/set-simple-mode。冷启动一次性,不监听变化。
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('mode') === 'simple') {
+      dispatch({ type: 'view/set-simple-mode', value: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 即时同步 uiZoom 到 webFrame.setZoomFactor (preload 桥)。
   // 必须在 early return 之前 — React Hooks 规则:每次渲染调用顺序须一致。
@@ -172,10 +185,18 @@ function ConnectedShell({ buildVersion }: { buildVersion: string }): JSX.Element
             className="app-root with-shell"
             data-theme={currentTheme}
             data-window-style={windowStyle}
+            data-simple-mode={state.simpleMode ? 'true' : 'false'}
           >
             <WindowChrome windowStyle={windowStyle} buildVersion={buildVersion} />
             {state.inSettingsView ? (
               <SettingsView />
+            ) : state.simpleMode ? (
+              // BETA-027:简易页面 — 隐藏 Sidebar / Tab bar,只保留 WindowChrome
+              // + 终端区。工具栏浮在右上角(floating)以便用户出口。
+              <div className="app-body simple-mode">
+                <TerminalToolbar variant="floating" />
+                <MainPane />
+              </div>
             ) : (
               <div className="app-body">
                 <Sidebar />

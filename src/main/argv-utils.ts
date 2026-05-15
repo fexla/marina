@@ -38,3 +38,18 @@ export function parseOpenHere(argv: readonly string[]): string | null {
   }
   return null;
 }
+
+/**
+ * 解析 BETA-027 简易模式标记。约定:Explorer 右键集成 / shortcut 在
+ * argv 任意位置出现 `--mode=simple` 或 `--simple` 即视为简易模式。
+ *
+ * 与 parseOpenHere 解耦:即使没有 --open-here(冷启动直接 simpleMode),
+ * 也能通过这个标记影响首窗渲染。
+ */
+export function parseSimpleMode(argv: readonly string[]): boolean {
+  for (const tok of argv) {
+    if (!tok) continue;
+    if (tok === '--simple' || tok === '--mode=simple') return true;
+  }
+  return false;
+}

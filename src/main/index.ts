@@ -30,7 +30,7 @@ import { JsonStore } from './persistence';
 import { installIpcLayer } from './ipc';
 import { getPlatformAdapter, type SystemPathEntry } from './platform';
 import { WindowsAdapter } from './platform/windows';
-import { parseOpenHere } from './argv-utils';
+import { parseOpenHere, parseSimpleMode } from './argv-utils';
 import { getBuildType } from './build-type';
 import { logger } from './logger';
 import type {
@@ -219,8 +219,10 @@ function bootstrap(): void {
     });
     try {
       const requested = parseOpenHere(argv);
+      const simpleMode = parseSimpleMode(argv);
       logger.info('main', 'second-instance parseOpenHere result', {
         requested,
+        simpleMode,
         idxOfFlag: argv.indexOf('--open-here'),
       });
       if (requested) {
@@ -230,6 +232,7 @@ function bootstrap(): void {
           { windowManager, sessionManager, templatesManager },
           path,
           mode,
+          simpleMode,
         ).catch((err) => logger.error('main', 'openPathInTerminal failed', err));
         return;
       }
@@ -430,9 +433,11 @@ function bootstrap(): void {
       // 启动行为:--open-here 优先级最高 (Explorer 右键触发的冷启动 — 用户意图明确)。
       // 其次看 settings.behavior.startupBehavior:tray-only 不开窗,其他开窗。
       const startupOpenHere = parseOpenHere(process.argv);
+      const startupSimpleMode = parseSimpleMode(process.argv);
       // TIT-2 诊断:与 second-instance 路径对比 — 冷启动 argv 形态是什么样
       logger.info('main', 'cold-start parseOpenHere result', {
         startupOpenHere,
+        startupSimpleMode,
         argv: process.argv,
       });
       const wantWindow =
@@ -440,7 +445,9 @@ function bootstrap(): void {
         settingsManager.get().behavior.startupBehavior !== 'tray-only' ||
         smokeInteractive;
       if (wantWindow) {
-        const win = windowManager.createWindowFromFactory();
+        const win = windowManager.createWindowFromFactory({
+          simpleMode: startupSimpleMode,
+        });
         if (startupOpenHere !== null) {
           // 冷启动:在刚创建的窗口里起 session(忽略 explorerOpenIn=recent-window-tab,
           // 此时没有"最近"可用)。等 did-finish-load 后再 createSession,
@@ -541,10 +548,15 @@ async function openPathInTerminal(
   deps: OpenPathDeps,
   pathArg: string,
   mode: 'new-window' | 'recent-window-tab',
+  /**
+   * BETA-027:Explorer 简易模式入口。simple 时强制走 new-window 分支并注入
+   * ?mode=simple query;复用 recent-window-tab 的"已开普通窗口"无意义。
+   */
+  simpleMode = false,
 ): Promise<void> {
   const { windowManager, sessionManager, templatesManager } = deps;
 
-  if (mode === 'recent-window-tab') {
+  if (mode === 'recent-window-tab' && !simpleMode) {
     const recent = windowManager.getMostRecentlyActive();
     if (recent) {
       if (recent.isMinimized()) recent.restore();
@@ -564,9 +576,9 @@ async function openPathInTerminal(
     // 无最近活动窗口 → 降级新开
   }
 
-  // mode='new-window' 或 recent 降级:新开窗口,等 did-finish-load 再 createSession,
-  // 这样 evt:session:created 不会落在 renderer 还没订阅的空档。
-  const info = windowManager.createWindowFromFactory();
+  // mode='new-window' / recent 降级 / 简易模式:新开窗口,等 did-finish-load 再
+  // createSession,这样 evt:session:created 不会落在 renderer 还没订阅的空档。
+  const info = windowManager.createWindowFromFactory({ simpleMode });
   const target = windowManager.getById(info.id);
   if (!target) return;
   target.webContents.once('did-finish-load', () => {

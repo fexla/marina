@@ -59,6 +59,10 @@ export const COMMAND_CHANNELS = {
   SESSION_SEND_INPUT: 'cmd:session:send-input',
   SESSION_RESIZE: 'cmd:session:resize',
   SESSION_GET_SCROLLBACK: 'cmd:session:get-scrollback',
+  /** BETA-028:导出 scrollback 为 UTF-8 字符串,供终端工具栏"复制全部"按钮 */
+  SESSION_EXPORT_SCROLLBACK: 'cmd:session:export-scrollback',
+  /** BETA-028:清空 main 端的 scrollback ring buffer(配合 term.clear() 使用) */
+  SESSION_CLEAR_SCROLLBACK: 'cmd:session:clear-scrollback',
   /** M1-C:重命名 session(只改 displayName,内部仍由 sessionId 标识) */
   SESSION_RENAME: 'cmd:session:rename',
   /**

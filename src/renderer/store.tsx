@@ -92,6 +92,13 @@ export interface AppState {
    * 没跑够,用它当 fallback。
    */
   lastTerminalDims: { cols: number; rows: number };
+
+  /**
+   * BETA-027:简易页面模式 — 隐藏 Sidebar / Tab bar,只保留 WindowChrome
+   * + 终端区。从 Explorer 右键"在 Marina 简易终端中打开"启动时默认 true;
+   * 也可通过工具栏按钮(BETA-028)在普通页面里切换。本窗口私有,不跨窗口同步。
+   */
+  simpleMode: boolean;
 }
 
 const EMPTY_TREE: PathTree = {
@@ -120,6 +127,8 @@ export type AppAction =
   | { type: 'view/select-path'; pathId: string | null }
   | { type: 'view/select-session'; sessionId: string | null }
   | { type: 'view/toggle-path-expand'; pathId: string }
+  | { type: 'view/toggle-simple-mode' }
+  | { type: 'view/set-simple-mode'; value: boolean }
   | { type: 'view/expand-path'; pathId: string }
   | { type: 'view/enter-settings' }
   | { type: 'view/exit-settings' }
@@ -292,6 +301,12 @@ function reducer(state: AppState, action: AppAction): AppState {
       return { ...state, expandedPathIds: expanded };
     }
 
+    case 'view/toggle-simple-mode':
+      return { ...state, simpleMode: !state.simpleMode };
+
+    case 'view/set-simple-mode':
+      return { ...state, simpleMode: action.value };
+
     case 'view/expand-path': {
       if (state.expandedPathIds.has(action.pathId)) return state;
       const expanded = new Set(state.expandedPathIds);
@@ -380,6 +395,8 @@ export function makeDefaultState(myWindowId: string, myWindowNumber: number): Ap
     expandedPathIds: new Set(),
     inSettingsView: false,
     lastTerminalDims: { cols: 120, rows: 30 },
+    // BETA-027:默认普通页面;Explorer 简易模式打开时在 startup 显式 dispatch set
+    simpleMode: false,
   };
 }
 

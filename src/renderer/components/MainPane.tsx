@@ -41,6 +41,7 @@ import {
   useAppState,
 } from '../store';
 import { TerminalView } from './TerminalView';
+import { TerminalToolbar } from './TerminalToolbar';
 import { focusTerminalDom } from '../focus';
 import { Icon, type IconName } from './icons';
 import { TemplateIcon } from './TemplateIcon';
@@ -158,11 +159,14 @@ export function MainPane(): JSX.Element {
 
   return (
     <main className="main-pane" ref={containerRef}>
-      <TabBar
-        sessions={sessions}
-        selectedSessionId={state.selectedSessionId}
-        showBlankTab={!displayable}
-      />
+      {/* BETA-027:简易模式下 Tab bar 隐藏(浮动工具栏由 App.tsx 直接渲染) */}
+      {!state.simpleMode && (
+        <TabBar
+          sessions={sessions}
+          selectedSessionId={state.selectedSessionId}
+          showBlankTab={!displayable}
+        />
+      )}
       {displayable ? (
         <TerminalView
           // 用 sessionId 作 key,确保切换时彻底重建 xterm 实例
@@ -373,6 +377,8 @@ function TabBar({ sessions, selectedSessionId, showBlankTab }: TabBarProps): JSX
           <span className="tab-name">新建</span>
         </button>
       </div>
+      {/* BETA-028:tab-bar 右端嵌入终端工具栏 */}
+      <TerminalToolbar variant="inline" />
     </div>
   );
 }
