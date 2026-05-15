@@ -512,17 +512,13 @@ button:disabled {
 }
 
 .path-expand-arrow {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 12px;
-  font-size: 9px;
+  height: 12px;
   color: var(--muted, #f0f);
-  transition: transform 100ms ease;
   cursor: pointer;
-  text-align: center;
-}
-
-.path-expand-arrow.expanded {
-  transform: rotate(90deg);
 }
 
 .path-expand-arrow.placeholder {

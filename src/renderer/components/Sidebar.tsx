@@ -23,6 +23,7 @@ import {
   type DragEvent,
   type MouseEvent,
 } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import {
   COMMAND_CHANNELS,
   type AddBookmarkResponse,
@@ -152,7 +153,14 @@ export function Sidebar(): JSX.Element {
   };
 
   return (
-    <aside className="sidebar">
+    <aside
+      className="sidebar"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          dispatch({ type: 'view/select-path', pathId: null });
+        }
+      }}
+    >
       <div className="sidebar-top-spacer" />
       <div
         className={`sidebar-bookmarks-dropzone${dragOver ? ' drag-over' : ''}`}
@@ -453,11 +461,11 @@ function PathItem({ node }: { node: PathNode }): JSX.Element {
       >
         {sessions.length > 0 ? (
           <span
-            className={`path-expand-arrow${expanded ? ' expanded' : ''}`}
+            className="path-expand-arrow"
             onClick={handleToggleExpand}
             aria-label={expanded ? '收起' : '展开'}
           >
-            ▶
+            {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           </span>
         ) : (
           <span className="path-expand-arrow placeholder" />
