@@ -64,6 +64,7 @@ import { Icon, type IconName } from './icons';
 import { useModal } from './Modal';
 import { TemplateIcon } from './TemplateIcon';
 import { useToast } from './Toast';
+import { useTranslation } from './LanguageProvider';
 
 type CategoryId =
   | 'appearance'
@@ -75,22 +76,17 @@ type CategoryId =
   | 'advanced'
   | 'about';
 
-interface CategoryDef {
-  id: CategoryId;
-  iconName: IconName;
-  title: string;
-}
-
 // CP-4 勘误 #11:用 lucide 图标替换原有 Emoji。BETA-031 新增 'AI 助手'。
-const CATEGORIES: CategoryDef[] = [
-  { id: 'appearance', iconName: 'appearance', title: '外观' },
-  { id: 'shell', iconName: 'shell', title: 'Shell 与启动' },
-  { id: 'behavior', iconName: 'behavior', title: '行为' },
-  { id: 'data', iconName: 'data', title: '数据' },
-  { id: 'system-integration', iconName: 'systemIntegration', title: '系统集成' },
-  { id: 'ai', iconName: 'ai', title: 'AI 助手' },
-  { id: 'advanced', iconName: 'advanced', title: '高级' },
-  { id: 'about', iconName: 'about', title: '关于' },
+// BETA-004:title 改 i18n key,渲染时由 t() 转。
+const CATEGORIES: Array<{ id: CategoryId; iconName: IconName; titleKey: string }> = [
+  { id: 'appearance', iconName: 'appearance', titleKey: 'settings.category.appearance' },
+  { id: 'shell', iconName: 'shell', titleKey: 'settings.category.shell' },
+  { id: 'behavior', iconName: 'behavior', titleKey: 'settings.category.behavior' },
+  { id: 'data', iconName: 'data', titleKey: 'settings.category.data' },
+  { id: 'system-integration', iconName: 'systemIntegration', titleKey: 'settings.category.systemIntegration' },
+  { id: 'ai', iconName: 'ai', titleKey: 'settings.category.ai' },
+  { id: 'advanced', iconName: 'advanced', titleKey: 'settings.category.advanced' },
+  { id: 'about', iconName: 'about', titleKey: 'settings.category.about' },
 ];
 
 // 把 settings update 走 IPC 的副作用集中,所有控件都用这个
@@ -108,6 +104,7 @@ async function updateSettings(
 
 export function SettingsView(): JSX.Element {
   const dispatch = useAppDispatch();
+  const { t } = useTranslation();
   const [active, setActive] = useState<CategoryId>('appearance');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -122,12 +119,12 @@ export function SettingsView(): JSX.Element {
           type="button"
           className="settings-close"
           onClick={handleClose}
-          title="关闭设置"
-          aria-label="关闭设置"
+          title={t('settings.close')}
+          aria-label={t('settings.close')}
         >
           ×
         </button>
-        <h1 className="settings-title">设置</h1>
+        <h1 className="settings-title">{t('settings.title')}</h1>
         {errorMsg && (
           <span className="settings-error" role="alert">
             <Icon name="alertTriangle" size={12} /> {errorMsg}
@@ -146,7 +143,7 @@ export function SettingsView(): JSX.Element {
               <span className="settings-nav-icon" aria-hidden="true">
                 <Icon name={c.iconName} size={14} />
               </span>
-              <span className="settings-nav-label">{c.title}</span>
+              <span className="settings-nav-label">{t(c.titleKey)}</span>
             </button>
           ))}
         </nav>
@@ -219,6 +216,8 @@ function AppearancePanel({
   const terminalLineHeight = a?.terminalLineHeight ?? 1.2;
   const uiFontFamily = a?.uiFontFamily ?? '';
   const uiZoom = a?.uiZoom ?? 1;
+
+  const language = a?.language ?? 'system';
 
   // CP-4 勘误 #3:用 queryLocalFonts 真实枚举系统字体,推荐字体置顶。
   // 异步加载,装载前用 probeFonts(推荐) 快速兜底,UX 上看是"先出推荐再补全"。
@@ -380,6 +379,27 @@ function AppearancePanel({
             void updateSettings({ appearance: { uiZoom: v } }, setError)
           }
         />
+      </SettingRow>
+
+      {/* BETA-004:语言切换 */}
+      <SettingRow
+        label="语言 / Language"
+        hint="切换 UI 显示语言;'跟随系统'下 zh-* 系统显示中文,其他显示英文"
+      >
+        <select
+          className="settings-input"
+          value={language}
+          onChange={(e) =>
+            void updateSettings(
+              { appearance: { language: e.target.value as 'system' | 'zh-CN' | 'en-US' } },
+              setError,
+            )
+          }
+        >
+          <option value="system">跟随系统 / System</option>
+          <option value="zh-CN">中文</option>
+          <option value="en-US">English</option>
+        </select>
       </SettingRow>
 
       {/* BETA-011:系统路径分组(Sidebar 第 4 栏) */}

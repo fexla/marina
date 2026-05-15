@@ -20,6 +20,7 @@ import { ClipboardCopy, Eraser, Maximize2, Minimize2, Search } from 'lucide-reac
 import { COMMAND_CHANNELS } from '@shared/protocol';
 import { useAppDispatch, useAppState, getDisplayableSession } from '../store';
 import { useToast } from './Toast';
+import { useTranslation } from './LanguageProvider';
 import { writeClipboardText } from '../clipboard';
 
 interface TerminalToolbarProps {
@@ -34,6 +35,7 @@ export function TerminalToolbar({ variant }: TerminalToolbarProps): JSX.Element 
   const state = useAppState();
   const dispatch = useAppDispatch();
   const toast = useToast();
+  const { t } = useTranslation();
   const session = getDisplayableSession(state);
   const sessionId = session?.id;
   const simpleMode = state.simpleMode;
@@ -47,13 +49,13 @@ export function TerminalToolbar({ variant }: TerminalToolbarProps): JSX.Element 
       );
       const text = res.text ?? '';
       if (!text) {
-        toast.push({ kind: 'info', message: '当前 scrollback 为空' });
+        toast.push({ kind: 'info', message: t('terminal.toolbar.emptyScrollback') });
         return;
       }
       const ok = await writeClipboardText(text);
       if (!ok) throw new Error('写入剪贴板失败');
       const lineCount = text.split('\n').length;
-      toast.push({ kind: 'success', message: `已复制 ${lineCount} 行 scrollback` });
+      toast.push({ kind: 'success', message: t('terminal.toolbar.copied', { lines: lineCount }) });
     } catch (err) {
       toast.push({
         kind: 'error',
@@ -101,8 +103,8 @@ export function TerminalToolbar({ variant }: TerminalToolbarProps): JSX.Element 
         className="terminal-toolbar-btn"
         onClick={() => void handleCopyAll()}
         disabled={disabled}
-        title="复制全部 scrollback"
-        aria-label="复制全部 scrollback"
+        title={t('terminal.toolbar.copyAll')}
+        aria-label={t('terminal.toolbar.copyAll')}
       >
         <ClipboardCopy size={14} />
       </button>
@@ -111,8 +113,8 @@ export function TerminalToolbar({ variant }: TerminalToolbarProps): JSX.Element 
         className="terminal-toolbar-btn"
         onClick={() => void handleClear()}
         disabled={disabled}
-        title="清屏"
-        aria-label="清屏"
+        title={t('terminal.toolbar.clear')}
+        aria-label={t('terminal.toolbar.clear')}
       >
         <Eraser size={14} />
       </button>
@@ -121,8 +123,8 @@ export function TerminalToolbar({ variant }: TerminalToolbarProps): JSX.Element 
         className="terminal-toolbar-btn"
         onClick={handleSearch}
         disabled={disabled}
-        title="搜索(Ctrl+F)"
-        aria-label="搜索"
+        title={t('terminal.toolbar.search')}
+        aria-label={t('common.search')}
       >
         <Search size={14} />
       </button>
@@ -130,8 +132,8 @@ export function TerminalToolbar({ variant }: TerminalToolbarProps): JSX.Element 
         type="button"
         className="terminal-toolbar-btn"
         onClick={handleToggleSimple}
-        title={simpleMode ? '退出简易页面' : '切换到简易页面'}
-        aria-label={simpleMode ? '退出简易页面' : '切换到简易页面'}
+        title={simpleMode ? t('terminal.toolbar.fromSimple') : t('terminal.toolbar.toSimple')}
+        aria-label={simpleMode ? t('terminal.toolbar.fromSimple') : t('terminal.toolbar.toSimple')}
       >
         {simpleMode ? <Maximize2 size={14} /> : <Minimize2 size={14} />}
       </button>

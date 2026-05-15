@@ -169,6 +169,7 @@ function makeStubSettingsManager(
     appearance: {
       theme: 'rose-pine',
       windowStyle: 'windows',
+      language: 'system',
       terminalFontFamily: '',
       terminalFontSize: 13,
       terminalLineHeight: 1.2,

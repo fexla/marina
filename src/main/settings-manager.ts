@@ -36,6 +36,7 @@ export const DEFAULT_SETTINGS: Settings = {
   appearance: {
     theme: 'rose-pine',
     windowStyle: 'windows',
+    language: 'system',
     terminalFontFamily:
       "'Cascadia Mono', 'JetBrains Mono', 'Consolas', 'LXGW WenKai Mono', monospace",
     terminalFontSize: 13,

@@ -20,6 +20,7 @@ import { ContextMenuProvider } from './components/ContextMenu';
 import { ToastProvider } from './components/Toast';
 import { ModalProvider } from './components/Modal';
 import { TerminalToolbar } from './components/TerminalToolbar';
+import { LanguageProvider } from './components/LanguageProvider';
 
 type HandshakeState =
   | { status: 'pending' }
@@ -178,6 +179,7 @@ function ConnectedShell({ buildVersion }: { buildVersion: string }): JSX.Element
   }
 
   return (
+    <LanguageProvider>
     <ToastProvider>
       <ModalProvider>
         <ContextMenuProvider>
@@ -207,6 +209,7 @@ function ConnectedShell({ buildVersion }: { buildVersion: string }): JSX.Element
         </ContextMenuProvider>
       </ModalProvider>
     </ToastProvider>
+    </LanguageProvider>
   );
 }
 

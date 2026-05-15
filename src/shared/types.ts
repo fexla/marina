@@ -206,6 +206,11 @@ export interface Settings {
   appearance: {
     theme: ThemeId;
     windowStyle: WindowStyle;             // M1-A:窗口风格 (windows / macos)
+    /**
+     * BETA-004 UI 语言。'system' 表示跟随系统 locale(app.getLocale()):
+     * zh-* 默认中文,其他默认英文。固定 'zh-CN' / 'en-US' 强制使用对应语言。
+     */
+    language: 'system' | 'zh-CN' | 'en-US';
     terminalFontFamily: string;
     terminalFontSize: number;
     terminalLineHeight: number;

@@ -32,6 +32,7 @@ import {
 } from '@shared/protocol';
 import type { PathNode, SessionInfo } from '@shared/types';
 import { disambiguatePathNames } from '@shared/path-display';
+import { useTranslation } from './LanguageProvider';
 import {
   findMyOwnedSessionId,
   useAppDispatch,
@@ -67,6 +68,7 @@ export function Sidebar(): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
   const toast = useToast();
+  const { t } = useTranslation();
   const [dragOver, setDragOver] = useState(false);
 
   const handlePickFolder = async (): Promise<void> => {
@@ -170,26 +172,26 @@ export function Sidebar(): JSX.Element {
         onDrop={(e) => void handleDrop(e)}
       >
         <Category
-          title="收藏"
+          title={t('sidebar.category.bookmark')}
           iconName="bookmark"
           paths={state.pathTree.bookmarks}
           actionLabel="+"
-          actionTitle="选择文件夹添加到收藏"
+          actionTitle={t('sidebar.addBookmark.title')}
           onAction={() => void handlePickFolder()}
         />
         <Category
-          title="临时"
+          title={t('sidebar.category.temporary')}
           iconName="clock"
           paths={state.pathTree.temporary}
           actionLabel="+"
-          actionTitle="选择文件夹并新建一个临时终端"
+          actionTitle={t('sidebar.addTemporary.title')}
           onAction={() => void handlePickFolderForTemp()}
         />
-        <Category title="最近" iconName="history" paths={state.pathTree.recent} />
+        <Category title={t('sidebar.category.recent')} iconName="history" paths={state.pathTree.recent} />
         {/* BETA-011:系统路径分组。空数组(设置整体关闭 / 全部逐项关闭)时不渲染。 */}
         {state.pathTree.systemPaths.length > 0 && (
           <Category
-            title="系统"
+            title={t('sidebar.category.system')}
             iconName="monitor"
             paths={state.pathTree.systemPaths}
           />
