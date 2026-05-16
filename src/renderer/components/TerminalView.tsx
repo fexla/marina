@@ -101,7 +101,7 @@ function buildLightExtendedAnsi(): string[] {
   for (let r = 0; r < 6; r++) {
     for (let g = 0; g < 6; g++) {
       for (let b = 0; b < 6; b++) {
-        out.push(rgb(cube[r], cube[g], cube[b]));
+        out.push(rgb(cube[r]!, cube[g]!, cube[b]!));
       }
     }
   }

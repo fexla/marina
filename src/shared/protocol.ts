@@ -162,6 +162,16 @@ export const EVENT_CHANNELS = {
   BOOKMARKS_UPDATED: 'evt:bookmarks:updated',
   SETTINGS_CHANGED: 'evt:settings:changed',
   TEMPLATES_UPDATED: 'evt:templates:updated',
+
+  /**
+   * BETA-003b · ADR-013:Linux 上最后窗口关闭 + 仍有 alive session 时,
+   * 主进程拦截 close 事件后给本窗口 renderer 发此事件,弹 LastSessionConfirm
+   * modal。Payload:{ sessionCount: number }。
+   *
+   * Windows / macOS 也复用同一 modal,触发位置分别是托盘菜单"完全退出"和
+   * Cmd+Q / App Menu Quit。
+   */
+  UI_SHOW_LAST_SESSION_CONFIRM: 'evt:ui:show-last-session-confirm',
 } as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];

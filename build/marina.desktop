@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Name=Marina
+GenericName=Terminal Emulator
+GenericName[zh_CN]=终端模拟器
+Comment=A modern terminal emulator
+Comment[zh_CN]=现代化的终端模拟器
+Icon=marina
+Exec=marina --working-directory=%f
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=shell;prompt;command;commandline;cmd;
+MimeType=inode/directory;
+StartupWMClass=Marina
+StartupNotify=true
+Actions=NewWindow;
+
+[Desktop Action NewWindow]
+Name=New Window
+Name[zh_CN]=新建窗口
+Exec=marina

@@ -106,6 +106,24 @@ export class WindowManager implements IWindowManager {
   private onClosedHandlers: Array<(windowId: string) => void> = [];
 
   /**
+   * BETA-003b · ADR-013:close 事件拦截器。在窗口 close 事件触发时,询问拦截器
+   * "本次是否应该弹 modal 并阻止关闭"。返回 true 表示已拦截(已发 IPC 让 renderer
+   * 弹 modal),WindowManager 调 preventDefault();返回 false 表示放行。
+   *
+   * Linux 上 index.ts 注入的实现:仅在 lifecycleModel === 'no-persistence' +
+   * 这是最后一个窗口 + 还有 alive session 时返回 true。
+   *
+   * Windows / macOS 也复用同一机制(将来托盘"完全退出"按钮 / Cmd+Q 进入退出
+   * 流程时,也通过同一 modal 走二次确认),目前 Windows 仍走 isQuitting 直退。
+   */
+  private closeInterceptor: ((win: BrowserWindow) => boolean) | null = null;
+
+  /** 一次性注入 close 拦截器(BETA-003b)。 */
+  setCloseInterceptor(interceptor: ((win: BrowserWindow) => boolean) | null): void {
+    this.closeInterceptor = interceptor;
+  }
+
+  /**
    * 新开一个窗口。
    *
    * @throws Error('MaxWindowsReached') 已达 V1 上限 (20 个窗口)
@@ -204,7 +222,20 @@ export class WindowManager implements IWindowManager {
 
     // M1-G:窗口关闭前把当前 bounds 写回 settings (经 onBeforeClose 回调)。
     // 注意 'close' 在 'closed' 之前;'closed' 时 win 已销毁拿不到 bounds。
-    win.on('close', () => {
+    win.on('close', (event) => {
+      // BETA-003b · ADR-013:先问 closeInterceptor 是否要拦截。Linux 上"最后窗口
+      // + 仍有 alive session"时,interceptor 内部已发 UI_SHOW_LAST_SESSION_CONFIRM
+      // 给本窗口 renderer,返回 true 表示我们应 preventDefault。
+      if (this.closeInterceptor) {
+        try {
+          if (this.closeInterceptor(win)) {
+            event.preventDefault();
+            return;
+          }
+        } catch (err) {
+          logger.error('WindowManager', 'closeInterceptor threw', err);
+        }
+      }
       try {
         if (options.onBeforeClose && !win.isDestroyed()) {
           const b = win.getNormalBounds(); // 不含最大化时的扩展尺寸

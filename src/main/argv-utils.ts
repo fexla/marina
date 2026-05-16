@@ -28,6 +28,26 @@
  * @returns 找到则返回 path 字符串;无 / 后续全是 flag / 后跟空串时返回 null
  */
 export function parseOpenHere(argv: readonly string[]): string | null {
+  // BETA-003c:Linux 文件管理器 / gnome-terminal 兼容 alias —
+  // `--working-directory=<path>` 是 GTK 终端家族(gnome-terminal /
+  // xfce4-terminal / wezterm)的事实标准 flag。我们的 .desktop Exec 行用
+  // `marina --working-directory=%f`,Nautilus 会展开 %f 为目录路径。
+  for (const tok of argv) {
+    if (!tok) continue;
+    if (tok.startsWith('--working-directory=')) {
+      return tok.slice('--working-directory='.length);
+    }
+  }
+  const wdIdx = argv.indexOf('--working-directory');
+  if (wdIdx >= 0) {
+    for (let i = wdIdx + 1; i < argv.length; i++) {
+      const tok = argv[i];
+      if (!tok) continue;
+      if (tok.startsWith('--')) continue;
+      return tok;
+    }
+  }
+
   const idx = argv.indexOf('--open-here');
   if (idx < 0) return null;
   for (let i = idx + 1; i < argv.length; i++) {

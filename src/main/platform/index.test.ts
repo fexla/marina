@@ -47,11 +47,11 @@ describe('getPlatformAdapter', () => {
     );
   });
 
-  it('Linux throw 带 "Contributions welcome" 提示', () => {
+  it('Linux 返回 LinuxAdapter,lifecycleModel=no-persistence (BETA-003a)', () => {
     setPlatform('linux');
-    expect(() => getPlatformAdapter()).toThrow(
-      /Linux.*not implemented.*Contributions welcome/,
-    );
+    const adapter = getPlatformAdapter();
+    expect(adapter).toBeDefined();
+    expect(adapter.lifecycleModel).toBe('no-persistence');
   });
 
   it('未知平台 throw 带平台名', () => {
@@ -68,6 +68,7 @@ describe('getPlatformAdapter', () => {
 
   it('__setPlatformAdapterForTest 替换缓存的 adapter', () => {
     const fakeAdapter = {
+      lifecycleModel: 'no-persistence' as const,
       detectShells: async () => [],
       buildShellLaunchParams: () => ({ args: [], env: {} }),
       registerFileManagerIntegration: async () => {},
@@ -87,6 +88,7 @@ describe('getPlatformAdapter', () => {
 
   it('__setPlatformAdapterForTest(null) 后再次走分发逻辑', () => {
     const fakeAdapter = {
+      lifecycleModel: 'no-persistence' as const,
       detectShells: async () => [],
       buildShellLaunchParams: () => ({ args: [], env: {} }),
       registerFileManagerIntegration: async () => {},
@@ -102,6 +104,9 @@ describe('getPlatformAdapter', () => {
 
     __setPlatformAdapterForTest(null);
     setPlatform('linux');
-    expect(() => getPlatformAdapter()).toThrow(/Linux.*not implemented/);
+    // BETA-003a:Linux 现在有真实实现,不再 throw;构造出 LinuxAdapter 即可
+    const got = getPlatformAdapter();
+    expect(got).toBeDefined();
+    expect(got.lifecycleModel).toBe('no-persistence');
   });
 });

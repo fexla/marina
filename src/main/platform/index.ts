@@ -16,6 +16,7 @@
  *   不许在 windows.ts 之外的地方写 process.platform === 'win32' 判断。
  */
 import { WindowsAdapter } from './windows';
+import { LinuxAdapter } from './linux';
 
 /**
  * 一个被检测到的 shell 的元数据。
@@ -31,9 +32,26 @@ export interface ShellInfo {
 
 /**
  * 平台适配器接口 (软件定义书 12.2)。
- * macOS / Linux 实现保留接口,运行时 throw 'Not implemented'。
+ * Windows / Linux 现已实现;macOS 仍占位。
  */
 export interface PlatformAdapter {
+  /**
+   * 平台生命周期模型 (软件定义书 12.2 v1.6,ADR-013)。
+   *
+   * - 'tray-resident' (Windows):关掉所有窗口后,app 仍跑在系统托盘,
+   *   session 由托盘里的主进程持有。完全退出走托盘菜单"完全退出"按钮
+   *   (带二次确认 modal)。
+   * - 'dock-resident' (macOS):关掉所有窗口后,app 仍在 Dock
+   *   (Electron `window-all-closed` darwin 分支默认不退出 = macOS HIG)。
+   *   完全退出走 Cmd+Q / App Menu Quit (带二次确认 modal)。
+   * - 'no-persistence' (Linux):无托盘 / 无 Dock,关掉最后一个窗口 = 应用退出。
+   *   当最后一个窗口关闭且仍有 state !== 'exited' 的 session 时,弹同一 modal
+   *   二次确认;全 exited 则静默退出。
+   *
+   * 三平台共享同一个 <LastSessionConfirm /> 组件,仅触发位置不同。
+   */
+  readonly lifecycleModel: 'tray-resident' | 'dock-resident' | 'no-persistence';
+
   /** 检测系统中可用的 shell */
   detectShells(): Promise<ShellInfo[]>;
 
@@ -127,10 +145,8 @@ export function getPlatformAdapter(): PlatformAdapter {
           'See CONTRIBUTING.md and src/main/platform/macos.ts.',
       );
     case 'linux':
-      throw new Error(
-        '[platform] Linux support not implemented yet. Contributions welcome! ' +
-          'See CONTRIBUTING.md and src/main/platform/linux.ts.',
-      );
+      cachedAdapter = new LinuxAdapter();
+      return cachedAdapter;
     default:
       throw new Error(`[platform] Unsupported process.platform: "${platform}"`);
   }

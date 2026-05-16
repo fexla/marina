@@ -267,7 +267,18 @@ export function defaultHookFileResolver(shellId: string): string {
     case 'cmd':
       return resolvePath(hookDir, 'cmd.bat');
     case 'git-bash':
+    case 'bash':
+      // Linux native bash 与 Git Bash 走同一份 bash hook (cygpath 探测做了
+      // POSIX / Windows 两套路径处理,POSIX 环境直接走 $PWD 分支)。
       return resolvePath(hookDir, 'bash.sh');
+    // BETA-003a:zsh / fish 占位 — 直接给到源文件,SessionManager 当前还没
+    // 给 zsh 拷成 .zshrc / 给 fish 拷成 fish/config.fish,所以 zsh hook 实际
+    // 不会被 zsh 加载(ZDOTDIR=<dir>/.zshrc 找不到 → 跳过),session 仍能跑但
+    // cwd 跟踪暂时丧失。后续 patch 补"临时副本铺设"流程。
+    case 'zsh':
+      return resolvePath(hookDir, 'zsh.sh');
+    case 'fish':
+      return resolvePath(hookDir, 'fish.fish');
     default:
       return resolvePath(hookDir, 'pwsh.ps1');
   }
@@ -464,10 +475,11 @@ export class SessionManager extends EventEmitter {
     super();
     void this._windowManager; // 抑制 noUnusedLocals
     this.spawnFn = options.spawnFn ?? defaultSpawnPty;
-    // 测试或非 Windows 不走 getPlatformAdapter (会 throw)
+    // 测试或 macOS 不走 getPlatformAdapter (macOS 仍 throw)。
+    // BETA-003a:Windows / Linux 都有真实 adapter,各自 detectShells / buildShellLaunchParams。
     this.platformAdapter =
       options.platformAdapter ??
-      (process.platform === 'win32' ? getPlatformAdapter() : createNoopAdapter());
+      (process.platform === 'darwin' ? createNoopAdapter() : getPlatformAdapter());
     this.hookFileResolver = options.hookFileResolver ?? defaultHookFileResolver;
     this.resizeQuietMs = options.resizeQuietMs ?? RESIZE_QUIET_MS;
     this.startupGraceMs = options.startupGraceMs ?? STARTUP_GRACE_MS;
@@ -1724,6 +1736,7 @@ function normalizeCwd(raw: string): string {
  */
 function createNoopAdapter(): PlatformAdapter {
   return {
+    lifecycleModel: 'no-persistence',
     async detectShells() {
       return [
         {

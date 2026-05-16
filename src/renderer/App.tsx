@@ -20,6 +20,7 @@ import { ContextMenuProvider } from './components/ContextMenu';
 import { ToastProvider } from './components/Toast';
 import { ModalProvider } from './components/Modal';
 import { LanguageProvider } from './components/LanguageProvider';
+import { LastSessionConfirmBridge } from './components/LastSessionConfirmBridge';
 
 type HandshakeState =
   | { status: 'pending' }
@@ -250,6 +251,7 @@ function ConnectedShell({
     <LanguageProvider>
     <ToastProvider>
       <ModalProvider>
+        <LastSessionConfirmBridge />
         <ContextMenuProvider>
           <div
             className="app-root with-shell"

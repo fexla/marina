@@ -1,6 +1,11 @@
 {
   "_meta": "Marina 中文文案。键名走 dot.path 命名,与 src/renderer/components 大致对齐。缺译时回退到 en-US,再回退到 key 字面值(开发期容易发现漏)。",
 
+  "lastSession.title": "确定关闭 Marina?",
+  "lastSession.message": "仍有 {count} 个会话在运行,关闭后将被终止。",
+  "lastSession.confirm": "关闭",
+  "lastSession.cancel": "取消",
+
   "sidebar.category.bookmark": "收藏",
   "sidebar.category.temporary": "临时",
   "sidebar.category.recent": "最近",

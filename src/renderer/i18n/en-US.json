@@ -1,6 +1,11 @@
 {
   "_meta": "Marina English strings. Keys follow dot.path naming, roughly aligned with src/renderer/components. Missing translations fall back to the key literal so dev-mode reveals gaps.",
 
+  "lastSession.title": "Close Marina?",
+  "lastSession.message": "{count} active session(s) will be terminated.",
+  "lastSession.confirm": "Close",
+  "lastSession.cancel": "Cancel",
+
   "sidebar.category.bookmark": "Bookmarks",
   "sidebar.category.temporary": "Temporary",
   "sidebar.category.recent": "Recent",

@@ -25,6 +25,9 @@ const NOT_IMPLEMENTED =
   'Contributions welcome — see CONTRIBUTING.md.';
 
 export class MacOSAdapter implements PlatformAdapter {
+  /** 软件定义书 12.2 (v1.6) — macOS 留在 Dock,Electron darwin 默认即此行为 */
+  readonly lifecycleModel = 'dock-resident' as const;
+
   async detectShells(): Promise<ShellInfo[]> {
     throw new Error(NOT_IMPLEMENTED);
   }

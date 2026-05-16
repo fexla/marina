@@ -217,6 +217,7 @@ function makeFakeAdapter(opts: FakeAdapterOpts = {}): PlatformAdapter {
     executablePath: 'C:\\fake\\pwsh.exe',
   };
   return {
+    lifecycleModel: 'tray-resident' as const,
     async detectShells() {
       return [shell];
     },
