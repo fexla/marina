@@ -17,6 +17,7 @@
  */
 import {
   memo,
+  useEffect,
   useState,
   useMemo,
   useRef,
@@ -121,21 +122,54 @@ export function Sidebar(): JSX.Element {
     }
   };
 
+  /**
+   * F8(beta 勘误2 续):dropzone 虚线框驻留 bug 修复 — 改用 dragover 心跳
+   * 模式,不再依赖 dragleave。
+   *
+   * 旧实现:onDragOver setDragOver(true),onDragLeave 在 currentTarget===target
+   * 时 setDragOver(false)。问题场景:
+   *   - 用户拖出窗口外:Chromium 不一定在 dropzone 上 fire dragleave,且
+   *     `currentTarget===target` 守卫只在直接离开容器时才成立(经过子元素
+   *     则不成立),状态卡死。
+   *   - ESC 取消拖拽:同样不 fire dragleave。
+   *   - 子元素吃掉 drop 事件:外层 drop handler 不到达,状态卡死。
+   *
+   * 新实现:dragover 在 drag 期间每 ~50ms 持续 fire。每次 fire 重置一个
+   * 120ms 的"心跳超时",超时未刷新就认为 drag 已离开 / 取消,清状态。
+   * drop 时立刻清 + 取消 pending 超时,保险。
+   */
+  const dragHeartbeatRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearDragOverSoon = (): void => {
+    if (dragHeartbeatRef.current) clearTimeout(dragHeartbeatRef.current);
+    dragHeartbeatRef.current = setTimeout(() => {
+      setDragOver(false);
+      dragHeartbeatRef.current = null;
+    }, 120);
+  };
+
+  // 组件卸载时把 pending 超时清干净,避免 setState on unmounted。
+  useEffect(() => {
+    return () => {
+      if (dragHeartbeatRef.current) clearTimeout(dragHeartbeatRef.current);
+    };
+  }, []);
+
   const handleDragOver = (e: DragEvent<HTMLDivElement>): void => {
     e.preventDefault();
     e.stopPropagation();
     setDragOver(true);
-  };
-
-  const handleDragLeave = (e: DragEvent<HTMLDivElement>): void => {
-    // 只在真正离开容器时清,避免子元素 dragenter 引起 flash
-    if (e.currentTarget === e.target) setDragOver(false);
+    clearDragOverSoon();
   };
 
   const handleDrop = async (e: DragEvent<HTMLDivElement>): Promise<void> => {
     e.preventDefault();
     e.stopPropagation();
     setDragOver(false);
+    if (dragHeartbeatRef.current) {
+      clearTimeout(dragHeartbeatRef.current);
+      dragHeartbeatRef.current = null;
+    }
     // Electron 把 OS 拖拽的文件信息放在 dataTransfer.files,带原生 path
     const files = Array.from(e.dataTransfer.files);
     for (const file of files) {
@@ -172,7 +206,6 @@ export function Sidebar(): JSX.Element {
       <div
         className={`sidebar-bookmarks-dropzone${dragOver ? ' drag-over' : ''}`}
         onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
         onDrop={(e) => void handleDrop(e)}
       >
         <Category
