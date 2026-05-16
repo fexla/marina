@@ -63,6 +63,8 @@ import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
+// [BETA-019 DEBUG] 注册当前 Terminal 实例供 HUD 采样,定位光标污染后整体删除
+import { registerTerminal, unregisterTerminal } from '../debug/beta019-cursor-hud';
 import { Check, X } from 'lucide-react';
 import {
   COMMAND_CHANNELS,
@@ -702,6 +704,8 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       windowsMode: true,
     });
     termRef.current = term;
+    // [BETA-019 DEBUG] 注册到全局 registry 供标题栏 HUD 采样
+    registerTerminal(session.id, term);
 
     const fitAddon = new FitAddon();
     const webLinksAddon = new WebLinksAddon();
@@ -1097,6 +1101,8 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       termRef.current = null;
       fitRef.current = null;
       searchRef.current = null;
+      // [BETA-019 DEBUG] 从全局 registry 移除
+      unregisterTerminal(session.id);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.id]);
