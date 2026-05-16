@@ -424,8 +424,14 @@ button:disabled {
   text-align: center;
 }
 
-.app-titlebar-macos .titlebar-app-name {
-  color: var(--text, #f0f);
+/*
+ * BETA-024 二次修复:macOS 风格沿用 Windows 的彩色染色方案 ——
+ *   - .titlebar-app-name(Marina)走全局 --iris
+ *   - .titlebar-window-badge(Window N)走全局 --gold
+ * 这里只染中间的 em dash 分隔符,用 --muted 让它退到次要视觉层。
+ */
+.titlebar-title-dash {
+  color: var(--muted, #f0f);
 }
 
 .titlebar-traffic {
@@ -497,6 +503,8 @@ button:disabled {
   background-color: var(--surface, #f0f);
   border-right: 1px solid var(--overlay, #f0f);
   overflow: hidden;
+  /* F10:为 .sidebar-drag-overlay 提供绝对定位锚点 */
+  position: relative;
 }
 
 .sidebar-bookmarks-dropzone {
@@ -509,25 +517,36 @@ button:disabled {
   transition: background-color 100ms ease;
 }
 
-/* F9(beta 勘误2 续):dropzone 拖拽视觉重做。
-   砍掉生硬的 2px 虚线框,改用柔和 inset 阴影 + iris 色背景洗涤;
-   .sidebar-drop-hint 居中浮卡同时出现,告诉用户具体动作。 */
-.sidebar-bookmarks-dropzone {
-  position: relative;
+/* F10(beta 勘误2 续 v3):dropzone 视觉重做 — 独立 overlay 节点。
+ *
+ * 之前用 .sidebar-bookmarks-dropzone.drag-over + inset box-shadow 出过两个
+ * 问题:左边框在 overflow + 滚动容器下渲染缺失;dropEffect 只在 dropzone
+ * 子节点设置,光标飘出会闪回禁止。现在 drag handlers 提到 .sidebar 整体,
+ * 视觉用绝对定位的 .sidebar-drag-overlay 单独画,普通 border 渲染稳定。 */
+
+.sidebar-drag-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* iris 色背景洗涤,opacity 由 .sidebar.drag-over 切换 */
+  background-color: color-mix(in srgb, var(--iris, #c4a7e7) 14%, transparent);
+  /* 普通 border,4 条边都稳定显示;inset offset 2px 避免和 .sidebar 右
+     border 视觉重叠 */
+  border: 2px solid var(--iris, #c4a7e7);
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 130ms ease-out;
+  z-index: 6;
 }
 
-.sidebar-bookmarks-dropzone.drag-over {
-  background-color: color-mix(in srgb, var(--iris, #c4a7e7) 12%, transparent);
-  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--iris, #c4a7e7) 55%, transparent);
+.sidebar.drag-over .sidebar-drag-overlay {
+  opacity: 1;
 }
 
 .sidebar-drop-hint {
-  position: absolute;
-  /* 锁定在 dropzone 可见区中部偏上(top: 45% 而不是 50%,留出底部"设置"
-     按钮视觉权重),不参与文档流,不挡 drop 命中。 */
-  top: 45%;
-  left: 50%;
-  transform: translate(-50%, -50%) scale(0.96);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -538,21 +557,16 @@ button:disabled {
   border: 1px solid color-mix(in srgb, var(--iris, #c4a7e7) 55%, var(--overlay, #f0f));
   border-radius: 8px;
   box-shadow:
-    0 8px 24px rgb(0 0 0 / 28%),
-    0 0 0 4px color-mix(in srgb, var(--iris, #c4a7e7) 12%, transparent);
+    0 8px 24px rgb(0 0 0 / 32%),
+    0 0 0 4px color-mix(in srgb, var(--iris, #c4a7e7) 16%, transparent);
   font-size: 13px;
   font-weight: 500;
-  opacity: 0;
-  pointer-events: none;
-  transition:
-    opacity 110ms ease-out,
-    transform 140ms ease-out;
-  z-index: 5;
+  transform: scale(0.96);
+  transition: transform 140ms ease-out;
 }
 
-.sidebar-bookmarks-dropzone.drag-over .sidebar-drop-hint {
-  opacity: 1;
-  transform: translate(-50%, -50%) scale(1);
+.sidebar.drag-over .sidebar-drop-hint {
+  transform: scale(1);
 }
 
 .sidebar-drop-hint-icon {

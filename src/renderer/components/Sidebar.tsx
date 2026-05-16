@@ -123,20 +123,28 @@ export function Sidebar(): JSX.Element {
   };
 
   /**
-   * F8(beta 勘误2 续):dropzone 虚线框驻留 bug 修复 — 改用 dragover 心跳
-   * 模式,不再依赖 dragleave。
+   * F10(beta 勘误2 续 v3):dropzone 拖拽全面重做。
    *
-   * 旧实现:onDragOver setDragOver(true),onDragLeave 在 currentTarget===target
-   * 时 setDragOver(false)。问题场景:
-   *   - 用户拖出窗口外:Chromium 不一定在 dropzone 上 fire dragleave,且
-   *     `currentTarget===target` 守卫只在直接离开容器时才成立(经过子元素
-   *     则不成立),状态卡死。
-   *   - ESC 取消拖拽:同样不 fire dragleave。
-   *   - 子元素吃掉 drop 事件:外层 drop handler 不到达,状态卡死。
+   * 历史问题:
+   * - F8 心跳超时解决了"虚线框驻留"
+   * - F9 加了文件类型过滤 + 浮卡 + inset 阴影,但用户反馈:
+   *     (a) 左边框看不到 — overflow:hidden + 滚动容器下 inset box-shadow
+   *         在左侧渲染不稳定
+   *     (b) 鼠标在禁止/可放置之间闪烁 — dropEffect 只在 .sidebar-bookmarks-dropzone
+   *         区设了 'copy';一旦光标飘出该子元素(footer 上方、滚动条 gutter、
+   *         category header 间缝隙、或快速移动让 dragover 没赶上),回落到
+   *         App.tsx 的 window-level dragover 兜底 preventDefault 但没设
+   *         dropEffect,Chromium 落回 'none' 显示禁止图标。
    *
-   * 新实现:dragover 在 drag 期间每 ~50ms 持续 fire。每次 fire 重置一个
-   * 120ms 的"心跳超时",超时未刷新就认为 drag 已离开 / 取消,清状态。
-   * drop 时立刻清 + 取消 pending 超时,保险。
+   * 新方案:
+   * 1. drag handlers 提到整个 .sidebar (aside) — hit area 一口气覆盖,不再
+   *    有"在 sidebar 内但又不在 dropzone"的真空区。
+   * 2. dropEffect = 'copy' 无条件设(只要 preventDefault 了),不再做内部
+   *    isFileDrag 过滤就停手 — 即便后续不接受,先把光标稳住。
+   * 3. 边框靠独立的 `.sidebar-drag-overlay` 绝对定位 div,position:fixed-like
+   *    inset:0 覆盖整个 sidebar,普通 border 而非 inset shadow,绕开 overflow
+   *    渲染坑。pointer-events:none 不挡 drop。
+   * 4. 心跳超时机制保留(F8)— 处理拖出窗口 / ESC 场景。
    */
   const dragHeartbeatRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -145,10 +153,9 @@ export function Sidebar(): JSX.Element {
     dragHeartbeatRef.current = setTimeout(() => {
       setDragOver(false);
       dragHeartbeatRef.current = null;
-    }, 120);
+    }, 150);
   };
 
-  // 组件卸载时把 pending 超时清干净,避免 setState on unmounted。
   useEffect(() => {
     return () => {
       if (dragHeartbeatRef.current) clearTimeout(dragHeartbeatRef.current);
@@ -156,33 +163,35 @@ export function Sidebar(): JSX.Element {
   }, []);
 
   /**
-   * F9(beta 勘误2 续):只在真正拖文件时激活高亮 — 排除文本拖拽 / 终端内
-   * 选区拖拽 / DOM 元素拖拽等所有非文件来源,避免视觉噪声。
-   *
-   * Chromium 的 DataTransfer.types 在 dragover 阶段返回类型数组(出于安全
-   * 不返回内容);拖 OS 文件夹时数组包含 "Files",其它来源不会。
+   * 检查当前拖拽内容是否含文件。
+   * 注:Chromium 的 DataTransfer.types 在 dragover 阶段对 OS 文件拖拽稳定
+   * 返回包含 "Files" 的数组。非文件来源(终端选区 / 网页文本拖拽)不含。
+   * 仅用于 setDragOver 视觉态判定,不再用来决定是否 preventDefault。
    */
-  const isFileDrag = (e: DragEvent<HTMLDivElement>): boolean => {
+  const isFileDrag = (e: DragEvent<HTMLElement>): boolean => {
     const types = e.dataTransfer?.types;
     if (!types) return false;
-    // DataTransferItemList in Chromium 是 DOMStringList,Array.from 取 string[]
     for (let i = 0; i < types.length; i++) {
       if (types[i] === 'Files') return true;
     }
     return false;
   };
 
-  const handleDragOver = (e: DragEvent<HTMLDivElement>): void => {
+  const handleDragOver = (e: DragEvent<HTMLElement>): void => {
+    // 关键:无条件 preventDefault + dropEffect — 让 Chromium 在整个 sidebar
+    // 区域稳定显示"复制"光标,杜绝光标闪烁。stopPropagation 阻止 App.tsx
+    // 的 window-level dragover 在同一事件上重复处理。
     e.preventDefault();
     e.stopPropagation();
-    if (!isFileDrag(e)) return;
-    // 显式 dropEffect 让 OS 光标显示"复制"小标(与"加入收藏"语义一致)
-    e.dataTransfer.dropEffect = 'copy';
-    setDragOver(true);
-    clearDragOverSoon();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    // 视觉态只在真文件拖拽时激活,避免文本/内部拖拽误显高亮 + 浮卡。
+    if (isFileDrag(e)) {
+      setDragOver(true);
+      clearDragOverSoon();
+    }
   };
 
-  const handleDrop = async (e: DragEvent<HTMLDivElement>): Promise<void> => {
+  const handleDrop = async (e: DragEvent<HTMLElement>): Promise<void> => {
     e.preventDefault();
     e.stopPropagation();
     setDragOver(false);
@@ -190,7 +199,6 @@ export function Sidebar(): JSX.Element {
       clearTimeout(dragHeartbeatRef.current);
       dragHeartbeatRef.current = null;
     }
-    // Electron 把 OS 拖拽的文件信息放在 dataTransfer.files,带原生 path
     const files = Array.from(e.dataTransfer.files);
     for (const file of files) {
       // file.path 是 Electron 提供的扩展属性 (浏览器标准 File API 没有),
@@ -211,30 +219,26 @@ export function Sidebar(): JSX.Element {
 
   return (
     <aside
-      className="sidebar"
+      className={`sidebar${dragOver ? ' drag-over' : ''}`}
       onClick={(e) => {
         if (e.target === e.currentTarget) {
           dispatch({ type: 'view/select-path', pathId: null });
         }
       }}
+      onDragOver={handleDragOver}
+      onDrop={(e) => void handleDrop(e)}
     >
-      {/* F7(beta 勘误2 续):BETA-016 一度在 sidebar 顶部塞 32px spacer 给"呼吸空间",
-          但右侧 .tab-bar 紧贴 .app-titlebar 底,导致左栏第一行 ("收藏" header)
-          整体比右栏 TabBar 低一整个 spacer 高度。用户要求两侧顶端直接对齐。
-          删 spacer + 把 .sidebar-category-header 高度对齐 .tab-bar (min-height: 32px),
-          这样第一个 category 的 row 自身充当"列头",顶端与 TabBar 顶端齐平。 */}
-      <div
-        className={`sidebar-bookmarks-dropzone${dragOver ? ' drag-over' : ''}`}
-        onDragOver={handleDragOver}
-        onDrop={(e) => void handleDrop(e)}
-      >
-        {/* F9(beta 勘误2 续):拖文件期间居中显示动作提示卡片。aria-hidden 因
-            它是视觉装饰,真实可操作的整个 dropzone 已经 accept drop。指针事件
-            穿透(pointer-events: none),不阻挡 drop。 */}
-        <div className="sidebar-drop-hint" aria-hidden="true">
+      {/* F10:独立 overlay 节点 — 覆盖整个 sidebar 区域。普通 border + 平滑过渡,
+          避开 inset box-shadow 在 overflow:hidden + 滚动容器下渲染不稳的坑。
+          pointer-events: none 不阻挡 drop。aria-hidden 视觉装饰不进无障碍树。
+          dragOver=false 时整体 opacity:0(transition fade-out),不影响布局。 */}
+      <div className="sidebar-drag-overlay" aria-hidden="true">
+        <div className="sidebar-drop-hint">
           <span className="sidebar-drop-hint-icon">📁</span>
           <span className="sidebar-drop-hint-label">{t('sidebar.dropHint')}</span>
         </div>
+      </div>
+      <div className="sidebar-bookmarks-dropzone">
         <Category
           title={t('sidebar.category.bookmark')}
           iconName="bookmark"

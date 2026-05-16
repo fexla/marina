@@ -39,14 +39,23 @@ export function App(): JSX.Element {
   // 的 onDrop 里读 dataTransfer.files;它们的 React 合成事件在 bubble 阶
   // 段早于此窗口监听触发,因此不冲突。
   useEffect(() => {
-    const block = (e: globalThis.DragEvent): void => {
+    const blockDragOver = (e: globalThis.DragEvent): void => {
+      // F10(beta 勘误2 续 v3):React 合成事件 stopPropagation 不阻止 native
+      // event 继续冒泡到 window,所以这里仍会触发。靠 defaultPrevented 判定
+      // 子组件(Sidebar)是否已"消费"事件 — 已消费就让其保留它设的 dropEffect
+      // ('copy'),否则我们 preventDefault 同时显式设 'none' 让禁止图标稳定。
+      if (e.defaultPrevented) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'none';
+    };
+    const blockDrop = (e: globalThis.DragEvent): void => {
       e.preventDefault();
     };
-    window.addEventListener('dragover', block);
-    window.addEventListener('drop', block);
+    window.addEventListener('dragover', blockDragOver);
+    window.addEventListener('drop', blockDrop);
     return () => {
-      window.removeEventListener('dragover', block);
-      window.removeEventListener('drop', block);
+      window.removeEventListener('dragover', blockDragOver);
+      window.removeEventListener('drop', blockDrop);
     };
   }, []);
 
