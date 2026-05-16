@@ -155,9 +155,29 @@ export function Sidebar(): JSX.Element {
     };
   }, []);
 
+  /**
+   * F9(beta 勘误2 续):只在真正拖文件时激活高亮 — 排除文本拖拽 / 终端内
+   * 选区拖拽 / DOM 元素拖拽等所有非文件来源,避免视觉噪声。
+   *
+   * Chromium 的 DataTransfer.types 在 dragover 阶段返回类型数组(出于安全
+   * 不返回内容);拖 OS 文件夹时数组包含 "Files",其它来源不会。
+   */
+  const isFileDrag = (e: DragEvent<HTMLDivElement>): boolean => {
+    const types = e.dataTransfer?.types;
+    if (!types) return false;
+    // DataTransferItemList in Chromium 是 DOMStringList,Array.from 取 string[]
+    for (let i = 0; i < types.length; i++) {
+      if (types[i] === 'Files') return true;
+    }
+    return false;
+  };
+
   const handleDragOver = (e: DragEvent<HTMLDivElement>): void => {
     e.preventDefault();
     e.stopPropagation();
+    if (!isFileDrag(e)) return;
+    // 显式 dropEffect 让 OS 光标显示"复制"小标(与"加入收藏"语义一致)
+    e.dataTransfer.dropEffect = 'copy';
     setDragOver(true);
     clearDragOverSoon();
   };
@@ -208,6 +228,13 @@ export function Sidebar(): JSX.Element {
         onDragOver={handleDragOver}
         onDrop={(e) => void handleDrop(e)}
       >
+        {/* F9(beta 勘误2 续):拖文件期间居中显示动作提示卡片。aria-hidden 因
+            它是视觉装饰,真实可操作的整个 dropzone 已经 accept drop。指针事件
+            穿透(pointer-events: none),不阻挡 drop。 */}
+        <div className="sidebar-drop-hint" aria-hidden="true">
+          <span className="sidebar-drop-hint-icon">📁</span>
+          <span className="sidebar-drop-hint-label">{t('sidebar.dropHint')}</span>
+        </div>
         <Category
           title={t('sidebar.category.bookmark')}
           iconName="bookmark"

@@ -9,6 +9,7 @@
   "sidebar.addBookmark.title": "Pick a folder to add to bookmarks",
   "sidebar.addTemporary.title": "Pick a folder and open a temporary terminal",
   "sidebar.path.invalid": "Path is not accessible",
+  "sidebar.dropHint": "Drop to add to bookmarks",
 
   "system.desktop": "Desktop",
   "system.home": "Home",

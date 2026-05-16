@@ -509,10 +509,59 @@ button:disabled {
   transition: background-color 100ms ease;
 }
 
+/* F9(beta 勘误2 续):dropzone 拖拽视觉重做。
+   砍掉生硬的 2px 虚线框,改用柔和 inset 阴影 + iris 色背景洗涤;
+   .sidebar-drop-hint 居中浮卡同时出现,告诉用户具体动作。 */
+.sidebar-bookmarks-dropzone {
+  position: relative;
+}
+
 .sidebar-bookmarks-dropzone.drag-over {
-  background-color: var(--highlight-low, #f0f);
-  outline: 2px dashed var(--iris, #f0f);
-  outline-offset: -8px;
+  background-color: color-mix(in srgb, var(--iris, #c4a7e7) 12%, transparent);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--iris, #c4a7e7) 55%, transparent);
+}
+
+.sidebar-drop-hint {
+  position: absolute;
+  /* 锁定在 dropzone 可见区中部偏上(top: 45% 而不是 50%,留出底部"设置"
+     按钮视觉权重),不参与文档流,不挡 drop 命中。 */
+  top: 45%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.96);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 22px;
+  background-color: var(--surface, #f0f);
+  color: var(--text, #f0f);
+  border: 1px solid color-mix(in srgb, var(--iris, #c4a7e7) 55%, var(--overlay, #f0f));
+  border-radius: 8px;
+  box-shadow:
+    0 8px 24px rgb(0 0 0 / 28%),
+    0 0 0 4px color-mix(in srgb, var(--iris, #c4a7e7) 12%, transparent);
+  font-size: 13px;
+  font-weight: 500;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 110ms ease-out,
+    transform 140ms ease-out;
+  z-index: 5;
+}
+
+.sidebar-bookmarks-dropzone.drag-over .sidebar-drop-hint {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.sidebar-drop-hint-icon {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.sidebar-drop-hint-label {
+  white-space: nowrap;
 }
 
 .sidebar-category {

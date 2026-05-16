@@ -9,6 +9,7 @@
   "sidebar.addBookmark.title": "选择文件夹添加到收藏",
   "sidebar.addTemporary.title": "选择文件夹并新建一个临时终端",
   "sidebar.path.invalid": "路径不可访问",
+  "sidebar.dropHint": "松开以加入收藏",
 
   "system.desktop": "桌面",
   "system.home": "主目录",
