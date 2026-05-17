@@ -939,20 +939,36 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     // PER-1:term.open 之后才能 load WebGL addon(需 canvas DOM 节点)。
     // try/catch 兜底:某些虚拟机 / 无 GPU 加速环境下 WebGL context 创建
     // 失败,catch 后 xterm 自动用 DOM renderer。
-    try {
-      webglAddon = new WebglAddon();
-      webglAddon.onContextLoss(() => {
-        try {
-          webglAddon?.dispose();
-        } catch {
-          /* ignore */
-        }
+    //
+    // PER-LINUX(BETA-003 性能修复):Linux 上无条件跳过 WebGL。
+    // 根因:Chromium 在 Linux 下 GPU 驱动栈(Mesa/VAAPI/EGL)经常不完整,
+    // WebGL context **会成功创建**(因为有 swiftshader 软渲兜底),但每帧 GL
+    // 调用都走 CPU 模拟,xterm 滚动秒级响应,完全不可用。catch 在这种情况下
+    // 不会触发(创建并未抛错),所以软探测无效 —— 直接按 platform 跳过最稳。
+    // xterm DOM renderer 在 Linux 上对大多数 GPU 配置都稳定,即使在虚拟机内
+    // 也能保持流畅滚动。
+    // 检测走 navigator.userAgent —— renderer 进程没有 process.platform。
+    const isLinux = typeof navigator !== 'undefined' &&
+      /linux/i.test(navigator.userAgent) &&
+      !/android/i.test(navigator.userAgent);
+    if (isLinux) {
+      console.info('[TerminalView] PER-LINUX: skipping WebGL addon (Linux软渲风险),using DOM renderer');
+    } else {
+      try {
+        webglAddon = new WebglAddon();
+        webglAddon.onContextLoss(() => {
+          try {
+            webglAddon?.dispose();
+          } catch {
+            /* ignore */
+          }
+          webglAddon = null;
+        });
+        term.loadAddon(webglAddon);
+      } catch (err) {
+        console.warn('[TerminalView] WebGL renderer unavailable, falling back to DOM', err);
         webglAddon = null;
-      });
-      term.loadAddon(webglAddon);
-    } catch (err) {
-      console.warn('[TerminalView] WebGL renderer unavailable, falling back to DOM', err);
-      webglAddon = null;
+      }
     }
 
     try {
