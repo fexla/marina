@@ -9,7 +9,7 @@
  *   读 useTranslation() 拿到这个值就会随之 re-render。
  */
 import { createContext, useContext, useEffect, useMemo, type ReactNode } from 'react';
-import { resolveLocale, setLocale, t, tx, type Locale } from '@shared/i18n';
+import { getLocale, resolveLocale, setLocale, t, tx, type Locale } from '@shared/i18n';
 import { useAppState } from '../store';
 
 interface LanguageContextValue {
@@ -26,12 +26,24 @@ export function LanguageProvider({ children }: { children: ReactNode }): JSX.Ele
     return resolveLocale(pref, typeof navigator !== 'undefined' ? navigator.language : undefined);
   }, [pref]);
 
-  // 同步 module-level state(t() 用)
-  useEffect(() => {
+  // PER-LANG 修复:在 render 阶段同步 module-level currentLocale。
+  //
+  // 原方案用 useEffect(() => setLocale(locale), [locale]) — 但 useEffect 在
+  // paint 之后才跑。导致 settings.language 变化时,LanguageProvider 重渲触发
+  // children(SettingsView 等)重渲,children 调 t()/tx() **仍读旧 currentLocale**
+  // (因为 effect 还没执行),要等用户下次手动触发 re-render(切 tab / 退出
+  // 设置页 / hover 等)才能看到新文案。表现为"切语言不实时生效"。
+  //
+  // render 阶段同步调 setLocale 让 module variable 在 children 重渲前就更新好。
+  // 这是 "render-time side effect" — React 严格模式下幂等 mutation 是安全的
+  // (跑两次 setLocale 同值是 no-op),也是 react-i18next 等 i18n 库的通用做法。
+  // 加 if 守卫避免每次 re-render 都触发等值赋值(纯优化,不影响正确性)。
+  if (getLocale() !== locale) {
     setLocale(locale);
-  }, [locale]);
+  }
 
-  // <html lang> 同步,方便 DevTools / 截图工具识别
+  // <html lang> 同步,方便 DevTools / 截图工具识别(DOM 操作仍在 effect 里,
+  // 因为 documentElement.lang 是真 DOM 副作用)
   useEffect(() => {
     if (typeof document !== 'undefined') {
       document.documentElement.lang = locale;
