@@ -631,6 +631,23 @@ button:disabled {
   background-color: var(--color-bg-primary, #f0f);
 }
 
+/*
+ * BETA-003b 圆角修复:Linux 上 BrowserWindow 走 transparent:true,
+ * 圆角由 .app-root border-radius + overflow:hidden 自己画。Windows 11 走系统
+ * DWM 自动给 frameless 窗口加圆角,我们这里也加一份 CSS 圆角作为视觉保险
+ * (DWM 圆角作用在 OS 窗口外框,CSS border-radius 作用在 renderer 内部,
+ * 两者一致时无视觉差;若以后切到非 DWM 平台,CSS 圆角仍然生效)。
+ */
+.app-root.with-shell {
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+/* 最大化时去掉圆角(M1-A,WINDOW_MAX_STATE_CHANGED 同步 <html data-maximized>) */
+html[data-maximized='true'] .app-root.with-shell {
+  border-radius: 0;
+}
+
 /* ── M1-A 自绘标题栏 ────────────────────────────────────────────── */
 
 .app-titlebar {

@@ -68,6 +68,12 @@ export function WindowChrome({ windowStyle, buildVersion, buildType }: Props): J
     };
   }, []);
 
+  // BETA-003b 圆角修复:同步 data-maximized 到 <html>,Linux 上 .app-root 的
+  // border-radius 在最大化时通过 CSS 选择器去掉(避免最大化后窗口角不贴屏边)。
+  useEffect(() => {
+    document.documentElement.setAttribute('data-maximized', maximized ? 'true' : 'false');
+  }, [maximized]);
+
   const callMin = (): void => {
     void window.api.invoke(COMMAND_CHANNELS.WINDOW_MINIMIZE, undefined);
     // FOC-3:最小化不需要立刻归还(窗口都缩了),但用户从托盘点回来后

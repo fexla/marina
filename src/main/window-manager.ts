@@ -159,7 +159,13 @@ export class WindowManager implements IWindowManager {
       minHeight: 400,
       show: false,
       title: `Marina — Window ${windowNumber}`,
-      backgroundColor: '#191724', // Rose Pine base — 软件定义书 5.1.9
+      // BETA-003b 圆角修复:Linux 上 X11/Wayland 没有 Windows 11 DWM 那样的系统级
+      // frameless 圆角,frame:false + 实色 backgroundColor 撑出方形画布,renderer 端
+      // CSS border-radius 看不见。Linux 走 transparent:true + 透明 backgroundColor,
+      // 让窗口可见区域由 .app-root 的 border-radius + overflow:hidden 决定。
+      // Windows / macOS 维持原行为(系统 DWM / NSWindow 给 frameless 圆角)。
+      backgroundColor: process.platform === 'linux' ? '#00000000' : '#191724',
+      transparent: process.platform === 'linux',
       // M1-A:自绘标题栏。frame:false 把整条 OS 标题栏拿掉,renderer 端用
       // -webkit-app-region:drag 实现拖动,用 cmd:window:* 实现按钮动作。
       frame: false,

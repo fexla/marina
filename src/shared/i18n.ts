@@ -75,3 +75,16 @@ export function t(key: string, params?: Record<string, string | number>): string
   }
   return template;
 }
+
+/**
+ * inline 中英二选一(BETA-003b i18n 快通道)。当不想或来不及把文案搬进
+ * zh-CN.json / en-US.json 时,直接 `tx('主题', 'Theme')` 调用即可,在当前
+ * locale 下返回对应字面值。
+ *
+ * 这是一个工程权衡:t(key) 的 key→JSON 路径更利于多语言扩展,但对"快速把
+ * 既有硬编码中文国际化"代价过高(每条要同时改组件 + 加两份 JSON);tx 让
+ * 中英文 i18n 接入零摩擦。后续可逐步把 tx 调用替换为 t(key) + JSON 翻译。
+ */
+export function tx(zh: string, en: string): string {
+  return currentLocale === 'zh-CN' ? zh : en;
+}

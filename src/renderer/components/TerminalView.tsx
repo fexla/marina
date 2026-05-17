@@ -449,7 +449,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
 
   const appState = useAppState();
   const dispatch = useAppDispatch();
-  const { t } = useTranslation();
+  const { t, tx } = useTranslation();
   const simpleMode = appState.simpleMode;
   const themeId = appState.settings.appearance?.theme;
   const fontSize = appState.settings.appearance?.terminalFontSize ?? 13;
@@ -605,14 +605,14 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
               : normalized;
           const preview = sanitizePastedPreview(previewRaw);
           const ok = await modal.confirm({
-            title: '多行粘贴确认',
-            message:
-              `即将粘贴 ${lineCount} 行内容到终端。\n` +
-              '多行内容可能被 shell 当成多条命令立即执行。\n' +
-              '建议在"设置 → 行为"启用 bracketed paste 让支持的 shell 把粘贴当 literal。',
+            title: tx('多行粘贴确认', 'Multi-line paste confirmation'),
+            message: tx(
+              `即将粘贴 ${lineCount} 行内容到终端。\n多行内容可能被 shell 当成多条命令立即执行。\n建议在"设置 → 行为"启用 bracketed paste 让支持的 shell 把粘贴当 literal。`,
+              `About to paste ${lineCount} lines into the terminal.\nMulti-line content may be interpreted by the shell as multiple commands.\nEnable bracketed paste in Settings → Behavior so supported shells treat it as literal text.`,
+            ),
             preview,
-            confirmLabel: '粘贴',
-            cancelLabel: '取消',
+            confirmLabel: tx('粘贴', 'Paste'),
+            cancelLabel: tx('取消', 'Cancel'),
           });
           if (!ok) return;
         }
@@ -1502,7 +1502,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         <span className="status-text">
           {session.displayName} · pid {session.pid > 0 ? session.pid : '—'}
           {session.state === 'exited' &&
-            ` · 已退出 (exitCode=${session.exitCode ?? 0})`}
+            tx(` · 已退出 (exitCode=${session.exitCode ?? 0})`, ` · Exited (exitCode=${session.exitCode ?? 0})`)}
         </span>
         <button
           type="button"
@@ -1525,7 +1525,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
           className="status-cwd"
           title={
             cwdDrifted
-              ? `当前: ${session.currentCwd}\n原: ${session.originalCwd}`
+              ? tx(`当前: ${session.currentCwd}\n原: ${session.originalCwd}`, `Current: ${session.currentCwd}\nOriginal: ${session.originalCwd}`)
               : session.currentCwd
           }
         >
@@ -1543,12 +1543,12 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         onDrop={handleTerminalDrop}
       />
       {searchVisible && (
-        <div className="terminal-search-bar" role="search" aria-label="终端搜索">
+        <div className="terminal-search-bar" role="search" aria-label={tx('终端搜索', 'Terminal search')}>
           <input
             ref={searchInputRef}
             type="text"
             className="terminal-search-input"
-            placeholder="搜索 (Enter 下一个 / Shift+Enter 上一个 / Esc 关闭)"
+            placeholder={tx('搜索 (Enter 下一个 / Shift+Enter 上一个 / Esc 关闭)', 'Search (Enter = next, Shift+Enter = prev, Esc = close)')}
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
             onKeyDown={(e) => {
@@ -1568,22 +1568,22 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
             className="terminal-search-count"
             title={
               searchText
-                ? `${searchResults.matches} 个匹配,当前第 ${searchResults.current}`
-                : '输入关键字开始搜索'
+                ? tx(`${searchResults.matches} 个匹配,当前第 ${searchResults.current}`, `${searchResults.matches} matches, currently #${searchResults.current}`)
+                : tx('输入关键字开始搜索', 'Type to start searching')
             }
           >
             {searchText
               ? searchResults.matches > 0
                 ? `${searchResults.current}/${searchResults.matches}`
-                : '无匹配'
+                : tx('无匹配', 'No match')
               : '—'}
           </span>
           <button
             type="button"
             className="terminal-search-btn"
             onClick={() => performSearch('previous')}
-            title="上一个 (Shift+Enter)"
-            aria-label="上一个匹配"
+            title={tx('上一个 (Shift+Enter)', 'Previous (Shift+Enter)')}
+            aria-label={tx('上一个匹配', 'Previous match')}
             disabled={!searchText || searchResults.matches === 0}
           >
             ↑
@@ -1592,8 +1592,8 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
             type="button"
             className="terminal-search-btn"
             onClick={() => performSearch('next')}
-            title="下一个 (Enter)"
-            aria-label="下一个匹配"
+            title={tx('下一个 (Enter)', 'Next (Enter)')}
+            aria-label={tx('下一个匹配', 'Next match')}
             disabled={!searchText || searchResults.matches === 0}
           >
             ↓
@@ -1602,8 +1602,8 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
             type="button"
             className={`terminal-search-btn${searchCaseSensitive ? ' active' : ''}`}
             onClick={() => setSearchCaseSensitive((v) => !v)}
-            title="区分大小写"
-            aria-label="区分大小写"
+            title={tx('区分大小写', 'Case sensitive')}
+            aria-label={tx('区分大小写', 'Case sensitive')}
             aria-pressed={searchCaseSensitive}
           >
             Aa
@@ -1612,8 +1612,8 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
             type="button"
             className="terminal-search-btn close"
             onClick={handleCloseSearch}
-            title="关闭 (Esc)"
-            aria-label="关闭搜索"
+            title={tx('关闭 (Esc)', 'Close (Esc)')}
+            aria-label={tx('关闭搜索', 'Close search')}
           >
             ×
           </button>

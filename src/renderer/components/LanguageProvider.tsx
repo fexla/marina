@@ -9,7 +9,7 @@
  *   读 useTranslation() 拿到这个值就会随之 re-render。
  */
 import { createContext, useContext, useEffect, useMemo, type ReactNode } from 'react';
-import { resolveLocale, setLocale, t, type Locale } from '@shared/i18n';
+import { resolveLocale, setLocale, t, tx, type Locale } from '@shared/i18n';
 import { useAppState } from '../store';
 
 interface LanguageContextValue {
@@ -41,8 +41,8 @@ export function LanguageProvider({ children }: { children: ReactNode }): JSX.Ele
   return <LanguageContext.Provider value={{ locale }}>{children}</LanguageContext.Provider>;
 }
 
-/** UI 组件可用的 hook;返回当前 locale,组件 re-render 时 t() 自动用新 locale */
-export function useTranslation(): { locale: Locale; t: typeof t } {
+/** UI 组件可用的 hook;返回当前 locale,组件 re-render 时 t() / tx() 自动用新 locale */
+export function useTranslation(): { locale: Locale; t: typeof t; tx: typeof tx } {
   const { locale } = useContext(LanguageContext);
-  return { locale, t };
+  return { locale, t, tx };
 }

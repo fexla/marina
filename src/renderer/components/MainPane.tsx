@@ -48,6 +48,7 @@ import { useToast } from './Toast';
 import { useModal } from './Modal';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { buildSessionContextMenu } from './sessionContextMenu';
+import { useTranslation } from './LanguageProvider';
 
 interface DetectedShell {
   id: string;
@@ -180,15 +181,21 @@ export function MainPane(): JSX.Element {
 }
 
 function WelcomeState(): JSX.Element {
+  const { tx } = useTranslation();
   return (
     <div className="welcome-state">
       <h2>Marina</h2>
-      <p>从左侧选一个路径开始,或点击 <strong>收藏 +</strong> 添加文件夹。</p>
+      <p>
+        {tx('从左侧选一个路径开始,或点击', 'Pick a path on the left, or click')}{' '}
+        <strong>{tx('收藏 +', 'Bookmark +')}</strong>{' '}
+        {tx('添加文件夹。', 'to add a folder.')}
+      </p>
     </div>
   );
 }
 
 function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
+  const { tx } = useTranslation();
   const state = useAppState();
   const dispatch = useAppDispatch();
   const toast = useToast();
@@ -244,7 +251,7 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
       console.error('[MainPane] create-session failed', err);
       toast.push({
         kind: 'error',
-        message: `新建终端失败:${err instanceof Error ? err.message : String(err)}`,
+        message: tx(`新建终端失败:${err instanceof Error ? err.message : String(err)}`, `Failed to create terminal: ${err instanceof Error ? err.message : String(err)}`),
       });
     } finally {
       setCreating(false);
@@ -255,11 +262,14 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
 
   return (
     <div className="empty-path-state">
-      <p className="empty-hint">在 <code>{displayPath}</code> 新建终端</p>
+      <p className="empty-hint">
+        {tx('在', 'New terminal in')} <code>{displayPath}</code>
+        {tx(' 新建终端', '')}
+      </p>
 
       {shells && shells.length > 0 && (
         <div className="empty-section">
-          <div className="empty-section-title">检测到的 Shell</div>
+          <div className="empty-section-title">{tx('检测到的 Shell', 'Detected shells')}</div>
           <div className="empty-button-grid">
             {shells.map((s) => (
               <button
@@ -281,7 +291,7 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
       )}
 
       <div className="empty-section">
-        <div className="empty-section-title">启动模板</div>
+        <div className="empty-section-title">{tx('启动模板', 'Launch templates')}</div>
         <div className="empty-button-grid">
           {templates.map((t) => (
             <TemplateLaunchButton
@@ -334,6 +344,7 @@ interface TabBarProps {
 }
 
 function TabBar({ sessions, selectedSessionId, showBlankTab }: TabBarProps): JSX.Element {
+  const { tx } = useTranslation();
   const state = useAppState();
   const dispatch = useAppDispatch();
 
@@ -371,10 +382,10 @@ function TabBar({ sessions, selectedSessionId, showBlankTab }: TabBarProps): JSX
           type="button"
           className={`tab tab-blank${showBlankTab ? ' selected' : ''}`}
           onClick={handleClickBlankTab}
-          title="新建终端 — 选择 Shell 或模板"
+          title={tx('新建终端 — 选择 Shell 或模板', 'New terminal — pick a shell or template')}
         >
           <span className="tab-blank-icon" aria-hidden="true">+</span>
-          <span className="tab-name">新建</span>
+          <span className="tab-name">{tx('新建', 'New')}</span>
         </button>
       </div>
     </div>
@@ -388,6 +399,7 @@ interface TabProps {
 }
 
 function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
+  const { tx } = useTranslation();
   const state = useAppState();
   const dispatch = useAppDispatch();
   const ctxMenu = useContextMenuApi();
@@ -422,10 +434,10 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
           // Tab 端走 Modal.prompt(Sidebar 端走行内编辑,两者菜单"内容"对齐
           // 但触发体验各按各侧的惯例)。
           const next = await modal.prompt({
-            title: '重命名会话',
-            message: '为此会话指定新的显示名(不影响 sessionId)',
+            title: tx('重命名会话', 'Rename session'),
+            message: tx('为此会话指定新的显示名(不影响 sessionId)', 'New display name for this session (sessionId stays the same)'),
             defaultValue: session.displayName,
-            confirmLabel: '保存',
+            confirmLabel: tx('保存', 'Save'),
           });
           if (next === null) return;
           const trimmed = next.trim();
@@ -527,16 +539,16 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
 
   const tooltipParts: string[] = [];
   if (variant === 'other') {
-    tooltipParts.push(`${session.displayName} (在其他窗口)`);
+    tooltipParts.push(tx(`${session.displayName} (在其他窗口)`, `${session.displayName} (owned by another window)`));
   } else {
     tooltipParts.push(session.displayName);
   }
   if (cwdDrifted) {
-    tooltipParts.push(`当前目录 → ${session.currentCwd}`);
-    tooltipParts.push(`(原: ${session.originalCwd})`);
+    tooltipParts.push(tx(`当前目录 → ${session.currentCwd}`, `Current dir → ${session.currentCwd}`));
+    tooltipParts.push(tx(`(原: ${session.originalCwd})`, `(orig: ${session.originalCwd})`));
   }
   if (session.state === 'exited') {
-    tooltipParts.push(`已退出 (exitCode=${session.exitCode ?? 0})`);
+    tooltipParts.push(tx(`已退出 (exitCode=${session.exitCode ?? 0})`, `Exited (exitCode=${session.exitCode ?? 0})`));
   }
 
   return (
@@ -555,7 +567,7 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
     >
       <span className="tab-name">{session.displayName}</span>
       {cwdDrifted && (
-        <span className="tab-cwd-drift" aria-label="当前目录已变">
+        <span className="tab-cwd-drift" aria-label={tx('当前目录已变', 'Current directory changed')}>
           <Icon name="alertTriangle" size={11} />
         </span>
       )}
@@ -563,7 +575,7 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
         <span
           className="tab-close"
           onClick={handleClose}
-          title="关闭"
+          title={tx('关闭', 'Close')}
           role="button"
         >
           ×
