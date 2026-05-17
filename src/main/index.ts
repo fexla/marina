@@ -250,9 +250,17 @@ function bootstrap(): void {
   });
 
   app.on('window-all-closed', () => {
-    // window-all-closed 不退出:进入"纯托盘模式"
     // isQuitting=true 时 (主动 quit) 让默认行为执行,继续走 before-quit / will-quit
     if (isQuitting) return;
+    // BETA-003b · ADR-013:Linux 上 lifecycleModel='no-persistence',关掉最后
+    // 一个窗口 = 应用退出。alive session 的二次确认已在 windowManager 的
+    // closeInterceptor 里处理过,走到这里说明 modal 用户已确认 / 本就无 alive session,
+    // 安全 quit。
+    // Windows ('tray-resident') / macOS ('dock-resident') 保持"app 不死于窗口"。
+    if (process.platform === 'linux') {
+      isQuitting = true;
+      app.quit();
+    }
   });
 
   app.on('before-quit', () => {
@@ -354,7 +362,11 @@ function bootstrap(): void {
       // followSystemTheme 字段)。原因:Windows 上 nativeTheme.shouldUseDarkColors
       // 在不少机器上不可靠 (尤其多用户 / 远程会话),自动切主题反而是 bug 来源;
       // 用户主动选 7 套主题已足够。
-      const platformAdapter = process.platform === 'win32' ? getPlatformAdapter() : null;
+      //
+      // BETA-003a:Linux 也走 getPlatformAdapter(),拿到 LinuxAdapter 实例;
+      // macOS 仍占位,getPlatformAdapter 会 throw,保留 null 即可。
+      const platformAdapter =
+        process.platform === 'darwin' ? null : getPlatformAdapter();
 
       settingsManager.on('settingsChanged', (e: { changedKeys: string[]; settings: Settings }) => {
         if (e.changedKeys.includes('behavior.autoStart') && platformAdapter) {
@@ -416,7 +428,40 @@ function bootstrap(): void {
           );
       }
 
-      trayManager.init();
+      // BETA-003b · ADR-013:三平台共享 close 拦截 — 只对 lifecycleModel
+      // === 'no-persistence'(Linux)的"最后窗口 + 仍有 alive session" 场景
+      // preventDefault + 发 IPC 让 renderer 弹 LastSessionConfirm modal。
+      // Windows ('tray-resident')/ macOS ('dock-resident') 走原有路径,本拦截器
+      // 直接返回 false 放行。
+      if (platformAdapter) {
+        const adapter = platformAdapter;
+        windowManager.setCloseInterceptor((win) => {
+          if (isQuitting) return false; // 已经在退出流程,放行
+          if (adapter.lifecycleModel !== 'no-persistence') return false;
+          // 检查是否为最后一个窗口
+          const others = windowManager
+            .list()
+            .filter((w) => w.electronWindowId !== win.webContents.id);
+          if (others.length > 0) return false;
+          // 检查 alive session 数
+          const aliveCount = sessionManager
+            .list()
+            .filter((s) => s.state !== 'exited').length;
+          if (aliveCount === 0) return false; // 全 exited,静默关
+          // 拦截 + 通知 renderer 弹 modal
+          win.webContents.send('evt:ui:show-last-session-confirm', {
+            eventId: 'lsc-' + Date.now(),
+            timestamp: Date.now(),
+            payload: { sessionCount: aliveCount },
+          });
+          return true;
+        });
+      }
+
+      // BETA-003a:Linux 不做托盘,跳过 trayManager.init()
+      if (process.platform === 'win32') {
+        trayManager.init();
+      }
 
       // 交互级冒烟测试 harness。仅在 MARINA_SMOKE_INTERACTIVE=1 时装载。
       // 完整端到端验证:真实 BrowserWindow + preload bridge + IPC handler +
@@ -435,8 +480,31 @@ function bootstrap(): void {
 
       // 启动行为:--open-here 优先级最高 (Explorer 右键触发的冷启动 — 用户意图明确)。
       // 其次看 settings.behavior.startupBehavior:tray-only 不开窗,其他开窗。
-      const startupOpenHere = parseOpenHere(process.argv);
+      let startupOpenHere = parseOpenHere(process.argv);
       const startupSimpleMode = parseSimpleMode(process.argv);
+
+      // BETA-003c:Linux 上 Nautilus / Nemo / Caja 的 "在终端中打开" 是通过
+      // gsettings org.gnome.desktop.default-applications.terminal exec 拉起
+      // Marina,**不传 argv 参数**,而是 fork+chdir+exec ——子进程的 process.cwd()
+      // 就是用户右键的那个目录。我们检测这个信号,当 cwd 不是 / 也不是 home 时
+      // 自动把它作为 startupOpenHere。GUI 应用菜单启动时 cwd 通常是 / 或 home,
+      // 走默认空窗逻辑。
+      if (
+        process.platform === 'linux' &&
+        startupOpenHere === null &&
+        !startupSimpleMode
+      ) {
+        try {
+          const cwd = process.cwd();
+          const home = app.getPath('home');
+          if (cwd !== '/' && cwd !== home && existsSync(cwd)) {
+            startupOpenHere = cwd;
+            logger.info('main', `linux cold-start picked process.cwd: ${cwd}`);
+          }
+        } catch (err) {
+          logger.warn('main', 'linux cwd detection failed', err);
+        }
+      }
       // TIT-2 诊断:与 second-instance 路径对比 — 冷启动 argv 形态是什么样
       logger.info('main', 'cold-start parseOpenHere result', {
         startupOpenHere,

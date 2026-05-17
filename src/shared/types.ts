@@ -308,13 +308,15 @@ export interface Settings {
     statusRecheckEnabled: boolean;
     /**
      * BETA-006 v2:喂给 LLM 的输入源。
-     * - 'raw'      = scrollback 最末 2KB 原始字节(含 ANSI 转义、PSReadLine 重绘
-     *                残影,LLM 看到的不是用户视觉上看到的)
      * - 'headless' = main 端 @xterm/headless 维护的"已渲染"字符矩阵尾部 N 行,
-     *                无 ANSI / 无重绘残影,默认走这条
+     *                无 ANSI / 无重绘残影,唯一可用选项
      * - 'screenshot' = 多模态视觉,枚举值预留,UI 暂不暴露
+     *
+     * CURSOR-1 后:原 'raw'(裸字节 ring 末 2KB)选项已删除,裸字节 scrollback
+     * 存储被 state-replay 架构(SerializeAddon)取代,不再保留。settings.json
+     * 里残留的 'raw' 值在 SettingsManager 读取时会被 coerce 到 'headless'。
      */
-    statusRecheckSource: 'raw' | 'headless' | 'screenshot';
+    statusRecheckSource: 'headless' | 'screenshot';
   };
 }
 

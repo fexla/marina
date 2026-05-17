@@ -1,6 +1,11 @@
 {
   "_meta": "Marina 中文文案。键名走 dot.path 命名,与 src/renderer/components 大致对齐。缺译时回退到 en-US,再回退到 key 字面值(开发期容易发现漏)。",
 
+  "lastSession.title": "确定关闭 Marina?",
+  "lastSession.message": "仍有 {count} 个会话在运行,关闭后将被终止。",
+  "lastSession.confirm": "关闭",
+  "lastSession.cancel": "取消",
+
   "sidebar.category.bookmark": "收藏",
   "sidebar.category.temporary": "临时",
   "sidebar.category.recent": "最近",
@@ -56,7 +61,7 @@
   "settings.ai.statusRecheck.label": "状态复核(BETA-006)",
   "settings.ai.statusRecheck.hint": "active→idle 跃迁前让 LLM 复核;失败时回退原阈值,不阻塞",
   "settings.ai.statusRecheckSource.label": "复核输入源",
-  "settings.ai.statusRecheckSource.hint": "raw=原始字节(含 ANSI 转义);headless=已渲染的字符矩阵(推荐,无重绘残影)",
+  "settings.ai.statusRecheckSource.hint": "headless=已渲染的字符矩阵(无 ANSI 噪音、无重绘残影)",
 
   "common.enable": "启用",
   "common.disable": "禁用",

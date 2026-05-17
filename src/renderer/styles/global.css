@@ -631,6 +631,26 @@ button:disabled {
   background-color: var(--color-bg-primary, #f0f);
 }
 
+/*
+ * Windows 11 走系统 DWM 自动给 frameless 窗口加圆角;CSS 这里再加一份 CSS
+ * 圆角作视觉保险(DWM 圆角作用在 OS 窗口外框,CSS border-radius 作用在
+ * renderer 内部,一致时无视觉差)。
+ *
+ * BETA-003c (2026-05-17):Linux 上回退到 transparent:false + 实色背景
+ * (Wayland 透明窗口 resize bug),所以这里要排除 Linux —— 圆角内会露出
+ * #191724 实色边角,丑。Linux 上窗口是方角(与 gnome-terminal / wezterm
+ * 等所有主流 Linux 终端一致)。
+ */
+html:not([data-platform='linux']) .app-root.with-shell {
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+/* 最大化时去掉圆角(M1-A,WINDOW_MAX_STATE_CHANGED 同步 <html data-maximized>) */
+html[data-maximized='true'] .app-root.with-shell {
+  border-radius: 0;
+}
+
 /* ── M1-A 自绘标题栏 ────────────────────────────────────────────── */
 
 .app-titlebar {

@@ -162,6 +162,16 @@ export const EVENT_CHANNELS = {
   BOOKMARKS_UPDATED: 'evt:bookmarks:updated',
   SETTINGS_CHANGED: 'evt:settings:changed',
   TEMPLATES_UPDATED: 'evt:templates:updated',
+
+  /**
+   * BETA-003b · ADR-013:Linux 上最后窗口关闭 + 仍有 alive session 时,
+   * 主进程拦截 close 事件后给本窗口 renderer 发此事件,弹 LastSessionConfirm
+   * modal。Payload:{ sessionCount: number }。
+   *
+   * Windows / macOS 也复用同一 modal,触发位置分别是托盘菜单"完全退出"和
+   * Cmd+Q / App Menu Quit。
+   */
+  UI_SHOW_LAST_SESSION_CONFIRM: 'evt:ui:show-last-session-confirm',
 } as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
@@ -304,7 +314,19 @@ export interface GetScrollbackPayload {
 }
 
 export interface GetScrollbackResponse {
-  /** Base64 编码的整段 scrollback ring buffer 内容 (UTF-8 字节流) */
+  /**
+   * Base64 编码的 ANSI 重建流(UTF-8 字节)。
+   *
+   * CURSOR-1 后(state-replay 架构):main 端从 session 各自的 @xterm/headless
+   * 状态机通过 SerializeAddon 序列化"当前完整终端状态"(buffer + 当前在哪个
+   * buffer + 模式 + cursor + SGR)。Renderer 把 data 直接 term.write(),xterm
+   * 按 ANSI parse 即恢复到字节级等价状态 — 包括 alt-buffer (?1049h)、
+   * cursor 隐藏 (?25l)、滚动区 (DECSTBM) 等。
+   *
+   * 旧字段名 `data` 保留(不破坏 IPC 协议),但语义已从"原始 PTY 字节流"
+   * 升级为"状态机重建 ANSI 流"。详见 SessionManager.getScrollbackForReplay
+   * 与 docs/issues/cursor-1-alt-buffer-blink-policy-broke-codex.md。
+   */
   data: string;
   /** 取此 scrollback 时刻 PTY 已 emit 的最后一条 output 的 seq;
    *  渲染端用 seq > lastSeq 去重 evt:session:output。 */

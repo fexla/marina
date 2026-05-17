@@ -59,18 +59,21 @@ import type { AIClient } from './ai-client';
 import xtermHeadless from '@xterm/headless';
 const { Terminal: HeadlessTerminal } = xtermHeadless;
 type HeadlessTerminal = InstanceType<typeof HeadlessTerminal>;
+// CURSOR-1 根治(state-replay):headless terminal 装 SerializeAddon,
+// getScrollback 不再返回裸字节流,改为序列化"当前完整终端状态"的 ANSI
+// 重建流。详见 docs/issues/cursor-1-alt-buffer-blink-policy-broke-codex.md
+// 续档"架构级根治方案"。
+// 0.14.0 stable _serializeModes 不覆盖 ?25l 与 DECSTBM,本文件下面 getScrollback
+// 内手动补两条 — 详见 docs/issues/xterm-serialize-mode-polyfill.md。
+import xtermSerialize from '@xterm/addon-serialize';
+const { SerializeAddon } = xtermSerialize;
+type SerializeAddon = InstanceType<typeof SerializeAddon>;
 import { Osc1337Parser } from './osc1337-parser';
 import { getPlatformAdapter, type PlatformAdapter, type ShellInfo } from './platform';
 import { buildSpawnEnv, validateDimensions } from './pty-utils';
 import { logger } from './logger';
 
 const SPAWN_ENV_SKIP = ['ELECTRON_RUN_AS_NODE', 'ELECTRON_RENDERER_URL'];
-
-/**
- * Scrollback ring buffer 上限 (软件定义书 5.1.4)。2MB 远小于 PTY 输出
- * 速率,实际很少触顶。超过则尾部裁切。
- */
-export const SCROLLBACK_LIMIT = 2 * 1024 * 1024;
 
 /**
  * cwd 兜底参数:
@@ -267,7 +270,18 @@ export function defaultHookFileResolver(shellId: string): string {
     case 'cmd':
       return resolvePath(hookDir, 'cmd.bat');
     case 'git-bash':
+    case 'bash':
+      // Linux native bash 与 Git Bash 走同一份 bash hook (cygpath 探测做了
+      // POSIX / Windows 两套路径处理,POSIX 环境直接走 $PWD 分支)。
       return resolvePath(hookDir, 'bash.sh');
+    // BETA-003a:zsh / fish 占位 — 直接给到源文件,SessionManager 当前还没
+    // 给 zsh 拷成 .zshrc / 给 fish 拷成 fish/config.fish,所以 zsh hook 实际
+    // 不会被 zsh 加载(ZDOTDIR=<dir>/.zshrc 找不到 → 跳过),session 仍能跑但
+    // cwd 跟踪暂时丧失。后续 patch 补"临时副本铺设"流程。
+    case 'zsh':
+      return resolvePath(hookDir, 'zsh.sh');
+    case 'fish':
+      return resolvePath(hookDir, 'fish.fish');
     default:
       return resolvePath(hookDir, 'pwsh.ps1');
   }
@@ -282,11 +296,13 @@ interface ManagedSession {
   /** PTY 监听句柄,destroy 时释放 */
   disposables: IDisposable[];
   /**
-   * Ring buffer:存所有透传后字节流 (OSC 1337 已剥离)。
-   * 软件定义书 5.1.4 + 8.4 (跨窗口接管时新 owner 拉历史回放)。
+   * 已经向 renderer emit 过的最后一条 PTY data 的 outputSeq。-1 表示尚未
+   * 有输出。renderer 重挂时拿这个 seq 去重 live 通道的 pending 字节(只
+   * write seq > lastSeq 的 chunk,避免与 state-replay 输出双写)。
+   *
+   * CURSOR-1 前:同时也是 `managed.scrollback` 裸字节 ring 的"已 emit"边界
+   * (PER-2 不变量)。CURSOR-1 后裸字节 ring 已删除,边界只保留 seq 语义。
    */
-  scrollback: Buffer;
-  /** scrollback 中最末一条 PTY data 对应的 outputSeq。-1 表示尚未有输出。 */
   scrollbackLastSeq: number;
   /** OSC 1337 解析器 (每 session 一份,持有未完结 stash) */
   parser: Osc1337Parser;
@@ -353,10 +369,22 @@ interface ManagedSession {
    * 字节同步 write,buffer 维护"已渲染"字符矩阵 — 复核时读这里拿干净文本,
    * 跳过 ANSI 转义和 PSReadLine 重绘残影,LLM 看到的与用户视觉一致。
    *
+   * CURSOR-1 根治后(state-replay):headlessTerm 同时承担"重挂时状态恢复"
+   * 的权威数据源 — getScrollback 通过下面 serializeAddon.serialize() 从这里
+   * 吐 ANSI 重建流,而不再用裸字节 ring buffer。
+   *
    * null = 该 session 没有 headless 镜像(理论上 createSession 总会建,
    * 留 null 是为了 destroy 后访问安全)。
    */
   headlessTerm: HeadlessTerminal | null;
+  /**
+   * CURSOR-1 根治:绑在 headlessTerm 上的 SerializeAddon,getScrollback 调
+   * serializeAddon.serialize() 拿到能完全重建当前终端状态的 ANSI 字节流
+   * (含 alt-buffer / cursor 位置 / SGR / 大部分 DEC 模式)。
+   *
+   * null 同 headlessTerm 一同语义(destroy 后访问安全)。
+   */
+  serializeAddon: SerializeAddon | null;
 }
 
 export interface CreateSessionInput {
@@ -464,10 +492,11 @@ export class SessionManager extends EventEmitter {
     super();
     void this._windowManager; // 抑制 noUnusedLocals
     this.spawnFn = options.spawnFn ?? defaultSpawnPty;
-    // 测试或非 Windows 不走 getPlatformAdapter (会 throw)
+    // 测试或 macOS 不走 getPlatformAdapter (macOS 仍 throw)。
+    // BETA-003a:Windows / Linux 都有真实 adapter,各自 detectShells / buildShellLaunchParams。
     this.platformAdapter =
       options.platformAdapter ??
-      (process.platform === 'win32' ? getPlatformAdapter() : createNoopAdapter());
+      (process.platform === 'darwin' ? createNoopAdapter() : getPlatformAdapter());
     this.hookFileResolver = options.hookFileResolver ?? defaultHookFileResolver;
     this.resizeQuietMs = options.resizeQuietMs ?? RESIZE_QUIET_MS;
     this.startupGraceMs = options.startupGraceMs ?? STARTUP_GRACE_MS;
@@ -595,7 +624,6 @@ export class SessionManager extends EventEmitter {
       pty,
       outputSeq: 0,
       disposables,
-      scrollback: Buffer.alloc(0),
       scrollbackLastSeq: -1,
       parser: new Osc1337Parser(),
       idleTimer: null,
@@ -611,16 +639,24 @@ export class SessionManager extends EventEmitter {
       manuallyRenamed: false,
       pendingEmit: null,
       pendingEmitTimer: null,
-      // BETA-006 v2:headless 镜像,scrollback 行数 1000 够装最近几屏 + 历史。
+      // BETA-006 v2 + CURSOR-1:headless 镜像,scrollback 行数对齐 renderer
+      // 端 xterm 的 5000(`TerminalView.tsx` Terminal 构造 scrollback: 5000)
+      // —— headless serialize 出来的状态要能完整覆盖 renderer 可见 + 滚动区。
       // allowProposedApi:translateBufferLineToString 是 proposed api,xterm 5.x
       // 长期稳定,proposed 只是流程慢。
       headlessTerm: new HeadlessTerminal({
         cols: info.cols,
         rows: info.rows,
-        scrollback: 1000,
+        scrollback: 5000,
         allowProposedApi: true,
       }),
+      serializeAddon: null,
     };
+    // CURSOR-1:绑 SerializeAddon。loadAddon 必须在 headless 实例创建后,
+    // 字段挂回 managed.serializeAddon 供 getScrollback 调用。
+    const serializeAddon = new SerializeAddon();
+    managed.headlessTerm!.loadAddon(serializeAddon);
+    managed.serializeAddon = serializeAddon;
     this.sessions.set(sessionId, managed);
 
     disposables.push(
@@ -961,44 +997,138 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * 取 session 的 scrollback ring buffer 内容。
+   * 取 session 重挂时需要回放的"完整终端状态"为 ANSI 字节流(base64) +
+   * 当前 scrollbackLastSeq。
    *
-   * 返回 base64 编码 + 当前 scrollbackLastSeq。Renderer 用 lastSeq 对后续
-   * evt:session:output 去重 (seq > lastSeq 才 write)。
+   * **CURSOR-1 根治 — state-replay 架构**:
    *
-   * session 不存在返回 { data: '', lastSeq: -1 } — 与 sendInput / resize
-   * 等"竞态时静默"的语义一致。
+   * 旧路径(`getScrollback`)把 main 端 `managed.scrollback: Buffer` 裸字节
+   * ring(2MB 上限,头部裁切)的内容原样返回。问题:裁切按 \n 边界对齐,
+   * 不识别 DEC 模式 setter,一旦 Claude Code / Codex / vim 这类 alt-buffer
+   * 应用累积输出超 2MB,开头的 ?1049h / ?25l 等 setter 被裁掉 — renderer
+   * 重挂时拿到的字节流缺关键模式,xterm 落不到正确 buffer。这是 BETA-019
+   * / CURSOR-1 的根因。
+   *
+   * 新路径:每 session 各保一份 @xterm/headless terminal,跟在 PTY 字节流
+   * 后面镜像状态机(buffer + modes + cursor + SGR)。本方法通过 SerializeAddon
+   * 序列化"当前完整终端状态"为可重放的 ANSI 流 — 是状态机重建,不是字节流
+   * 回灌,从根上不可能丢模式。
+   *
+   * 时序保证(避免 PER-2 invariant 在新架构下的等价问题):
+   *
+   *   1. flushPendingEmit:把 pendingEmit 里的字节立刻 emit 出去,
+   *      scrollbackLastSeq 推进到该批次末尾
+   *   2. await drainHeadless:写一个空 chunk 等回调,xterm parser 把所有已
+   *      排队的 write 处理完,headless buffer 反映已收字节
+   *   3. 同步块 serialize + 读 scrollbackLastSeq + return — 不再 flush
+   *      (期间到达的新字节会走 8ms 自然 batch + live emit,renderer 用
+   *      seq > lastSeq 过滤,不双写不丢)
+   *
+   * session 不存在返回 { data: '', lastSeq: -1 }。
    */
-  getScrollback(sessionId: string): { data: string; lastSeq: number } {
+  async getScrollbackForReplay(
+    sessionId: string,
+  ): Promise<{ data: string; lastSeq: number }> {
     const managed = this.sessions.get(sessionId);
-    if (!managed) return { data: '', lastSeq: -1 };
+    if (!managed || !managed.headlessTerm || !managed.serializeAddon) {
+      return { data: '', lastSeq: -1 };
+    }
+    const term = managed.headlessTerm;
+    const addon = managed.serializeAddon;
+
+    // 1) flush 任何 pendingEmit:emit 出去 + 推 scrollbackLastSeq。这一步
+    //    保证"已经 emit 给 renderer 的字节"和"headless 状态机即将反映的
+    //    字节"在调用本方法的瞬间是一致的边界。
+    this.flushPendingEmit(managed);
+
+    // 2) 等 parser drain。write('', cb) 在 cb 内说"我之前的 write 全部 parse 完
+    //    了" — 这是 xterm 官方 API,等价于一个轻量 fence。
+    await new Promise<void>((resolve) => {
+      term.write('', () => resolve());
+    });
+
+    // 3) 同步块:此后任何 PTY 新字节只能在我们 return 之后才被事件循环处理,
+    //    所以 serialize() 看到的 headless 状态 + scrollbackLastSeq 都对应
+    //    drain 解析到的边界,不会有竞态。drain 后到达的字节会通过 8ms 自然
+    //    batch 走 live emit,renderer seq > lastSeq 过滤兜底。
+    let ansi = addon.serialize({ scrollback: 5000 });
+
+    // XTERM-SERIALIZE-POLYFILL:0.14.0 stable 的 _serializeModes 不覆盖光标
+    // 可见性(?25l)与滚动区(DECSTBM),master / 0.15.0-beta 已修。直读
+    // headless _core 内部状态把这两条补到字节流末尾 — 与 master 自身实现
+    // 字节级等价,不是猜测。完整背景与删除条件见
+    // docs/issues/xterm-serialize-mode-polyfill.md。
+    const core = (term as unknown as {
+      _core?: {
+        coreService?: { isCursorHidden?: boolean };
+        buffer?: { scrollTop?: number; scrollBottom?: number };
+      };
+    })._core;
+    if (core?.coreService?.isCursorHidden) {
+      ansi += '\x1b[?25l';
+    }
+    const top = core?.buffer?.scrollTop;
+    const bot = core?.buffer?.scrollBottom;
+    if (
+      typeof top === 'number' &&
+      typeof bot === 'number' &&
+      (top !== 0 || bot !== term.rows - 1)
+    ) {
+      ansi += `\x1b[${top + 1};${bot + 1}r`;
+    }
+
     return {
-      data: managed.scrollback.toString('base64'),
+      data: Buffer.from(ansi, 'utf8').toString('base64'),
       lastSeq: managed.scrollbackLastSeq,
     };
   }
 
   /**
    * BETA-028:返回 scrollback 的 UTF-8 字符串(供"复制全部"工具栏按钮)。
-   * 大 scrollback 用 Buffer→string 一次性转换,在 2MB 上限下可接受。
+   *
+   * CURSOR-1 后:从 headless terminal buffer 按行 translate(已渲染的字符
+   * 矩阵,无 ANSI 转义、无 PSReadLine 重绘残影),换行用 '\n'。比旧的"裸
+   * 字节直接 utf8 toString"更干净,直接可粘贴。
+   *
+   * async:headless write 是异步 parse 的,读 buffer 前先 await drain,否则
+   * "刚 emit 的字节"可能还没进 buffer。getScrollbackForReplay 同样的时序。
    */
-  exportScrollback(sessionId: string): { text: string } {
+  async exportScrollback(sessionId: string): Promise<{ text: string }> {
     const managed = this.sessions.get(sessionId);
-    if (!managed) return { text: '' };
-    return { text: managed.scrollback.toString('utf8') };
+    if (!managed || !managed.headlessTerm) return { text: '' };
+    // flush pendingEmit + drain parser,确保 buffer 反映所有已 emit 的字节
+    this.flushPendingEmit(managed);
+    const term = managed.headlessTerm;
+    await new Promise<void>((resolve) => {
+      term.write('', () => resolve());
+    });
+    const buf = term.buffer.active;
+    const lines: string[] = [];
+    // buf.length 是 scrollback + viewport 总行数,正向遍历
+    for (let y = 0; y < buf.length; y++) {
+      const line = buf.getLine(y);
+      if (!line) continue;
+      lines.push(line.translateToString(true)); // trim trailing whitespace
+    }
+    // 去掉末尾连续空行
+    while (lines.length > 0 && lines[lines.length - 1] === '') {
+      lines.pop();
+    }
+    return { text: lines.join('\n') };
   }
 
   /**
-   * BETA-028:清空 main 端 scrollback ring buffer。配合 renderer 的
-   * term.clear() 使用 —— 否则下次 TerminalView 重挂载时会把已"看似清空"
-   * 的历史又回灌一遍。
+   * BETA-028:清空 main 端 scrollback。配合 renderer 的 term.clear() 使用 ——
+   * 否则下次 TerminalView 重挂载时会把"看似清空"的历史又回灌一遍。
    *
-   * scrollbackLastSeq 不重置,保持序列号单调,避免 pending replay 出错。
+   * CURSOR-1 后:直接调 headless.clear()(清 normal buffer scrollback + viewport,
+   * 与 xterm 标准行为一致)。scrollbackLastSeq 不重置,保持序列号单调,避免
+   * pending replay 出错。
    */
   clearScrollback(sessionId: string): void {
     const managed = this.sessions.get(sessionId);
-    if (!managed) return;
-    managed.scrollback = Buffer.alloc(0);
+    if (!managed || !managed.headlessTerm) return;
+    managed.headlessTerm.clear();
   }
 
   // ──────────────────────────────────────────────────────────────────
@@ -1086,9 +1216,9 @@ export class SessionManager extends EventEmitter {
    */
   private queueEmit(managed: ManagedSession, bytes: Buffer, seq: number): void {
     if (this.emitBatchMs <= 0) {
-      // 立即路径 — append + 推 lastSeq + emit 在同一同步块内完成,
-      // 与延迟路径在 flush 时的原子性等价。
-      this.appendScrollback(managed, bytes);
+      // 立即路径 — 推 lastSeq + emit 在同一同步块内完成。CURSOR-1 后:
+      // headless terminal 是状态源(handlePtyData 内同步 write),无需在此
+      // append 任何裸字节存储。
       managed.scrollbackLastSeq = seq;
       const payload: SessionOutputPayload = {
         sessionId: managed.info.id,
@@ -1119,10 +1249,10 @@ export class SessionManager extends EventEmitter {
     if (!managed.pendingEmit) return;
     const { bytes, lastSeq } = managed.pendingEmit;
     managed.pendingEmit = null;
-    // 原子前进顺序:先 scrollback append,再 scrollbackLastSeq,再 emit。
-    // 这三步在 Node 单线程下同步完成,中间不会被 IPC 调用 getScrollback
-    // 打断 — 任何观察者看到的都是一致状态。
-    this.appendScrollback(managed, bytes);
+    // 原子前进:推 lastSeq + emit 同步完成。CURSOR-1 后:headless 状态机
+    // 是 state-replay 的唯一源,write 已在 handlePtyData 内同步进入(line
+    // headlessTerm?.write 调用),此处不再追加裸字节。getScrollbackForReplay
+    // 通过 await drain + serialize 保证读到的状态与 lastSeq 一致。
     managed.scrollbackLastSeq = lastSeq;
     const payload: SessionOutputPayload = {
       sessionId: managed.info.id,
@@ -1130,33 +1260,6 @@ export class SessionManager extends EventEmitter {
       seq: lastSeq,
     };
     this.emit('sessionOutput', payload);
-  }
-
-  private appendScrollback(managed: ManagedSession, bytes: Buffer): void {
-    if (managed.scrollback.length === 0) {
-      managed.scrollback = bytes;
-    } else {
-      managed.scrollback = Buffer.concat([managed.scrollback, bytes]);
-    }
-    if (managed.scrollback.length > SCROLLBACK_LIMIT) {
-      // OSC-2:尾部裁切对齐 ESC/换行边界,避免接管首屏乱码。
-      //
-      // 历史:`subarray(length - LIMIT)` 在裸字节上做裁切,落点可能在:
-      //   - 多字节 UTF-8 序列中间 → 首字符 U+FFFD(轻微)
-      //   - CSI/OSC/DCS 转义序列中间 → xterm 进 OSC parse 状态吞数十-数百
-      //     字节直到下一个 BEL/ST(严重,首屏大段隐形或状态污染)
-      //   - SGR 颜色序列中间 → 颜色错位直到下一个完整 SGR
-      //
-      // 修复:findSafeTruncationBoundary 从目标偏移向前找最近的 \n,把
-      // 实际裁切点对齐到完整 ANSI 行的边界。最多回退 4KB(防极端 case
-      // 整段没换行时永远回退)。
-      const minStart = managed.scrollback.length - SCROLLBACK_LIMIT;
-      const safeStart = findSafeTruncationBoundary(
-        managed.scrollback,
-        minStart,
-      );
-      managed.scrollback = managed.scrollback.subarray(safeStart);
-    }
   }
 
   private handlePtyExit(
@@ -1252,6 +1355,9 @@ export class SessionManager extends EventEmitter {
       }
       managed.headlessTerm = null;
     }
+    // CURSOR-1:SerializeAddon 在 headlessTerm.dispose 内会被一起释放
+    // (它跟着 terminal 生命周期),这里只清字段引用,避免悬空指向
+    managed.serializeAddon = null;
     this.sessions.delete(sid);
     this.pathManager.detachSession(sid);
     this.emit('sessionDestroyed', { sessionId: sid, reason });
@@ -1286,17 +1392,13 @@ export class SessionManager extends EventEmitter {
         this.aiClient &&
         this.aiClient.isConfigured()
       ) {
-        // BETA-006 v2:按 settings.ai.statusRecheckSource 选输入源。
-        // headless = 从 @xterm/headless buffer 拿"已渲染"文本(无 ANSI 噪音 /
-        // 无 PSReadLine 重绘残影),raw = 保留旧路径(scrollback 末 2KB 原始
-        // 字节)。screenshot 暂未实现 → fallback 到 raw。
-        const source = s.ai.statusRecheckSource ?? 'headless';
-        const tail =
-          source === 'headless' && managed.headlessTerm
-            ? this.getHeadlessTail(managed, 40)
-            : managed.scrollback
-                .subarray(Math.max(0, managed.scrollback.length - 2048))
-                .toString('utf8');
+        // BETA-006 v2:从 @xterm/headless buffer 拿"已渲染"文本(无 ANSI
+        // 噪音 / 无 PSReadLine 重绘残影)。
+        // CURSOR-1 后:原 settings.ai.statusRecheckSource='raw' 路径(裸字节
+        // ring 末 2KB)已删除,headless 是唯一输入源。screenshot 选项仍预留。
+        const tail = managed.headlessTerm
+          ? this.getHeadlessTail(managed, 40)
+          : '';
         // BETA-006 v2.1:把"上次 Enter / 上次任意输入距今多久"喂给 LLM,
         // 帮它区分"长命令在跑"vs"用户打字未按回车"。
         // BETA-006 v2.2:再附最近按键事件 ring buffer(类别+时间,无内容),
@@ -1656,36 +1758,6 @@ function sanitizeTitle(raw: string): string {
 }
 
 /**
- * OSC-2:scrollback 尾部裁切对齐 ANSI/UTF-8 边界。
- *
- * 从 minStart 开始向后扫描,找到最近的 `\n`(0x0A)作为安全起点。
- * 没找到时最多向后扫 4KB,仍没找到 → 用 minStart 兜底(整段无换行的
- * 极端 case,只能接受可能的 ANSI 半截);防止扫遍整段 buffer。
- *
- * 为什么找 \n 而不是找 ESC 边界:
- *   - 找 ESC 边界更精确(任何完整 SGR/CSI 之后都是安全的),但实现复杂
- *     (需识别完整 vt 状态机)
- *   - \n 总是 ANSI 行边界,xterm 解析时一定回到 ground state,简单可靠
- *   - 4KB 上限保证最坏情况下损失数十行,远好过乱码风险
- *
- * 测试覆盖:OSC-2 test case 见 session-manager.test.ts。
- */
-export function findSafeTruncationBoundary(
-  buf: Buffer,
-  minStart: number,
-): number {
-  if (minStart <= 0) return 0;
-  const maxScanEnd = Math.min(buf.length, minStart + 4096);
-  for (let i = minStart; i < maxScanEnd; i++) {
-    if (buf[i] === 0x0a /* \n */) {
-      return i + 1; // \n 后的下一个字节才是安全起点
-    }
-  }
-  // 没找到合理边界 — 用 minStart 兜底,接受可能的 ANSI 半截
-  return minStart;
-}
-
-/**
  * 把 OSC 1337 报告的 cwd 规范化:trim、~ 展开、PSDrive 前缀剥离、转绝对。
  * 失败时原样返回。
  *
@@ -1724,6 +1796,7 @@ function normalizeCwd(raw: string): string {
  */
 function createNoopAdapter(): PlatformAdapter {
   return {
+    lifecycleModel: 'no-persistence',
     async detectShells() {
       return [
         {

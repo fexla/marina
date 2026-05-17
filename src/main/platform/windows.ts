@@ -121,6 +121,9 @@ function getShellCandidates(): ShellCandidate[] {
 }
 
 export class WindowsAdapter implements PlatformAdapter {
+  /** 软件定义书 12.2 (v1.6) — Windows 走托盘心智 */
+  readonly lifecycleModel = 'tray-resident' as const;
+
   /**
    * 探测系统中可用的 shell。
    *

@@ -101,7 +101,7 @@ function buildLightExtendedAnsi(): string[] {
   for (let r = 0; r < 6; r++) {
     for (let g = 0; g < 6; g++) {
       for (let b = 0; b < 6; b++) {
-        out.push(rgb(cube[r], cube[g], cube[b]));
+        out.push(rgb(cube[r]!, cube[g]!, cube[b]!));
       }
     }
   }
@@ -449,7 +449,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
 
   const appState = useAppState();
   const dispatch = useAppDispatch();
-  const { t } = useTranslation();
+  const { t, tx } = useTranslation();
   const simpleMode = appState.simpleMode;
   const themeId = appState.settings.appearance?.theme;
   const fontSize = appState.settings.appearance?.terminalFontSize ?? 13;
@@ -605,14 +605,14 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
               : normalized;
           const preview = sanitizePastedPreview(previewRaw);
           const ok = await modal.confirm({
-            title: '多行粘贴确认',
-            message:
-              `即将粘贴 ${lineCount} 行内容到终端。\n` +
-              '多行内容可能被 shell 当成多条命令立即执行。\n' +
-              '建议在"设置 → 行为"启用 bracketed paste 让支持的 shell 把粘贴当 literal。',
+            title: tx('多行粘贴确认', 'Multi-line paste confirmation'),
+            message: tx(
+              `即将粘贴 ${lineCount} 行内容到终端。\n多行内容可能被 shell 当成多条命令立即执行。\n建议在"设置 → 行为"启用 bracketed paste 让支持的 shell 把粘贴当 literal。`,
+              `About to paste ${lineCount} lines into the terminal.\nMulti-line content may be interpreted by the shell as multiple commands.\nEnable bracketed paste in Settings → Behavior so supported shells treat it as literal text.`,
+            ),
             preview,
-            confirmLabel: '粘贴',
-            cancelLabel: '取消',
+            confirmLabel: tx('粘贴', 'Paste'),
+            cancelLabel: tx('取消', 'Cancel'),
           });
           if (!ok) return;
         }
@@ -878,22 +878,14 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       },
     );
 
-    // BETA-019 workaround:alt-screen buffer (TUI 应用如 Claude Code / vim /
-    // htop / aider) 内关闭 cursorBlink,主 buffer (shell prompt) 内开启。
+    // CURSOR-1 根治后(state-replay 架构),BETA-019 workaround 已删除:
+    // 此处原有 `term.buffer.onBufferChange` listener 强行在 alt-buffer 期间
+    // 关 cursorBlink,启发式错且实测 5% 出错。
     //
-    // 用户报告 Claude Code 跑一段时间后,自绘 spinner 重绘字符的末尾出现闪烁
-    // 输入光标。深入排查(详见 BETA-019 工单)未能定位根因 — patch
-    // `coreService.isCursorHidden` setter 抓 stack trace 显示 bug 时段并无异常
-    // 翻转,排除了 DECSTR / RIS / setMode/resetMode 路径污染的所有候选。
-    // 暂以业界通行启发式 workaround 兜底:alt buffer 期 = TUI 应用自管光标,
-    // 终端层闪烁仅徒增干扰。Windows Terminal / iTerm2 / kitty 同此策略。
-    //
-    // exited 态由 FLK-10 effect 设 cursorStyle='underline' 标识,此时 PTY 已死,
-    // 不再有 buffer 切换,只读 cursorStyle 即可跳过(避免与 FLK-10 互相覆盖)。
-    const bufferChangeDisposable = term.buffer.onBufferChange(() => {
-      if (term.options.cursorStyle === 'underline') return;
-      term.options.cursorBlink = term.buffer.active.type === 'normal';
-    });
+    // 真正修复在 main 端 `SessionManager.getScrollbackForReplay`:重挂时通过
+    // SerializeAddon 从 headless 状态机吐完整 ANSI 重建流(含 ?1049h / ?25l
+    // 等模式),renderer 写入即恢复正确 buffer / cursor 可见性。应用要藏光标
+    // 就发 ?25l,Marina 转发,不再二次猜。
 
     term.open(container);
 
@@ -939,20 +931,36 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     // PER-1:term.open 之后才能 load WebGL addon(需 canvas DOM 节点)。
     // try/catch 兜底:某些虚拟机 / 无 GPU 加速环境下 WebGL context 创建
     // 失败,catch 后 xterm 自动用 DOM renderer。
-    try {
-      webglAddon = new WebglAddon();
-      webglAddon.onContextLoss(() => {
-        try {
-          webglAddon?.dispose();
-        } catch {
-          /* ignore */
-        }
+    //
+    // PER-LINUX(BETA-003 性能修复):Linux 上无条件跳过 WebGL。
+    // 根因:Chromium 在 Linux 下 GPU 驱动栈(Mesa/VAAPI/EGL)经常不完整,
+    // WebGL context **会成功创建**(因为有 swiftshader 软渲兜底),但每帧 GL
+    // 调用都走 CPU 模拟,xterm 滚动秒级响应,完全不可用。catch 在这种情况下
+    // 不会触发(创建并未抛错),所以软探测无效 —— 直接按 platform 跳过最稳。
+    // xterm DOM renderer 在 Linux 上对大多数 GPU 配置都稳定,即使在虚拟机内
+    // 也能保持流畅滚动。
+    // 检测走 navigator.userAgent —— renderer 进程没有 process.platform。
+    const isLinux = typeof navigator !== 'undefined' &&
+      /linux/i.test(navigator.userAgent) &&
+      !/android/i.test(navigator.userAgent);
+    if (isLinux) {
+      console.info('[TerminalView] PER-LINUX: skipping WebGL addon (Linux软渲风险),using DOM renderer');
+    } else {
+      try {
+        webglAddon = new WebglAddon();
+        webglAddon.onContextLoss(() => {
+          try {
+            webglAddon?.dispose();
+          } catch {
+            /* ignore */
+          }
+          webglAddon = null;
+        });
+        term.loadAddon(webglAddon);
+      } catch (err) {
+        console.warn('[TerminalView] WebGL renderer unavailable, falling back to DOM', err);
         webglAddon = null;
-      });
-      term.loadAddon(webglAddon);
-    } catch (err) {
-      console.warn('[TerminalView] WebGL renderer unavailable, falling back to DOM', err);
-      webglAddon = null;
+      }
     }
 
     try {
@@ -1210,7 +1218,6 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       cleanupOutput();
       dataHandler.dispose();
       searchResultsDisposable?.dispose();
-      bufferChangeDisposable.dispose();
       searchAddon.dispose();
       // PER-1:WebGL addon 必须在 term.dispose 之前释放,否则 GL context
       // 句柄泄漏(显存累积,大量切 session 后会触发显卡警告)
@@ -1241,10 +1248,8 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
   // 在闪"误导用户以为还能交互(配合 TYP-1 的 toast,死后输入有可见反馈)。
   // 状态回到 active/idle 时(实际不会发生,exited 是终态)恢复闪。
   //
-  // BETA-019 workaround:not-exited 分支同时读 buffer.type — 在 alt buffer
-  // (Claude Code 等 TUI) 内保持 blink=false。否则 session.state idle↔active
-  // 切换会反复把 blink 强制设回 true,覆盖 onBufferChange listener 的关闭设置。
-  // cursorStyle 仍用作"exited 标识位",mount effect 内 onBufferChange 读它判 exited。
+  // CURSOR-1 后:not-exited 分支不再读 buffer.type — 应用要藏光标会发
+  // ?25l,Marina 转发即可,无需启发式。
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
@@ -1253,7 +1258,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       term.options.cursorStyle = 'underline';
     } else {
       term.options.cursorStyle = 'bar';
-      term.options.cursorBlink = term.buffer.active.type === 'normal';
+      term.options.cursorBlink = true;
     }
   }, [session.state]);
 
@@ -1502,7 +1507,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         <span className="status-text">
           {session.displayName} · pid {session.pid > 0 ? session.pid : '—'}
           {session.state === 'exited' &&
-            ` · 已退出 (exitCode=${session.exitCode ?? 0})`}
+            tx(` · 已退出 (exitCode=${session.exitCode ?? 0})`, ` · Exited (exitCode=${session.exitCode ?? 0})`)}
         </span>
         <button
           type="button"
@@ -1525,7 +1530,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
           className="status-cwd"
           title={
             cwdDrifted
-              ? `当前: ${session.currentCwd}\n原: ${session.originalCwd}`
+              ? tx(`当前: ${session.currentCwd}\n原: ${session.originalCwd}`, `Current: ${session.currentCwd}\nOriginal: ${session.originalCwd}`)
               : session.currentCwd
           }
         >
@@ -1543,12 +1548,12 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         onDrop={handleTerminalDrop}
       />
       {searchVisible && (
-        <div className="terminal-search-bar" role="search" aria-label="终端搜索">
+        <div className="terminal-search-bar" role="search" aria-label={tx('终端搜索', 'Terminal search')}>
           <input
             ref={searchInputRef}
             type="text"
             className="terminal-search-input"
-            placeholder="搜索 (Enter 下一个 / Shift+Enter 上一个 / Esc 关闭)"
+            placeholder={tx('搜索 (Enter 下一个 / Shift+Enter 上一个 / Esc 关闭)', 'Search (Enter = next, Shift+Enter = prev, Esc = close)')}
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
             onKeyDown={(e) => {
@@ -1568,22 +1573,22 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
             className="terminal-search-count"
             title={
               searchText
-                ? `${searchResults.matches} 个匹配,当前第 ${searchResults.current}`
-                : '输入关键字开始搜索'
+                ? tx(`${searchResults.matches} 个匹配,当前第 ${searchResults.current}`, `${searchResults.matches} matches, currently #${searchResults.current}`)
+                : tx('输入关键字开始搜索', 'Type to start searching')
             }
           >
             {searchText
               ? searchResults.matches > 0
                 ? `${searchResults.current}/${searchResults.matches}`
-                : '无匹配'
+                : tx('无匹配', 'No match')
               : '—'}
           </span>
           <button
             type="button"
             className="terminal-search-btn"
             onClick={() => performSearch('previous')}
-            title="上一个 (Shift+Enter)"
-            aria-label="上一个匹配"
+            title={tx('上一个 (Shift+Enter)', 'Previous (Shift+Enter)')}
+            aria-label={tx('上一个匹配', 'Previous match')}
             disabled={!searchText || searchResults.matches === 0}
           >
             ↑
@@ -1592,8 +1597,8 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
             type="button"
             className="terminal-search-btn"
             onClick={() => performSearch('next')}
-            title="下一个 (Enter)"
-            aria-label="下一个匹配"
+            title={tx('下一个 (Enter)', 'Next (Enter)')}
+            aria-label={tx('下一个匹配', 'Next match')}
             disabled={!searchText || searchResults.matches === 0}
           >
             ↓
@@ -1602,8 +1607,8 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
             type="button"
             className={`terminal-search-btn${searchCaseSensitive ? ' active' : ''}`}
             onClick={() => setSearchCaseSensitive((v) => !v)}
-            title="区分大小写"
-            aria-label="区分大小写"
+            title={tx('区分大小写', 'Case sensitive')}
+            aria-label={tx('区分大小写', 'Case sensitive')}
             aria-pressed={searchCaseSensitive}
           >
             Aa
@@ -1612,8 +1617,8 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
             type="button"
             className="terminal-search-btn close"
             onClick={handleCloseSearch}
-            title="关闭 (Esc)"
-            aria-label="关闭搜索"
+            title={tx('关闭 (Esc)', 'Close (Esc)')}
+            aria-label={tx('关闭搜索', 'Close search')}
           >
             ×
           </button>

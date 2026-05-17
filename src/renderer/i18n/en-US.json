@@ -1,6 +1,11 @@
 {
   "_meta": "Marina English strings. Keys follow dot.path naming, roughly aligned with src/renderer/components. Missing translations fall back to the key literal so dev-mode reveals gaps.",
 
+  "lastSession.title": "Close Marina?",
+  "lastSession.message": "{count} active session(s) will be terminated.",
+  "lastSession.confirm": "Close",
+  "lastSession.cancel": "Cancel",
+
   "sidebar.category.bookmark": "Bookmarks",
   "sidebar.category.temporary": "Temporary",
   "sidebar.category.recent": "Recent",
@@ -56,7 +61,7 @@
   "settings.ai.statusRecheck.label": "Status recheck (BETA-006)",
   "settings.ai.statusRecheck.hint": "LLM rechecks before active→idle; falls back to the threshold on failure, never blocks",
   "settings.ai.statusRecheckSource.label": "Recheck input source",
-  "settings.ai.statusRecheckSource.hint": "raw = raw PTY bytes (ANSI escapes included); headless = pre-rendered character matrix (recommended, no redraw residue)",
+  "settings.ai.statusRecheckSource.hint": "headless = pre-rendered character matrix (no ANSI noise, no redraw residue)",
 
   "common.enable": "Enable",
   "common.disable": "Disable",

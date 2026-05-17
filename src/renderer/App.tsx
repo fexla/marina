@@ -20,6 +20,7 @@ import { ContextMenuProvider } from './components/ContextMenu';
 import { ToastProvider } from './components/Toast';
 import { ModalProvider } from './components/Modal';
 import { LanguageProvider } from './components/LanguageProvider';
+import { LastSessionConfirmBridge } from './components/LastSessionConfirmBridge';
 
 type HandshakeState =
   | { status: 'pending' }
@@ -231,6 +232,18 @@ function ConnectedShell({
     document.documentElement.setAttribute('data-theme', currentTheme);
   }, [currentTheme]);
 
+  // BETA-003c resize 修复:把平台标记挂到 <html data-platform>,CSS 据此
+  // 排除 Linux 上的 .app-root border-radius — Linux 跑 transparent:false
+  // (Wayland 透明窗口 resize bug),圆角内会露 #191724 实色边角,要把圆角
+  // 关掉。Windows / macOS 仍走系统 frameless 圆角 + CSS 圆角双保险。
+  useEffect(() => {
+    const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+    const isLinux = /linux/i.test(ua) && !/android/i.test(ua);
+    const isMac = /mac/i.test(ua) && !isLinux;
+    const platform = isLinux ? 'linux' : isMac ? 'darwin' : 'win32';
+    document.documentElement.setAttribute('data-platform', platform);
+  }, []);
+
   if (sync.error) {
     return (
       <FullPagePlaceholder
@@ -250,6 +263,7 @@ function ConnectedShell({
     <LanguageProvider>
     <ToastProvider>
       <ModalProvider>
+        <LastSessionConfirmBridge />
         <ContextMenuProvider>
           <div
             className="app-root with-shell"

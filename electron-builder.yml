@@ -89,11 +89,71 @@ mac:
   category: public.app-category.developer-tools
   # icon: build/icon.icns
 
+## Linux (BETA-003d)
+##
+## 三产物:.deb / .rpm / AppImage,都 x64。
+## - .deb / .rpm postinst 自动通过 update-alternatives / alternatives 把 marina
+##   注册为 x-terminal-emulator (优先级 50;系统默认 gnome-terminal 是 40)
+## - AppImage 走单文件分发,无需 root;StartupWMClass 让任务栏图标分组正确
+## - desktop entry 通过 Categories=System;TerminalEmulator 让 Nautilus / Nemo /
+##   Caja 的 "在终端中打开" 找到 Marina (走 gsettings + freedesktop spec)
 linux:
   target:
-    - target: AppImage
-      arch: [x64]
     - target: deb
       arch: [x64]
-  category: Development
-  # icon: build/icon.png
+    - target: rpm
+      arch: [x64]
+    - target: AppImage
+      arch: [x64]
+  # category 是 freedesktop "Main Category" 之一,electron-builder 把它写入
+  # /usr/share/applications/marina.desktop 的 Categories= 字段。选 TerminalEmulator
+  # 让 Nautilus / Nemo 等文件管理器识别 Marina 为"终端"类型应用,GNOME 设置 →
+  # 默认应用 → 终端 下拉也会列出 Marina。
+  category: TerminalEmulator
+  executableName: marina
+  icon: build/icon.png
+  synopsis: 现代化的终端模拟器
+  description: Marina 是一款以"路径"为核心的终端管理器,内置 AI 助手联动,适配 Windows / Linux。
+  # electron-builder 24.x:desktop 字段直接平铺为 key/value,自动写入
+  # /usr/share/applications/marina.desktop。Exec 行由 executableName=marina 自动
+  # 生成为 `marina %U`(走 /usr/bin/marina 软链);Nautilus / Nemo / Caja 等的
+  # "在终端中打开"通过 gsettings + 子进程 cwd 继承传目录,不依赖 Exec 参数 ——
+  # 见 main/index.ts 启动期 process.cwd() 的解析路径(BETA-003c)。
+  desktop:
+    Name: Marina
+    GenericName: Terminal Emulator
+    Comment: A modern terminal emulator
+    Categories: System;TerminalEmulator;
+    Keywords: shell;prompt;command;commandline;cmd;
+    MimeType: inode/directory;
+    StartupWMClass: Marina
+    StartupNotify: 'true'
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+deb:
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libdrm2
+    - libgbm1
+  afterInstall: build/linux/deb-postinst.sh
+  afterRemove: build/linux/deb-postrm.sh
+
+rpm:
+  depends:
+    - gtk3
+    - libnotify
+    - nss
+    - libXScrnSaver
+    - libXtst
+    - xdg-utils
+  afterInstall: build/linux/rpm-postinst.sh
+  afterRemove: build/linux/rpm-postrm.sh
+
+appImage:
+  artifactName: ${productName}-${version}-${arch}.${ext}

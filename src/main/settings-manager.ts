@@ -289,6 +289,23 @@ export function stripUnknownLegacyFields<T>(raw: T): T {
     }
   }
 
+  // CURSOR-1(2026-05-17):BETA-006 v2 输入源 'raw'(裸字节 scrollback 末尾)
+  // 路径已删除,老 settings.json 残留 ai.statusRecheckSource='raw' 静默 coerce
+  // 到 'headless'(唯一可用)。不 coerce 的话 validateSettings 会因枚举不匹
+  // 配抛错。
+  if (
+    obj['ai'] &&
+    typeof obj['ai'] === 'object' &&
+    !Array.isArray(obj['ai'])
+  ) {
+    const ai = obj['ai'] as Record<string, unknown>;
+    if (ai['statusRecheckSource'] === 'raw') {
+      const cloned = ensureClone();
+      const aiClone = { ...ai, statusRecheckSource: 'headless' };
+      cloned['ai'] = aiClone;
+    }
+  }
+
   return (next ?? raw) as T;
 }
 

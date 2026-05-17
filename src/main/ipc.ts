@@ -312,36 +312,43 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
 
   ipcMain.handle(
     COMMAND_CHANNELS.SESSION_CLAIM,
-    (
+    async (
       _e,
       envelope: CommandEnvelope<ClaimSessionPayload>,
-    ): ClaimSessionResponse => {
+    ): Promise<ClaimSessionResponse> => {
       sessionManager.claimOwner(envelope.payload.sessionId, envelope.windowId);
       // CP-2 勘误后:scrollback ring buffer 已实现。带回历史以保协议自洽,
       // 但 renderer 通常用 cmd:session:get-scrollback 单独拉,以避免 claim
       // 动作和 history-replay 时序耦合 (TerminalView 重新挂载场景非 claim 触发)
-      const sb = sessionManager.getScrollback(envelope.payload.sessionId);
+      // CURSOR-1 后:替换路径 = getScrollbackForReplay(state-replay 架构,
+      // 返回完整终端状态 ANSI 流),需 async + await。
+      const sb = await sessionManager.getScrollbackForReplay(
+        envelope.payload.sessionId,
+      );
       return { scrollback: sb.data, lastSeq: sb.lastSeq };
     },
   );
 
   ipcMain.handle(
     COMMAND_CHANNELS.SESSION_GET_SCROLLBACK,
-    (
+    async (
       _e,
       envelope: CommandEnvelope<GetScrollbackPayload>,
-    ): GetScrollbackResponse => {
-      return sessionManager.getScrollback(envelope.payload.sessionId);
+    ): Promise<GetScrollbackResponse> => {
+      // CURSOR-1:走 state-replay 路径(SerializeAddon),不再返回裸字节。
+      // 详见 SessionManager.getScrollbackForReplay 与 docs/issues/cursor-1-...
+      return sessionManager.getScrollbackForReplay(envelope.payload.sessionId);
     },
   );
 
   ipcMain.handle(
     COMMAND_CHANNELS.SESSION_EXPORT_SCROLLBACK,
-    (
+    async (
       _e,
       envelope: CommandEnvelope<{ sessionId: string }>,
-    ): { text: string } => {
-      // BETA-028:工具栏"复制全部"按钮 → 返回 UTF-8 字符串
+    ): Promise<{ text: string }> => {
+      // BETA-028:工具栏"复制全部"按钮 → 返回 UTF-8 字符串。
+      // CURSOR-1 后 exportScrollback 改 async(读 headless 前需 drain parser)。
       return sessionManager.exportScrollback(envelope.payload.sessionId);
     },
   );
