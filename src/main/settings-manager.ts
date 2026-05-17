@@ -66,6 +66,10 @@ export const DEFAULT_SETTINGS: Settings = {
   advanced: {
     logLevel: 'INFO',
     activeIdleThresholdSeconds: 2,
+    // 终端渲染器默认 'auto':Windows/macOS WebGL、Linux DOM(PER-LINUX,
+    // BETA-003 修复)。'webgl' / 'dom' 是显式覆盖,通常给调研某些 WebGL
+    // 兼容性 bug 用(例如某些 TUI 的光标渲染在 WebGL 下异常)。
+    terminalRenderer: 'auto',
   },
   // BETA-031 AI 助手默认全 disabled,用户开启 + 填 key 后才生效
   ai: {
@@ -401,6 +405,12 @@ export function validateSettings(s: Settings): void {
     throw new SettingsError(
       'InvalidSettings',
       `advanced.logLevel="${s.advanced.logLevel}" 必须是 INFO 或 DEBUG`,
+    );
+  }
+  if (!['auto', 'webgl', 'dom'].includes(s.advanced.terminalRenderer)) {
+    throw new SettingsError(
+      'InvalidSettings',
+      `advanced.terminalRenderer="${s.advanced.terminalRenderer}" 必须是 auto / webgl / dom`,
     );
   }
   if (!['menu', 'paste'].includes(s.behavior.terminalRightClick)) {

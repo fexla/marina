@@ -279,6 +279,19 @@ export interface Settings {
     logLevel: 'INFO' | 'DEBUG';
     activeIdleThresholdSeconds: number;
     // 注:v1.2 起 sessionTombstoneMinutes 已删除 (砍墓地,见 ADR-008)
+    /**
+     * 终端渲染器选择(影响 xterm.js 渲染层)。
+     * - 'auto' = 平台默认:Windows / macOS 用 WebGL(性能 10-50× DOM),Linux
+     *           强制 DOM(Chromium Mesa/EGL 软渲会让 xterm 滚动秒级响应)。
+     *           **当前默认行为**。
+     * - 'webgl' = 强制 WebGL。**警告**:Linux 上几乎必然慢得不可用。
+     * - 'dom' = 强制 DOM renderer。性能差但稳定;某些应用(如 Codex)在
+     *           WebGL 下光标渲染异常时是有效的回退手段。
+     *
+     * 设置变更对**已打开 tab 不生效**,需关 tab 重开(xterm 实例的 renderer
+     * 在 mount 时决定,运行时切换需重建)。
+     */
+    terminalRenderer: 'auto' | 'webgl' | 'dom';
   };
 
   /**

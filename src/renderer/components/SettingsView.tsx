@@ -1690,6 +1690,7 @@ function AdvancedPanel({
   const state = useAppState();
   const adv = state.settings.advanced;
   const logLevel = adv?.logLevel ?? 'INFO';
+  const terminalRenderer = adv?.terminalRenderer ?? 'auto';
 
   const [confirmingReset, setConfirmingReset] = useState(false);
 
@@ -1757,6 +1758,36 @@ function AdvancedPanel({
         <button type="button" className="settings-button" onClick={handleOpenLogs}>
           {tx('打开日志目录', 'Open log directory')}
         </button>
+      </SettingRow>
+
+      <SettingRow
+        label={tx('终端渲染器', 'Terminal renderer')}
+        hint={tx(
+          'auto=平台默认(Win/macOS WebGL,Linux DOM);dom=强制软渲(性能差但稳,某些 TUI 光标在 WebGL 下异常时用)。变更对已打开的 tab 不生效,需关 tab 重开。',
+          'auto = platform default (Win/macOS WebGL, Linux DOM); dom = force DOM (slower but compatible — useful when some TUIs render cursors incorrectly under WebGL). Takes effect on next opened tab.',
+        )}
+      >
+        <select
+          className="settings-input"
+          value={terminalRenderer}
+          onChange={(e) =>
+            void updateSettings(
+              {
+                advanced: {
+                  terminalRenderer: e.target.value as
+                    | 'auto'
+                    | 'webgl'
+                    | 'dom',
+                },
+              },
+              setError,
+            )
+          }
+        >
+          <option value="auto">{tx('auto (平台默认)', 'auto (platform default)')}</option>
+          <option value="webgl">{tx('webgl (强制)', 'webgl (force)')}</option>
+          <option value="dom">{tx('dom (强制软渲)', 'dom (force DOM)')}</option>
+        </select>
       </SettingRow>
 
       <SettingRow

@@ -460,6 +460,9 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
   const selectOnCopy = appState.settings.behavior?.selectOnCopy ?? true;
   const rightClickMode = appState.settings.behavior?.terminalRightClick ?? 'menu';
   const bracketedPaste = appState.settings.behavior?.bracketedPaste ?? true;
+  // 终端渲染器选择(mount 时决定,运行时切换需关 tab 重开)
+  const terminalRenderer =
+    appState.settings.advanced?.terminalRenderer ?? 'auto';
 
   // 把"创建期"读到的初始值用 useMemo 锁定 (terminal 创建后只用 mutator 调整),
   // 否则每次 settings 引用变化都会重建 xterm 实例。
@@ -932,19 +935,34 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     // try/catch 兜底:某些虚拟机 / 无 GPU 加速环境下 WebGL context 创建
     // 失败,catch 后 xterm 自动用 DOM renderer。
     //
-    // PER-LINUX(BETA-003 性能修复):Linux 上无条件跳过 WebGL。
-    // 根因:Chromium 在 Linux 下 GPU 驱动栈(Mesa/VAAPI/EGL)经常不完整,
-    // WebGL context **会成功创建**(因为有 swiftshader 软渲兜底),但每帧 GL
-    // 调用都走 CPU 模拟,xterm 滚动秒级响应,完全不可用。catch 在这种情况下
-    // 不会触发(创建并未抛错),所以软探测无效 —— 直接按 platform 跳过最稳。
-    // xterm DOM renderer 在 Linux 上对大多数 GPU 配置都稳定,即使在虚拟机内
-    // 也能保持流畅滚动。
-    // 检测走 navigator.userAgent —— renderer 进程没有 process.platform。
-    const isLinux = typeof navigator !== 'undefined' &&
+    // 决定用 WebGL renderer 还是 DOM renderer。
+    //
+    // settings.advanced.terminalRenderer:
+    //   'auto'  = 平台默认:Windows/macOS WebGL,Linux DOM(PER-LINUX,
+    //             BETA-003 性能修复 — Chromium 在 Linux 下 GPU 驱动栈
+    //             Mesa/EGL 经常不完整,WebGL context 会成功创建但走 CPU
+    //             模拟,xterm 滚动秒级响应不可用;catch 不触发,只能按
+    //             platform 直接跳)
+    //   'webgl' = 强制 WebGL(Linux 上几乎必然慢得不可用,只在显式调研时用)
+    //   'dom'   = 强制 DOM renderer(某些 TUI 在 WebGL 下光标渲染异常时
+    //             用作回退手段;性能 10-50× 差但稳)
+    //
+    // mount 时决定,运行时改设置需重建 xterm 实例(关 tab 重开),因为
+    // addon 在 term.open 之后只 load 一次。
+    const isLinux =
+      typeof navigator !== 'undefined' &&
       /linux/i.test(navigator.userAgent) &&
       !/android/i.test(navigator.userAgent);
-    if (isLinux) {
-      console.info('[TerminalView] PER-LINUX: skipping WebGL addon (Linux软渲风险),using DOM renderer');
+    const useWebGL =
+      terminalRenderer === 'webgl'
+        ? true
+        : terminalRenderer === 'dom'
+          ? false
+          : !isLinux; // 'auto'
+    if (!useWebGL) {
+      console.info(
+        `[TerminalView] using DOM renderer (settings.advanced.terminalRenderer=${terminalRenderer}${terminalRenderer === 'auto' && isLinux ? ', Linux auto' : ''})`,
+      );
     } else {
       try {
         webglAddon = new WebglAddon();
@@ -958,7 +976,10 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         });
         term.loadAddon(webglAddon);
       } catch (err) {
-        console.warn('[TerminalView] WebGL renderer unavailable, falling back to DOM', err);
+        console.warn(
+          '[TerminalView] WebGL renderer unavailable, falling back to DOM',
+          err,
+        );
         webglAddon = null;
       }
     }
