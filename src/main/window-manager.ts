@@ -226,26 +226,6 @@ export class WindowManager implements IWindowManager {
       sendMaxState();
     });
 
-    // BETA-003 PER-LINUX:主进程的 resize 事件作为 ResizeObserver 的双保险。
-    // 根因:Linux Wayland / Xwayland + transparent:true 下,renderer DOM
-    // ResizeObserver 触发时机可能滞后于真实 viewport,fit() 用过期 clientWidth
-    // 算出错误 cols → IPC PTY 卡在中间值 → 用户拖大窗口后右侧空白。
-    // Electron 主进程 'resize' 事件来自原生 window manager,时机更可靠。
-    // renderer 收到后用 rAF + fit 强制重 fit。
-    //
-    // 触发频率:X11 / Wayland 在拖动过程中可能高频触发,renderer 端做 trailing
-    // debounce。Windows 维持 RO 主路径,此事件作冗余触发也无害(performResize
-    // 内部有 lastCols/Rows dedupe)。
-    const sendResized = (): void => {
-      if (win.isDestroyed()) return;
-      win.webContents.send('evt:window:resized', {
-        eventId: randomUUID(),
-        timestamp: Date.now(),
-        payload: {},
-      });
-    };
-    win.on('resize', sendResized);
-
     // M1-G:窗口关闭前把当前 bounds 写回 settings (经 onBeforeClose 回调)。
     // 注意 'close' 在 'closed' 之前;'closed' 时 win 已销毁拿不到 bounds。
     win.on('close', (event) => {

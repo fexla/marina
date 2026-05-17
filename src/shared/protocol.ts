@@ -172,20 +172,6 @@ export const EVENT_CHANNELS = {
    * Cmd+Q / App Menu Quit。
    */
   UI_SHOW_LAST_SESSION_CONFIRM: 'evt:ui:show-last-session-confirm',
-
-  /**
-   * BETA-003 PER-LINUX 修复:主进程 BrowserWindow.on('resize') 触发时发此事件,
-   * renderer 用 rAF + fitAddon.fit 强制重 fit。
-   *
-   * 根因:Linux Wayland/Xwayland + transparent:true 下,renderer 端
-   * ResizeObserver 可能在 layout 未收敛时触发,fit() 算出旧尺寸,导致 PTY
-   * 卡在中间值(用户拖大窗口后右侧空白)。Electron 主进程 'resize' 事件
-   * 触发时机更可靠,作为双保险。Windows / macOS 上 RO 已够用,此事件无害。
-   *
-   * 触发频率:OS-dependent。X11 / Wayland 在拖动中可能高频触发,renderer
-   * 端做 trailing 防抖。
-   */
-  WINDOW_RESIZED: 'evt:window:resized',
 } as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];

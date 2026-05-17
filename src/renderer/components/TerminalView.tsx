@@ -1131,55 +1131,15 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         .catch(() => {});
     };
 
-    // PER-LINUX (BETA-003 resize 修复):双帧 + 兜底重 fit 调度器。
-    // 调用一次会做 3 件事:
-    //   1. 立刻 performResize(用当前 container 尺寸,可能尚未收敛)
-    //   2. rAF 后再 performResize(下一帧 layout 已收敛)
-    //   3. 100ms 后再 performResize(catch 拖动结束的尾帧 / 异步 layout)
-    // performResize 内部有 lastCols/Rows dedupe,session-manager.resize 也有
-    // no-op short-circuit,所以多次调用是廉价的。
-    let trailingTimer: ReturnType<typeof setTimeout> | null = null;
-    const performResizeRobust = (): void => {
-      if (disposed) return;
-      performResize();
-      requestAnimationFrame(() => {
-        if (disposed) return;
-        performResize();
-      });
-      if (trailingTimer !== null) clearTimeout(trailingTimer);
-      trailingTimer = setTimeout(() => {
-        trailingTimer = null;
-        performResize();
-      }, 100);
-    };
-
     const resizeObserver = new ResizeObserver(() => {
       if (disposed) return;
       if (resizeTimer !== null) clearTimeout(resizeTimer);
       resizeTimer = setTimeout(() => {
         resizeTimer = null;
-        performResizeRobust();
+        performResize();
       }, RESIZE_DEBOUNCE_MS);
     });
     resizeObserver.observe(container);
-
-    // PER-LINUX (BETA-003 resize 修复):主进程 BrowserWindow.on('resize') 兜底。
-    // 根因:Linux Wayland/Xwayland + transparent 下,renderer 端 ResizeObserver
-    // 可能在 layout 未收敛时触发,fit() 用过期 clientWidth 算出错误 cols → IPC
-    // PTY 卡在中间值 → 用户拖大窗口后右侧空白。Electron 主进程 resize 事件来
-    // 自原生 window manager,时机更可靠;且会在 RO 已结束触发后继续 fire,
-    // 让我们能 catch 到"RO 沉默之后才稳定的 layout"。
-    const cleanupWindowResized = window.api.on(
-      EVENT_CHANNELS.WINDOW_RESIZED,
-      () => {
-        if (disposed) return;
-        if (resizeTimer !== null) {
-          clearTimeout(resizeTimer);
-          resizeTimer = null;
-        }
-        performResizeRobust();
-      },
-    );
 
     // RSZ-2:最大化 / 还原是瞬时尺寸跳变,不属于连续拖拽,跳过 debounce 立即
     // 执行 — 体感"双击 → 屏幕变大 → 终端立即铺满",而不是 150ms 停顿。
@@ -1261,9 +1221,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     return () => {
       disposed = true;
       if (resizeTimer !== null) clearTimeout(resizeTimer);
-      if (trailingTimer !== null) clearTimeout(trailingTimer);
       resizeObserver.disconnect();
-      cleanupWindowResized();
       cleanupMaxState();
       cleanupOutput();
       dataHandler.dispose();
