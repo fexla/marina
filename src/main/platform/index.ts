@@ -90,10 +90,32 @@ export interface PlatformAdapter {
    * 重新读 HKLM + HKCU 合并后的 PATH,确保新装的 python.exe / node.exe 立刻
    * 可见。失败时回退 process.env.PATH 并写 log.warn。
    *
+   * Windows 上还要保证返回值不含 `%SystemRoot%` 等未展开占位符(BETA-ENV-1)—
+   * 注册表 REG_EXPAND_SZ 原值含占位符,实现里必须自己调
+   * ExpandEnvironmentStrings(或等价的 TS 实现)展开后再返回。
+   *
    * macOS / Linux 平台一般不需要(标准 fork/exec 已继承 shell 完整 env),
    * 直接返回 process.env.PATH 即可。
    */
   getRefreshedPath(): string;
+
+  /**
+   * spawn 前对完整 env 字典做最后一道规整(BETA-ENV-1)。
+   *
+   * Windows 上必须保证:
+   * (1) `SystemRoot` / `windir` / `SYSTEMROOT` 三个 casing 都存在且值一致
+   *     —— Win32 内部展开 `%SystemRoot%` 按字面 key 找,casing 错就替换成空
+   * (2) PATH / Path / PATHEXT / PSModulePath / ComSpec 等 PATH-like 字段
+   *     里不残留未展开占位符
+   * 这两条任意一条挂了,所有 system32 系原生工具(powershell / cmd / reg /
+   * wmic / ssh / tasklist 等)都会从子进程的 PATH 上消失。
+   *
+   * macOS / Linux:子进程从 login shell 继承已展开的 env,本方法返回原对象
+   * 即可。接口保留是为了让 session-manager 不依赖 process.platform 判断。
+   *
+   * 实现允许**原地修改** env 并返回同一引用(便于调用方链式)。
+   */
+  normalizeSpawnEnv(env: Record<string, string>): Record<string, string>;
 
   /**
    * 返回干净安装时种入收藏栏的"默认收藏"条目。

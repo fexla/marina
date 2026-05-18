@@ -2,6 +2,38 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [0.1.0-beta.6] — 2026-05-18
+
+紧急 hotfix:在 Marina 启动的 Git Bash 里 `powershell.exe` / `cmd.exe` / `reg.exe`
+/ `wmic.exe` / `ssh.exe`(OpenSSH 版)等所有 `C:\Windows\System32` 系原生命令
+都无法通过 PATH 解析(BETA-ENV-1)。用户报告 Claude Code 的 PowerShell 工具
+直接返回"PowerShell is not available on this system."。
+
+### 修复
+
+- **BETA-ENV-1:Windows 子进程 PATH 占位符未展开 + canonical `SystemRoot`
+  缺失,导致 system32 系工具全部从 PATH 上消失。** 两个独立但叠加的 bug:
+  1. `WindowsAdapter.getRefreshedPath` 从注册表 `HKLM\…\Environment\Path`
+     读到的是 `REG_EXPAND_SZ` 字面字符串(含 `%SystemRoot%\System32` 等占位符),
+     直接塞进子进程 env 没做 `ExpandEnvironmentStrings`。
+  2. 子进程 env 块里 `SystemRoot`(canonical casing)是空串,只有 `SYSTEMROOT`
+     有值;Win32 内部展开 `%SystemRoot%` 按字面 key 名查,大小写不一致就替
+     换成空。
+  修复采用**两层防御**:
+  - Layer 1(源头):`getRefreshedPath` 读完注册表立即调
+    `expandWindowsEnvPlaceholders` 展开,name 查找大小写不敏感、未命中保留原
+    样(对齐 Win32 ExpandEnvironmentStringsW)。
+  - Layer 2(兜底):新增 `PlatformAdapter.normalizeSpawnEnv` 接口,Windows
+    实现在 spawn 前补齐 `SystemRoot` / `SYSTEMROOT` / `windir` 三个 casing 的
+    canonical 值,并对 PATH / Path / PATHEXT / PSModulePath / ComSpec 等
+    PATH-like 字段再做一次展开;残留占位符通过 `logger.warn` 上报。
+  - 配套 40 条单测覆盖回归(`src/main/platform/windows-env.test.ts` +
+    `src/main/platform/windows.test.ts` 的 BETA-ENV-1 部分),把用户报告里
+    `SystemRoot='' + SYSTEMROOT='C:\\Windows'` 的诡异组合钉成回归测,任何
+    回归都会让 CI 挂掉。
+  - Linux / macOS adapter `normalizeSpawnEnv` 走 no-op(Win32 占位符在 POSIX
+    上不存在)。
+
 ## [0.1.0-beta.5] — 2026-05-17
 
 beta.4 之后的开源准备 + Linux 首发回合。三件大事:**Linux 包正式可下载(Tier 2,

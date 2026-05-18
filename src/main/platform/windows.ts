@@ -25,6 +25,10 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { logger } from '../logger';
 import type { DefaultBookmarkSeed, PlatformAdapter, ShellInfo } from './index';
+import {
+  expandWindowsEnvPlaceholders,
+  normalizeWindowsSpawnEnv,
+} from './windows-env';
 
 const execFileAsync = promisify(execFile);
 
@@ -433,6 +437,12 @@ export class WindowsAdapter implements PlatformAdapter {
    * query 两个 hive 拿最新值,按 Windows 系统 PATH 解析顺序合并(HKLM 在前,
    * HKCU 在后)。
    *
+   * BETA-ENV-1:HKLM\…\Environment 下的 Path 在注册表里类型是 REG_EXPAND_SZ,
+   *   原值含 `%SystemRoot%\System32` 等占位符;reg.exe query 拿到的是字面字符
+   *   串,**没有展开**。直接塞进子进程 env 会导致所有 system32 系命令(powershell /
+   *   cmd / reg / wmic / tasklist / ssh 等)从 PATH 上消失。本方法返回前调
+   *   `expandWindowsEnvPlaceholders` 展开,name 大小写不敏感、未命中保留原样。
+   *
    * 失败回退 process.env.PATH(不阻塞 spawn),写 log.warn 留痕。
    *
    * 用 execFileSync 是因为本方法在每次 spawn 前同步调用,异步化的传染面太大。
@@ -442,36 +452,14 @@ export class WindowsAdapter implements PlatformAdapter {
   getRefreshedPath(): string {
     const fallback = process.env.PATH ?? '';
     try {
-      let hklm: string | null = null;
-      let hkcu: string | null = null;
-
-      try {
-        const out = execFileSync(
-          'reg.exe',
-          [
-            'query',
-            'HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\Environment',
-            '/v',
-            'Path',
-          ],
-          { encoding: 'utf8', windowsHide: true, timeout: 2000 },
-        );
-        hklm = parseRegPathOutput(out);
-      } catch (e) {
-        logger.warn('WindowsAdapter', 'reg query HKLM Path failed', e);
-      }
-
-      try {
-        const out = execFileSync(
-          'reg.exe',
-          ['query', 'HKCU\\Environment', '/v', 'Path'],
-          { encoding: 'utf8', windowsHide: true, timeout: 2000 },
-        );
-        hkcu = parseRegPathOutput(out);
-      } catch (e) {
+      const hklm = readRegistryPath(
+        'HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\Environment',
+        { onError: (e) => logger.warn('WindowsAdapter', 'reg query HKLM Path failed', e) },
+      );
+      const hkcu = readRegistryPath('HKCU\\Environment', {
         // HKCU\Environment\Path 在干净系统上可能不存在,正常现象
-        logger.debug('WindowsAdapter', 'reg query HKCU Path miss', e);
-      }
+        onError: (e) => logger.debug('WindowsAdapter', 'reg query HKCU Path miss', e),
+      });
 
       const parts = [hklm, hkcu].filter((s): s is string => !!s);
       if (parts.length === 0) {
@@ -481,7 +469,15 @@ export class WindowsAdapter implements PlatformAdapter {
         );
         return fallback;
       }
-      return parts.join(';');
+      const merged = parts.join(';');
+      // BETA-ENV-1:展开 %SystemRoot% 等占位符 — 用 process.env 做查找源,
+      // 这是当前进程实际可见的 env(已含 Windows 自动展开的 SystemRoot 等)。
+      // 即便这一步遗漏,session-manager 还会过 normalizeSpawnEnv 第二道防线。
+      const expanded = expandWindowsEnvPlaceholders(
+        merged,
+        process.env as Record<string, string>,
+      );
+      return expanded;
     } catch (e) {
       logger.warn(
         'WindowsAdapter',
@@ -490,6 +486,18 @@ export class WindowsAdapter implements PlatformAdapter {
       );
       return fallback;
     }
+  }
+
+  /**
+   * BETA-ENV-1 兜底层:spawn 前对完整 env 字典做规整。
+   *
+   * 逻辑见 src/main/platform/windows-env.ts 的 normalizeWindowsSpawnEnv 文件头。
+   * 残留占位符通过 logger.warn 上报,但不阻塞 spawn(尽量让用户能跑起来再说)。
+   */
+  normalizeSpawnEnv(env: Record<string, string>): Record<string, string> {
+    return normalizeWindowsSpawnEnv(env, {
+      onWarn: (message) => logger.warn('WindowsAdapter', message),
+    });
   }
 
   /**
@@ -587,4 +595,44 @@ export function __setRunRegImplForTest(
   impl: ((args: string[]) => Promise<{ stderr: string; code: number }>) | null,
 ): void {
   runRegImpl = impl ?? defaultRunReg;
+}
+
+/**
+ * 同步 `reg query <hive> /v Path` 并解析出 Path 值。
+ *
+ * 抽出独立函数主要为可测性 —— `getRefreshedPath` 真的去 spawn reg.exe 在单测里
+ * 不仅慢、还把测试和宿主机的 PATH 耦合在一起。`__setReadRegistryPathImplForTest`
+ * 注入 mock 后,可断言 BETA-ENV-1 的占位符展开链路。
+ */
+let readRegistryPathImpl: (hive: string) => string | null = defaultReadRegistryPath;
+
+function defaultReadRegistryPath(hive: string): string | null {
+  const out = execFileSync('reg.exe', ['query', hive, '/v', 'Path'], {
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 2000,
+  });
+  return parseRegPathOutput(out);
+}
+
+function readRegistryPath(
+  hive: string,
+  options: { onError?: (err: unknown) => void } = {},
+): string | null {
+  try {
+    return readRegistryPathImpl(hive);
+  } catch (e) {
+    options.onError?.(e);
+    return null;
+  }
+}
+
+/**
+ * 仅供测试用,生产代码不调。
+ * 传 null 恢复真实 reg.exe 调用。
+ */
+export function __setReadRegistryPathImplForTest(
+  impl: ((hive: string) => string | null) | null,
+): void {
+  readRegistryPathImpl = impl ?? defaultReadRegistryPath;
 }

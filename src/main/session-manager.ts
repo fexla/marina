@@ -576,6 +576,11 @@ export class SessionManager extends EventEmitter {
     }
     Object.assign(env, launchParams.env);
     Object.assign(env, template.env);
+    // BETA-ENV-1:Windows 上必做的最后一道防御 —— 补齐 canonical SystemRoot
+    // 三种 casing,并展开 PATH-like 字段里残留的 %SystemRoot% / %windir% 等
+    // 占位符。任一缺失都会让子进程的 system32 系命令(powershell / cmd /
+    // reg / wmic / ssh 等)从 PATH 上消失。Linux / macOS 走 no-op。
+    this.platformAdapter.normalizeSpawnEnv(env);
 
     let pty: IPty;
     try {
@@ -1826,6 +1831,10 @@ function createNoopAdapter(): PlatformAdapter {
     },
     getRefreshedPath() {
       return process.env.PATH ?? '';
+    },
+    normalizeSpawnEnv(env: Record<string, string>) {
+      // noop adapter:不做 Windows 占位符规整,直接放行
+      return env;
     },
     getDefaultBookmarkSeeds() {
       return [];

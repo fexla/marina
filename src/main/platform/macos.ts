@@ -54,6 +54,11 @@ export class MacOSAdapter implements PlatformAdapter {
     // 注册表广播痛点不存在,直接返回 process.env.PATH。
     return process.env.PATH ?? '';
   }
+  normalizeSpawnEnv(env: Record<string, string>): Record<string, string> {
+    // BETA-ENV-1:macOS 上 env 由 launchd / login shell 提供,
+    // %SystemRoot% 这种 Win32 占位符不存在,接口纯走 no-op。
+    return env;
+  }
   getDefaultBookmarkSeeds(): DefaultBookmarkSeed[] {
     const home = homedir();
     return [

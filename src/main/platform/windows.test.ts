@@ -10,7 +10,11 @@
  * @对应文档章节: 软件定义书.md 12.2;Explorer 右键集成工作记录
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { WindowsAdapter, __setRunRegImplForTest } from './windows';
+import {
+  WindowsAdapter,
+  __setReadRegistryPathImplForTest,
+  __setRunRegImplForTest,
+} from './windows';
 
 describe('WindowsAdapter — registerFileManagerIntegration', () => {
   let calls: string[][] = [];
@@ -153,6 +157,113 @@ describe('WindowsAdapter — registerFileManagerIntegration', () => {
         '/f',
       ],
     ]);
+  });
+});
+
+describe('WindowsAdapter — getRefreshedPath (BETA-001 + BETA-ENV-1)', () => {
+  const originalSystemRoot = process.env.SystemRoot;
+  const originalSYSTEMROOT = process.env.SYSTEMROOT;
+
+  beforeEach(() => {
+    // 钉死 SystemRoot,避免测试机环境差异(CI / 本地)影响展开结果
+    process.env.SystemRoot = 'C:\\Windows';
+    process.env.SYSTEMROOT = 'C:\\Windows';
+  });
+
+  afterEach(() => {
+    __setReadRegistryPathImplForTest(null);
+    if (originalSystemRoot === undefined) delete process.env.SystemRoot;
+    else process.env.SystemRoot = originalSystemRoot;
+    if (originalSYSTEMROOT === undefined) delete process.env.SYSTEMROOT;
+    else process.env.SYSTEMROOT = originalSYSTEMROOT;
+  });
+
+  it('合并 HKLM + HKCU,顺序 HKLM 在前(BETA-001 原行为)', () => {
+    __setReadRegistryPathImplForTest((hive) => {
+      if (hive.startsWith('HKLM')) return 'C:\\Windows\\System32;C:\\bin';
+      return 'D:\\user\\local';
+    });
+    const adapter = new WindowsAdapter();
+    expect(adapter.getRefreshedPath()).toBe(
+      'C:\\Windows\\System32;C:\\bin;D:\\user\\local',
+    );
+  });
+
+  it('注册表里残留 %SystemRoot% 字面量 → 返回值必须已展开(BETA-ENV-1 核心)', () => {
+    // 还原真实场景:HKLM PATH 在注册表里是 REG_EXPAND_SZ,reg query 给出的字面
+    // 串里含 %SystemRoot%\System32 等占位符。展开后才能让 spawn 出来的子进程
+    // 找到 powershell / cmd / reg / wmic 等 system32 系工具。
+    __setReadRegistryPathImplForTest((hive) => {
+      if (hive.startsWith('HKLM')) {
+        return (
+          '%SystemRoot%\\system32;%SystemRoot%;%SystemRoot%\\System32\\Wbem;' +
+          '%SYSTEMROOT%\\System32\\WindowsPowerShell\\v1.0;' +
+          '%SYSTEMROOT%\\System32\\OpenSSH'
+        );
+      }
+      return null;
+    });
+    const adapter = new WindowsAdapter();
+    const got = adapter.getRefreshedPath();
+    expect(got).not.toMatch(/%SystemRoot%/i);
+    expect(got).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0');
+    expect(got).toContain('C:\\Windows\\System32\\OpenSSH');
+  });
+
+  it('HKCU 缺失(干净系统)→ 仅返回 HKLM 的内容,不报错', () => {
+    __setReadRegistryPathImplForTest((hive) => {
+      if (hive.startsWith('HKLM')) return 'C:\\Windows\\System32';
+      throw new Error('ERROR: 系统找不到指定的注册表项或值。');
+    });
+    const adapter = new WindowsAdapter();
+    expect(adapter.getRefreshedPath()).toBe('C:\\Windows\\System32');
+  });
+
+  it('HKLM + HKCU 都失败 → 回退 process.env.PATH', () => {
+    const origPath = process.env.PATH;
+    process.env.PATH = 'C:\\fallback\\bin';
+    __setReadRegistryPathImplForTest(() => {
+      throw new Error('reg.exe 不存在');
+    });
+    try {
+      const adapter = new WindowsAdapter();
+      expect(adapter.getRefreshedPath()).toBe('C:\\fallback\\bin');
+    } finally {
+      if (origPath === undefined) delete process.env.PATH;
+      else process.env.PATH = origPath;
+    }
+  });
+
+  it('两个 hive 都返回 null(parse 失败 / 字段不存在)→ 回退 process.env.PATH', () => {
+    const origPath = process.env.PATH;
+    process.env.PATH = 'C:\\original\\path';
+    __setReadRegistryPathImplForTest(() => null);
+    try {
+      const adapter = new WindowsAdapter();
+      expect(adapter.getRefreshedPath()).toBe('C:\\original\\path');
+    } finally {
+      if (origPath === undefined) delete process.env.PATH;
+      else process.env.PATH = origPath;
+    }
+  });
+});
+
+describe('WindowsAdapter — normalizeSpawnEnv (BETA-ENV-1 兜底层)', () => {
+  it('补齐 canonical SystemRoot + 展开 PATH 占位符', () => {
+    const env: Record<string, string> = {
+      SYSTEMROOT: 'C:\\Windows', // 注意只设大写
+      PATH: '%SystemRoot%\\System32;C:\\bin',
+    };
+    new WindowsAdapter().normalizeSpawnEnv(env);
+    expect(env.SystemRoot).toBe('C:\\Windows');
+    expect(env.windir).toBe('C:\\Windows');
+    expect(env.PATH).toBe('C:\\Windows\\System32;C:\\bin');
+  });
+
+  it('原地修改并返回同一引用,便于调用方链式', () => {
+    const env: Record<string, string> = { PATH: '%SystemRoot%\\System32' };
+    const got = new WindowsAdapter().normalizeSpawnEnv(env);
+    expect(got).toBe(env);
   });
 });
 

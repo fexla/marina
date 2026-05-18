@@ -77,6 +77,7 @@ describe('getPlatformAdapter', () => {
       setAutoStart: async () => {},
       isAutoStartEnabled: async () => false,
       getRefreshedPath: () => process.env.PATH ?? '',
+      normalizeSpawnEnv: (env: Record<string, string>) => env,
       getDefaultBookmarkSeeds: () => [],
     };
     __setPlatformAdapterForTest(fakeAdapter);
@@ -97,6 +98,7 @@ describe('getPlatformAdapter', () => {
       setAutoStart: async () => {},
       isAutoStartEnabled: async () => false,
       getRefreshedPath: () => process.env.PATH ?? '',
+      normalizeSpawnEnv: (env: Record<string, string>) => env,
       getDefaultBookmarkSeeds: () => [],
     };
     __setPlatformAdapterForTest(fakeAdapter);

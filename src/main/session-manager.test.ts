@@ -243,6 +243,10 @@ function makeFakeAdapter(opts: FakeAdapterOpts = {}): PlatformAdapter {
       // 测试默认走 process.env.PATH,不触发 reg query。
       return process.env.PATH ?? '';
     },
+    normalizeSpawnEnv(env: Record<string, string>) {
+      // 测试默认 no-op,绕开 BETA-ENV-1 Windows 规整逻辑。
+      return env;
+    },
     getDefaultBookmarkSeeds() {
       return [];
     },

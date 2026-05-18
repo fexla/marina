@@ -337,6 +337,12 @@ export class LinuxAdapter implements PlatformAdapter {
     return process.env['PATH'] ?? '';
   }
 
+  normalizeSpawnEnv(env: Record<string, string>): Record<string, string> {
+    // BETA-ENV-1:Linux 上 env 由 login shell / display manager 提供,
+    // %SystemRoot% 这种 Win32 占位符不存在,接口纯走 no-op。
+    return env;
+  }
+
   getDefaultBookmarkSeeds(): DefaultBookmarkSeed[] {
     const home = homedir();
     return [
