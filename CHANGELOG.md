@@ -2,6 +2,26 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [0.1.0-beta.7] — 2026-05-18
+
+### 修复
+
+- **IME-1:中文输入法按标点偶发冲刷一大段历史输入。** 根因在
+  `@xterm/xterm@5.5.0` 的 CompositionHelper:整个 xterm 只在 Enter / Ctrl+C
+  时清 helper-textarea,中文用户长时间不按 Enter(Claude Code / aider 等 TUI
+  多行编辑场景)时 textarea 累积到几百几千字符;再叠加 compositionend 用
+  `substring(start)` 取从开头到 textarea 末尾、以及 keydown 229 + replace
+  diff 等几条 race 路径,就会把历史一起送给 onData,看起来像"按一个标点冲刷
+  出几十上百字的重复"。Workaround:在 `term.open` 之后给 helper-textarea 挂
+  `compositionend` 监听,延迟 16ms(~1 帧,晚于 xterm 自己的 `setTimeout(0)`
+  substring 读取窗口)清空 textarea.value,从根上断"textarea 累积历史"这个
+  前提,所有三条 race 路径同时失效。核心逻辑抽到
+  `src/shared/ime-textarea-workaround.ts`(纯函数 + duck-typed 接口),
+  AGENTS.md 5.1 红线下沉到 shared 后写了 7 条护栏单测,确保未来 xterm 升级 /
+  TerminalView 重构不会悄悄删掉 workaround。`onData` 与 helper-textarea 上的
+  IME 探针(PROBE A / PROBE B)保留作为长期监控,观察两周无 `[IME-LEAK]` 报警
+  后整体移除。详见 `docs/issues/ime-1-chinese-ime-stale-textarea-flush.md`。
+
 ## [0.1.0-beta.6] — 2026-05-18
 
 紧急 hotfix:在 Marina 启动的 Git Bash 里 `powershell.exe` / `cmd.exe` / `reg.exe`
