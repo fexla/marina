@@ -20,6 +20,15 @@
  *   2. invoke cmd:session:get-scrollback → 拿到 (data, lastSeq)
  *   3. write scrollback → 把 pending 中 seq > lastSeq 的写入 → 切 listener
  *      为"直接写"模式
+ *   4. **视口锚定 (SCROLL-1)**:在第 3 步末尾用 `term.write('', cb)` 作
+ *      fence,cb 内调 `term.scrollToBottom()`。**绝不能**在 `.then` 体里
+ *      直接调 scrollToBottom — `term.write()` 是异步排队(d.ts:1216:
+ *      "callback that fires when the data was processed by the parser"),
+ *      此刻 parser 才刚开始消化 writeBuffer,viewport 锚的"底"还在跟着
+ *      新行长,用户看到"从上往下刷屏到底部"。fence callback 由 xterm 在
+ *      parser drain 后触发,等价 main 端 session-manager.ts 的同模式
+ *      drain 写法。任何未来改 scrollback 数据源 / 量级的人都要重读
+ *      docs/issues/scroll-1-session-switch-progressive-refresh.md。
  *   后续到达的 output 直接 term.write,无需去重 (lastSeq 为快照时刻)
  * - 用 sessionId 作 React key,session 切换时强制重建 xterm 实例
  *   (避免 viewport / 滚动状态错乱)
@@ -1216,10 +1225,24 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         }
         pending = [];
         replayed = true;
-        // BETA-018:scrollback 重放完后立即滚到底。xterm 默认把分片 write 留在
-        // 顶部 viewport,用户看到的是"从上往下刷屏"。重放是同步内容回灌,
-        // 不是历史浏览,应当锚定底部。
-        term.scrollToBottom();
+        // BETA-018 + SCROLL-1:scrollback 重放完后锚底,消除"从上往下刷屏"
+        // 观感。重放是同步内容回灌,不是历史浏览,应当锚定底部。
+        //
+        // SCROLL-1 修正:scrollToBottom **必须**在 fence callback 内,而不是
+        // 这里直接调。因为 `term.write()` 是异步排队 — 上面所有 write 调用
+        // 返回时,xterm parser 通常还在分批消化 writeBuffer,buffer 里只有
+        // 已 parse 完的那部分行。直接 scrollToBottom 锚的"底"在后续 parser
+        // 解析新行时会被持续往下推 → 视觉上仍是从顶部往下铺。空 chunk +
+        // callback 走 xterm 内部 FIFO writeBuffer,callback 由 parser drain
+        // 后触发(d.ts:1216:"callback that fires when the data was
+        // processed by the parser") — 等价于一道 drain fence,锚的"底"
+        // 才是真正的最终底。disposed 兜底:fence 异步触发,期间用户可能
+        // 已切走 / 关窗,组件已 dispose,跳过避免 throw。
+        // 详见 docs/issues/scroll-1-session-switch-progressive-refresh.md。
+        term.write('', () => {
+          if (disposed) return;
+          term.scrollToBottom();
+        });
       })
       .catch((err) => {
         console.warn('[TerminalView] get-scrollback failed, falling back', err);
@@ -1227,8 +1250,12 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         for (const c of pending) term.write(c.bytes);
         pending = [];
         replayed = true;
-        // BETA-018:fallback 路径同样滚到底,保持 viewport 一致行为
-        term.scrollToBottom();
+        // BETA-018 + SCROLL-1:fallback 路径同样走 fence + scrollToBottom,
+        // 保持 viewport 一致行为。fence 理由同主路径。
+        term.write('', () => {
+          if (disposed) return;
+          term.scrollToBottom();
+        });
       });
 
     // ResizeObserver — trailing debounce 150ms (用户勘误后续 #4)
