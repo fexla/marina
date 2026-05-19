@@ -2,6 +2,15 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [0.1.0-beta.9] — 2026-05-19
+
+UI 视觉一致性收尾:把"无边框 / hairline / lucide 矢量图标"语言推进到 ctx-menu 和 sidebar 加号按钮两处遗漏。
+
+### 修复 / 改进
+
+- **UI-1:ctx-menu 边框走 alpha hairline + 删双重描边。** 原 `border: 1px solid var(--color-bg-strong)` + box-shadow `0 0 0 1px var(--color-bg-elevated)` 两条同色 1px 叠成 2px 实线;在浅色主题下 box-shadow ring 还会换成更重的 `var(--color-text-muted)`,cutie 樱花粉底上呈"莓棕墨水线",和 a393bfa 删 sidebar/statusbar 边框的方向矛盾。改用 `color-mix(in srgb, var(--color-text-primary) 8%, transparent)`,一处定义跨 10 套主题自动 do-the-right-thing:深底叠浅文字色 → 极淡 highlight 线,浅底叠深文字色 → 极淡 shadow 线。box-shadow 第二层 ring 同步删除,drop shadow 单层足够撑立体感。浅色主题 ctx-menu 特化块瘦身,只保留 28%→14% 阴影减淡。对齐 UI-1 RFC §3 "组件级浮卡边界用 hairline 而非实色 token"的主流做法。
+- **UI-1:sidebar 加号按钮去实色边框 + 字符 `+` 换 lucide `plus` icon。** 同批次又一处实色 token 描边遗漏 — `.sidebar-category-action` 的 `border: 1px solid var(--color-bg-elevated)` 在 cutie / dawn 浅色主题下边框色与 surface 对比 ΔL\* < 1,基本隐形,既起不到 "有可点按钮" 的 affordance 又破坏无边框语言。改 ghost 风格:`transparent` + hover 出 `--color-bg-active`,跟 `.tab-close / .titlebar-btn` 同种语言。同时把 `actionLabel="+"` 字符改成 `<Icon name="plus" size={12} />` — 原字符 + 视觉中心与 SVG 不在同一基线,粗细跟旁边 bookmark/clock/history 三个 lucide icon 不一致;改 icon 后字号声明也一并清理,跨主题继承 text-muted → text-primary 的 hover 升级。`CategoryProps.actionLabel: string` → `ReactNode`(类型放宽,内部 interface)。
+
 ## [0.1.0-beta.8] — 2026-05-19
 
 ### 新增
