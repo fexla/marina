@@ -520,8 +520,47 @@ describe('SessionManager — createSession', () => {
     expect(command).toContain('command -v tmux >/dev/null 2>&1');
     expect(command).toContain('MARINA_TMUX_BASE=');
     expect(command).toContain('tmux -L marina list-sessions');
+    expect(command).toContain('then exec "${SHELL:-/bin/sh}" -l; else');
     expect(command).toContain('tmux attach/create failed; falling back to shell.');
     expect(command).toContain('else exec "${SHELL:-/bin/sh}" -l; fi');
+  });
+
+  it('SSH tmux 正常退出后回到远端登录 shell,不让 ssh.exe 结束 Marina session', async () => {
+    const adapter: PlatformAdapter = {
+      ...makeFakeAdapter(),
+      resolveExecutable(commandName: string) {
+        return commandName === 'ssh' ? 'C:\\Windows\\System32\\OpenSSH\\ssh.exe' : null;
+      },
+    };
+    const { mgr } = makeManager({ adapter });
+    const pathId = makePathId({
+      kind: 'ssh',
+      sshProfileId: 'ssh-1',
+      path: '~/repo',
+    });
+
+    await mgr.createSession({
+      pathId,
+      templateId: 'shell',
+      ownerWindowId: 'w-1',
+      cols: 80,
+      rows: 24,
+      sshProfile: {
+        id: 'ssh-1',
+        name: 'prod',
+        host: 'example.com',
+        port: 22,
+        username: 'alice',
+        authType: 'agent',
+        tmuxMode: 'attach-or-create',
+      },
+    });
+
+    const command = (FakePty.instances[0]!.args as string[]).at(-1)!;
+
+    expect(command).toContain('if MARINA_TMUX_BASE=');
+    expect(command).toContain('then exec "${SHELL:-/bin/sh}" -l; else');
+    expect(command).not.toContain('then MARINA_TMUX_BASE=');
   });
 
   it('SSH tmux 忽略旧版自定义 session 名,始终按目录末级派生', async () => {

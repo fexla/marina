@@ -1830,11 +1830,16 @@ function buildRemoteLoginCommand(
     'printf %s\\\\n "Marina: tmux attach/create failed on the remote host." >&2; exit 127';
   const fallbackAfterFailure =
     profile.tmuxOnMissing === 'fail' ? failCommand : shellCommand;
-  const tmuxBootstrap = (
+  // tmux 本身只是远端 shell 里的一个全屏程序,不是 Marina session 的终点。
+  // 用户在 tmux pane 里输入 exit 后,tmux client 会正常返回;此时必须继续
+  // exec 回登录 shell,否则 ssh.exe 会结束,Main 只能把整个 Marina session
+  // 标成 exited。失败路径仍走 fallbackAfterFailure,避免把真正的 tmux 启动
+  // 错误伪装成一次正常 shell 回落。
+  const tmuxBootstrap =
     `${cdCommand} && if command -v tmux >/dev/null 2>&1; then ` +
-    `${tmuxCommand} || { printf %s\\\\n "Marina: tmux attach/create failed; falling back to shell." >&2; ${fallbackAfterFailure}; }; ` +
-    `else ${fallbackAfterFailure}; fi`
-  );
+    `if ${tmuxCommand}; then ${shellCommand}; else ` +
+    `{ printf %s\\\\n "Marina: tmux attach/create failed; falling back to shell." >&2; ${fallbackAfterFailure}; }; fi; ` +
+    `else ${fallbackAfterFailure}; fi`;
   // SSH remote command 默认由远端 login shell 以非登录/非交互方式执行。
   // 有些机器的 tmux 依赖 login shell 初始化出来的 PATH / locale / conda 等环境:
   // 用户回退到 shell 后手动 `tmux new-session -A` 能成功,但直接 remote command
