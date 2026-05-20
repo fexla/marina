@@ -967,15 +967,28 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
           termRef.current?.clearSelection();
           return false;
         }
-        // 粘贴:Ctrl+Shift+V
-        if (ev.shiftKey && key === 'v') {
-          void h.handlePaste();
+        // 粘贴:Ctrl+V / Ctrl+Shift+V
+        // xterm.js 对 Ctrl+V 会发 0x16 (Unix literal-next),需拦截。
+        // return false → xterm 不处理按键也不调 preventDefault → 浏览器触发
+        // paste 事件 → capture phase listener 统一接管。
+        // Ctrl+Shift+V 和 Shift+Insert 无需拦截:xterm 对它们不产生序列,
+        // 浏览器自然触发 paste 事件,同样由 capture listener 接管。
+        if (key === 'v') {
           return false;
         }
       }
-      // 粘贴:Shift+Insert(无 Ctrl)
-      if (ev.shiftKey && !isMod && !ev.altKey && ev.key === 'Insert') {
-        void h.handlePaste();
+
+      // Ctrl+Enter:发送 \x1b\r (ESC + CR),与 Alt+Enter 一致。
+      // conhost.exe 对 Ctrl+Enter 带修饰符状态,Claude Code 等应用可识别为"插入换行";
+      // xterm.js 默认把 Ctrl+Enter 当普通 Enter 发 \r,应用无法区分。
+      // 发 \x1b\r 让应用识别为换行(Alt+Enter 语义),与 cmd 行为对齐。
+      if (isMod && !ev.altKey && !ev.shiftKey && ev.key === 'Enter') {
+        ev.preventDefault();
+        const base64 = encodeStringToBase64('\x1b\r');
+        void window.api.invoke(COMMAND_CHANNELS.SESSION_SEND_INPUT, {
+          sessionId: session.id,
+          data: base64,
+        });
         return false;
       }
 
@@ -1015,6 +1028,26 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     // 就发 ?25l,Marina 转发,不再二次猜。
 
     term.open(container);
+
+    // PASTE-1:capture phase paste 监听器 — 所有粘贴的唯一入口。
+    // xterm.js 在 helper-textarea 和 terminal element 上注册了 bubble phase
+    // 的 paste listener(handlePasteEvent),会把剪贴板内容直接发到 PTY。
+    // 我们在 capture phase 拦截,stopImmediatePropagation 阻止 xterm 的 listener
+    // 触发,统一走 Marina 的 handlePaste (bracketed paste / 多行确认 / ESC 检测
+    // / 大粘贴警告)。这样无论 Ctrl+V / Ctrl+Shift+V / Shift+Insert / 语音输入
+    // / 浏览器右键粘贴,都走同一条路径。
+    {
+      const pasteInterceptor = (ev: ClipboardEvent) => {
+        ev.stopImmediatePropagation();
+        ev.preventDefault();
+        void handlePaste();
+      };
+      const helperTa = container.querySelector('.xterm-helper-textarea');
+      if (helperTa) {
+        helperTa.addEventListener('paste', pasteInterceptor, true);
+      }
+      container.addEventListener('paste', pasteInterceptor, true);
+    }
 
     // IME-1 探针 ring buffer — 暂存最近 50 条 EV,onData 触发疑似 LEAK 时
     // 一并 IPC 发到 main 端 logger.ime 落盘。capacity=50 覆盖 LEAK 前 1-2s
