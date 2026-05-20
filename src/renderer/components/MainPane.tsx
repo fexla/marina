@@ -239,6 +239,7 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
   const handleCreate = async (
     templateId: string,
     shellId?: string,
+    sshTmuxMode?: 'disabled' | 'attach-or-create',
   ): Promise<void> => {
     if (creating) return;
     setCreating(true);
@@ -250,6 +251,7 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
           pathId,
           templateId,
           ...(shellId ? { shellId } : {}),
+          ...(isSshPath ? { sshTmuxMode: sshTmuxMode ?? 'disabled' } : {}),
           cols: dims.cols,
           rows: dims.rows,
         },
@@ -286,7 +288,7 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
             <button
               type="button"
               className="template-button"
-              onClick={() => void handleCreate(state.defaultTemplateId ?? 'shell')}
+              onClick={() => void handleCreate(state.defaultTemplateId ?? 'shell', undefined, 'disabled')}
               disabled={creating}
               title={displayPath}
             >
@@ -294,6 +296,18 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
                 <Icon name="shell" size={18} />
               </span>
               <span className="template-label">{tx('连接', 'Connect')}</span>
+            </button>
+            <button
+              type="button"
+              className="template-button"
+              onClick={() => void handleCreate(state.defaultTemplateId ?? 'shell', undefined, 'attach-or-create')}
+              disabled={creating}
+              title={tx(`通过 tmux 连接 ${displayPath}`, `Connect with tmux to ${displayPath}`)}
+            >
+              <span className="template-icon">
+                <Icon name="templateShell" size={18} />
+              </span>
+              <span className="template-label">tmux</span>
             </button>
           </div>
         </div>

@@ -130,6 +130,14 @@ function normalizeProfile(input: SshProfile): SshProfile {
   }
   const defaultRemoteCwd = normalizeRemotePath(input.defaultRemoteCwd ?? '~');
   if (defaultRemoteCwd) next.defaultRemoteCwd = defaultRemoteCwd;
+  const tmuxMode = input.tmuxMode === 'attach-or-create' ? 'attach-or-create' : 'disabled';
+  next.tmuxMode = tmuxMode;
+  next.tmuxSessionPolicy =
+    input.tmuxSessionPolicy === 'new-per-launch' ? 'new-per-launch' : 'reuse';
+  next.tmuxOnMissing =
+    input.tmuxOnMissing === 'fail' ? 'fail' : 'fallback-shell';
+  const tmuxSessionName = normalizeTmuxSessionName(input.tmuxSessionName ?? '');
+  if (tmuxSessionName) next.tmuxSessionName = tmuxSessionName;
   return next;
 }
 
@@ -152,10 +160,19 @@ function validateProfilesArray(input: unknown): SshProfile[] {
             : 'agent',
         defaultRemoteCwd:
           typeof r['defaultRemoteCwd'] === 'string' ? r['defaultRemoteCwd'] : '~',
+        tmuxMode:
+          r['tmuxMode'] === 'attach-or-create' ? 'attach-or-create' : 'disabled',
+        tmuxSessionPolicy:
+          r['tmuxSessionPolicy'] === 'new-per-launch' ? 'new-per-launch' : 'reuse',
+        tmuxOnMissing:
+          r['tmuxOnMissing'] === 'fail' ? 'fail' : 'fallback-shell',
         addedAt: typeof r['addedAt'] === 'number' ? r['addedAt'] : Date.now(),
       };
       if (typeof r['keyFilePath'] === 'string') {
         profileInput.keyFilePath = r['keyFilePath'];
+      }
+      if (typeof r['tmuxSessionName'] === 'string') {
+        profileInput.tmuxSessionName = r['tmuxSessionName'];
       }
       out.push(
         normalizeProfile(profileInput),
@@ -165,6 +182,24 @@ function validateProfilesArray(input: unknown): SshProfile[] {
     }
   }
   return out;
+}
+
+function normalizeTmuxSessionName(input: string): string {
+  const value = input.trim();
+  if (!value) return '';
+  if (value.length > 80) {
+    throw new SshProfileManagerError(
+      'InvalidSshProfile',
+      'tmux session 名称必须不超过 80 字符',
+    );
+  }
+  if (!/^[A-Za-z0-9_.-]+$/.test(value)) {
+    throw new SshProfileManagerError(
+      'InvalidSshProfile',
+      'tmux session 名称只能包含字母、数字、下划线、点和连字符',
+    );
+  }
+  return value;
 }
 
 export function normalizeRemotePath(input: string): string {

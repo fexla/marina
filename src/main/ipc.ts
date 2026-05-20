@@ -282,7 +282,15 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       _e,
       envelope: CommandEnvelope<CreateSessionPayload>,
     ): Promise<CreateSessionResponse> => {
-      const { pathId, templateId, shellId, takeOwnership = true, cols, rows } = envelope.payload;
+      const {
+        pathId,
+        templateId,
+        shellId,
+        takeOwnership = true,
+        cols,
+        rows,
+        sshTmuxMode,
+      } = envelope.payload;
       const oldTreeJson = JSON.stringify(pathManager.getTree());
       const effectiveTemplateId =
         templateId ?? templatesManager.getDefaultTemplateId();
@@ -298,6 +306,18 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       // `input.ownerWindowId || null` 会落到 info.ownerWindowId = null。
       // 不要先创建带 owner 再 releaseOwner:那条路径在 owner=='' 时已被
       // 折叠为 null,后续 releaseOwner 会因 null !== envelope.windowId 抛 NotOwner。
+      const sshProfileForLaunch = sshProfile
+        ? {
+            ...sshProfile,
+            // tmux 是首页按钮表达的"本次启动意图",不是 SSH profile 状态。
+            // 这样即使旧 profile 里残留 tmuxMode,首页"连接"仍稳定是纯 SSH。
+            tmuxMode:
+              sshTmuxMode === 'attach-or-create'
+                ? 'attach-or-create' as const
+                : 'disabled' as const,
+            tmuxOnMissing: 'fallback-shell' as const,
+          }
+        : null;
       const session = await sessionManager.createSession({
         pathId: pathId ?? '',
         templateId: effectiveTemplateId,
@@ -305,7 +325,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
         cols,
         rows,
         ...(shellId ? { shellIdOverride: shellId } : {}),
-        ...(sshProfile ? { sshProfile } : {}),
+        ...(sshProfileForLaunch ? { sshProfile: sshProfileForLaunch } : {}),
       });
       const pathTreeChanged =
         JSON.stringify(pathManager.getTree()) !== oldTreeJson;

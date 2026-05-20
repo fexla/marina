@@ -37,7 +37,7 @@
  * - exited 状态语义 (无自动销毁)
  */
 import { EventEmitter } from 'node:events';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, resolve as resolvePath } from 'node:path';
@@ -402,6 +402,10 @@ export interface CreateSessionInput {
     username: string;
     authType: 'agent' | 'keyFile' | 'password';
     keyFilePath?: string;
+    tmuxMode?: 'disabled' | 'attach-or-create';
+    tmuxSessionName?: string;
+    tmuxSessionPolicy?: 'reuse' | 'new-per-launch';
+    tmuxOnMissing?: 'fallback-shell' | 'fail';
   };
   /**
    * 勘误第二轮 #3:可选 shell id 覆盖。给定时跳过 pickShell 的 settings 兜底,
@@ -590,8 +594,13 @@ export class SessionManager extends EventEmitter {
     }
 
     const hookFile = this.hookFileResolver(shell.id);
+    const existingSshSessionsForPath = isSsh
+      ? this.list().filter((s) => s.pathId === input.pathId && s.state !== 'exited').length
+      : 0;
     const launchParams = isSsh
-      ? buildSshLaunchParams(input.sshProfile!, pathRef.path)
+      ? buildSshLaunchParams(input.sshProfile!, pathRef.path, {
+          forceTmuxChoice: existingSshSessionsForPath > 0,
+        })
       : this.platformAdapter.buildShellLaunchParams(
           shell,
           hookFile,
@@ -1748,13 +1757,19 @@ function pickDisplayName(template: Template, shell: ShellInfo): string {
 
 function buildSshLaunchParams(
   profile: {
+    id?: string;
     host: string;
     port: number;
     username: string;
     authType: 'agent' | 'keyFile' | 'password';
     keyFilePath?: string;
+    tmuxMode?: 'disabled' | 'attach-or-create';
+    tmuxSessionName?: string;
+    tmuxSessionPolicy?: 'reuse' | 'new-per-launch';
+    tmuxOnMissing?: 'fallback-shell' | 'fail';
   },
   remoteCwd: string,
+  options: { forceTmuxChoice?: boolean } = {},
 ): { args: string[]; env: Record<string, string> } {
   const args = [
     '-tt',
@@ -1767,11 +1782,23 @@ function buildSshLaunchParams(
     args.push('-i', profile.keyFilePath);
   }
   args.push(`${profile.username}@${profile.host}`);
-  args.push(buildRemoteLoginCommand(remoteCwd));
+  args.push(buildRemoteLoginCommand(remoteCwd, profile, options));
   return { args, env: {} };
 }
 
-function buildRemoteLoginCommand(remoteCwd: string): string {
+function buildRemoteLoginCommand(
+  remoteCwd: string,
+  profile: {
+    id?: string;
+    host: string;
+    username: string;
+    tmuxMode?: 'disabled' | 'attach-or-create';
+    tmuxSessionName?: string;
+    tmuxSessionPolicy?: 'reuse' | 'new-per-launch';
+    tmuxOnMissing?: 'fallback-shell' | 'fail';
+  },
+  options: { forceTmuxChoice?: boolean } = {},
+): string {
   const cwd = remoteCwd.trim() || '~';
   let cdCommand: string;
   if (cwd === '~') {
@@ -1786,12 +1813,108 @@ function buildRemoteLoginCommand(remoteCwd: string): string {
   } else {
     cdCommand = `cd ${shQuote(cwd)}`;
   }
-  return `${cdCommand} && exec "\${SHELL:-/bin/sh}" -l`;
+  const shellCommand = 'exec "${SHELL:-/bin/sh}" -l';
+  if (profile.tmuxMode !== 'attach-or-create') {
+    return `${cdCommand} && ${shellCommand}`;
+  }
+  const baseSessionName = defaultTmuxSessionName(cwd);
+  // 目录派生是产品语义:同一个远程目录的 tmux 会话族必须统一落在
+  // marina-<leaf> / marina-<leaf>-N。旧版 profile 里可能残留
+  // tmuxSessionName 或 new-per-launch,这里故意不再读取,避免旧配置覆盖
+  // "按目录智能选择"规则。
+  const tmuxCommand = buildSmartTmuxCommand(
+    baseSessionName,
+    !!options.forceTmuxChoice,
+  );
+  const failCommand =
+    'printf %s\\\\n "Marina: tmux attach/create failed on the remote host." >&2; exit 127';
+  const fallbackAfterFailure =
+    profile.tmuxOnMissing === 'fail' ? failCommand : shellCommand;
+  const tmuxBootstrap = (
+    `${cdCommand} && if command -v tmux >/dev/null 2>&1; then ` +
+    `${tmuxCommand} || { printf %s\\\\n "Marina: tmux attach/create failed; falling back to shell." >&2; ${fallbackAfterFailure}; }; ` +
+    `else ${fallbackAfterFailure}; fi`
+  );
+  // SSH remote command 默认由远端 login shell 以非登录/非交互方式执行。
+  // 有些机器的 tmux 依赖 login shell 初始化出来的 PATH / locale / conda 等环境:
+  // 用户回退到 shell 后手动 `tmux new-session -A` 能成功,但直接 remote command
+  // 会报 "server exited unexpectedly"。启用 tmux 时先显式进入 login shell 执行
+  // bootstrap,让自动路径尽量贴近用户手动成功的路径。
+  return `exec "\${SHELL:-/bin/sh}" -lc ${shQuote(tmuxBootstrap)}`;
 }
 
 function shQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
+
+function defaultTmuxSessionName(remoteCwd: string): string {
+  const normalized = remoteCwd.replace(/\/+$/g, '') || '~';
+  const leaf = normalized === '~'
+    ? 'home'
+    : normalized.split('/').filter(Boolean).pop() || 'root';
+  const safe = leaf
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  if (safe) return `marina-${safe}`;
+  const digest = createHash('sha256').update(remoteCwd).digest('hex').slice(0, 8);
+  return `marina-${digest}`;
+}
+
+function buildSmartTmuxCommand(baseSessionName: string, forceChoice: boolean): string {
+  const base = shQuote(baseSessionName);
+  const force = forceChoice ? '1' : '0';
+  return (
+    `MARINA_TMUX_BASE=${base} MARINA_TMUX_FORCE_CHOICE=${force} ` +
+    `sh -c ${shQuote(SMART_TMUX_SCRIPT)}`
+  );
+}
+
+const SMART_TMUX_SCRIPT = `
+base=$MARINA_TMUX_BASE
+force=$MARINA_TMUX_FORCE_CHOICE
+sessions=$(tmux -L marina list-sessions -F '#S' 2>/dev/null | while IFS= read -r s; do
+  if [ "$s" = "$base" ]; then
+    printf '%s\\n' "$s"
+    continue
+  fi
+  case "$s" in
+    "$base"-*)
+      suffix=\${s#"$base-"}
+      case "$suffix" in ''|*[!0-9]*) ;; *) printf '%s\\n' "$s" ;; esac
+      ;;
+  esac
+done)
+count=$(printf '%s\\n' "$sessions" | sed '/^$/d' | wc -l | tr -d ' ')
+new_session() {
+  i=1
+  while tmux -L marina has-session -t "$base-$i" 2>/dev/null; do i=$((i + 1)); done
+  exec tmux -L marina new-session -s "$base-$i"
+}
+if [ "$count" = "0" ]; then
+  exec tmux -L marina new-session -s "$base"
+fi
+if [ "$count" = "1" ] && [ "$force" != "1" ]; then
+  exec tmux -L marina attach-session -t "$sessions"
+fi
+printf '\\nMarina found tmux sessions for %s:\\n' "$base"
+n=1
+printf '%s\\n' "$sessions" | sed '/^$/d' | while IFS= read -r s; do printf '  %s) attach %s\\n' "$n" "$s"; n=$((n + 1)); done
+printf '  n) create new session\\nSelect: '
+read ans
+case "$ans" in
+  n|N|"") new_session ;;
+  *[!0-9]*) new_session ;;
+  *)
+    if [ "$ans" -lt 1 ] 2>/dev/null; then new_session; fi
+    target=$(printf '%s\\n' "$sessions" | sed '/^$/d' | sed -n "$ans"p)
+    if [ -n "$target" ]; then exec tmux -L marina attach-session -t "$target"; fi
+    new_session
+    ;;
+esac
+`;
 
 /**
  * OSC 标题"启动垃圾"识别(TIT-1):

@@ -106,6 +106,28 @@ export type StartupBehavior = 'open-window' | 'tray-only';
  */
 export type NewTerminalShellPolicy = 'default' | 'last-used';
 
+/**
+ * SSH 远端 tmux 启动策略。
+ *
+ * 这是 SSH 启动链路的轻量增强,不是 Marina 的 tmux session 管理模型:
+ * Marina 仍只管理本地 ssh.exe PTY;远端 tmux 仅用于断线后 attach 回同一个
+ * 远端会话。
+ */
+export type SshTmuxMode = 'disabled' | 'attach-or-create';
+
+/**
+ * 远端没有 tmux 命令时的行为。
+ */
+export type SshTmuxOnMissing = 'fallback-shell' | 'fail';
+
+/**
+ * SSH tmux session 命名策略。
+ *
+ * - reuse:按远程目录末级派生基名,远端已有同名 session 时按数量智能选择
+ * - new-per-launch:每次从 Marina 新建 session 都创建新的 tmux session,适合强制多开
+ */
+export type SshTmuxSessionPolicy = 'reuse' | 'new-per-launch';
+
 // ──────────────────────────────────────────────────────────────────
 // 内存数据 (Window / Session / Path)
 // ──────────────────────────────────────────────────────────────────
@@ -387,8 +409,8 @@ export interface RecentEntry {
 }
 
 /**
- * SSH 服务器连接配置。第一版不持久化密码;推荐使用系统 ssh-agent
- * 或 key file。password auth 只作为 UI 选项,连接时仍交给 ssh CLI 交互提示。
+ * SSH 服务器连接配置。第一版不持久化密码;password auth 只作为
+ * UI 选项,连接时仍交给 ssh CLI 交互提示。
  */
 export interface SshProfile {
   id: string;
@@ -399,6 +421,10 @@ export interface SshProfile {
   authType: 'agent' | 'keyFile' | 'password';
   keyFilePath?: string;
   defaultRemoteCwd?: string;
+  tmuxMode?: SshTmuxMode;
+  tmuxSessionName?: string;
+  tmuxSessionPolicy?: SshTmuxSessionPolicy;
+  tmuxOnMissing?: SshTmuxOnMissing;
   addedAt: number;
 }
 

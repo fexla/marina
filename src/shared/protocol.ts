@@ -294,6 +294,14 @@ export interface CreateSessionPayload {
   /** 终端尺寸初始值 */
   cols: number;
   rows: number;
+  /**
+   * SSH 路径专用:本次连接是否启用远端 tmux。
+   *
+   * 这是一次性启动选项,不持久化到 SSH profile。首页的"连接"按钮传
+   * disabled,旁边的"tmux"按钮传 attach-or-create,避免旧 profile 里的
+   * tmux 字段影响普通 SSH 连接。
+   */
+  sshTmuxMode?: 'disabled' | 'attach-or-create';
 }
 
 export interface CreateSessionResponse {
@@ -468,6 +476,10 @@ export interface AddSshProfilePayload {
   authType: 'agent' | 'keyFile' | 'password';
   keyFilePath?: string;
   defaultRemoteCwd?: string;
+  tmuxMode?: 'disabled' | 'attach-or-create';
+  tmuxSessionName?: string;
+  tmuxSessionPolicy?: 'reuse' | 'new-per-launch';
+  tmuxOnMissing?: 'fallback-shell' | 'fail';
 }
 
 export interface AddSshProfileResponse {

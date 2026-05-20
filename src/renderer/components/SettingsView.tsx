@@ -1097,7 +1097,7 @@ function DataPanel({
   const [sshHost, setSshHost] = useState('');
   const [sshPort, setSshPort] = useState('22');
   const [sshUser, setSshUser] = useState('');
-  const [sshAuthType, setSshAuthType] = useState<'agent' | 'keyFile' | 'password'>('agent');
+  const [sshAuthType, setSshAuthType] = useState<'keyFile' | 'password'>('password');
   const [sshKeyFile, setSshKeyFile] = useState('');
   const [remoteProfileId, setRemoteProfileId] = useState('');
   const [remotePath, setRemotePath] = useState('~');
@@ -1177,7 +1177,9 @@ function DataPanel({
           port,
           username: sshUser,
           authType: sshAuthType,
-          ...(sshKeyFile.trim() ? { keyFilePath: sshKeyFile.trim() } : {}),
+          ...(sshAuthType === 'keyFile' && sshKeyFile.trim()
+            ? { keyFilePath: sshKeyFile.trim() }
+            : {}),
           defaultRemoteCwd: remotePath || '~',
         },
       );
@@ -1186,7 +1188,7 @@ function DataPanel({
       setSshHost('');
       setSshPort('22');
       setSshUser('');
-      setSshAuthType('agent');
+      setSshAuthType('password');
       setSshKeyFile('');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1256,12 +1258,17 @@ function DataPanel({
             <input className="settings-input" value={sshHost} onChange={(e) => setSshHost(e.target.value)} placeholder="host.example.com" />
             <input className="settings-input" value={sshUser} onChange={(e) => setSshUser(e.target.value)} placeholder={tx('用户名', 'Username')} />
             <input className="settings-input" type="number" value={sshPort} onChange={(e) => setSshPort(e.target.value)} placeholder="22" />
-            <select className="settings-input" value={sshAuthType} onChange={(e) => setSshAuthType(e.target.value as 'agent' | 'keyFile' | 'password')}>
-              <option value="agent">ssh-agent</option>
-              <option value="keyFile">{tx('密钥文件', 'Key file')}</option>
+            <select className="settings-input" value={sshAuthType} onChange={(e) => setSshAuthType(e.target.value as 'keyFile' | 'password')}>
               <option value="password">{tx('密码(不保存)', 'Password (not saved)')}</option>
+              <option value="keyFile">{tx('密钥文件', 'Key file')}</option>
             </select>
-            <input className="settings-input" value={sshKeyFile} onChange={(e) => setSshKeyFile(e.target.value)} placeholder={tx('密钥路径(可选)', 'Key path (optional)')} />
+            <input
+              className="settings-input"
+              value={sshKeyFile}
+              onChange={(e) => setSshKeyFile(e.target.value)}
+              placeholder={tx('密钥路径', 'Key path')}
+              disabled={sshAuthType !== 'keyFile'}
+            />
           </div>
           <button type="button" className="settings-button" onClick={() => void handleAddSshProfile()}>
             {tx('添加服务器', 'Add server')}
