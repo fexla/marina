@@ -1837,7 +1837,7 @@ function buildRemoteLoginCommand(
   // 错误伪装成一次正常 shell 回落。
   const tmuxBootstrap =
     `${cdCommand} && if command -v tmux >/dev/null 2>&1; then ` +
-    `if ${tmuxCommand}; then ${shellCommand}; else ` +
+    `if ${tmuxCommand}\nthen ${shellCommand}; else ` +
     `{ printf %s\\\\n "Marina: tmux attach/create failed; falling back to shell." >&2; ${fallbackAfterFailure}; }; fi; ` +
     `else ${fallbackAfterFailure}; fi`;
   // SSH remote command 默认由远端 login shell 以非登录/非交互方式执行。
@@ -1871,9 +1871,21 @@ function defaultTmuxSessionName(remoteCwd: string): string {
 function buildSmartTmuxCommand(baseSessionName: string, forceChoice: boolean): string {
   const base = shQuote(baseSessionName);
   const force = forceChoice ? '1' : '0';
+  const script = Buffer.from(SMART_TMUX_SCRIPT, 'utf8').toString('base64');
+  // 这里不能用 `sh -c ${shQuote(SMART_TMUX_SCRIPT)}`。外层 SSH 命令已经
+  // 通过 `${SHELL:-/bin/sh} -lc '...'` 再解析一次;如果内层脚本里还有
+  // `'#S'` / `'%s\n'` / `''|...` 这类单引号,第二层 shell 会把它们当作
+  // `sh -c '...'` 参数的结束,最终在远端看到裸露的 `;;` 或文件结尾错误。
+  // 也不能用 heredoc:它会占用子 shell 的 stdin,tmux/read 拿不到 SSH 分配
+  // 的 tty,Ubuntu 上会报 "open terminal failed: not a terminal"。
+  // base64 让脚本文本完全不参与 shell quote;再用 `sh -c "$(decode)"`
+  // 作为一个子 shell 执行,stdin 仍保持连接到真实 tty。不能用 eval:
+  // tmux 结束后脚本里的 `exit $?` 会退出当前 login shell,外层 `then
+  // exec "${SHELL:-/bin/sh}" -l` 没机会执行,用户在 tmux 里 exit 后就会
+  // 直接断开 SSH。
   return (
     `MARINA_TMUX_BASE=${base} MARINA_TMUX_FORCE_CHOICE=${force} ` +
-    `sh -c ${shQuote(SMART_TMUX_SCRIPT)}`
+    `sh -c "$(printf %s ${shQuote(script)} | base64 -d)"`
   );
 }
 
@@ -1885,40 +1897,47 @@ sessions=$(tmux -L marina list-sessions -F '#S' 2>/dev/null | while IFS= read -r
     printf '%s\\n' "$s"
     continue
   fi
-  case "$s" in
-    "$base"-*)
-      suffix=\${s#"$base-"}
-      case "$suffix" in ''|*[!0-9]*) ;; *) printf '%s\\n' "$s" ;; esac
-      ;;
-  esac
+  prefix=$base-
+  suffix=\${s#$prefix}
+  if [ "$suffix" != "$s" ] && printf '%s\\n' "$suffix" | grep -Eq '^[0-9]+$'; then
+    printf '%s\\n' "$s"
+  fi
 done)
 count=$(printf '%s\\n' "$sessions" | sed '/^$/d' | wc -l | tr -d ' ')
 new_session() {
   i=1
   while tmux -L marina has-session -t "$base-$i" 2>/dev/null; do i=$((i + 1)); done
-  exec tmux -L marina new-session -s "$base-$i"
+  tmux -L marina new-session -s "$base-$i"
+  exit $?
 }
 if [ "$count" = "0" ]; then
-  exec tmux -L marina new-session -s "$base"
+  tmux -L marina new-session -s "$base"
+  exit $?
 fi
 if [ "$count" = "1" ] && [ "$force" != "1" ]; then
-  exec tmux -L marina attach-session -t "$sessions"
+  tmux -L marina attach-session -t "$sessions"
+  exit $?
 fi
 printf '\\nMarina found tmux sessions for %s:\\n' "$base"
 n=1
 printf '%s\\n' "$sessions" | sed '/^$/d' | while IFS= read -r s; do printf '  %s) attach %s\\n' "$n" "$s"; n=$((n + 1)); done
 printf '  n) create new session\\nSelect: '
 read ans
-case "$ans" in
-  n|N|"") new_session ;;
-  *[!0-9]*) new_session ;;
-  *)
-    if [ "$ans" -lt 1 ] 2>/dev/null; then new_session; fi
-    target=$(printf '%s\\n' "$sessions" | sed '/^$/d' | sed -n "$ans"p)
-    if [ -n "$target" ]; then exec tmux -L marina attach-session -t "$target"; fi
-    new_session
-    ;;
-esac
+if [ "$ans" = "n" ] || [ "$ans" = "N" ] || [ -z "$ans" ]; then
+  new_session
+fi
+if ! printf '%s\\n' "$ans" | grep -Eq '^[0-9]+$'; then
+  new_session
+fi
+if [ "$ans" -lt 1 ] 2>/dev/null; then
+  new_session
+fi
+target=$(printf '%s\\n' "$sessions" | sed '/^$/d' | sed -n "$ans"p)
+if [ -n "$target" ]; then
+  tmux -L marina attach-session -t "$target"
+  exit $?
+fi
+new_session
 `;
 
 /**

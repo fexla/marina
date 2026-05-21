@@ -295,6 +295,14 @@ function makeManager(
   return { mgr, win, path };
 }
 
+function decodeEmbeddedTmuxScript(command: string): string {
+  const match = command.match(/printf %s (?:'\\'')?([A-Za-z0-9+/=]+)(?:'\\'')? \| base64 -d/);
+  if (!match?.[1]) {
+    throw new Error(`测试无法从 SSH 命令中提取 tmux base64 脚本: ${command}`);
+  }
+  return Buffer.from(match[1], 'base64').toString('utf8');
+}
+
 // ──────────────────────────────────────────────────────────────────
 // 测试
 // ──────────────────────────────────────────────────────────────────
@@ -519,7 +527,15 @@ describe('SessionManager — createSession', () => {
     expect(command).toContain('exec "${SHELL:-/bin/sh}" -lc');
     expect(command).toContain('command -v tmux >/dev/null 2>&1');
     expect(command).toContain('MARINA_TMUX_BASE=');
-    expect(command).toContain('tmux -L marina list-sessions');
+    expect(command).toContain('base64 -d');
+    expect(command).not.toContain('sh -c ');
+    expect(command).not.toContain('<<');
+    const decodedTmuxScript = decodeEmbeddedTmuxScript(command);
+    expect(decodedTmuxScript).toContain("grep -Eq '^[0-9]+$'");
+    expect(decodedTmuxScript).not.toContain('case ');
+    expect(decodedTmuxScript).not.toContain(';;');
+    expect(decodedTmuxScript).not.toContain('exec tmux');
+    expect(decodedTmuxScript).toContain('exit $?');
     expect(command).toContain('then exec "${SHELL:-/bin/sh}" -l; else');
     expect(command).toContain('tmux attach/create failed; falling back to shell.');
     expect(command).toContain('else exec "${SHELL:-/bin/sh}" -l; fi');
@@ -559,6 +575,8 @@ describe('SessionManager — createSession', () => {
     const command = (FakePty.instances[0]!.args as string[]).at(-1)!;
 
     expect(command).toContain('if MARINA_TMUX_BASE=');
+    expect(command).toContain('base64 -d');
+    expect(command).not.toContain('<<');
     expect(command).toContain('then exec "${SHELL:-/bin/sh}" -l; else');
     expect(command).not.toContain('then MARINA_TMUX_BASE=');
   });
@@ -677,7 +695,7 @@ describe('SessionManager — createSession', () => {
     const command = (FakePty.instances[0]!.args as string[]).at(-1)!;
     expect(command).toContain('MARINA_TMUX_BASE=');
     expect(command).toContain('marina-repo');
-    expect(command).toContain('tmux -L marina list-sessions');
+    expect(command).toContain('base64 -d');
     expect(command).not.toContain('work-');
   });
 
