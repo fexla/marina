@@ -94,6 +94,7 @@ export const COMMAND_CHANNELS = {
   SSH_PROFILE_UPDATE: 'cmd:ssh-profile:update',
   SSH_PROFILE_DELETE: 'cmd:ssh-profile:delete',
   SSH_PROFILE_TEST: 'cmd:ssh-profile:test',
+  SSH_PROFILE_PICK_KEY_FILE: 'cmd:ssh-profile:pick-key-file',
   REMOTE_BOOKMARK_ADD: 'cmd:remote-bookmark:add',
 
   // Settings 域
@@ -308,6 +309,11 @@ export interface CreateSessionResponse {
   session: SessionInfo;
   /** 是否触发了 path 树变化 (临时分类等) */
   pathTreeChanged: boolean;
+  /**
+   * 非阻塞的提示信息。例如保存了 SSH 密码但本机没装 sshpass,无法自动注入。
+   * renderer 收到非空字符串时弹一条 warn toast。
+   */
+  warning?: string;
 }
 
 export interface RenameSessionPayload {
@@ -475,6 +481,11 @@ export interface AddSshProfilePayload {
   username: string;
   authType: 'agent' | 'keyFile' | 'password';
   keyFilePath?: string;
+  /**
+   * 可选明文密码。main 收到后用 safeStorage 加密落盘,renderer 永远拿不到。
+   * undefined = 不更新已有保存密码;'' (空字符串) = 清除已保存密码。
+   */
+  password?: string;
   defaultRemoteCwd?: string;
   tmuxMode?: 'disabled' | 'attach-or-create';
   tmuxSessionName?: string;
@@ -501,6 +512,15 @@ export interface DeleteSshProfilePayload {
 
 export interface ListSshProfilesResponse {
   profiles: SshProfile[];
+}
+
+export interface PickSshKeyFilePayload {
+  defaultPath?: string;
+}
+
+export interface PickSshKeyFileResponse {
+  /** 用户取消 → null */
+  path: string | null;
 }
 
 export interface TestSshProfilePayload {

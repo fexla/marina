@@ -197,22 +197,24 @@ function makeStubs() {
     on: vi.fn(),
   };
 
+  const sshProfileFixture = (id: string) =>
+    id === 'ssh-1'
+      ? {
+          id: 'ssh-1',
+          name: 'prod',
+          host: 'example.com',
+          port: 22,
+          username: 'alice',
+          authType: 'agent' as const,
+          tmuxMode: 'attach-or-create' as const,
+          tmuxOnMissing: 'fail' as const,
+          addedAt: 1,
+        }
+      : null;
+
   const sshProfileManager = {
-    get: vi.fn((id: string) =>
-      id === 'ssh-1'
-        ? {
-            id: 'ssh-1',
-            name: 'prod',
-            host: 'example.com',
-            port: 22,
-            username: 'alice',
-            authType: 'agent' as const,
-            tmuxMode: 'attach-or-create' as const,
-            tmuxOnMissing: 'fail' as const,
-            addedAt: 1,
-          }
-        : null,
-    ),
+    get: vi.fn(sshProfileFixture),
+    getInternal: vi.fn(sshProfileFixture),
     list: vi.fn(() => []),
     on: vi.fn(),
   };

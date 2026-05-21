@@ -257,6 +257,9 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
         },
       );
       dispatch({ type: 'view/select-session', sessionId: res.session.id });
+      if (res.warning) {
+        toast.push({ kind: 'warn', message: tx(res.warning, res.warning) });
+      }
       // FOC-3:模板按钮点击后焦点漂在 button 上,挂载 TerminalView 后
       // 自动把焦点送回 xterm。A4 的 selectedSessionId effect 也会兜底,
       // 但显式 + rAF 让"立即可打字"语义更清晰。

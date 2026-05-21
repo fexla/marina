@@ -36,12 +36,18 @@ export class SshProfileManager extends EventEmitter {
   }
 
   list(): SshProfile[] {
-    return this.profiles.map((p) => ({ ...p }));
+    return this.profiles.map((p) => toPublicProfile(p));
+  }
+
+  /** 内部使用:返回包含 passwordEncrypted 的完整 profile,绝不能直接发给 renderer。 */
+  getInternal(id: string): SshProfile | null {
+    const found = this.profiles.find((p) => p.id === id);
+    return found ? { ...found } : null;
   }
 
   get(id: string): SshProfile | null {
     const found = this.profiles.find((p) => p.id === id);
-    return found ? { ...found } : null;
+    return found ? toPublicProfile(found) : null;
   }
 
   add(input: Omit<SshProfile, 'id' | 'addedAt'>): SshProfile {
@@ -53,7 +59,7 @@ export class SshProfileManager extends EventEmitter {
     this.profiles.push(profile);
     this.persist();
     this.emit('sshProfilesUpdated', { profiles: this.list() });
-    return { ...profile };
+    return toPublicProfile(profile);
   }
 
   update(id: string, partial: Partial<Omit<SshProfile, 'id' | 'addedAt'>>): SshProfile {
@@ -65,7 +71,7 @@ export class SshProfileManager extends EventEmitter {
     this.profiles[idx] = next;
     this.persist();
     this.emit('sshProfilesUpdated', { profiles: this.list() });
-    return { ...next };
+    return toPublicProfile(next);
   }
 
   delete(id: string): void {
@@ -128,6 +134,14 @@ function normalizeProfile(input: SshProfile): SshProfile {
   } else if (keyFilePath) {
     next.keyFilePath = keyFilePath;
   }
+  if (typeof input.passwordEncrypted === 'string' && input.passwordEncrypted.length > 0) {
+    // 上限保守:safeStorage 加密后的 base64 不会很大,128 KB 足以容纳任何
+    // 合理长度密码,过大说明数据损坏或被篡改,直接丢弃。
+    if (input.passwordEncrypted.length > 131072) {
+      throw new SshProfileManagerError('InvalidSshProfile', 'passwordEncrypted 过长');
+    }
+    next.passwordEncrypted = input.passwordEncrypted;
+  }
   const defaultRemoteCwd = normalizeRemotePath(input.defaultRemoteCwd ?? '~');
   if (defaultRemoteCwd) next.defaultRemoteCwd = defaultRemoteCwd;
   const tmuxMode = input.tmuxMode === 'attach-or-create' ? 'attach-or-create' : 'disabled';
@@ -171,6 +185,9 @@ function validateProfilesArray(input: unknown): SshProfile[] {
       if (typeof r['keyFilePath'] === 'string') {
         profileInput.keyFilePath = r['keyFilePath'];
       }
+      if (typeof r['passwordEncrypted'] === 'string') {
+        profileInput.passwordEncrypted = r['passwordEncrypted'];
+      }
       if (typeof r['tmuxSessionName'] === 'string') {
         profileInput.tmuxSessionName = r['tmuxSessionName'];
       }
@@ -209,4 +226,12 @@ export function normalizeRemotePath(input: string): string {
   value = value.replace(/\/+/g, '/');
   if (value.length > 1 && value.endsWith('/')) value = value.slice(0, -1);
   return value;
+}
+
+function toPublicProfile(p: SshProfile): SshProfile {
+  const { passwordEncrypted: _omit, ...rest } = p;
+  void _omit;
+  const out: SshProfile = { ...rest };
+  if (p.passwordEncrypted) out.hasSavedPassword = true;
+  return out;
 }

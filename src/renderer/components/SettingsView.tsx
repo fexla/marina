@@ -38,6 +38,7 @@ import {
   type ImportSettingsResponse,
   type ListShellsResponse,
   type ExportSettingsResponse,
+  type PickSshKeyFileResponse,
   type SetExplorerIntegrationResponse,
   type UpdateTemplatePayload,
   type UpdateTemplateResponse,
@@ -1099,6 +1100,8 @@ function DataPanel({
   const [sshUser, setSshUser] = useState('');
   const [sshAuthType, setSshAuthType] = useState<'keyFile' | 'password'>('password');
   const [sshKeyFile, setSshKeyFile] = useState('');
+  const [sshPassword, setSshPassword] = useState('');
+  const [sshSavePassword, setSshSavePassword] = useState(false);
   const [remoteProfileId, setRemoteProfileId] = useState('');
   const [remotePath, setRemotePath] = useState('~');
   const [remoteName, setRemoteName] = useState('');
@@ -1180,6 +1183,9 @@ function DataPanel({
           ...(sshAuthType === 'keyFile' && sshKeyFile.trim()
             ? { keyFilePath: sshKeyFile.trim() }
             : {}),
+          ...(sshAuthType === 'password' && sshSavePassword && sshPassword
+            ? { password: sshPassword }
+            : {}),
           defaultRemoteCwd: remotePath || '~',
         },
       );
@@ -1190,6 +1196,21 @@ function DataPanel({
       setSshUser('');
       setSshAuthType('password');
       setSshKeyFile('');
+      setSshPassword('');
+      setSshSavePassword(false);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handlePickSshKeyFile = async (): Promise<void> => {
+    setError(null);
+    try {
+      const res = await window.api.invoke<unknown, PickSshKeyFileResponse>(
+        COMMAND_CHANNELS.SSH_PROFILE_PICK_KEY_FILE,
+        { ...(sshKeyFile.trim() ? { defaultPath: sshKeyFile.trim() } : {}) },
+      );
+      if (res.path) setSshKeyFile(res.path);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -1231,7 +1252,7 @@ function DataPanel({
 
       <SettingRow
         label={tx('SSH 服务器', 'SSH servers')}
-        hint={tx('保存连接参数;密码不会保存,连接时由 ssh CLI 交互提示', 'Stores connection parameters; passwords are not saved and are prompted by ssh CLI')}
+        hint={tx('保存连接参数;勾选"保存密码"会用 OS 凭据加密保存,登录时需 sshpass 才能自动注入', 'Saves connection parameters; "Save password" stores the password via OS keychain — auto-login requires sshpass on PATH')}
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 520 }}>
           {state.sshProfiles.length > 0 && (
@@ -1240,6 +1261,7 @@ function DataPanel({
                 <li key={p.id}>
                   <span className="settings-info-text">
                     {p.name} — {p.username}@{p.host}:{p.port}
+                    {p.hasSavedPassword ? tx(' · 已保存密码', ' · password saved') : ''}
                   </span>
                   <button
                     type="button"
@@ -1259,17 +1281,49 @@ function DataPanel({
             <input className="settings-input" value={sshUser} onChange={(e) => setSshUser(e.target.value)} placeholder={tx('用户名', 'Username')} />
             <input className="settings-input" type="number" value={sshPort} onChange={(e) => setSshPort(e.target.value)} placeholder="22" />
             <select className="settings-input" value={sshAuthType} onChange={(e) => setSshAuthType(e.target.value as 'keyFile' | 'password')}>
-              <option value="password">{tx('密码(不保存)', 'Password (not saved)')}</option>
+              <option value="password">{tx('密码', 'Password')}</option>
               <option value="keyFile">{tx('密钥文件', 'Key file')}</option>
             </select>
-            <input
-              className="settings-input"
-              value={sshKeyFile}
-              onChange={(e) => setSshKeyFile(e.target.value)}
-              placeholder={tx('密钥路径', 'Key path')}
-              disabled={sshAuthType !== 'keyFile'}
-            />
+            <div style={{ display: 'flex', gap: 4 }}>
+              <input
+                className="settings-input"
+                style={{ flex: 1, minWidth: 0 }}
+                value={sshKeyFile}
+                onChange={(e) => setSshKeyFile(e.target.value)}
+                placeholder={tx('密钥路径', 'Key path')}
+                disabled={sshAuthType !== 'keyFile'}
+              />
+              <button
+                type="button"
+                className="settings-button"
+                disabled={sshAuthType !== 'keyFile'}
+                onClick={() => void handlePickSshKeyFile()}
+              >
+                {tx('选择', 'Select')}
+              </button>
+            </div>
           </div>
+          {sshAuthType === 'password' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <input
+                className="settings-input"
+                type="password"
+                value={sshPassword}
+                onChange={(e) => setSshPassword(e.target.value)}
+                placeholder={tx('密码(可选,留空则连接时手动输入)', 'Password (optional; leave blank to type at connect time)')}
+                autoComplete="new-password"
+              />
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={sshSavePassword}
+                  onChange={(e) => setSshSavePassword(e.target.checked)}
+                  disabled={!sshPassword}
+                />
+                {tx('保存密码(OS 加密;需 sshpass 才能自动登录)', 'Save password (OS-encrypted; needs sshpass on PATH for auto-login)')}
+              </label>
+            </div>
+          )}
           <button type="button" className="settings-button" onClick={() => void handleAddSshProfile()}>
             {tx('添加服务器', 'Add server')}
           </button>

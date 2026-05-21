@@ -21,7 +21,7 @@
  * - cmd:session:create / close / claim / release / focus-owner / send-input / resize
  * - 所有 evt:* 广播
  */
-import { app, BrowserWindow, clipboard, ipcMain, dialog, shell } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain, dialog, safeStorage, shell } from 'electron';
 import { getBuildType } from './build-type';
 import {
   getExplorerIntegrationStatus,
@@ -80,6 +80,8 @@ import {
   type PathTreeUpdatedPayload,
   type PickFolderPayload,
   type PickFolderResponse,
+  type PickSshKeyFilePayload,
+  type PickSshKeyFileResponse,
   type QuitPayload,
   type QuitResponse,
   type OpenSessionInNewWindowPayload,
@@ -297,7 +299,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       const pathRef = pathId ? pathRefFromId(pathId) : null;
       const sshProfile =
         pathRef?.kind === 'ssh' && pathRef.sshProfileId
-          ? sshProfileManager?.get(pathRef.sshProfileId)
+          ? sshProfileManager?.getInternal(pathRef.sshProfileId)
           : null;
       if (pathRef?.kind === 'ssh' && !sshProfile) {
         throw makeIpcError('SshProfileNotFound', `sshProfileId="${pathRef.sshProfileId}"`);
@@ -316,8 +318,17 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
                 ? 'attach-or-create' as const
                 : 'disabled' as const,
             tmuxOnMissing: 'fallback-shell' as const,
+            // 在 main 进程里立刻解密;session-manager 只看到明文,不持有
+            // safeStorage 句柄。解密失败(profile 文件来自另一台机器 / 用户)
+            // 时悄悄丢弃,会自动回退到交互式密码提示。
+            ...(sshProfile.passwordEncrypted
+              ? decryptStoredPassword(sshProfile.passwordEncrypted)
+              : {}),
           }
         : null;
+      if (sshProfileForLaunch) {
+        delete (sshProfileForLaunch as { passwordEncrypted?: string }).passwordEncrypted;
+      }
       const session = await sessionManager.createSession({
         pathId: pathId ?? '',
         templateId: effectiveTemplateId,
@@ -329,7 +340,8 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       });
       const pathTreeChanged =
         JSON.stringify(pathManager.getTree()) !== oldTreeJson;
-      return { session, pathTreeChanged };
+      const warning = sessionManager.lastLaunchWarning ?? undefined;
+      return warning ? { session, pathTreeChanged, warning } : { session, pathTreeChanged };
     },
   );
 
@@ -643,7 +655,12 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       if (!sshProfileManager) {
         throw makeIpcError('SshProfileUnavailable', 'SSH profile manager 未初始化');
       }
-      const profile = sshProfileManager.add(envelope.payload);
+      const { password, ...rest } = envelope.payload;
+      const addInput: Omit<typeof rest, never> & { passwordEncrypted?: string } = { ...rest };
+      if (typeof password === 'string' && password.length > 0) {
+        addInput.passwordEncrypted = encryptPasswordOrThrow(password);
+      }
+      const profile = sshProfileManager.add(addInput);
       return { profile };
     },
   );
@@ -654,11 +671,38 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       if (!sshProfileManager) {
         throw makeIpcError('SshProfileUnavailable', 'SSH profile manager 未初始化');
       }
-      const profile = sshProfileManager.update(
-        envelope.payload.id,
-        envelope.payload.partial,
-      );
+      const { password, ...partialRest } = envelope.payload.partial;
+      const partial: typeof partialRest & { passwordEncrypted?: string } = { ...partialRest };
+      if (typeof password === 'string') {
+        // '' 表示清除已保存密码;非空字符串则加密落盘。
+        partial.passwordEncrypted = password.length > 0 ? encryptPasswordOrThrow(password) : '';
+      }
+      const profile = sshProfileManager.update(envelope.payload.id, partial);
       return { profile };
+    },
+  );
+
+  ipcMain.handle(
+    COMMAND_CHANNELS.SSH_PROFILE_PICK_KEY_FILE,
+    async (
+      _e,
+      envelope: CommandEnvelope<PickSshKeyFilePayload>,
+    ): Promise<PickSshKeyFileResponse> => {
+      const fromWindow = BrowserWindow.fromWebContents(_e.sender);
+      const result = await dialog.showOpenDialog(
+        fromWindow ?? BrowserWindow.getFocusedWindow()!,
+        {
+          title: '选择 SSH 私钥文件',
+          properties: ['openFile', 'showHiddenFiles'],
+          ...(envelope.payload.defaultPath
+            ? { defaultPath: envelope.payload.defaultPath }
+            : {}),
+        },
+      );
+      if (result.canceled || result.filePaths.length === 0) {
+        return { path: null };
+      }
+      return { path: result.filePaths[0]! };
     },
   );
 
@@ -1391,6 +1435,26 @@ function makeIpcError(
   err.code = code;
   if (details) err.details = details;
   return err;
+}
+
+function encryptPasswordOrThrow(plaintext: string): string {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw makeIpcError(
+      'SafeStorageUnavailable',
+      '当前系统未启用 OS 凭据加密(Linux 上可能缺少 libsecret/GNOME Keyring)。无法安全保存密码。',
+    );
+  }
+  return safeStorage.encryptString(plaintext).toString('base64');
+}
+
+function decryptStoredPassword(blob: string): { password?: string } {
+  if (!safeStorage.isEncryptionAvailable()) return {};
+  try {
+    const buf = Buffer.from(blob, 'base64');
+    return { password: safeStorage.decryptString(buf) };
+  } catch {
+    return {};
+  }
 }
 
 async function assertDirectory(path: string): Promise<void> {

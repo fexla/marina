@@ -116,6 +116,9 @@ export function Sidebar(): JSX.Element {
       // session 创建后:store reducer 自动 select 它(因 ownerWindowId === myWindowId)。
       // 这里再显式 dispatch 一次 select-path,防御性把视图切到该路径。
       dispatch({ type: 'view/select-path', pathId: res.session.pathId });
+      if (res.warning) {
+        toast.push({ kind: 'warn', message: res.warning });
+      }
     } catch (err) {
       toast.push({
         kind: 'error',
@@ -409,6 +412,9 @@ function PathItem({
       // 再显式 select 新创建的 session。两次 dispatch 在 React 18 自动 batch。
       dispatch({ type: 'view/select-path', pathId: node.id });
       dispatch({ type: 'view/select-session', sessionId: res.session.id });
+      if (res.warning) {
+        toast.push({ kind: 'warn', message: res.warning });
+      }
     } catch (err) {
       // M1-K:不可达路径 / spawn 失败 → toast + (收藏路径) 提供"移除收藏"
       const msg = err instanceof Error ? err.message : String(err);

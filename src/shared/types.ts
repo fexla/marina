@@ -409,8 +409,9 @@ export interface RecentEntry {
 }
 
 /**
- * SSH 服务器连接配置。第一版不持久化密码;password auth 只作为
- * UI 选项,连接时仍交给 ssh CLI 交互提示。
+ * SSH 服务器连接配置。可选保存密码:passwordEncrypted 是 Electron
+ * safeStorage 加密后的 base64 文本,仅 main 进程能解密。送到 renderer
+ * 的副本始终剥去 passwordEncrypted,仅保留 hasSavedPassword 标志。
  */
 export interface SshProfile {
   id: string;
@@ -420,6 +421,10 @@ export interface SshProfile {
   username: string;
   authType: 'agent' | 'keyFile' | 'password';
   keyFilePath?: string;
+  /** safeStorage.encryptString 结果的 base64;只在 main 内部保留 */
+  passwordEncrypted?: string;
+  /** 仅 renderer 副本带:是否已保存密码 */
+  hasSavedPassword?: boolean;
   defaultRemoteCwd?: string;
   tmuxMode?: SshTmuxMode;
   tmuxSessionName?: string;

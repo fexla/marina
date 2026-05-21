@@ -402,6 +402,8 @@ export interface CreateSessionInput {
     username: string;
     authType: 'agent' | 'keyFile' | 'password';
     keyFilePath?: string;
+    /** 明文密码;ipc 层用 safeStorage 解密后传入,会注入 sshpass 自动登录 */
+    password?: string;
     tmuxMode?: 'disabled' | 'attach-or-create';
     tmuxSessionName?: string;
     tmuxSessionPolicy?: 'reuse' | 'new-per-launch';
@@ -490,6 +492,11 @@ export class SessionManager extends EventEmitter {
   private readonly skipCwdValidation: boolean;
   private readonly emitBatchMs: number;
   private readonly appVersion: string;
+  /**
+   * 最近一次 createSession 的非阻塞警告(例如保存了密码但缺 sshpass)。
+   * ipc 层在 createSession resolve 后立即读取并清空,传给 renderer 弹 toast。
+   */
+  lastLaunchWarning: string | null = null;
 
   /**
    * 缓存 detectShells 结果。首次 createSession 时填充,后续复用。
@@ -539,6 +546,7 @@ export class SessionManager extends EventEmitter {
    *   PtySpawnFailed / CwdNotAccessible
    */
   async createSession(input: CreateSessionInput): Promise<SessionInfo> {
+    this.lastLaunchWarning = null;
     const template = this.templatesManager.resolve(input.templateId);
     const dims = validateDimensions(input.cols, input.rows);
     const shells = await this.getShells();
@@ -649,6 +657,28 @@ export class SessionManager extends EventEmitter {
         );
       }
       spawnFile = resolvedSsh;
+      // 保存了密码且 sshpass 在 PATH 上 → 用 sshpass -e 包一层,把
+      // SSHPASS 环境变量喂给 ssh,实现无交互登录。sshpass 不可用时静默
+      // 回退到原始 ssh,密码框仍会出现,用户体验只是退化不破坏。
+      const sshPassword = input.sshProfile!.password;
+      if (
+        input.sshProfile!.authType === 'password' &&
+        typeof sshPassword === 'string' &&
+        sshPassword.length > 0
+      ) {
+        const resolvedSshPass = this.platformAdapter.resolveExecutable('sshpass', env);
+        if (resolvedSshPass) {
+          env.SSHPASS = sshPassword;
+          launchParams.args = ['-e', spawnFile, ...launchParams.args];
+          spawnFile = resolvedSshPass;
+        } else {
+          this.lastLaunchWarning =
+            'SshpassMissing: 已保存 SSH 密码,但未在 PATH 上找到 sshpass。' +
+            '本次连接 ssh 仍会交互式提示密码。' +
+            'Windows: winget install xhcoding.sshpass-win32;' +
+            'Debian/Ubuntu: apt install sshpass;macOS: brew install sshpass。';
+        }
+      }
     } else {
       spawnFile = shell.executablePath;
     }
