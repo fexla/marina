@@ -978,20 +978,6 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         }
       }
 
-      // Ctrl+Enter:发送 \x1b\r (ESC + CR),与 Alt+Enter 一致。
-      // conhost.exe 对 Ctrl+Enter 带修饰符状态,Claude Code 等应用可识别为"插入换行";
-      // xterm.js 默认把 Ctrl+Enter 当普通 Enter 发 \r,应用无法区分。
-      // 发 \x1b\r 让应用识别为换行(Alt+Enter 语义),与 cmd 行为对齐。
-      if (isMod && !ev.altKey && !ev.shiftKey && ev.key === 'Enter') {
-        ev.preventDefault();
-        const base64 = encodeStringToBase64('\x1b\r');
-        void window.api.invoke(COMMAND_CHANNELS.SESSION_SEND_INPUT, {
-          sessionId: session.id,
-          data: base64,
-        });
-        return false;
-      }
-
       // Esc:仅在搜索栏可见时拦截 — 否则 Esc 应正常透传给终端 (vim 等需要)
       if (ev.key === 'Escape' && searchVisibleRef.current) {
         h.handleCloseSearch();
