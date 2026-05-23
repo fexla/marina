@@ -168,8 +168,26 @@ function reducer(state: AppState, action: AppAction): AppState {
         selectedPathId: state.selectedPathId ?? firstBookmark?.id ?? null,
       };
     }
-    case 'pathTree/update':
-      return { ...state, pathTree: action.tree };
+    case 'pathTree/update': {
+      const selectedPathStillExists =
+        state.selectedPathId !== null &&
+        findPathNode(action.tree, state.selectedPathId) !== undefined;
+      const validPathIds = new Set([
+        ...action.tree.bookmarks.map((p) => p.id),
+        ...action.tree.temporary.map((p) => p.id),
+        ...action.tree.recent.map((p) => p.id),
+      ]);
+      const expandedPathIds = new Set(
+        [...state.expandedPathIds].filter((pathId) => validPathIds.has(pathId)),
+      );
+      return {
+        ...state,
+        pathTree: action.tree,
+        expandedPathIds,
+        selectedPathId: selectedPathStillExists ? state.selectedPathId : null,
+        selectedSessionId: selectedPathStillExists ? state.selectedSessionId : null,
+      };
+    }
 
     case 'bookmarks/update':
       return { ...state, bookmarks: action.bookmarks };

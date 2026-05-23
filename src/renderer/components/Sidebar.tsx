@@ -1,13 +1,14 @@
 /**
  * @file src/renderer/components/Sidebar.tsx
- * @purpose 三栏侧栏 (收藏 / 临时 / 最近),路径节点 + 子 session 节点。
+ * @purpose 首页侧边栏,按"设备分组 + 临时 / 最近"组织路径节点和子 session 节点。
  *   含 + 按钮调文件夹选择器、拖文件夹到收藏区加入收藏 (drag-drop)、
  *   单击选中、双击新建 session、右键菜单 (CP-2 简化菜单)。
  *
  * @关键设计:
- * - 三栏始终显示,即使空 (软件定义书 6.2.1: 默认全部展开)
- * - 同 path 在三栏不重叠;每个 path 节点可展开看 sessions
- * - sessions 显示状态点 (active 绿 / idle 黄 / tombstoned 灰)、
+ * - 本机 / 每个 SSH profile / 每个 WSL 发行版是并列设备分组,帮助用户识别路径所在设备
+ * - 收藏仍是 PathManager 的持久化状态,但首页不再单独渲染"收藏"分组
+ * - 临时 / 最近仍保留 PathManager 状态机语义;每个 path 节点可展开看 sessions
+ * - sessions 显示状态点 (active 绿 / idle 黄 / exited 灰)、
  *   是否被其他窗口持有 (灰显 + ↗ 图标)
  * - 拖 Explorer 文件夹到 .sidebar-bookmarks-dropzone (CP-2 完成标志):
  *   先校验 file:// path 是否存在且是目录,然后调 cmd:bookmark:add
@@ -32,7 +33,7 @@ import {
   type CreateSessionResponse,
   type PickFolderResponse,
 } from '@shared/protocol';
-import type { PathNode, SessionInfo } from '@shared/types';
+import type { PathNode, SessionInfo, SshProfile } from '@shared/types';
 import { disambiguatePathNames } from '@shared/path-display';
 import { useTranslation } from './LanguageProvider';
 import {
@@ -43,6 +44,7 @@ import {
 } from '../store';
 import { Icon, type IconName } from './icons';
 import { useContextMenuApi, type ContextMenuItem } from './ContextMenu';
+import { useModal } from './Modal';
 import { useToast } from './Toast';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { buildSessionContextMenu } from './sessionContextMenu';
@@ -62,6 +64,15 @@ const STATE_DOT_COLOR: Record<SessionInfo['state'], string> = {
   exited: 'var(--color-text-muted, #f0f)',
 };
 
+interface DeviceSection {
+  id: string;
+  title: string;
+  iconName: IconName;
+  kind: 'local' | 'ssh' | 'wsl';
+  sshProfileId?: string;
+  paths: PathNode[];
+}
+
 // ──────────────────────────────────────────────────────────────────
 // M1-C:全局 ContextMenuProvider 提到 App.tsx,这里只 useContextMenuApi。
 // 旧版内嵌 provider 已删除,文件因此短了 100+ 行。
@@ -71,10 +82,33 @@ export function Sidebar(): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
   const toast = useToast();
+  const modal = useModal();
   const { t } = useTranslation();
   const [dragOver, setDragOver] = useState(false);
+  const [collapsedCategoryIds, setCollapsedCategoryIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const deviceSections = useMemo(
+    () => buildDeviceSections(state.pathTree, state.sshProfiles),
+    [state.pathTree, state.sshProfiles],
+  );
 
-  const handlePickFolder = async (): Promise<void> => {
+  const isCategoryCollapsed = (categoryId: string): boolean =>
+    collapsedCategoryIds.has(categoryId);
+
+  const handleToggleCategory = (categoryId: string): void => {
+    setCollapsedCategoryIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(categoryId)) {
+        next.delete(categoryId);
+      } else {
+        next.add(categoryId);
+      }
+      return next;
+    });
+  };
+
+  const handleAddLocalBookmark = async (): Promise<void> => {
     try {
       const result = await window.api.invoke<unknown, PickFolderResponse>(
         COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER,
@@ -86,8 +120,44 @@ export function Sidebar(): JSX.Element {
         { path: result.path },
       );
     } catch (err) {
-      console.error('[Sidebar] pick-folder + add-bookmark failed', err);
+      toast.push({
+        kind: 'error',
+        message: `添加文件夹失败:${err instanceof Error ? err.message : String(err)}`,
+      });
     }
+  };
+
+  const handleAddSshBookmark = async (section: DeviceSection): Promise<void> => {
+    if (!section.sshProfileId) return;
+    const remotePath = await modal.prompt({
+      title: `添加远程文件夹 - ${section.title}`,
+      message: '输入要加入的远程目录路径。',
+      placeholder: '~/project',
+      defaultValue: '~',
+      confirmLabel: '加入',
+    });
+    const path = remotePath?.trim();
+    if (!path) return;
+    try {
+      await window.api.invoke<unknown, AddBookmarkResponse>(
+        COMMAND_CHANNELS.REMOTE_BOOKMARK_ADD,
+        { sshProfileId: section.sshProfileId, remotePath: path },
+      );
+      toast.push({ kind: 'success', message: `已添加远程文件夹 ${path}` });
+    } catch (err) {
+      toast.push({
+        kind: 'error',
+        message: `添加远程文件夹失败:${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  };
+
+  const handleAddDevicePath = async (section: DeviceSection): Promise<void> => {
+    if (section.kind === 'ssh') {
+      await handleAddSshBookmark(section);
+      return;
+    }
+    await handleAddLocalBookmark();
   };
 
   /**
@@ -226,23 +296,41 @@ export function Sidebar(): JSX.Element {
         <span className="sidebar-drop-hint-label">{t('sidebar.dropHint')}</span>
       </div>
       <div className="sidebar-bookmarks-dropzone">
+        {deviceSections.map((section) => (
+          <Category
+            key={section.id}
+            categoryId={section.id}
+            title={section.title}
+            iconName={section.iconName}
+            paths={section.paths}
+            variant="device"
+            emptyLabel="无路径"
+            collapsed={isCategoryCollapsed(section.id)}
+            onToggleCollapsed={handleToggleCategory}
+            actionLabel={<Icon name="plus" size={12} />}
+            actionTitle={`添加到${section.title}`}
+            onAction={() => void handleAddDevicePath(section)}
+          />
+        ))}
         <Category
-          title={t('sidebar.category.bookmark')}
-          iconName="bookmark"
-          paths={state.pathTree.bookmarks}
-          actionLabel={<Icon name="plus" size={12} />}
-          actionTitle={t('sidebar.addBookmark.title')}
-          onAction={() => void handlePickFolder()}
-        />
-        <Category
+          categoryId="temporary"
           title={t('sidebar.category.temporary')}
           iconName="clock"
-          paths={state.pathTree.temporary}
+          paths={deviceSections.length > 0 ? withoutBookmarked(state.pathTree.temporary) : state.pathTree.temporary}
+          collapsed={isCategoryCollapsed('temporary')}
+          onToggleCollapsed={handleToggleCategory}
           actionLabel={<Icon name="plus" size={12} />}
           actionTitle={t('sidebar.addTemporary.title')}
           onAction={() => void handlePickFolderForTemp()}
         />
-        <Category title={t('sidebar.category.recent')} iconName="history" paths={state.pathTree.recent} />
+        <Category
+          categoryId="recent"
+          title={t('sidebar.category.recent')}
+          iconName="history"
+          paths={deviceSections.length > 0 ? withoutBookmarked(state.pathTree.recent) : state.pathTree.recent}
+          collapsed={isCategoryCollapsed('recent')}
+          onToggleCollapsed={handleToggleCategory}
+        />
       </div>
       <div className="sidebar-footer">
         <button
@@ -260,9 +348,14 @@ export function Sidebar(): JSX.Element {
 }
 
 interface CategoryProps {
+  categoryId: string;
   title: string;
   iconName: IconName;
   paths: PathNode[];
+  variant?: 'default' | 'device';
+  emptyLabel?: string;
+  collapsed: boolean;
+  onToggleCollapsed: (categoryId: string) => void;
   /** affordance 内容 — 通常是 lucide icon (<Icon name="plus" .../>) */
   actionLabel?: ReactNode;
   actionTitle?: string;
@@ -270,9 +363,14 @@ interface CategoryProps {
 }
 
 function Category({
+  categoryId,
   title,
   iconName,
   paths,
+  variant = 'default',
+  emptyLabel = '空',
+  collapsed,
+  onToggleCollapsed,
   actionLabel,
   actionTitle,
   onAction,
@@ -280,8 +378,17 @@ function Category({
   // BETA-014:同 category 内末级文件夹同名时自动补父目录区分;手动命名的不参与。
   const displayNames = useMemo(() => disambiguatePathNames(paths), [paths]);
   return (
-    <section className="sidebar-category">
-      <header className="sidebar-category-header">
+    <section
+      className={`sidebar-category${variant === 'device' ? ' device-category' : ''}${collapsed ? ' collapsed' : ''}`}
+    >
+      <header
+        className="sidebar-category-header"
+        onClick={() => onToggleCollapsed(categoryId)}
+        title={collapsed ? '展开分组' : '折叠分组'}
+      >
+        <span className="sidebar-category-chevron" aria-hidden="true">
+          {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+        </span>
         <span className="sidebar-category-title">
           <span className="sidebar-category-icon" aria-hidden="true">
             <Icon name={iconName} size={12} />
@@ -293,15 +400,18 @@ function Category({
           <button
             type="button"
             className="sidebar-category-action"
-            onClick={onAction}
+            onClick={(e) => {
+              e.stopPropagation();
+              onAction?.();
+            }}
             title={actionTitle}
           >
             {actionLabel}
           </button>
         )}
       </header>
-      {paths.length === 0 ? (
-        <p className="sidebar-empty">空</p>
+      {collapsed ? null : paths.length === 0 ? (
+        <p className="sidebar-empty">{emptyLabel}</p>
       ) : (
         <ul className="sidebar-paths">
           {paths.map((p) => {
@@ -345,7 +455,7 @@ function PathItem({
   const displayName =
     displayNameOverride ??
     node.displayName ??
-    formatPathDisplayName(node, sshProfile?.name);
+    formatPathDisplayName(node);
   const displayPath =
     node.kind === 'ssh' && sshProfile
       ? `${sshProfile.username}@${sshProfile.host}:${node.path}`
@@ -464,9 +574,21 @@ function PathItem({
         label: '移除收藏',
         danger: true,
         onSelect: () => {
-          window.api
-            .invoke(COMMAND_CHANNELS.BOOKMARK_REMOVE, { pathId: node.id })
-            .then(() => toast.push({ kind: 'success', message: `已移除收藏 ${displayName}` }))
+          const removeBookmark = async (): Promise<void> => {
+            await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_REMOVE, { pathId: node.id });
+            // 首页已经不单独展示"收藏"分组。无 session 的收藏被移除后,
+            // PathManager 会按状态机放入 recent;对用户来说这看起来像"没删掉",
+            // 需要再右键"从最近移除"一次。这里把这两个 UI 动作合成一次。
+            if (node.sessionIds.length === 0) {
+              await window.api.invoke(COMMAND_CHANNELS.PATH_REMOVE_FROM_RECENT, {
+                path: node.id,
+              });
+            }
+          };
+          removeBookmark()
+            .then(() =>
+              toast.push({ kind: 'success', message: `已移除收藏 ${displayName}` }),
+            )
             .catch((err: unknown) =>
               toast.push({
                 kind: 'error',
@@ -603,7 +725,10 @@ function PathItem({
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
-          <span className="path-name">{displayName}</span>
+          <span className="path-text">
+            <span className="path-name">{displayName}</span>
+            <span className="path-subtitle">{displayPath}</span>
+          </span>
         )}
         {activeCount > 0 && !renaming && (
           <span className="path-session-count" title={`${activeCount} 个终端`}>
@@ -860,6 +985,88 @@ function SessionItemImpl({
 const SessionItem = memo(SessionItemImpl);
 
 /**
+ * 把 PathManager 的状态机视图(bookmarked/temporary/recent)投影成"设备视图"。
+ *
+ * 为什么只在 renderer 做:
+ * - 收藏 / 临时 / 最近仍是产品状态机和持久化 schema 的事实来源。
+ * - 本机 / SSH / WSL 是按设备拆开的收藏视图,帮助用户区分"这个路径在哪台设备上"。
+ * - 这样不会改 IPC 协议,也不会让 PathManager 同时承担分类和设备两套职责。
+ *
+ * 显示规则:
+ * - 设备分组只列出已收藏路径。移除收藏后,路径如果仍有 session,由临时分组承载。
+ * - 临时 / 最近只显示非收藏路径,避免同一 path 在设备分组和状态机分组重复出现。
+ */
+function buildDeviceSections(pathTree: {
+  bookmarks: PathNode[];
+  temporary: PathNode[];
+  recent: PathNode[];
+}, sshProfiles: SshProfile[]): DeviceSection[] {
+  const bookmarks = uniquePathNodes(pathTree.bookmarks);
+  const localPaths = bookmarks.filter((p) => (p.kind ?? 'local') === 'local' && !getWslDistroName(p.path));
+  const sections: DeviceSection[] = [
+    {
+      id: 'device:local',
+      title: '本机',
+      iconName: 'shellPowershell',
+      kind: 'local',
+      paths: localPaths,
+    },
+  ];
+
+  for (const profile of sshProfiles) {
+    const paths = bookmarks.filter((p) => p.kind === 'ssh' && p.sshProfileId === profile.id);
+    sections.push({
+      id: `device:ssh:${profile.id}`,
+      title: profile.name,
+      iconName: 'server',
+      kind: 'ssh',
+      sshProfileId: profile.id,
+      paths,
+    });
+  }
+
+  const wslGroups = new Map<string, PathNode[]>();
+  for (const node of bookmarks) {
+    const distro = getWslDistroName(node.path);
+    if (!distro) continue;
+    const paths = wslGroups.get(distro) ?? [];
+    paths.push(node);
+    wslGroups.set(distro, paths);
+  }
+  for (const [distro, paths] of wslGroups) {
+    sections.push({
+      id: `device:wsl:${distro}`,
+      title: `WSL ${distro}`,
+      iconName: 'shell',
+      kind: 'wsl',
+      paths,
+    });
+  }
+
+  return sections;
+}
+
+function uniquePathNodes(nodes: PathNode[]): PathNode[] {
+  const seen = new Set<string>();
+  const result: PathNode[] = [];
+  for (const node of nodes) {
+    if (seen.has(node.id)) continue;
+    seen.add(node.id);
+    result.push(node);
+  }
+  return result;
+}
+
+function withoutBookmarked(nodes: PathNode[]): PathNode[] {
+  return nodes.filter((node) => node.category !== 'bookmarked');
+}
+
+function getWslDistroName(path: string): string | null {
+  const match = path.match(/^\\\\(?:wsl\$|wsl\.localhost)\\([^\\]+)(?:\\|$)/i);
+  return match?.[1] ?? null;
+}
+
+/**
  * 比较两个路径是否指向同一目录。Windows 大小写无关,POSIX 大小写敏感。
  * 不做 normalize (currentCwd / originalCwd 进入 SessionInfo 之前已经 path.resolve 过)。
  */
@@ -870,10 +1077,9 @@ function samePath(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
 }
 
-function formatPathDisplayName(node: PathNode, sshProfileName?: string): string {
+function formatPathDisplayName(node: PathNode): string {
   const leaf = lastSegmentOf(node.path);
-  if (node.kind !== 'ssh') return leaf;
-  return `${sshProfileName ?? 'SSH'}:${leaf}`;
+  return leaf;
 }
 
 function lastSegmentOf(path: string): string {

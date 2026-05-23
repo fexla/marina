@@ -1077,6 +1077,11 @@ html[data-maximized='true'] .app-root.with-shell {
   text-transform: uppercase;
   letter-spacing: 0.6px;
   color: var(--color-text-primary, #f0f);
+  cursor: pointer;
+}
+
+.sidebar-category-header:hover {
+  background-color: var(--color-bg-hover, #f0f);
 }
 
 /* F7(beta 勘误2 续):.sidebar-top-spacer 已从 Sidebar.tsx 移除,这里保留
@@ -1089,6 +1094,25 @@ html[data-maximized='true'] .app-root.with-shell {
 
 .sidebar-category-icon {
   font-size: 11px;
+}
+
+.sidebar-category-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  color: var(--color-text-muted, #f0f);
+  flex: 0 0 auto;
+}
+
+.sidebar-category.device-category .sidebar-category-icon {
+  color: var(--color-info, #f0f);
+}
+
+.sidebar-category.device-category .sidebar-category-title {
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .sidebar-category-title {
@@ -1143,14 +1167,14 @@ html[data-maximized='true'] .app-root.with-shell {
 }
 
 .path-item {
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .path-item-row {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 12px;
+  padding: 4px 12px 4px 28px;
   cursor: pointer;
   color: var(--color-text-primary, #f0f);
 }
@@ -1200,7 +1224,27 @@ html[data-maximized='true'] .app-root.with-shell {
 }
 
 .path-name {
+  color: var(--color-text-primary, #f0f);
+  font-weight: 500;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.path-text {
   flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.path-subtitle {
+  color: var(--color-text-muted, #f0f);
+  font-size: 10px;
+  line-height: 1.2;
+  font-family: var(--terminal-font-family, monospace);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1240,7 +1284,7 @@ html[data-maximized='true'] .app-root.with-shell {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 12px;
+  padding: 3px 12px 3px 44px;
   font-size: 12px;
   color: var(--color-text-primary, #f0f);
   cursor: pointer;

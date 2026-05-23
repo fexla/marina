@@ -1108,6 +1108,10 @@ function DataPanel({
   const [remoteProfileId, setRemoteProfileId] = useState('');
   const [remotePath, setRemotePath] = useState('~');
   const [remoteName, setRemoteName] = useState('');
+  const [wslDistros, setWslDistros] = useState<Array<{ id: string; name: string }>>([]);
+  const [wslDistroId, setWslDistroId] = useState('');
+  const [wslPath, setWslPath] = useState('/home');
+  const [wslName, setWslName] = useState('');
   // BETA-039:从主进程取真实 userData 路径(app.getPath('userData')),
   // portable / dev / 自定义 userData 场景下 UI 都准确;首次渲染前显示占位。
   const [dataDir, setDataDir] = useState<string>('…');
@@ -1120,6 +1124,32 @@ function DataPanel({
       })
       .catch(() => {
         // 静默:UI 退回到占位文本;真实路径取不到不影响其他功能。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    window.api
+      .invoke<unknown, ListShellsResponse>(
+        COMMAND_CHANNELS.SETTINGS_LIST_SHELLS,
+        {},
+      )
+      .then((res) => {
+        if (cancelled) return;
+        const distros = res.shells
+          .filter((shell) => shell.id.startsWith('wsl:'))
+          .map((shell) => ({
+            id: shell.id,
+            name: shell.id.slice('wsl:'.length),
+          }));
+        setWslDistros(distros);
+        setWslDistroId((current) => current || distros[0]?.id || '');
+      })
+      .catch(() => {
+        if (!cancelled) setWslDistros([]);
       });
     return () => {
       cancelled = true;
@@ -1301,6 +1331,52 @@ function DataPanel({
     }
   };
 
+  const handleAddWslBookmark = async (): Promise<void> => {
+    setError(null);
+    try {
+      const distro = wslDistroId.startsWith('wsl:')
+        ? wslDistroId.slice('wsl:'.length)
+        : '';
+      if (!distro) {
+        setError(tx('请先选择 WSL 发行版', 'Select a WSL distro first'));
+        return;
+      }
+      const normalizedPath = wslPath.trim().replaceAll('\\', '/');
+      if (!normalizedPath.startsWith('/')) {
+        setError(tx('WSL 路径必须是 Linux 绝对路径,例如 /home/user/project', 'WSL path must be an absolute Linux path, for example /home/user/project'));
+        return;
+      }
+      const relative = normalizedPath.replace(/^\/+/, '').replace(/\/+/g, '\\');
+      const uncPath = `\\\\wsl$\\${distro}${relative ? `\\${relative}` : '\\'}`;
+      await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_ADD, {
+        path: uncPath,
+        ...(wslName.trim() ? { displayName: wslName.trim() } : {}),
+      });
+      setWslPath('/home');
+      setWslName('');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handlePickWslFolder = async (): Promise<void> => {
+    setError(null);
+    try {
+      const result = await window.api.invoke<unknown, { path: string | null }>(
+        COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER,
+        {},
+      );
+      if (!result.path) return;
+      await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_ADD, {
+        path: result.path,
+        ...(wslName.trim() ? { displayName: wslName.trim() } : {}),
+      });
+      setWslName('');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   return (
     <section className="settings-panel">
       <h2 className="settings-panel-title">{tx('数据', 'Data')}</h2>
@@ -1407,8 +1483,8 @@ function DataPanel({
       </SettingRow>
 
       <SettingRow
-        label={tx('远程文件夹收藏', 'Remote folder bookmark')}
-        hint={tx('添加后会出现在左侧收藏;双击即通过 SSH 进入该远程目录', 'Appears in Bookmarks; double-click opens SSH in that remote directory')}
+        label={tx('添加远程文件夹', 'Add remote folder')}
+        hint={tx('添加后会出现在左侧对应服务器分组;双击即通过 SSH 进入该远程目录', 'Appears under the matching server group; double-click opens SSH in that remote directory')}
       >
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           <select
@@ -1427,6 +1503,38 @@ function DataPanel({
           <input className="settings-input" value={remoteName} onChange={(e) => setRemoteName(e.target.value)} placeholder={tx('显示名(可选)', 'Display name (optional)')} />
           <button type="button" className="settings-button" onClick={() => void handleAddRemoteBookmark()}>
             {tx('加入收藏', 'Add bookmark')}
+          </button>
+        </div>
+      </SettingRow>
+
+      <SettingRow
+        label={tx('WSL 文件夹', 'WSL folder')}
+        hint={tx('选择 WSL 发行版并填写 Linux 绝对路径;添加后会出现在左侧对应 WSL 分组', 'Pick a WSL distro and enter an absolute Linux path; it appears under the matching WSL group in the sidebar')}
+      >
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          <select
+            className="settings-input"
+            value={wslDistroId}
+            onChange={(e) => setWslDistroId(e.target.value)}
+            disabled={wslDistros.length === 0}
+          >
+            {wslDistros.length === 0 ? (
+              <option value="">{tx('未检测到 WSL 发行版', 'No WSL distro detected')}</option>
+            ) : (
+              wslDistros.map((distro) => (
+                <option key={distro.id} value={distro.id}>
+                  {distro.name}
+                </option>
+              ))
+            )}
+          </select>
+          <input className="settings-input" value={wslPath} onChange={(e) => setWslPath(e.target.value)} placeholder="/home/user/project" />
+          <input className="settings-input" value={wslName} onChange={(e) => setWslName(e.target.value)} placeholder={tx('显示名(可选)', 'Display name (optional)')} />
+          <button type="button" className="settings-button" onClick={() => void handleAddWslBookmark()} disabled={wslDistros.length === 0}>
+            {tx('加入 WSL', 'Add WSL')}
+          </button>
+          <button type="button" className="settings-button" onClick={() => void handlePickWslFolder()}>
+            {tx('选择文件夹', 'Pick folder')}
           </button>
         </div>
       </SettingRow>

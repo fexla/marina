@@ -81,6 +81,7 @@ const MIN_ROWS = 5;
  * 落到 templateShell 兜底。
  */
 function shellIcon(id: string): IconName {
+  if (id === 'wsl' || id.startsWith('wsl:')) return 'shell';
   switch (id) {
     case 'pwsh':
       return 'shellPwsh';
@@ -93,6 +94,22 @@ function shellIcon(id: string): IconName {
     default:
       return 'templateShell';
   }
+}
+
+function getWslDistroName(path: string): string | null {
+  const match = path.match(/^\\\\(?:wsl\$|wsl\.localhost)\\([^\\]+)(?:\\|$)/i);
+  return match?.[1] ?? null;
+}
+
+function filterShellsForWslPath(
+  shells: DetectedShell[],
+  distroName: string | null,
+): DetectedShell[] {
+  if (!distroName) return shells;
+  const targetId = `wsl:${distroName}`.toLowerCase();
+  const distroShells = shells.filter((s) => s.id.toLowerCase() === targetId);
+  if (distroShells.length > 0) return distroShells;
+  return shells.filter((s) => s.id.toLowerCase() === 'wsl');
 }
 
 export function MainPane(): JSX.Element {
@@ -205,6 +222,8 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
   const sshProfile =
     node?.sshProfileId ? state.sshProfiles.find((p) => p.id === node.sshProfileId) : undefined;
   const isSshPath = node?.kind === 'ssh';
+  const wslDistroName = node ? getWslDistroName(node.path) : null;
+  const isWslPath = !!wslDistroName;
   const displayPath =
     isSshPath && sshProfile
       ? `${sshProfile.username}@${sshProfile.host}:${node.path}`
@@ -276,6 +295,8 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
   };
 
   const templates = state.templates;
+  const visibleShells = shells ? filterShellsForWslPath(shells, wslDistroName) : null;
+  const wslShellId = isWslPath ? visibleShells?.[0]?.id : undefined;
 
   return (
     <div className="empty-path-state">
@@ -316,11 +337,11 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
         </div>
       )}
 
-      {!isSshPath && shells && shells.length > 0 && (
+      {!isSshPath && visibleShells && visibleShells.length > 0 && (
         <div className="empty-section">
           <div className="empty-section-title">{tx('检测到的 Shell', 'Detected shells')}</div>
           <div className="empty-button-grid">
-            {shells.map((s) => (
+            {visibleShells.map((s) => (
               <button
                 key={s.id}
                 type="button"
@@ -342,12 +363,12 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
       <div className="empty-section">
         <div className="empty-section-title">{tx('启动模板', 'Launch templates')}</div>
         <div className="empty-button-grid">
-          {!isSshPath && templates.map((t) => (
+          {!isSshPath && (!isWslPath || wslShellId) && templates.map((t) => (
             <TemplateLaunchButton
               key={t.id}
               template={t}
               creating={creating}
-              onLaunch={() => void handleCreate(t.id)}
+              onLaunch={() => void handleCreate(t.id, wslShellId)}
             />
           ))}
         </div>
