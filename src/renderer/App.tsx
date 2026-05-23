@@ -285,8 +285,8 @@ function ConnectedShell({
                 <MainPane />
               </div>
             ) : (
-              <div className="app-body">
-                <Sidebar />
+              <div className={`app-body${state.sidebarVisible ? '' : ' sidebar-hidden'}`}>
+                {state.sidebarVisible && <Sidebar />}
                 <MainPane />
               </div>
             )}

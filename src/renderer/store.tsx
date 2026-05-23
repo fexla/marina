@@ -102,6 +102,10 @@ export interface AppState {
    * 也可通过工具栏按钮(BETA-028)在普通页面里切换。本窗口私有,不跨窗口同步。
    */
   simpleMode: boolean;
+  /**
+   * 普通页面下的侧栏可见性。本窗口私有,只控制 Sidebar,不影响 Tab bar。
+   */
+  sidebarVisible: boolean;
 }
 
 const EMPTY_TREE: PathTree = {
@@ -132,6 +136,8 @@ export type AppAction =
   | { type: 'view/toggle-path-expand'; pathId: string }
   | { type: 'view/toggle-simple-mode' }
   | { type: 'view/set-simple-mode'; value: boolean }
+  | { type: 'view/toggle-sidebar' }
+  | { type: 'view/set-sidebar-visible'; value: boolean }
   | { type: 'view/expand-path'; pathId: string }
   | { type: 'view/enter-settings' }
   | { type: 'view/exit-settings' }
@@ -332,6 +338,12 @@ function reducer(state: AppState, action: AppAction): AppState {
     case 'view/set-simple-mode':
       return { ...state, simpleMode: action.value };
 
+    case 'view/toggle-sidebar':
+      return { ...state, sidebarVisible: !state.sidebarVisible };
+
+    case 'view/set-sidebar-visible':
+      return { ...state, sidebarVisible: action.value };
+
     case 'view/expand-path': {
       if (state.expandedPathIds.has(action.pathId)) return state;
       const expanded = new Set(state.expandedPathIds);
@@ -423,6 +435,7 @@ export function makeDefaultState(myWindowId: string, myWindowNumber: number): Ap
     lastTerminalDims: { cols: 120, rows: 30 },
     // BETA-027:默认普通页面;Explorer 简易模式打开时在 startup 显式 dispatch set
     simpleMode: false,
+    sidebarVisible: true,
   };
 }
 
