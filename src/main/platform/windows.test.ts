@@ -45,16 +45,17 @@ describe('WindowsAdapter — WSL shell support', () => {
     expect(result.env).toEqual({});
   });
 
-  it('buildShellLaunchParams(wsl) 有命令时走 sh -lc "<cmd>"', () => {
+  it('buildShellLaunchParams(wsl) 有命令时走默认交互 shell加载用户 PATH', () => {
     const adapter = new WindowsAdapter();
     const result = adapter.buildShellLaunchParams(
       { id: 'wsl', displayName: 'WSL', executablePath: 'C:\\Windows\\System32\\wsl.exe' },
       'C:\\ignored\\hook.sh',
       { command: 'echo', args: ['hello world'] },
     );
-    expect(result.args[0]).toBe('-e');
+    expect(result.args[0]).toBe('--exec');
     expect(result.args[1]).toBe('sh');
     expect(result.args[2]).toBe('-lc');
+    expect(result.args[3]).toContain('exec "${SHELL:-/bin/sh}" -i -c');
     expect(result.args[3]).toMatch(/echo.*hello world/);
     expect(result.env).toEqual({});
   });
@@ -83,8 +84,10 @@ describe('WindowsAdapter — WSL shell support', () => {
     );
     expect(result.args[0]).toBe('-d');
     expect(result.args[1]).toBe('Ubuntu');
-    expect(result.args[2]).toBe('-e');
+    expect(result.args[2]).toBe('--exec');
     expect(result.args[3]).toBe('sh');
+    expect(result.args[4]).toBe('-lc');
+    expect(result.args[5]).toContain('exec "${SHELL:-/bin/sh}" -i -c');
   });
 
   it('WSL 发行版解析兼容 UTF-16LE 输出,避免中文名乱码', () => {

@@ -329,16 +329,21 @@ export class WindowsAdapter implements PlatformAdapter {
         // 有命令时先跑命令再 exec bash (postExitAction=keep_shell)。
         const wsl = parseWslShellId(shell.id);
         if (wsl.isWsl) {
-          // WSL MVP:避免硬编码依赖 bash(部分发行版无 bash 或不在 PATH)。
-          // 无命令时直接进默认发行版默认 shell;有命令时走 sh -lc 兜底。
-          // 完整版再补 hook 透传与 Windows/WSL 路径映射。
+          // WSL 模板必须经由用户默认 shell 的交互启动路径。
+          //
+          // 不能直接 `wsl.exe -e sh -lc <cmd>`:sh 是非交互 shell,不会加载
+          // ~/.bashrc / ~/.zshrc / nvm 等用户 PATH 初始化。Claude/Codex/OpenCode
+          // 常装在这些初始化脚本追加的目录里,结果就会误报 command not found。
+          //
+          // 这里让 WSL 先用发行版默认 shell 解析 `exec "$SHELL" -i -c ...`,
+          // 由用户默认交互 shell 加载 rc 文件后再执行模板命令。
           const distroArgs = wsl.distro ? ['-d', wsl.distro] : [];
           if (commandToRun) {
             const cmdLine = [commandToRun.command, ...commandToRun.args]
               .map(quoteBash)
               .join(' ');
             return {
-              args: [...distroArgs, '-e', 'sh', '-lc', cmdLine],
+              args: [...distroArgs, '--exec', 'sh', '-lc', buildWslInteractiveCommand(cmdLine)],
               env: {},
             };
           }
@@ -708,6 +713,10 @@ function parseWslShellId(id: string): WslShellIdParts {
     return { isWsl: true, distro: id.slice(4) };
   }
   return { isWsl: false };
+}
+
+function buildWslInteractiveCommand(cmdLine: string): string {
+  return `exec "\${SHELL:-/bin/sh}" -i -c ${quoteBash(cmdLine)}`;
 }
 
 /**
