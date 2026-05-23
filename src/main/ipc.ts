@@ -1155,12 +1155,7 @@ async function buildArchive(deps: IpcLayerDeps): Promise<SettingsArchiveV1> {
     }
   };
   // 强制先 flush,以保证读盘时拿到最新写入
-  await Promise.all([
-    deps.settingsManager.flush(),
-    deps.pathManager.flush(),
-    deps.sshProfileManager?.flush() ?? Promise.resolve(),
-    deps.templatesManager.flush(),
-  ]);
+  await flushAllStores(deps);
   const settings = deps.settingsManager.get();
   const bookmarks = await readJson<{ paths: unknown[] }>('bookmarks.json', { paths: [] });
   const recent = await readJson<{ paths: unknown[] }>('recent.json', { paths: [] });
@@ -1269,6 +1264,10 @@ async function applyArchiveInMemory(
   }
 
   // 等待所有 store debounce 落盘
+  await flushAllStores(deps);
+}
+
+async function flushAllStores(deps: IpcLayerDeps): Promise<void> {
   await Promise.all([
     deps.settingsManager.flush(),
     deps.pathManager.flush(),
