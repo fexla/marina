@@ -996,6 +996,41 @@ html[data-maximized='true'] .app-root.with-shell {
   transition: background-color 100ms ease;
 }
 
+/* SSH 方案 v2.1 §II.3:Sidebar 顶部 segmented control。本地用户(无 profile
+   且未启用远程)看不到这段 — 仅在 hasSshProfiles || enableRemote 时渲染。 */
+.sidebar-segmented {
+  display: flex;
+  gap: 2px;
+  padding: 6px 8px;
+  background-color: var(--color-bg-secondary, #f0f);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-text-muted, #888) 18%, transparent);
+}
+
+.sidebar-segmented-item {
+  flex: 1 1 0;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-muted, #888);
+  background-color: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition:
+    background-color 100ms ease,
+    color 100ms ease;
+}
+
+.sidebar-segmented-item:hover {
+  color: var(--color-text-primary, #fff);
+  background-color: color-mix(in srgb, var(--color-text-muted, #888) 10%, transparent);
+}
+
+.sidebar-segmented-item.active {
+  color: var(--color-text-primary, #fff);
+  background-color: color-mix(in srgb, var(--color-accent-special, #c4a7e7) 22%, transparent);
+}
+
 /* F11(beta 勘误2 续 v4):dropzone 视觉 — 纯背景洗涤 + 居中浮卡。
  *
  * 历史尝试与撤回原因:
@@ -1959,6 +1994,82 @@ textarea.settings-input::-webkit-scrollbar-thumb:hover {
 .settings-input::-webkit-scrollbar-corner,
 textarea.settings-input::-webkit-scrollbar-corner {
   background-color: transparent;
+}
+
+/* ── Remote (SSH) Settings (v2.1 §II.6 — RemotePanel) ─────────────
+   PR #2 polish:把 inline style 改成 class。布局保持原样:profile 列表 +
+   2 列 grid 表单 + 密码字段块 + 提交按钮行。 */
+
+.ssh-profile-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 520px;
+}
+
+.ssh-profile-list {
+  margin: 0;
+  list-style: none;
+  padding: 0;
+}
+
+.ssh-profile-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.ssh-profile-button {
+  margin-left: 8px;
+}
+
+.ssh-profile-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.ssh-key-picker {
+  display: flex;
+  gap: 4px;
+}
+
+.ssh-key-input {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.ssh-password-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ssh-password-save {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.ssh-profile-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.ssh-enable-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.remote-bookmark-form {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
 }
 
 /* ── Settings View (CP-4) ─────────────────────────────────────── */

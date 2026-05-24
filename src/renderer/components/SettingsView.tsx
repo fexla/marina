@@ -76,14 +76,23 @@ type CategoryId =
   | 'shell'
   | 'behavior'
   | 'data'
+  | 'remote'
   | 'system-integration'
   | 'ai'
   | 'advanced'
   | 'about';
 
+interface CategoryDef {
+  id: CategoryId;
+  iconName: IconName;
+  titleKey: string;
+}
+
 // CP-4 勘误 #11:用 lucide 图标替换原有 Emoji。BETA-031 新增 'AI 助手'。
 // BETA-004:title 改 i18n key,渲染时由 t() 转。
-const CATEGORIES: Array<{ id: CategoryId; iconName: IconName; titleKey: string }> = [
+// SSH 方案 v2.1 §II.6:'remote' 分类条件渲染(见 buildVisibleCategories);
+// 本地用户(无 SshProfile 且未开 enableRemote)视野永远是 8 个分类。
+const BASE_CATEGORIES: CategoryDef[] = [
   { id: 'appearance', iconName: 'appearance', titleKey: 'settings.category.appearance' },
   { id: 'shell', iconName: 'shell', titleKey: 'settings.category.shell' },
   { id: 'behavior', iconName: 'behavior', titleKey: 'settings.category.behavior' },
@@ -93,6 +102,36 @@ const CATEGORIES: Array<{ id: CategoryId; iconName: IconName; titleKey: string }
   { id: 'advanced', iconName: 'advanced', titleKey: 'settings.category.advanced' },
   { id: 'about', iconName: 'about', titleKey: 'settings.category.about' },
 ];
+
+const REMOTE_CATEGORY: CategoryDef = {
+  id: 'remote',
+  iconName: 'server',
+  titleKey: 'settings.category.remote',
+};
+
+/**
+ * SSH 方案 v2.1 §II.6:本地用户视野守护。'remote' 分类只在以下任一条件下
+ * 显示:
+ *   1. 已有至少一个 SshProfile(用户已经在配置远程)
+ *   2. advanced.enableRemote === true(用户主动想看远程入口)
+ *
+ * 否则隐藏 — 设置页永远是 8 个分类,跟 beta.9 一致。
+ * 'remote' 插入位置:放在 'data' 之后、'system-integration' 之前,语义上跟
+ * "数据"分类的"远程文件夹"延续。
+ */
+function buildVisibleCategories(input: {
+  hasSshProfiles: boolean;
+  enableRemote: boolean;
+}): CategoryDef[] {
+  const showRemote = input.hasSshProfiles || input.enableRemote;
+  if (!showRemote) return BASE_CATEGORIES;
+  const result: CategoryDef[] = [];
+  for (const c of BASE_CATEGORIES) {
+    result.push(c);
+    if (c.id === 'data') result.push(REMOTE_CATEGORY);
+  }
+  return result;
+}
 
 // 把 settings update 走 IPC 的副作用集中,所有控件都用这个
 async function updateSettings(
@@ -110,8 +149,26 @@ async function updateSettings(
 export function SettingsView(): JSX.Element {
   const dispatch = useAppDispatch();
   const { t } = useTranslation();
+  const state = useAppState();
   const [active, setActive] = useState<CategoryId>('appearance');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const visibleCategories = useMemo(
+    () =>
+      buildVisibleCategories({
+        hasSshProfiles: state.sshProfiles.length > 0,
+        enableRemote: state.settings?.advanced?.enableRemote === true,
+      }),
+    [state.sshProfiles.length, state.settings?.advanced?.enableRemote],
+  );
+
+  // 当前 active 分类被移除时(例如用户在 remote 面板把 enableRemote 关掉且
+  // 没 profile),回退到 appearance。
+  useEffect(() => {
+    if (!visibleCategories.some((c) => c.id === active)) {
+      setActive('appearance');
+    }
+  }, [visibleCategories, active]);
 
   const handleClose = useCallback(() => {
     dispatch({ type: 'view/exit-settings' });
@@ -138,12 +195,13 @@ export function SettingsView(): JSX.Element {
       </header>
       <div className="settings-body">
         <nav className="settings-nav" aria-label={t('settings.title')}>
-          {CATEGORIES.map((c) => (
+          {visibleCategories.map((c) => (
             <button
               key={c.id}
               type="button"
               className={`settings-nav-item${active === c.id ? ' active' : ''}`}
               onClick={() => setActive(c.id)}
+              data-testid={`settings-nav-${c.id}`}
             >
               <span className="settings-nav-icon" aria-hidden="true">
                 <Icon name={c.iconName} size={14} />
@@ -175,6 +233,8 @@ function CategoryPanel({ categoryId, setError }: CategoryPanelProps): JSX.Elemen
       return <BehaviorPanel setError={setError} />;
     case 'data':
       return <DataPanel setError={setError} />;
+    case 'remote':
+      return <RemotePanel setError={setError} />;
     case 'system-integration':
       return <SystemIntegrationPanel setError={setError} />;
     case 'ai':
@@ -1133,22 +1193,10 @@ function DataPanel({
   setError: (msg: string | null) => void;
 }): JSX.Element {
   const { tx } = useTranslation();
-  const state = useAppState();
   const [busy, setBusy] = useState<'export' | 'import' | null>(null);
   const [lastExportPath, setLastExportPath] = useState<string | null>(null);
-  const [sshName, setSshName] = useState('');
-  const [sshHost, setSshHost] = useState('');
-  const [sshPort, setSshPort] = useState('22');
-  const [sshUser, setSshUser] = useState('');
-  const [sshAuthType, setSshAuthType] = useState<'keyFile' | 'password'>('password');
-  const [sshKeyFile, setSshKeyFile] = useState('');
-  const [sshPassword, setSshPassword] = useState('');
-  const [sshSavePassword, setSshSavePassword] = useState(false);
-  /** 非 null 时表单进入"编辑"模式;按钮文案/提交动作随之切换 */
-  const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
-  const [remoteProfileId, setRemoteProfileId] = useState('');
-  const [remotePath, setRemotePath] = useState('~');
-  const [remoteName, setRemoteName] = useState('');
+  // SSH 相关 state/handlers 已迁到 RemotePanel(v2.1 §II.6),DataPanel 只保留
+  // 与设备无关的"数据"操作 + WSL(WSL 仍属本机视野)。
   const [wslDistros, setWslDistros] = useState<Array<{ id: string; name: string }>>([]);
   const [wslDistroId, setWslDistroId] = useState('');
   const [wslPath, setWslPath] = useState('/home');
@@ -1243,136 +1291,6 @@ function DataPanel({
     }
   };
 
-  const resetSshForm = (): void => {
-    setEditingProfileId(null);
-    setSshName('');
-    setSshHost('');
-    setSshPort('22');
-    setSshUser('');
-    setSshAuthType('password');
-    setSshKeyFile('');
-    setSshPassword('');
-    setSshSavePassword(false);
-  };
-
-  const handleEditSshProfile = (id: string): void => {
-    const p = state.sshProfiles.find((x) => x.id === id);
-    if (!p) return;
-    setError(null);
-    setEditingProfileId(id);
-    setSshName(p.name);
-    setSshHost(p.host);
-    setSshPort(String(p.port));
-    setSshUser(p.username);
-    setSshAuthType(p.authType === 'keyFile' ? 'keyFile' : 'password');
-    setSshKeyFile(p.keyFilePath ?? '');
-    // 密码不回填(main 永远不会送明文给 renderer);留空 + 未勾保存 = 保留旧密码。
-    setSshPassword('');
-    setSshSavePassword(false);
-  };
-
-  const handleSubmitSshProfile = async (): Promise<void> => {
-    setError(null);
-    try {
-      const port = Number.parseInt(sshPort, 10);
-      if (editingProfileId) {
-        // 更新:password 字段的语义见 protocol.ts —— undefined 保留旧密码,
-        // ''(空串) 清除已保存密码,非空字符串则替换。
-        const partial: Record<string, unknown> = {
-          name: sshName,
-          host: sshHost,
-          port,
-          username: sshUser,
-          authType: sshAuthType,
-          defaultRemoteCwd: remotePath || '~',
-        };
-        if (sshAuthType === 'keyFile' && sshKeyFile.trim()) {
-          partial.keyFilePath = sshKeyFile.trim();
-        }
-        if (sshAuthType === 'password') {
-          if (sshSavePassword && sshPassword) {
-            partial.password = sshPassword;
-          } else if (sshSavePassword && !sshPassword) {
-            // 勾了保存但密码框为空 → 用户想清除已保存密码
-            partial.password = '';
-          }
-          // 未勾 → 不带 password 字段,保留旧值
-        }
-        await window.api.invoke<unknown, UpdateSshProfileResponse>(
-          COMMAND_CHANNELS.SSH_PROFILE_UPDATE,
-          { id: editingProfileId, partial },
-        );
-        resetSshForm();
-      } else {
-        const res = await window.api.invoke<unknown, AddSshProfileResponse>(
-          COMMAND_CHANNELS.SSH_PROFILE_ADD,
-          {
-            name: sshName,
-            host: sshHost,
-            port,
-            username: sshUser,
-            authType: sshAuthType,
-            ...(sshAuthType === 'keyFile' && sshKeyFile.trim()
-              ? { keyFilePath: sshKeyFile.trim() }
-              : {}),
-            ...(sshAuthType === 'password' && sshSavePassword && sshPassword
-              ? { password: sshPassword }
-              : {}),
-            defaultRemoteCwd: remotePath || '~',
-          },
-        );
-        setRemoteProfileId(res.profile.id);
-        resetSshForm();
-      }
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  const handlePickSshKeyFile = async (): Promise<void> => {
-    setError(null);
-    try {
-      const res = await window.api.invoke<unknown, PickSshKeyFileResponse>(
-        COMMAND_CHANNELS.SSH_PROFILE_PICK_KEY_FILE,
-        { ...(sshKeyFile.trim() ? { defaultPath: sshKeyFile.trim() } : {}) },
-      );
-      if (res.path) setSshKeyFile(res.path);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  const handleDeleteSshProfile = async (id: string): Promise<void> => {
-    setError(null);
-    try {
-      await window.api.invoke(COMMAND_CHANNELS.SSH_PROFILE_DELETE, { id });
-      if (remoteProfileId === id) setRemoteProfileId('');
-      if (editingProfileId === id) resetSshForm();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  const handleAddRemoteBookmark = async (): Promise<void> => {
-    setError(null);
-    try {
-      const profileId = remoteProfileId || state.sshProfiles[0]?.id;
-      if (!profileId) {
-        setError(tx('请先添加 SSH 服务器', 'Add an SSH server first'));
-        return;
-      }
-      await window.api.invoke(COMMAND_CHANNELS.REMOTE_BOOKMARK_ADD, {
-        sshProfileId: profileId,
-        remotePath,
-        ...(remoteName.trim() ? { displayName: remoteName.trim() } : {}),
-      });
-      setRemotePath('~');
-      setRemoteName('');
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
-
   const handleAddWslBookmark = async (): Promise<void> => {
     setError(null);
     try {
@@ -1431,132 +1349,6 @@ function DataPanel({
   return (
     <section className="settings-panel">
       <h2 className="settings-panel-title">{tx('数据', 'Data')}</h2>
-
-      <SettingRow
-        label={tx('SSH 服务器', 'SSH servers')}
-        hint={tx('保存连接参数;勾选"保存密码"会用 OS 凭据加密保存,登录时需 sshpass 才能自动注入', 'Saves connection parameters; "Save password" stores the password via OS keychain — auto-login requires sshpass on PATH')}
-      >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 520 }}>
-          {state.sshProfiles.length > 0 && (
-            <ul className="acknowledgements-list" style={{ margin: 0 }}>
-              {state.sshProfiles.map((p) => (
-                <li key={p.id}>
-                  <span className="settings-info-text">
-                    {p.name} — {p.username}@{p.host}:{p.port}
-                    {p.hasSavedPassword ? tx(' · 已保存密码', ' · password saved') : ''}
-                    {editingProfileId === p.id ? tx(' · 编辑中', ' · editing') : ''}
-                  </span>
-                  <button
-                    type="button"
-                    className="settings-button"
-                    style={{ marginLeft: 8 }}
-                    onClick={() => handleEditSshProfile(p.id)}
-                  >
-                    {tx('编辑', 'Edit')}
-                  </button>
-                  <button
-                    type="button"
-                    className="settings-button danger"
-                    style={{ marginLeft: 8 }}
-                    onClick={() => void handleDeleteSshProfile(p.id)}
-                  >
-                    {tx('删除', 'Delete')}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-            <input className="settings-input" value={sshName} onChange={(e) => setSshName(e.target.value)} placeholder={tx('名称', 'Name')} />
-            <input className="settings-input" value={sshHost} onChange={(e) => setSshHost(e.target.value)} placeholder="host.example.com" />
-            <input className="settings-input" value={sshUser} onChange={(e) => setSshUser(e.target.value)} placeholder={tx('用户名', 'Username')} />
-            <input className="settings-input" type="number" value={sshPort} onChange={(e) => setSshPort(e.target.value)} placeholder="22" />
-            <select className="settings-input" value={sshAuthType} onChange={(e) => setSshAuthType(e.target.value as 'keyFile' | 'password')}>
-              <option value="password">{tx('密码', 'Password')}</option>
-              <option value="keyFile">{tx('密钥文件', 'Key file')}</option>
-            </select>
-            <div style={{ display: 'flex', gap: 4 }}>
-              <input
-                className="settings-input"
-                style={{ flex: 1, minWidth: 0 }}
-                value={sshKeyFile}
-                onChange={(e) => setSshKeyFile(e.target.value)}
-                placeholder={tx('密钥路径', 'Key path')}
-                disabled={sshAuthType !== 'keyFile'}
-              />
-              <button
-                type="button"
-                className="settings-button"
-                disabled={sshAuthType !== 'keyFile'}
-                onClick={() => void handlePickSshKeyFile()}
-              >
-                {tx('选择', 'Select')}
-              </button>
-            </div>
-          </div>
-          {sshAuthType === 'password' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <input
-                className="settings-input"
-                type="password"
-                value={sshPassword}
-                onChange={(e) => setSshPassword(e.target.value)}
-                placeholder={
-                  editingProfileId
-                    ? tx('新密码(留空则保留旧密码)', 'New password (leave blank to keep existing)')
-                    : tx('密码(可选,留空则连接时手动输入)', 'Password (optional; leave blank to type at connect time)')
-                }
-                autoComplete="new-password"
-              />
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-                <input
-                  type="checkbox"
-                  checked={sshSavePassword}
-                  onChange={(e) => setSshSavePassword(e.target.checked)}
-                />
-                {editingProfileId
-                  ? tx('应用密码修改(勾选 + 留空可清除已保存密码)', 'Apply password change (checked + empty clears saved password)')
-                  : tx('保存密码(OS 加密;需 sshpass 才能自动登录)', 'Save password (OS-encrypted; needs sshpass on PATH for auto-login)')}
-              </label>
-            </div>
-          )}
-          <div style={{ display: 'flex', gap: 6 }}>
-            <button type="button" className="settings-button" onClick={() => void handleSubmitSshProfile()}>
-              {editingProfileId ? tx('保存修改', 'Save changes') : tx('添加服务器', 'Add server')}
-            </button>
-            {editingProfileId && (
-              <button type="button" className="settings-button" onClick={resetSshForm}>
-                {tx('取消', 'Cancel')}
-              </button>
-            )}
-          </div>
-        </div>
-      </SettingRow>
-
-      <SettingRow
-        label={tx('添加远程文件夹', 'Add remote folder')}
-        hint={tx('添加后会出现在左侧对应服务器分组;双击即通过 SSH 进入该远程目录', 'Appears under the matching server group; double-click opens SSH in that remote directory')}
-      >
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-          <select
-            className="settings-input"
-            value={remoteProfileId || state.sshProfiles[0]?.id || ''}
-            onChange={(e) => setRemoteProfileId(e.target.value)}
-            disabled={state.sshProfiles.length === 0}
-          >
-            {state.sshProfiles.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-          <input className="settings-input" value={remotePath} onChange={(e) => setRemotePath(e.target.value)} placeholder="/home/user/project" />
-          <input className="settings-input" value={remoteName} onChange={(e) => setRemoteName(e.target.value)} placeholder={tx('显示名(可选)', 'Display name (optional)')} />
-          <button type="button" className="settings-button" onClick={() => void handleAddRemoteBookmark()}>
-            {tx('加入收藏', 'Add bookmark')}
-          </button>
-        </div>
-      </SettingRow>
 
       <SettingRow
         label={tx('WSL 文件夹', 'WSL folder')}
@@ -1640,6 +1432,383 @@ function DataPanel({
         >
           {busy === 'import' ? tx('导入中…', 'Importing…') : tx('导入…', 'Import…')}
         </button>
+      </SettingRow>
+    </section>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────
+// 远程分类(SSH 方案 v2.1 §II.6)— 条件渲染,只在 hasSshProfiles ||
+// advanced.enableRemote === true 时由 SettingsView 决定挂载。本面板承载:
+//   - SSH 服务器(CRUD + edit + 文件选择器 + 保存密码)
+//   - 远程文件夹收藏(挂在某个 profile 下的 RemoteBookmark)
+//   - 远程相关高级开关入口(`advanced.enableRemote` 关掉后,若无 profile 则
+//     本面板下次进设置不再显示)
+// ──────────────────────────────────────────────────────────────────
+
+function RemotePanel({
+  setError,
+}: {
+  setError: (msg: string | null) => void;
+}): JSX.Element {
+  const { tx } = useTranslation();
+  const state = useAppState();
+  const [sshName, setSshName] = useState('');
+  const [sshHost, setSshHost] = useState('');
+  const [sshPort, setSshPort] = useState('22');
+  const [sshUser, setSshUser] = useState('');
+  const [sshAuthType, setSshAuthType] = useState<'keyFile' | 'password'>('password');
+  const [sshKeyFile, setSshKeyFile] = useState('');
+  const [sshPassword, setSshPassword] = useState('');
+  const [sshSavePassword, setSshSavePassword] = useState(false);
+  const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
+  const [remoteProfileId, setRemoteProfileId] = useState('');
+  const [remotePath, setRemotePath] = useState('~');
+  const [remoteName, setRemoteName] = useState('');
+
+  const enableRemote = state.settings?.advanced?.enableRemote === true;
+
+  const resetSshForm = (): void => {
+    setEditingProfileId(null);
+    setSshName('');
+    setSshHost('');
+    setSshPort('22');
+    setSshUser('');
+    setSshAuthType('password');
+    setSshKeyFile('');
+    setSshPassword('');
+    setSshSavePassword(false);
+  };
+
+  const handleEditSshProfile = (id: string): void => {
+    const p = state.sshProfiles.find((x) => x.id === id);
+    if (!p) return;
+    setError(null);
+    setEditingProfileId(id);
+    setSshName(p.name);
+    setSshHost(p.host);
+    setSshPort(String(p.port));
+    setSshUser(p.username);
+    setSshAuthType(p.authType === 'keyFile' ? 'keyFile' : 'password');
+    setSshKeyFile(p.keyFilePath ?? '');
+    setSshPassword('');
+    setSshSavePassword(false);
+  };
+
+  const handleSubmitSshProfile = async (): Promise<void> => {
+    setError(null);
+    try {
+      const port = Number.parseInt(sshPort, 10);
+      if (editingProfileId) {
+        const partial: Record<string, unknown> = {
+          name: sshName,
+          host: sshHost,
+          port,
+          username: sshUser,
+          authType: sshAuthType,
+          defaultRemoteCwd: remotePath || '~',
+        };
+        if (sshAuthType === 'keyFile' && sshKeyFile.trim()) {
+          partial.keyFilePath = sshKeyFile.trim();
+        }
+        if (sshAuthType === 'password') {
+          if (sshSavePassword && sshPassword) {
+            partial.password = sshPassword;
+          } else if (sshSavePassword && !sshPassword) {
+            partial.password = '';
+          }
+        }
+        await window.api.invoke<unknown, UpdateSshProfileResponse>(
+          COMMAND_CHANNELS.SSH_PROFILE_UPDATE,
+          { id: editingProfileId, partial },
+        );
+        resetSshForm();
+      } else {
+        const res = await window.api.invoke<unknown, AddSshProfileResponse>(
+          COMMAND_CHANNELS.SSH_PROFILE_ADD,
+          {
+            name: sshName,
+            host: sshHost,
+            port,
+            username: sshUser,
+            authType: sshAuthType,
+            ...(sshAuthType === 'keyFile' && sshKeyFile.trim()
+              ? { keyFilePath: sshKeyFile.trim() }
+              : {}),
+            ...(sshAuthType === 'password' && sshSavePassword && sshPassword
+              ? { password: sshPassword }
+              : {}),
+            defaultRemoteCwd: remotePath || '~',
+          },
+        );
+        setRemoteProfileId(res.profile.id);
+        resetSshForm();
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handlePickSshKeyFile = async (): Promise<void> => {
+    setError(null);
+    try {
+      const res = await window.api.invoke<unknown, PickSshKeyFileResponse>(
+        COMMAND_CHANNELS.SSH_PROFILE_PICK_KEY_FILE,
+        { ...(sshKeyFile.trim() ? { defaultPath: sshKeyFile.trim() } : {}) },
+      );
+      if (res.path) setSshKeyFile(res.path);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleDeleteSshProfile = async (id: string): Promise<void> => {
+    setError(null);
+    try {
+      await window.api.invoke(COMMAND_CHANNELS.SSH_PROFILE_DELETE, { id });
+      if (remoteProfileId === id) setRemoteProfileId('');
+      if (editingProfileId === id) resetSshForm();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleAddRemoteBookmark = async (): Promise<void> => {
+    setError(null);
+    try {
+      const profileId = remoteProfileId || state.sshProfiles[0]?.id;
+      if (!profileId) {
+        setError(tx('请先添加 SSH 服务器', 'Add an SSH server first'));
+        return;
+      }
+      await window.api.invoke(COMMAND_CHANNELS.REMOTE_BOOKMARK_ADD, {
+        sshProfileId: profileId,
+        remotePath,
+        ...(remoteName.trim() ? { displayName: remoteName.trim() } : {}),
+      });
+      setRemotePath('~');
+      setRemoteName('');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  return (
+    <section className="settings-panel" data-testid="settings-remote-panel">
+      <h2 className="settings-panel-title">{tx('远程', 'Remote')}</h2>
+
+      <SettingRow
+        label={tx('SSH 服务器', 'SSH servers')}
+        hint={tx(
+          '保存连接参数;勾选"保存密码"会用 OS 凭据加密保存,登录时需 sshpass 才能自动注入',
+          'Saves connection parameters; "Save password" stores the password via OS keychain — auto-login requires sshpass on PATH',
+        )}
+      >
+        <div className="ssh-profile-form">
+          {state.sshProfiles.length > 0 && (
+            <ul className="ssh-profile-list">
+              {state.sshProfiles.map((p) => (
+                <li key={p.id}>
+                  <span className="settings-info-text">
+                    {p.name} — {p.username}@{p.host}:{p.port}
+                    {p.hasSavedPassword ? tx(' · 已保存密码', ' · password saved') : ''}
+                    {editingProfileId === p.id ? tx(' · 编辑中', ' · editing') : ''}
+                  </span>
+                  <button
+                    type="button"
+                    className="settings-button ssh-profile-button"
+                    onClick={() => handleEditSshProfile(p.id)}
+                  >
+                    {tx('编辑', 'Edit')}
+                  </button>
+                  <button
+                    type="button"
+                    className="settings-button danger ssh-profile-button"
+                    onClick={() => void handleDeleteSshProfile(p.id)}
+                  >
+                    {tx('删除', 'Delete')}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="ssh-profile-grid">
+            <input
+              className="settings-input"
+              value={sshName}
+              onChange={(e) => setSshName(e.target.value)}
+              placeholder={tx('名称', 'Name')}
+            />
+            <input
+              className="settings-input"
+              value={sshHost}
+              onChange={(e) => setSshHost(e.target.value)}
+              placeholder="host.example.com"
+            />
+            <input
+              className="settings-input"
+              value={sshUser}
+              onChange={(e) => setSshUser(e.target.value)}
+              placeholder={tx('用户名', 'Username')}
+            />
+            <input
+              className="settings-input"
+              type="number"
+              value={sshPort}
+              onChange={(e) => setSshPort(e.target.value)}
+              placeholder="22"
+            />
+            <select
+              className="settings-input"
+              value={sshAuthType}
+              onChange={(e) =>
+                setSshAuthType(e.target.value as 'keyFile' | 'password')
+              }
+            >
+              <option value="password">{tx('密码', 'Password')}</option>
+              <option value="keyFile">{tx('密钥文件', 'Key file')}</option>
+            </select>
+            <div className="ssh-key-picker">
+              <input
+                className="settings-input ssh-key-input"
+                value={sshKeyFile}
+                onChange={(e) => setSshKeyFile(e.target.value)}
+                placeholder={tx('密钥路径', 'Key path')}
+                disabled={sshAuthType !== 'keyFile'}
+              />
+              <button
+                type="button"
+                className="settings-button"
+                disabled={sshAuthType !== 'keyFile'}
+                onClick={() => void handlePickSshKeyFile()}
+              >
+                {tx('选择', 'Select')}
+              </button>
+            </div>
+          </div>
+          {sshAuthType === 'password' && (
+            <div className="ssh-password-field">
+              <input
+                className="settings-input"
+                type="password"
+                value={sshPassword}
+                onChange={(e) => setSshPassword(e.target.value)}
+                placeholder={
+                  editingProfileId
+                    ? tx(
+                        '新密码(留空则保留旧密码)',
+                        'New password (leave blank to keep existing)',
+                      )
+                    : tx(
+                        '密码(可选,留空则连接时手动输入)',
+                        'Password (optional; leave blank to type at connect time)',
+                      )
+                }
+                autoComplete="new-password"
+              />
+              <label className="ssh-password-save">
+                <input
+                  type="checkbox"
+                  checked={sshSavePassword}
+                  onChange={(e) => setSshSavePassword(e.target.checked)}
+                />
+                {editingProfileId
+                  ? tx(
+                      '应用密码修改(勾选 + 留空可清除已保存密码)',
+                      'Apply password change (checked + empty clears saved password)',
+                    )
+                  : tx(
+                      '保存密码(OS 加密;需 sshpass 才能自动登录)',
+                      'Save password (OS-encrypted; needs sshpass on PATH for auto-login)',
+                    )}
+              </label>
+            </div>
+          )}
+          <div className="ssh-profile-actions">
+            <button
+              type="button"
+              className="settings-button"
+              onClick={() => void handleSubmitSshProfile()}
+            >
+              {editingProfileId
+                ? tx('保存修改', 'Save changes')
+                : tx('添加服务器', 'Add server')}
+            </button>
+            {editingProfileId && (
+              <button
+                type="button"
+                className="settings-button"
+                onClick={resetSshForm}
+              >
+                {tx('取消', 'Cancel')}
+              </button>
+            )}
+          </div>
+        </div>
+      </SettingRow>
+
+      <SettingRow
+        label={tx('添加远程文件夹', 'Add remote folder')}
+        hint={tx(
+          '添加后会出现在左侧对应服务器分组;双击即通过 SSH 进入该远程目录',
+          'Appears under the matching server group; double-click opens SSH in that remote directory',
+        )}
+      >
+        <div className="remote-bookmark-form">
+          <select
+            className="settings-input"
+            value={remoteProfileId || state.sshProfiles[0]?.id || ''}
+            onChange={(e) => setRemoteProfileId(e.target.value)}
+            disabled={state.sshProfiles.length === 0}
+          >
+            {state.sshProfiles.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          <input
+            className="settings-input"
+            value={remotePath}
+            onChange={(e) => setRemotePath(e.target.value)}
+            placeholder="/home/user/project"
+          />
+          <input
+            className="settings-input"
+            value={remoteName}
+            onChange={(e) => setRemoteName(e.target.value)}
+            placeholder={tx('显示名(可选)', 'Display name (optional)')}
+          />
+          <button
+            type="button"
+            className="settings-button"
+            onClick={() => void handleAddRemoteBookmark()}
+          >
+            {tx('加入收藏', 'Add bookmark')}
+          </button>
+        </div>
+      </SettingRow>
+
+      <SettingRow
+        label={tx('始终显示远程入口', 'Always show remote entry')}
+        hint={tx(
+          '即使没有 SSH 服务器,也在 sidebar 顶部和设置页保留远程入口。关闭后,如果当前没有 profile,本面板会被隐藏(刷新设置后生效)。',
+          'Show the remote entry in the sidebar and settings even without any SSH server. Turning this off hides this panel if no profile exists (takes effect after re-entering settings).',
+        )}
+      >
+        <label className="ssh-enable-toggle">
+          <input
+            type="checkbox"
+            checked={enableRemote}
+            onChange={(e) =>
+              void updateSettings(
+                { advanced: { enableRemote: e.target.checked } },
+                setError,
+              )
+            }
+          />
+          {tx('启用远程入口', 'Enable remote entry')}
+        </label>
       </SettingRow>
     </section>
   );
