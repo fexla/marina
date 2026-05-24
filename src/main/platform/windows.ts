@@ -649,6 +649,16 @@ export class WindowsAdapter implements PlatformAdapter {
       { label: '主目录', path: userProfile },
     ];
   }
+
+  /**
+   * SSH 方案 v2.1 §阶段 3.5:Windows OpenSSH 8.x+ ControlMaster 走 named pipe
+   * (\\.\pipe\openssh-ssh-*),不读 ControlPath 参数 — Marina 传它它就忽略,
+   * 实际复用走 pipe。返回 `~/.ssh/cm-%r@%h:%p` 跟 POSIX 行为对齐,方便用户
+   * 把 Marina 配置导出后在 macOS / Linux 等价运行。
+   */
+  getSshControlPath(): string {
+    return '~/.ssh/cm-%r@%h:%p';
+  }
 }
 
 /**

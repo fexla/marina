@@ -153,6 +153,16 @@ function normalizeProfile(input: SshProfile): SshProfile {
     input.tmuxOnMissing === 'fail' ? 'fail' : 'fallback-shell';
   const tmuxSessionName = normalizeTmuxSessionName(input.tmuxSessionName ?? '');
   if (tmuxSessionName) next.tmuxSessionName = tmuxSessionName;
+  // ProxyJump v2.1 §阶段 2.3:多跳板,每段最多 255 字符;空段过滤;最多 5 段
+  // 防滥用(OpenSSH 没硬上限但 5 段已极少见)。OpenSSH -J 接受 user@host:port
+  // 形式,Marina 不校验段格式,直接透传。
+  const proxyJump = Array.isArray(input.proxyJump)
+    ? input.proxyJump
+        .map((s) => (typeof s === 'string' ? s.trim() : ''))
+        .filter((s) => s.length > 0 && s.length <= 255)
+        .slice(0, 5)
+    : [];
+  if (proxyJump.length > 0) next.proxyJump = proxyJump;
   return next;
 }
 
@@ -191,6 +201,11 @@ function validateProfilesArray(input: unknown): SshProfile[] {
       }
       if (typeof r['tmuxSessionName'] === 'string') {
         profileInput.tmuxSessionName = r['tmuxSessionName'];
+      }
+      if (Array.isArray(r['proxyJump'])) {
+        profileInput.proxyJump = r['proxyJump'].filter(
+          (s): s is string => typeof s === 'string',
+        );
       }
       out.push(
         normalizeProfile(profileInput),

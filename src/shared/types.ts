@@ -356,6 +356,32 @@ export interface Settings {
     activeIdleThresholdSeconds: number;
     // 注:v1.2 起 sessionTombstoneMinutes 已删除 (砍墓地,见 ADR-008)
     /**
+     * SSH 方案 v2.1 §阶段 2.1:读取 ~/.ssh/config 合并到 profile 列表。
+     *
+     * - true:Marina 自管 SshProfile + ssh_config 的 Host 块在 sidebar /
+     *   设置页"远程"分类合并显示;ssh_config 来源的条目带"ssh_config" 标签,
+     *   只读不能编辑/删除(改请直接编辑 ~/.ssh/config)。
+     * - false(默认):只显示 Marina 自管 profile。
+     *
+     * 设置入口在 RemotePanel(advanced.enableRemote → 'remote' 分类内)。
+     */
+    includeSshConfig: boolean;
+
+    /**
+     * SSH 方案 v2.1 §阶段 3.5:启用 OpenSSH ControlMaster。
+     *
+     * true(默认):同一 host:port:user 的多个 session 复用第一个连接,
+     * 启动后 ControlPersist=10m,期间新 session 0 握手(从 ~3s 降到 <100ms)。
+     * Windows OpenSSH 8.x+ 支持但 socket 走 named pipe,部分老版本不稳定 —
+     * OpenSSH 自身在 master 不可用时会回退到新连接,Marina 不需要兜底。
+     *
+     * false:每个 session 独立握手(beta.9 行为)。
+     *
+     * 设置入口在 RemotePanel。
+     */
+    enableControlMaster: boolean;
+
+    /**
      * SSH 方案 v2.1 §II.6:本地用户视野守护开关。
      *
      * - false(默认):未添加任何 SshProfile 时,设置页"远程"分类完全隐藏,
@@ -532,6 +558,15 @@ export interface SshProfile {
   /** 仅 renderer 副本带:是否已保存密码 */
   hasSavedPassword?: boolean;
   defaultRemoteCwd?: string;
+  /**
+   * SSH 方案 v2.1 §阶段 2.3:ProxyJump 多级跳板。
+   *
+   * 数组形式:`['bastion.example.com', 'inner.example.com']` → `ssh -J bastion.example.com,inner.example.com`。
+   * 每段可写 `user@host:port` 形式(与 OpenSSH -J 相同);空数组或缺失 = 不跳板。
+   * Marina 不校验跳板格式,完整转发给 OpenSSH,跳板鉴权由 OpenSSH 自己处理
+   * (复用主机已配的 SSH agent / key)。
+   */
+  proxyJump?: string[];
   tmuxMode?: SshTmuxMode;
   tmuxSessionName?: string;
   tmuxSessionPolicy?: SshTmuxSessionPolicy;

@@ -69,8 +69,11 @@ import {
   type GetSettingsResponse,
   type GetSnapshotPayload,
   type ImportSettingsResponse,
+  type KnownHostsRefreshResponse,
   type ListShellsResponse,
   type ListSshProfilesResponse,
+  type SshAgentStatusResponse,
+  type SshConfigListResponse,
   type OpenExternalPayload,
   type SetDefaultTemplatePayload,
   type SettingsArchiveV1,
@@ -125,6 +128,9 @@ import type { SessionManager } from './session-manager';
 import type { SshProfileManager } from './ssh-profile-manager';
 import type { TemplatesManager } from './templates-manager';
 import type { AIClient } from './ai-client';
+import type { KnownHostsManager } from './known-hosts-manager';
+import { parseSshConfig } from './ssh-config-parser';
+import { detectSshAgent } from './ssh-agent';
 import { logger } from './logger';
 import { setQuitting } from './index';
 
@@ -134,6 +140,8 @@ export interface IpcLayerDeps {
   settingsManager: SettingsManager;
   sessionManager: SessionManager;
   sshProfileManager?: SshProfileManager;
+  /** SSH 方案 §阶段 3.1:已知主机指纹历史,可选(无 SSH 用户不创建) */
+  knownHostsManager?: KnownHostsManager;
   templatesManager: TemplatesManager;
   /** BETA-031:可选,未注入时 AI_TEST_CONNECTION 返回 ok:false */
   aiClient?: AIClient;
@@ -184,6 +192,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     settingsManager,
     sessionManager,
     sshProfileManager,
+    knownHostsManager,
     templatesManager,
   } = deps;
 
@@ -759,6 +768,59 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
           : {}),
       });
       return { bookmark };
+    },
+  );
+
+  // SSH 方案 §阶段 2.1:ssh_config 集成 — 只在 advanced.includeSshConfig 开
+  // 时读 ~/.ssh/config。关时返回 enabled=false + entries=[],renderer 自动
+  // 不渲染 ssh_config 区。
+  ipcMain.handle(
+    COMMAND_CHANNELS.SSH_CONFIG_LIST,
+    (_e, _envelope: CommandEnvelope<undefined>): SshConfigListResponse => {
+      const enabled = settingsManager.get().advanced.includeSshConfig === true;
+      if (!enabled) return { enabled: false, entries: [] };
+      const entries = parseSshConfig().map((e) => ({
+        alias: e.alias,
+        hostName: e.hostName,
+        ...(e.user ? { user: e.user } : {}),
+        port: e.port,
+        identityFiles: e.identityFiles,
+        proxyJump: e.proxyJump,
+        sourceFile: e.sourceFile,
+      }));
+      return { enabled: true, entries };
+    },
+  );
+
+  // SSH 方案 §阶段 2.2:同步探测 ssh-agent。耗时 ~100ms 以内,不进 worker。
+  ipcMain.handle(
+    COMMAND_CHANNELS.SSH_AGENT_STATUS,
+    (_e, _envelope: CommandEnvelope<undefined>): SshAgentStatusResponse => {
+      const r = detectSshAgent();
+      if (r.status === 'agent-running') {
+        return { status: 'agent-running', keys: r.keys };
+      }
+      return { status: 'agent-missing', reason: r.reason, message: r.message };
+    },
+  );
+
+  // SSH 方案 §阶段 3.1:列 ~/.ssh/known_hosts 并 diff history。
+  // knownHostsManager 不在 deps 时返回空,避免 renderer 出错。
+  ipcMain.handle(
+    COMMAND_CHANNELS.KNOWN_HOSTS_REFRESH,
+    (_e, _envelope: CommandEnvelope<undefined>): KnownHostsRefreshResponse => {
+      if (!knownHostsManager) return { entries: [], changes: [] };
+      const r = knownHostsManager.refresh();
+      return {
+        entries: r.entries.map((e) => ({
+          hosts: e.hosts,
+          keyType: e.keyType,
+          fingerprint: e.fingerprint,
+          sourceFile: e.sourceFile,
+          isHashed: e.isHashed,
+        })),
+        changes: r.changes,
+      };
     },
   );
 

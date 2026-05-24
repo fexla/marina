@@ -71,4 +71,7 @@ export class MacOSAdapter implements PlatformAdapter {
       { label: '主目录', path: home },
     ];
   }
+  getSshControlPath(): string {
+    return '~/.ssh/cm-%r@%h:%p';
+  }
 }

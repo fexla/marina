@@ -66,6 +66,14 @@ export const DEFAULT_SETTINGS: Settings = {
   advanced: {
     logLevel: 'INFO',
     activeIdleThresholdSeconds: 2,
+    // SSH 方案 v2.1 §阶段 2.1:默认不读 ~/.ssh/config,用户在 RemotePanel
+    // 主动启用才合并显示。避免出现没看过 ssh_config 的用户误以为 Marina
+    // 暴露了他们的远端清单。
+    includeSshConfig: false,
+    // SSH 方案 v2.1 §阶段 3.5:默认开 ControlMaster,同 host 多 session
+    // 性能从 ~3s 握手 / 个降到 <100ms / 个。OpenSSH 8.x+ Windows 支持,
+    // 老版本失败时 OpenSSH 自身会回退到新连接,Marina 不需要兜底逻辑。
+    enableControlMaster: true,
     // SSH 方案 v2.1 §II.6:本地用户视野守护。默认 false,只有当用户加了
     // SshProfile 或主动勾此项时,远程相关 UI 才出现。本地用户的 sidebar /
     // 设置页视野与 beta.9 一致。

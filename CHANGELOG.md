@@ -6,6 +6,23 @@
 
 ### 新增
 
+- **SSH 阶段 2+3:ssh_config / ssh-agent / ProxyJump / ControlMaster / known_hosts / 重连按钮 — 一次性推到 M1 里程碑(0.2.0 GA 候选)。** 在阶段 1 的 UI 分离 + 类型强化基础上,把剩下的"基础 SSH 终端"功能全做掉。
+  - **ProxyJump 多级跳板(§阶段 2.3)**:`SshProfile.proxyJump: string[]` 字段,`buildSshLaunchParams` 拼成 `-J host1,host2,host3`。RemotePanel SSH 表单加 ProxyJump 输入(逗号分隔多跳板,支持 `user@host:port` 段)。每段最多 5 跳防滥用,空段静默过滤。3 个新单测覆盖单/多跳板 + 空数组。
+  - **ssh_config 集成(§阶段 2.1)**:新建 `src/main/ssh-config-parser.ts`(258 行 + 13 个单测),解析 `~/.ssh/config` 的 Host 块 + Include 指令(递归深度 16 防循环)+ 通配符 Host 过滤 + Match 块整段跳过(V1 范围外)+ `Key=Value` / 引号 value / `key value` 三种行格式。`advanced.includeSshConfig` 开关默认 false;开后 RemotePanel 显示已发现 Host 列表(只读,改请直接编辑 ssh_config)。
+  - **ssh-agent 检测(§阶段 2.2)**:新建 `src/main/ssh-agent.ts`(140 行 + 9 个单测)。POSIX 看 `SSH_AUTH_SOCK`,Windows 看 OpenSSH Authentication Agent 服务;统一通过 `ssh-add -l` 列已加载 key(bits / SHA256 指纹 / comment / keyType)。RemotePanel 显示 agent 状态 ✅/⚠️ + key 列表 + 刷新按钮。无 agent 时给 actionable 提示(`eval $(ssh-agent)` 等)。
+  - **ControlMaster 性能层(§阶段 3.5)**:`advanced.enableControlMaster` 默认 true。`buildSshLaunchParams` 加 `-o ControlMaster=auto -o ControlPath=~/.ssh/cm-%r@%h:%p -o ControlPersist=10m`,同一 host:port:user 的 5 个 session 只 1 次握手(~3s → <100ms / session)。Windows OpenSSH 8.x+ 走 named pipe,ControlPath 被忽略仍照样复用,失败时 OpenSSH 自动回退到独立连接 — Marina 不需要兜底。2 个新单测验证 args 出现 / 不出现。`PlatformAdapter.getSshControlPath()` 可选接口(POSIX 三平台返回 `~/.ssh/cm-%r@%h:%p`)。
+  - **KnownHostsManager(§阶段 3.1)**:新建 `src/main/known-hosts-manager.ts`(190 行 + 8 个单测),解析 `~/.ssh/known_hosts` 每行(支持 plaintext / hashed `|1|` host / @cert-authority 跳过 / 注释跳过),计算 SHA256 指纹(与 `ssh-keygen -lf` 一致)。新增 `known-hosts-history.json` 持久化指纹时间线 — 同 host 指纹变化时报告 changes(potential MITM),timeline 跨重启保留。RemotePanel 顶部高亮变化条目(红框),下方列当前所有条目(前 10 条)。
+  - **ReconnectBanner(§阶段 3.4)**:TerminalView statusbar 在 SSH session `state === 'exited'` 时显示"重连"按钮(玫紫色 accent),点击 = 同 pathId + 同 templateId + 当前 dims 起新 session,reducer 自动 select 新 session,旧 exited tab 留给用户决定。不做自动重连(留 V2 配 powerMonitor / navigator.onLine 体系)。CSS `.reconnect-button` 配 hover / disabled 态。
+  - **IPC + bootstrap**:新增 3 个通道 `cmd:ssh-config:list` / `cmd:ssh-agent:status` / `cmd:known-hosts:refresh`。`KnownHostsManager` 跟其他 store 一样走 `JsonStore` + `initialize` / `flush` 生命周期,挂进 `installIpcLayer({ ...deps, knownHostsManager })`。
+  - **RemotePanel UI 集成**:新增 4 个 SettingRow — agent 状态卡片 / ssh_config 开关 + 列表 / ControlMaster 开关 / known_hosts 浏览器(含变化高亮)。新 CSS class 8 个(`.ssh-agent-card / .ssh-agent-status-line / .ssh-agent-key-list / .ssh-config-list / .ssh-config-hint / .ssh-known-hosts-list / .ssh-known-hosts-changes / .reconnect-button`)。新 i18n key 0 个(用 tx 双语字面量)。
+  - **测试 + CI Gate**:新增 33 条测试(`ssh-config-parser.test.ts` 13 + `ssh-agent.test.ts` 9 + `known-hosts-manager.test.ts` 8 + `session-manager.test.ts` 新增 ProxyJump×3 + ControlMaster×2 = 5)。全量 501 个测试通过,typecheck + ESLint + stylelint 全过。
+  - **已跳过的 M1 后续工单(放 V1.1 或 V2)**:
+    - **HostKeyPromptModal**(首次连接的 `Are you sure you want to continue connecting?` 拦截 + Marina 自绘 modal)— 需要 PTY 输出实时扫描 + 写 ssh stdin,跨平台行为细节多。当前体验:用户在终端里直接按 yes,known_hosts 由 OpenSSH 自动写入,Marina 下次 refresh 时检测到新条目。
+    - **MFA / TOTP modal**(截获 `Verification code:` prompt → Marina modal)同上原因。
+    - **自动重连 + 网络变化检测**(navigator.onLine + powerMonitor sleep/wake → 倒计时自动重连)— 实现简单但需要时序测试,且重连频率受 ControlPersist 影响较大,V2 跟"会话冻结/解冻"一起做。
+    - **远端 tmux session 列表面板**(只看不操作)— PR #2 已实现 per-launch attach-or-create,列表面板属于增值功能。
+  - **M1 里程碑达成判定**:阶段 0(spec + PR #2 merge)+ 阶段 1(UI 分离 + 类型强化)+ 阶段 2-3 核心(本 PR)= Marina SSH 终端模式正式就位。SSH 用户能完成"管理远程服务器 + 进 shell 干活 + 用 tmux 保持会话 + 多 session 复用连接 + 主动重连"完整工作流。下一步走 0.2.0 GA 发版(beta.10 → beta.11 → 0.2.0)。
+
 - **SSH 阶段 1:UI 分离 + 类型强化 + PR #2 polish。** 落地 `docs/方案-SSH-完整支持-20260524.md` §阶段 1,把 PR #2 的 SSH MVP 收尾成"本地用户视野与 beta.9 100% 一致 + SSH 用户专属入口"。
   - **PathKind discriminated union(§II.1)**:`Bookmark / RecentEntry / PathNode` 改严格 discriminated union,`kind` 必填,ssh 变体 `sshProfileId` narrow 为必填。所有使用 Path 的函数走 `switch on kind` 自动 exhaustiveness check;新增 `assertNeverPathKind` 兜底,未来加 `'wsl'`/`'docker'` 时编译器强制找出所有需要补 case 的位置。
   - **磁盘迁移**:beta.9 之前的旧 schema(无 kind 字段)在 PathManager 启动时由 `migrateBookmarkOnLoad`/`migrateRecentOnLoad` 静默 coerce 为 local;损坏条目(kind=ssh 缺 sshProfileId)启动期丢弃不让用户进不来 Marina,导入 archive 走严格校验直接拒。新增 `PersistedBookmark`/`PersistedRecentEntry` 磁盘宽松 schema,与内存严格类型分离。

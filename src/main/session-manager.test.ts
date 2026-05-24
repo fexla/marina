@@ -200,6 +200,8 @@ function makeStubSettingsManager(
     advanced: {
       logLevel: 'INFO',
       activeIdleThresholdSeconds: 2,
+      includeSshConfig: false,
+      enableControlMaster: false,
       enableRemote: false,
       terminalRenderer: 'auto',
       ...overrides,
@@ -825,6 +827,166 @@ describe('SessionManager — createSession', () => {
         },
       }),
     ).rejects.toThrow(/无法定位本机 ssh\.exe/);
+  });
+
+  // ────────────────────────────────────────────────────────────────
+  // SSH 方案 v2.1 §阶段 2.3 + §阶段 3.5:ProxyJump + ControlMaster
+  // ────────────────────────────────────────────────────────────────
+
+  it('ProxyJump 单跳板 → -J 单值', async () => {
+    const adapter: PlatformAdapter = {
+      ...makeFakeAdapter(),
+      resolveExecutable(commandName: string) {
+        return commandName === 'ssh' ? 'C:\\Windows\\System32\\OpenSSH\\ssh.exe' : null;
+      },
+    };
+    const { mgr } = makeManager({ adapter });
+    const pathId = makePathId({ kind: 'ssh', sshProfileId: 'p1', path: '~' });
+    await mgr.createSession({
+      pathId,
+      templateId: 'shell',
+      ownerWindowId: 'w-1',
+      cols: 80,
+      rows: 24,
+      sshProfile: {
+        id: 'p1',
+        name: 'inner',
+        host: 'inner.example.com',
+        port: 22,
+        username: 'alice',
+        authType: 'agent',
+        proxyJump: ['bastion.example.com'],
+      },
+    });
+    const args = FakePty.instances[0]!.args as string[];
+    const i = args.indexOf('-J');
+    expect(i).toBeGreaterThan(0);
+    expect(args[i + 1]).toBe('bastion.example.com');
+  });
+
+  it('ProxyJump 多跳板 → -J 逗号拼接,顺序保留,空段过滤', async () => {
+    const adapter: PlatformAdapter = {
+      ...makeFakeAdapter(),
+      resolveExecutable(commandName: string) {
+        return commandName === 'ssh' ? 'C:\\Windows\\System32\\OpenSSH\\ssh.exe' : null;
+      },
+    };
+    const { mgr } = makeManager({ adapter });
+    const pathId = makePathId({ kind: 'ssh', sshProfileId: 'p1', path: '~' });
+    await mgr.createSession({
+      pathId,
+      templateId: 'shell',
+      ownerWindowId: 'w-1',
+      cols: 80,
+      rows: 24,
+      sshProfile: {
+        id: 'p1',
+        name: 'deep',
+        host: 'final.example.com',
+        port: 2222,
+        username: 'alice',
+        authType: 'agent',
+        proxyJump: ['user@bastion:22', '  ', 'inner.example.com'],
+      },
+    });
+    const args = FakePty.instances[0]!.args as string[];
+    const i = args.indexOf('-J');
+    expect(args[i + 1]).toBe('user@bastion:22,inner.example.com');
+  });
+
+  it('ControlMaster 启用时 args 含 -o ControlMaster=auto / ControlPath / ControlPersist', async () => {
+    const adapter: PlatformAdapter = {
+      ...makeFakeAdapter(),
+      resolveExecutable(commandName: string) {
+        return commandName === 'ssh' ? 'C:\\Windows\\System32\\OpenSSH\\ssh.exe' : null;
+      },
+      getSshControlPath: () => '~/.ssh/cm-%r@%h:%p',
+    };
+    const { mgr } = makeManager({
+      adapter,
+      settings: makeStubSettingsManager({ enableControlMaster: true }),
+    });
+    const pathId = makePathId({ kind: 'ssh', sshProfileId: 'p1', path: '~' });
+    await mgr.createSession({
+      pathId,
+      templateId: 'shell',
+      ownerWindowId: 'w-1',
+      cols: 80,
+      rows: 24,
+      sshProfile: {
+        id: 'p1',
+        name: 'prod',
+        host: 'example.com',
+        port: 22,
+        username: 'alice',
+        authType: 'agent',
+      },
+    });
+    const args = FakePty.instances[0]!.args as string[];
+    expect(args).toContain('ControlMaster=auto');
+    expect(args).toContain('ControlPath=~/.ssh/cm-%r@%h:%p');
+    expect(args).toContain('ControlPersist=10m');
+  });
+
+  it('ControlMaster 关闭时 args 不出现 ControlMaster=', async () => {
+    const adapter: PlatformAdapter = {
+      ...makeFakeAdapter(),
+      resolveExecutable(commandName: string) {
+        return commandName === 'ssh' ? 'C:\\Windows\\System32\\OpenSSH\\ssh.exe' : null;
+      },
+    };
+    const { mgr } = makeManager({
+      adapter,
+      settings: makeStubSettingsManager({ enableControlMaster: false }),
+    });
+    const pathId = makePathId({ kind: 'ssh', sshProfileId: 'p1', path: '~' });
+    await mgr.createSession({
+      pathId,
+      templateId: 'shell',
+      ownerWindowId: 'w-1',
+      cols: 80,
+      rows: 24,
+      sshProfile: {
+        id: 'p1',
+        name: 'prod',
+        host: 'example.com',
+        port: 22,
+        username: 'alice',
+        authType: 'agent',
+      },
+    });
+    const args = FakePty.instances[0]!.args as string[];
+    expect(args.some((a) => a.startsWith('ControlMaster='))).toBe(false);
+    expect(args.some((a) => a.startsWith('ControlPath='))).toBe(false);
+  });
+
+  it('ProxyJump 缺失或空数组 → 不出现 -J', async () => {
+    const adapter: PlatformAdapter = {
+      ...makeFakeAdapter(),
+      resolveExecutable(commandName: string) {
+        return commandName === 'ssh' ? 'C:\\Windows\\System32\\OpenSSH\\ssh.exe' : null;
+      },
+    };
+    const { mgr } = makeManager({ adapter });
+    const pathId = makePathId({ kind: 'ssh', sshProfileId: 'p1', path: '~' });
+    await mgr.createSession({
+      pathId,
+      templateId: 'shell',
+      ownerWindowId: 'w-1',
+      cols: 80,
+      rows: 24,
+      sshProfile: {
+        id: 'p1',
+        name: 'plain',
+        host: 'example.com',
+        port: 22,
+        username: 'alice',
+        authType: 'agent',
+        proxyJump: [],
+      },
+    });
+    const args = FakePty.instances[0]!.args as string[];
+    expect(args).not.toContain('-J');
   });
 });
 

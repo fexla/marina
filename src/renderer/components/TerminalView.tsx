@@ -90,6 +90,7 @@ import { Check, Maximize2, Minimize2, X } from 'lucide-react';
 import {
   COMMAND_CHANNELS,
   EVENT_CHANNELS,
+  type CreateSessionResponse,
   type GetScrollbackPayload,
   type GetScrollbackResponse,
   type ImeProbeDumpPayload,
@@ -1853,6 +1854,9 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
           {session.state === 'exited' &&
             tx(` · 已退出 (exitCode=${session.exitCode ?? 0})`, ` · Exited (exitCode=${session.exitCode ?? 0})`)}
         </span>
+        {session.state === 'exited' && session.pathId.startsWith('ssh:') && (
+          <ReconnectButton session={session} />
+        )}
         <button
           type="button"
           className="status-simple-toggle"
@@ -2000,6 +2004,68 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
  * - 危险 Unicode 双向重写字符(U+200E/200F、U+202A-E、U+2066-9)
  *   → `\u{XXXX}` 字面占位
  */
+/**
+ * SSH 方案 v2.1 §阶段 3.4:SSH session 退出后的手动重连按钮。
+ *
+ * 设计:不做自动重连(留 V2 配 powerMonitor / navigator.onLine 体系)。
+ * 这里只在 statusbar 加一个明确按钮,点击 = 同 pathId + 同 templateId 起
+ * 一个新 session。新 session 自动被 reducer 选中并替换视图,exited 的 tab
+ * 留在 TabBar 里,用户可以手动关闭。
+ */
+function ReconnectButton({ session }: { session: SessionInfo }): JSX.Element {
+  const state = useAppState();
+  const dispatch = useAppDispatch();
+  const toast = useToast();
+  const { tx } = useTranslation();
+  const [busy, setBusy] = useState(false);
+
+  const handleClick = async (): Promise<void> => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const dims = state.lastTerminalDims;
+      const templateId = session.templateId || state.defaultTemplateId || 'shell';
+      const res = await window.api.invoke<unknown, CreateSessionResponse>(
+        COMMAND_CHANNELS.SESSION_CREATE,
+        {
+          pathId: session.pathId,
+          templateId,
+          cols: dims.cols,
+          rows: dims.rows,
+          // tmuxMode 不带 — 复用 profile 默认。reducer 会 select 新 session,
+          // exited tab 留在 TabBar 里给用户主动关闭。
+        },
+      );
+      dispatch({ type: 'view/select-session', sessionId: res.session.id });
+      if (res.warning) {
+        toast.push({ kind: 'warn', message: res.warning });
+      }
+    } catch (err) {
+      toast.push({
+        kind: 'error',
+        message: tx(
+          `重连失败:${err instanceof Error ? err.message : String(err)}`,
+          `Reconnect failed: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      className="reconnect-button"
+      onClick={() => void handleClick()}
+      disabled={busy}
+      title={tx('用相同 SSH profile + 路径起一个新 session', 'Start a new session with the same SSH profile and remote path')}
+    >
+      {busy ? tx('重连中…', 'Reconnecting…') : tx('重连', 'Reconnect')}
+    </button>
+  );
+}
+
 function sanitizePastedPreview(text: string): string {
   let out = '';
   for (const ch of text) {

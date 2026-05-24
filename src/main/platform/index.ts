@@ -144,6 +144,18 @@ export interface PlatformAdapter {
    * 不存在(JsonStore source==='default')时才生效一次,后续启动不会重播。
    */
   getDefaultBookmarkSeeds(): DefaultBookmarkSeed[];
+
+  /**
+   * SSH 方案 v2.1 §阶段 3.5:OpenSSH ControlPath socket 文件路径模板。
+   *
+   * - Linux/macOS:返回 `~/.ssh/cm-%r@%h:%p`(OpenSSH 自动展开 %r/%h/%p,
+   *   ~ 由 OpenSSH 而非 shell 展开 — OpenSSH 文档明示)。
+   * - Windows:返回固定模板字符串即可。Windows OpenSSH 8.x+ 走 named pipe,
+   *   ControlPath 值被忽略,实际不读;传它只是为了 args 一致。
+   *
+   * 可选 — 旧 PlatformAdapter 实现不提供则 SessionManager 用默认值。
+   */
+  getSshControlPath?(): string;
 }
 
 /**

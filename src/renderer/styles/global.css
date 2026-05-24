@@ -1141,15 +1141,6 @@ html[data-maximized='true'] .app-root.with-shell {
   flex: 0 0 auto;
 }
 
-.sidebar-category.device-category .sidebar-category-icon {
-  color: var(--color-info, #f0f);
-}
-
-.sidebar-category.device-category .sidebar-category-title {
-  font-size: 13px;
-  font-weight: 600;
-}
-
 .sidebar-category-title {
   display: flex;
   align-items: center;
@@ -1262,24 +1253,6 @@ html[data-maximized='true'] .app-root.with-shell {
   color: var(--color-text-primary, #f0f);
   font-weight: 500;
   line-height: 1.25;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.path-text {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.path-subtitle {
-  color: var(--color-text-muted, #f0f);
-  font-size: 10px;
-  line-height: 1.2;
-  font-family: var(--terminal-font-family, monospace);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1996,6 +1969,31 @@ textarea.settings-input::-webkit-scrollbar-corner {
   background-color: transparent;
 }
 
+/* ── SSH ReconnectButton (v2.1 §阶段 3.4) ─────────────────────────
+   嵌在 statusbar 里的"重连"按钮,SSH session exit 后出现。视觉跟
+   .status-simple-toggle 同尺寸 / 同 hover token。 */
+.reconnect-button {
+  margin-left: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-primary, #fff);
+  background-color: color-mix(in srgb, var(--color-accent-special, #c4a7e7) 22%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent-special, #c4a7e7) 36%, transparent);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 100ms ease;
+}
+
+.reconnect-button:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--color-accent-special, #c4a7e7) 32%, transparent);
+}
+
+.reconnect-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 /* ── Remote (SSH) Settings (v2.1 §II.6 — RemotePanel) ─────────────
    PR #2 polish:把 inline style 改成 class。布局保持原样:profile 列表 +
    2 列 grid 表单 + 密码字段块 + 提交按钮行。 */
@@ -2046,23 +2044,74 @@ textarea.settings-input::-webkit-scrollbar-corner {
   gap: 4px;
 }
 
-.ssh-password-save {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-}
-
 .ssh-profile-actions {
   display: flex;
   gap: 6px;
 }
 
-.ssh-enable-toggle {
+.ssh-agent-card {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 6px;
-  font-size: 13px;
+  max-width: 520px;
+}
+
+.ssh-agent-status-line {
+  font-size: 12px;
+}
+
+.ssh-agent-status-line.ok {
+  color: var(--color-success, #4caf50);
+}
+
+.ssh-agent-status-line.warn {
+  color: var(--color-warning, #f0c674);
+}
+
+.ssh-agent-key-list,
+.ssh-config-list,
+.ssh-known-hosts-list,
+.ssh-known-hosts-changes {
+  margin: 0;
+  padding: 4px 8px;
+  list-style: none;
+  font-size: 12px;
+  background-color: color-mix(in srgb, var(--color-text-muted, #888) 8%, transparent);
+  border-radius: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.ssh-agent-key-list li,
+.ssh-config-list li,
+.ssh-known-hosts-list li {
+  padding: 2px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-text-muted, #888) 12%, transparent);
+}
+
+.ssh-agent-key-list li:last-child,
+.ssh-config-list li:last-child,
+.ssh-known-hosts-list li:last-child {
+  border-bottom: none;
+}
+
+.ssh-known-hosts-changes {
+  background-color: color-mix(in srgb, var(--color-danger, #ff6b6b) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-danger, #ff6b6b) 30%, transparent);
+}
+
+.ssh-known-hosts-changes li {
+  padding: 4px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-danger, #ff6b6b) 18%, transparent);
+}
+
+.ssh-known-hosts-changes li:last-child {
+  border-bottom: none;
+}
+
+.ssh-config-hint {
+  font-size: 11px;
+  color: var(--color-text-muted, #888);
 }
 
 .remote-bookmark-form {

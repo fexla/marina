@@ -25,6 +25,7 @@ import { TrayManager } from './tray';
 import { SessionManager } from './session-manager';
 import { PathManager } from './path-manager';
 import { SshProfileManager } from './ssh-profile-manager';
+import { KnownHostsManager, type KnownHostsHistoryFile } from './known-hosts-manager';
 import { SettingsManager, DEFAULT_SETTINGS } from './settings-manager';
 import { TemplatesManager } from './templates-manager';
 import { JsonStore } from './persistence';
@@ -166,11 +167,18 @@ function bootstrap(): void {
   const bookmarksStore = new JsonStore<BookmarksFile>(join(dataDir, 'bookmarks.json'));
   const recentStore = new JsonStore<RecentFile>(join(dataDir, 'recent.json'));
   const sshProfilesStore = new JsonStore<SshProfilesFile>(join(dataDir, 'ssh-profiles.json'));
+  // SSH 方案 §阶段 3.1:known_hosts 指纹历史,跨重启保留。即便用户没用过
+  // SSH 也创建实例(空 history),让 IPC handler 行为一致 — 反正不写盘就不
+  // 产生文件,nil cost。
+  const knownHostsStore = new JsonStore<KnownHostsHistoryFile>(
+    join(dataDir, 'known-hosts-history.json'),
+  );
   const templatesStore = new JsonStore<TemplatesFile>(join(dataDir, 'templates.json'));
 
   const settingsManager = new SettingsManager(settingsStore);
   const pathManager = new PathManager(bookmarksStore, recentStore);
   const sshProfileManager = new SshProfileManager(sshProfilesStore);
+  const knownHostsManager = new KnownHostsManager(knownHostsStore);
   const templatesManager = new TemplatesManager(templatesStore);
   const sessionManager = new SessionManager(
     windowManager,
@@ -350,6 +358,7 @@ function bootstrap(): void {
       logger.info('main', `bookmarks loaded from: ${bookmarksSource}`);
       const sshProfilesSrc = await sshProfileManager.initialize();
       logger.info('main', `ssh profiles loaded from: ${sshProfilesSrc}`);
+      await knownHostsManager.initialize();
       const tmplSrc = await templatesManager.initialize();
       logger.info('main', `templates loaded from: ${tmplSrc}`);
 
@@ -364,6 +373,7 @@ function bootstrap(): void {
         settingsManager,
         sessionManager,
         sshProfileManager,
+        knownHostsManager,
         templatesManager,
         aiClient,
       });
@@ -570,6 +580,7 @@ function bootstrap(): void {
         settingsManager.flush(),
         pathManager.flush(),
         sshProfileManager.flush(),
+        knownHostsManager.flush(),
         templatesManager.flush(),
         logger.flush(),
       ]);

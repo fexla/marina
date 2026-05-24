@@ -1,17 +1,19 @@
 /**
  * @file src/renderer/components/Sidebar.tsx
- * @purpose 首页侧边栏,按"设备分组 + 临时 / 最近"组织路径节点和子 session 节点。
+ * @purpose 三栏侧栏 (收藏 / 临时 / 最近),路径节点 + 子 session 节点。
  *   含 + 按钮调文件夹选择器、拖文件夹到收藏区加入收藏 (drag-drop)、
  *   单击选中、双击新建 session、右键菜单 (CP-2 简化菜单)。
  *
  * @关键设计:
- * - 本机 / 每个 SSH profile / 每个 WSL 发行版是并列设备分组,帮助用户识别路径所在设备
- * - 收藏仍是 PathManager 的持久化状态,但首页不再单独渲染"收藏"分组
- * - 临时 / 最近仍保留 PathManager 状态机语义;每个 path 节点可展开看 sessions
+ * - 三栏始终显示,即使空 (软件定义书 6.2.1: 默认全部展开)
+ * - 同 path 在三栏不重叠;每个 path 节点可展开看 sessions
  * - sessions 显示状态点 (active 绿 / idle 黄 / exited 灰)、
  *   是否被其他窗口持有 (灰显 + ↗ 图标)
  * - 拖 Explorer 文件夹到 .sidebar-bookmarks-dropzone (CP-2 完成标志):
  *   先校验 file:// path 是否存在且是目录,然后调 cmd:bookmark:add
+ * - SSH 方案 v2.1 §II.3:顶部 [本地] [远程] segmented control(仅在
+ *   hasSshProfiles || advanced.enableRemote 时显示),按 kind 过滤三栏内容。
+ *   本地用户(无 profile 且未启用远程)的 UI 与 beta.9 完全一致。
  * - 设置入口固定在底部 (CP-2 占位,CP-4 接入完整设置)
  *
  * @对应文档章节: 软件定义书.md 6.2 (左侧栏)、7.3 (拖拽规格)
@@ -33,12 +35,8 @@ import {
   type CreateSessionResponse,
   type PickFolderResponse,
 } from '@shared/protocol';
-import type { PathNode, SessionInfo, SshProfile } from '@shared/types';
-import {
-  disambiguatePathNames,
-  formatPathDisplayPath,
-  toWslUncPath,
-} from '@shared/path-display';
+import type { PathNode, SessionInfo } from '@shared/types';
+import { disambiguatePathNames } from '@shared/path-display';
 import { useTranslation } from './LanguageProvider';
 import {
   findMyOwnedSessionId,
@@ -67,16 +65,6 @@ const STATE_DOT_COLOR: Record<SessionInfo['state'], string> = {
   idle: 'var(--color-warning, #f0f)',
   exited: 'var(--color-text-muted, #f0f)',
 };
-
-interface DeviceSection {
-  id: string;
-  title: string;
-  iconName: IconName;
-  kind: 'local' | 'ssh' | 'wsl';
-  sshProfileId?: string;
-  wslDistroName?: string;
-  paths: PathNode[];
-}
 
 // ──────────────────────────────────────────────────────────────────
 // M1-C:全局 ContextMenuProvider 提到 App.tsx,这里只 useContextMenuApi。
@@ -130,21 +118,28 @@ export function Sidebar(): JSX.Element {
   const showSegmented = hasSshProfiles || enableRemote;
   const effectiveSegment: SidebarSegment = showSegmented ? segment : 'local';
 
-  const allDeviceSections = useMemo(
-    () => buildDeviceSections(state.pathTree, state.sshProfiles),
-    [state.pathTree, state.sshProfiles],
-  );
-  const deviceSections = useMemo(
-    () =>
-      allDeviceSections.filter((s) =>
-        effectiveSegment === 'remote' ? s.kind === 'ssh' : s.kind !== 'ssh',
-      ),
-    [allDeviceSections, effectiveSegment],
-  );
+  // SSH 方案 v2.1 §II.3:三栏按 segment 过滤(本地 = kind==='local',包含
+  // WSL UNC 路径;远程 = kind==='ssh')。本地用户无 profile + 未启 enableRemote
+  // 时 effectiveSegment 强制 'local',跟 beta.9 一样。
   const filterNodesBySegment = (nodes: PathNode[]): PathNode[] =>
     effectiveSegment === 'remote'
       ? nodes.filter((n) => n.kind === 'ssh')
       : nodes.filter((n) => n.kind === 'local');
+  const bookmarksFiltered = useMemo(
+    () => filterNodesBySegment(state.pathTree.bookmarks),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state.pathTree.bookmarks, effectiveSegment],
+  );
+  const temporaryFiltered = useMemo(
+    () => filterNodesBySegment(state.pathTree.temporary),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state.pathTree.temporary, effectiveSegment],
+  );
+  const recentFiltered = useMemo(
+    () => filterNodesBySegment(state.pathTree.recent),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state.pathTree.recent, effectiveSegment],
+  );
 
   const isCategoryCollapsed = (categoryId: string): boolean =>
     collapsedCategoryIds.has(categoryId);
@@ -161,7 +156,53 @@ export function Sidebar(): JSX.Element {
     });
   };
 
-  const handleAddLocalBookmark = async (): Promise<void> => {
+  /**
+   * 收藏栏 "+" 按钮。按当前 segment 走不同流程:
+   *
+   * - 本地段:beta.9 行为 — 系统 folder picker → BOOKMARK_ADD
+   * - 远程段:用首个 SSH profile 弹 prompt 让用户输远端路径。多 profile
+   *   时提示"用 X profile;要别的请去 设置 → 远程"。零 profile 时 toast
+   *   引导用户去设置(showSegmented 已经保证不会出现 0 profile + 不能切
+   *   远程段的状态,但 enableRemote=true 仍可能 0 profile)。
+   */
+  const handleAddBookmark = async (): Promise<void> => {
+    if (effectiveSegment === 'remote') {
+      const profiles = state.sshProfiles;
+      if (profiles.length === 0) {
+        toast.push({
+          kind: 'warn',
+          message: '请先在 设置 → 远程 添加 SSH 服务器',
+        });
+        return;
+      }
+      const profile = profiles[0]!;
+      const remotePath = await modal.prompt({
+        title: `添加远程文件夹 — ${profile.name}`,
+        message:
+          profiles.length > 1
+            ? `用 ${profile.name}(${profile.username}@${profile.host}) 添加。改用其他服务器请去 设置 → 远程`
+            : `输入 ${profile.username}@${profile.host} 上的目录路径。`,
+        placeholder: '~/project',
+        defaultValue: '~',
+        confirmLabel: '加入',
+      });
+      const path = remotePath?.trim();
+      if (!path) return;
+      try {
+        await window.api.invoke<unknown, AddBookmarkResponse>(
+          COMMAND_CHANNELS.REMOTE_BOOKMARK_ADD,
+          { sshProfileId: profile.id, remotePath: path },
+        );
+        toast.push({ kind: 'success', message: `已添加远程文件夹 ${path}` });
+      } catch (err) {
+        toast.push({
+          kind: 'error',
+          message: `添加远程文件夹失败:${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+      return;
+    }
+    // 本地段:beta.9 行为
     try {
       const result = await window.api.invoke<unknown, PickFolderResponse>(
         COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER,
@@ -178,58 +219,6 @@ export function Sidebar(): JSX.Element {
         message: `添加文件夹失败:${err instanceof Error ? err.message : String(err)}`,
       });
     }
-  };
-
-  const handleAddSshBookmark = async (section: DeviceSection): Promise<void> => {
-    if (!section.sshProfileId) return;
-    const remotePath = await modal.prompt({
-      title: `添加远程文件夹 - ${section.title}`,
-      message: '输入要加入的远程目录路径。',
-      placeholder: '~/project',
-      defaultValue: '~',
-      confirmLabel: '加入',
-    });
-    const path = remotePath?.trim();
-    if (!path) return;
-    try {
-      await window.api.invoke<unknown, AddBookmarkResponse>(
-        COMMAND_CHANNELS.REMOTE_BOOKMARK_ADD,
-        { sshProfileId: section.sshProfileId, remotePath: path },
-      );
-      toast.push({ kind: 'success', message: `已添加远程文件夹 ${path}` });
-    } catch (err) {
-      toast.push({
-        kind: 'error',
-        message: `添加远程文件夹失败:${err instanceof Error ? err.message : String(err)}`,
-      });
-    }
-  };
-
-  const handleAddDevicePath = async (section: DeviceSection): Promise<void> => {
-    if (section.kind === 'ssh') {
-      await handleAddSshBookmark(section);
-      return;
-    }
-    if (section.kind === 'wsl') {
-      try {
-        const result = await window.api.invoke<unknown, PickFolderResponse>(
-          COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER,
-          { defaultPath: toWslUncPath(section.wslDistroName ?? '') },
-        );
-        if (result.path === null) return;
-        await window.api.invoke<unknown, AddBookmarkResponse>(
-          COMMAND_CHANNELS.BOOKMARK_ADD,
-          { path: result.path },
-        );
-      } catch (err) {
-        toast.push({
-          kind: 'error',
-          message: `添加 WSL 文件夹失败:${err instanceof Error ? err.message : String(err)}`,
-        });
-      }
-      return;
-    }
-    await handleAddLocalBookmark();
   };
 
   /**
@@ -397,31 +386,22 @@ export function Sidebar(): JSX.Element {
         </div>
       )}
       <div className="sidebar-bookmarks-dropzone" data-segment={effectiveSegment}>
-        {deviceSections.map((section) => (
-          <Category
-            key={section.id}
-            categoryId={section.id}
-            title={section.title}
-            iconName={section.iconName}
-            paths={section.paths}
-            variant="device"
-            emptyLabel="无路径"
-            collapsed={isCategoryCollapsed(section.id)}
-            onToggleCollapsed={handleToggleCategory}
-            actionLabel={<Icon name="plus" size={12} />}
-            actionTitle={`添加到${section.title}`}
-            onAction={() => void handleAddDevicePath(section)}
-          />
-        ))}
+        <Category
+          categoryId="bookmark"
+          title={t('sidebar.category.bookmark')}
+          iconName="bookmark"
+          paths={bookmarksFiltered}
+          collapsed={isCategoryCollapsed('bookmark')}
+          onToggleCollapsed={handleToggleCategory}
+          actionLabel={<Icon name="plus" size={12} />}
+          actionTitle={t('sidebar.addBookmark.title')}
+          onAction={() => void handleAddBookmark()}
+        />
         <Category
           categoryId="temporary"
           title={t('sidebar.category.temporary')}
           iconName="clock"
-          paths={filterNodesBySegment(
-            deviceSections.length > 0
-              ? withoutBookmarked(state.pathTree.temporary)
-              : state.pathTree.temporary,
-          )}
+          paths={temporaryFiltered}
           collapsed={isCategoryCollapsed('temporary')}
           onToggleCollapsed={handleToggleCategory}
           actionLabel={<Icon name="plus" size={12} />}
@@ -432,11 +412,7 @@ export function Sidebar(): JSX.Element {
           categoryId="recent"
           title={t('sidebar.category.recent')}
           iconName="history"
-          paths={filterNodesBySegment(
-            deviceSections.length > 0
-              ? withoutBookmarked(state.pathTree.recent)
-              : state.pathTree.recent,
-          )}
+          paths={recentFiltered}
           collapsed={isCategoryCollapsed('recent')}
           onToggleCollapsed={handleToggleCategory}
         />
@@ -461,7 +437,6 @@ interface CategoryProps {
   title: string;
   iconName: IconName;
   paths: PathNode[];
-  variant?: 'default' | 'device';
   emptyLabel?: string;
   collapsed: boolean;
   onToggleCollapsed: (categoryId: string) => void;
@@ -476,7 +451,6 @@ function Category({
   title,
   iconName,
   paths,
-  variant = 'default',
   emptyLabel = '空',
   collapsed,
   onToggleCollapsed,
@@ -488,7 +462,7 @@ function Category({
   const displayNames = useMemo(() => disambiguatePathNames(paths), [paths]);
   return (
     <section
-      className={`sidebar-category${variant === 'device' ? ' device-category' : ''}${collapsed ? ' collapsed' : ''}`}
+      className={`sidebar-category${collapsed ? ' collapsed' : ''}`}
     >
       <header
         className="sidebar-category-header"
@@ -562,9 +536,6 @@ function PathItem({
     displayNameOverride ??
     node.displayName ??
     formatPathDisplayName(node);
-  const actionPath = node.path;
-  const displayPath =
-    node.kind === 'ssh' ? node.path : formatPathDisplayPath(node);
 
   // M1-C:行内重命名 (仅收藏支持)
   const [renaming, setRenaming] = useState(false);
@@ -635,7 +606,7 @@ function PathItem({
       const msg = err instanceof Error ? err.message : String(err);
       toast.push({
         kind: 'error',
-        message: `打开终端失败 (${displayPath}):${msg}`,
+        message: `打开终端失败 (${node.path}):${msg}`,
         durationMs: 10000,
       });
     }
@@ -654,7 +625,7 @@ function PathItem({
     // 通用项
     items.push({
       label: '复制路径',
-      onSelect: () => copyToClipboard(actionPath, '路径'),
+      onSelect: () => copyToClipboard(node.path, '路径'),
     });
     if (node.kind !== 'ssh') {
       items.push({
@@ -785,7 +756,7 @@ function PathItem({
         onClick={handleSelect}
         onDoubleClick={() => void handleDoubleClick()}
         onContextMenu={handleContextMenu}
-        title={node.invalid ? `${displayPath}\n⚠️ 路径不可访问` : displayPath}
+        title={node.invalid ? `${node.path}\n⚠️ 路径不可访问` : node.path}
       >
         {/*
           F2(beta 勘误2):左侧固定 12px 槽位,按优先级选一个内容渲染 —
@@ -830,10 +801,7 @@ function PathItem({
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
-          <span className="path-text">
-            <span className="path-name">{displayName}</span>
-            <span className="path-subtitle">{displayPath}</span>
-          </span>
+          <span className="path-name">{displayName}</span>
         )}
         {activeCount > 0 && !renaming && (
           <span className="path-session-count" title={`${activeCount} 个终端`}>
@@ -1088,89 +1056,6 @@ function SessionItemImpl({
  * session 引用保持不变 — 默认浅比较即可正确跳过无关项重渲。
  */
 const SessionItem = memo(SessionItemImpl);
-
-/**
- * 把 PathManager 的状态机视图(bookmarked/temporary/recent)投影成"设备视图"。
- *
- * 为什么只在 renderer 做:
- * - 收藏 / 临时 / 最近仍是产品状态机和持久化 schema 的事实来源。
- * - 本机 / SSH / WSL 是按设备拆开的收藏视图,帮助用户区分"这个路径在哪台设备上"。
- * - 这样不会改 IPC 协议,也不会让 PathManager 同时承担分类和设备两套职责。
- *
- * 显示规则:
- * - 设备分组只列出已收藏路径。移除收藏后,路径如果仍有 session,由临时分组承载。
- * - 临时 / 最近只显示非收藏路径,避免同一 path 在设备分组和状态机分组重复出现。
- */
-function buildDeviceSections(pathTree: {
-  bookmarks: PathNode[];
-  temporary: PathNode[];
-  recent: PathNode[];
-}, sshProfiles: SshProfile[]): DeviceSection[] {
-  const bookmarks = uniquePathNodes(pathTree.bookmarks);
-  const localPaths = bookmarks.filter((p) => p.kind === 'local' && !getWslDistroName(p.path));
-  const sections: DeviceSection[] = [
-    {
-      id: 'device:local',
-      title: '本机',
-      iconName: 'shellPowershell',
-      kind: 'local',
-      paths: localPaths,
-    },
-  ];
-
-  for (const profile of sshProfiles) {
-    const paths = bookmarks.filter((p) => p.kind === 'ssh' && p.sshProfileId === profile.id);
-    sections.push({
-      id: `device:ssh:${profile.id}`,
-      title: profile.name,
-      iconName: 'server',
-      kind: 'ssh',
-      sshProfileId: profile.id,
-      paths,
-    });
-  }
-
-  const wslGroups = new Map<string, PathNode[]>();
-  for (const node of bookmarks) {
-    const distro = getWslDistroName(node.path);
-    if (!distro) continue;
-    const paths = wslGroups.get(distro) ?? [];
-    paths.push(node);
-    wslGroups.set(distro, paths);
-  }
-  for (const [distro, paths] of wslGroups) {
-    sections.push({
-      id: `device:wsl:${distro}`,
-      title: `WSL ${distro}`,
-      iconName: 'shell',
-      kind: 'wsl',
-      wslDistroName: distro,
-      paths,
-    });
-  }
-
-  return sections;
-}
-
-function uniquePathNodes(nodes: PathNode[]): PathNode[] {
-  const seen = new Set<string>();
-  const result: PathNode[] = [];
-  for (const node of nodes) {
-    if (seen.has(node.id)) continue;
-    seen.add(node.id);
-    result.push(node);
-  }
-  return result;
-}
-
-function withoutBookmarked(nodes: PathNode[]): PathNode[] {
-  return nodes.filter((node) => node.category !== 'bookmarked');
-}
-
-function getWslDistroName(path: string): string | null {
-  const match = path.match(/^\\\\(?:wsl\$|wsl\.localhost)\\([^\\]+)(?:\\|$)/i);
-  return match?.[1] ?? null;
-}
 
 /**
  * 比较两个路径是否指向同一目录。Windows 大小写无关,POSIX 大小写敏感。

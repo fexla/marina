@@ -404,6 +404,8 @@ export interface CreateSessionInput {
     keyFilePath?: string;
     /** 明文密码;ipc 层用 safeStorage 解密后传入,会注入 sshpass 自动登录 */
     password?: string;
+    /** SSH 方案 §阶段 2.3:多级跳板,buildSshLaunchParams 转为 -J host1,host2 */
+    proxyJump?: string[];
     tmuxMode?: 'disabled' | 'attach-or-create';
     tmuxSessionName?: string;
     tmuxSessionPolicy?: 'reuse' | 'new-per-launch';
@@ -608,6 +610,8 @@ export class SessionManager extends EventEmitter {
     const sshLaunchOptions: {
       forceTmuxChoice?: boolean;
       commandToRun?: { command: string; args: string[]; env?: Record<string, string> };
+      enableControlMaster?: boolean;
+      controlPath?: string;
     } = { forceTmuxChoice: existingSshSessionsForPath > 0 };
     if (template.command) {
       sshLaunchOptions.commandToRun = {
@@ -615,6 +619,20 @@ export class SessionManager extends EventEmitter {
         args: template.args,
         env: template.env,
       };
+    }
+    // SSH 方案 §阶段 3.5:ControlMaster 由 settings.advanced.enableControlMaster
+    // 控制。socket 放在 userData/ssh-control/ 下,文件名包含 %r %h %p 占位符,
+    // OpenSSH 自动替换为 user / host / port。Windows OpenSSH 走 named pipe
+    // (\\.\pipe\openssh-ssh-*) 不读 ControlPath,我们传它它会忽略 — 还是开
+    // 收益:Linux/macOS / Cygwin OpenSSH 都吃这个路径。
+    if (isSsh) {
+      const settings = this.settingsManager.get();
+      if (settings.advanced.enableControlMaster) {
+        sshLaunchOptions.enableControlMaster = true;
+        sshLaunchOptions.controlPath = this.platformAdapter.getSshControlPath
+          ? this.platformAdapter.getSshControlPath()
+          : '~/.ssh/cm-%r@%h:%p';
+      }
     }
     const launchParams = isSsh
       ? buildSshLaunchParams(input.sshProfile!, pathRef.path, sshLaunchOptions)
@@ -1805,7 +1823,7 @@ function pickDisplayName(template: Template, shell: ShellInfo): string {
   return inferDisplayName(shell.executablePath);
 }
 
-function buildSshLaunchParams(
+export function buildSshLaunchParams(
   profile: {
     id?: string;
     host: string;
@@ -1813,6 +1831,7 @@ function buildSshLaunchParams(
     username: string;
     authType: 'agent' | 'keyFile' | 'password';
     keyFilePath?: string;
+    proxyJump?: string[];
     tmuxMode?: 'disabled' | 'attach-or-create';
     tmuxSessionName?: string;
     tmuxSessionPolicy?: 'reuse' | 'new-per-launch';
@@ -1822,6 +1841,10 @@ function buildSshLaunchParams(
   options: {
     forceTmuxChoice?: boolean;
     commandToRun?: { command: string; args: string[]; env?: Record<string, string> };
+    /** SSH 方案 §阶段 3.5:启用 ControlMaster 复用同 host 连接。默认 false。 */
+    enableControlMaster?: boolean;
+    /** ControlPath 绝对路径模板(必含 %r %h %p 占位符),enableControlMaster=true 时必填。 */
+    controlPath?: string;
   } = {},
 ): { args: string[]; env: Record<string, string> } {
   const args = [
@@ -1833,6 +1856,25 @@ function buildSshLaunchParams(
   ];
   if (profile.authType === 'keyFile' && profile.keyFilePath) {
     args.push('-i', profile.keyFilePath);
+  }
+  // ProxyJump:多跳板拼接成 -J host1,host2,host3。空数组等价于不跳板。
+  // OpenSSH 接受 user@host:port 形式,这里只做空段过滤,不做格式校验
+  // (跳板鉴权由 OpenSSH 复用主机已配置的 agent / key,Marina 不介入)。
+  const proxyHops = (profile.proxyJump ?? []).map((s) => s.trim()).filter((s) => s.length > 0);
+  if (proxyHops.length > 0) {
+    args.push('-J', proxyHops.join(','));
+  }
+  // ControlMaster:同 host 连接复用。auto = 第一次正常连,后续 attach 到
+  // 已有 master(通过 ControlPath socket)。ControlPersist=10m 让 master
+  // 在最后一个 client 断开后保留 10 分钟,期间新 session 0 握手。
+  // Windows OpenSSH 8.x+ 支持但不太稳,失败时 OpenSSH 自动回退到新连接,
+  // Marina 不需要兜底逻辑。
+  if (options.enableControlMaster && options.controlPath) {
+    args.push(
+      '-o', 'ControlMaster=auto',
+      '-o', `ControlPath=${options.controlPath}`,
+      '-o', 'ControlPersist=10m',
+    );
   }
   args.push(`${profile.username}@${profile.host}`);
   args.push(buildRemoteLoginCommand(remoteCwd, profile, options));

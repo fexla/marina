@@ -97,6 +97,14 @@ export const COMMAND_CHANNELS = {
   SSH_PROFILE_PICK_KEY_FILE: 'cmd:ssh-profile:pick-key-file',
   REMOTE_BOOKMARK_ADD: 'cmd:remote-bookmark:add',
 
+  // SSH 方案 v2.1 阶段 2+3:ssh_config / ssh-agent / known_hosts
+  /** §阶段 2.1:列出 ~/.ssh/config 的 Host 条目(只读,合并到 sidebar 视用户开关) */
+  SSH_CONFIG_LIST: 'cmd:ssh-config:list',
+  /** §阶段 2.2:探测 ssh-agent 状态 + 列出已加载的 key */
+  SSH_AGENT_STATUS: 'cmd:ssh-agent:status',
+  /** §阶段 3.1:列出 ~/.ssh/known_hosts + 与 Marina history 比对的指纹变化 */
+  KNOWN_HOSTS_REFRESH: 'cmd:known-hosts:refresh',
+
   // Settings 域
   SETTINGS_GET: 'cmd:settings:get',
   SETTINGS_UPDATE: 'cmd:settings:update',
@@ -487,6 +495,8 @@ export interface AddSshProfilePayload {
    */
   password?: string;
   defaultRemoteCwd?: string;
+  /** SSH 方案 §阶段 2.3:ProxyJump 多跳板(逗号分隔的多 host;每段最多 5 段) */
+  proxyJump?: string[];
   tmuxMode?: 'disabled' | 'attach-or-create';
   tmuxSessionName?: string;
   tmuxSessionPolicy?: 'reuse' | 'new-per-launch';
@@ -592,6 +602,65 @@ export interface DeleteTemplatePayload {
 
 export interface SetDefaultTemplatePayload {
   id: string;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// SSH 方案 v2.1 阶段 2+3:ssh_config / ssh-agent / known_hosts payload
+// ──────────────────────────────────────────────────────────────────
+
+/**
+ * ~/.ssh/config 的一条 Host 条目(只读;用户改请直接编辑 ssh_config)。
+ *
+ * Marina 在 sidebar / RemotePanel 把这些条目展示为"来源:ssh_config"标签,
+ * 不可删/编辑;连接时按本条同等 SshProfile 拼 ssh args。
+ */
+export interface SshConfigEntryDto {
+  alias: string;
+  hostName: string;
+  user?: string;
+  port: number;
+  identityFiles: string[];
+  proxyJump: string[];
+  /** ssh_config 文件绝对路径(tooltip / 诊断) */
+  sourceFile: string;
+}
+
+export interface SshConfigListResponse {
+  enabled: boolean;
+  entries: SshConfigEntryDto[];
+}
+
+export type SshAgentStatusResponse =
+  | {
+      status: 'agent-running';
+      keys: Array<{
+        bits: number;
+        fingerprint: string;
+        comment: string;
+        keyType: string;
+      }>;
+    }
+  | {
+      status: 'agent-missing';
+      reason: 'no-socket' | 'cli-missing' | 'cli-failed';
+      message: string;
+    };
+
+export interface KnownHostsRefreshResponse {
+  entries: Array<{
+    hosts: string;
+    keyType: string;
+    fingerprint: string;
+    sourceFile: string;
+    isHashed: boolean;
+  }>;
+  /** 与 history 比对后,本次发现指纹变化的 host 列表(potential MITM) */
+  changes: Array<{
+    host: string;
+    previousFingerprint: string;
+    newFingerprint: string;
+    keyType: string;
+  }>;
 }
 
 // ──────────────────────────────────────────────────────────────────
