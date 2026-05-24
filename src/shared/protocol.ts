@@ -620,7 +620,20 @@ export interface SettingsArchiveV1 {
   exportedFrom: string;
   settings: Settings;
   bookmarks: { paths: Bookmark[] };
-  recent: { paths: Array<{ path: string; lastUsedAt: number; useCount: number }> };
+  /**
+   * v2.1:archive 内 recent 容纳 SSH 项,kind / sshProfileId 可选,导入时由
+   * PathManager.validateRecentArray 严格校验(ssh kind 必须带 sshProfileId)。
+   * 字段缺失视为 local,与启动期 migrateRecentOnLoad 对齐。
+   */
+  recent: {
+    paths: Array<{
+      path: string;
+      lastUsedAt: number;
+      useCount: number;
+      kind?: 'local' | 'ssh';
+      sshProfileId?: string;
+    }>;
+  };
   sshProfiles?: { profiles: SshProfile[] };
   templates: { defaultTemplateId: string; templates: Template[] };
 }
