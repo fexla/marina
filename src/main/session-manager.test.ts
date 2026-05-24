@@ -538,12 +538,15 @@ describe('SessionManager — createSession', () => {
 
     const command = (FakePty.instances[0]!.args as string[]).at(-1)!;
     expect(command).toContain('cd "$HOME"/');
-    expect(command).toContain('exec "${SHELL:-/bin/sh}" -lc');
+    expect(command).toContain('exec "${SHELL:-/bin/sh}" -ic');
     expect(command).toContain("env '\\''MARINA_MODE=remote test'\\''");
     expect(command).toContain("'\\''codex'\\''");
     expect(command).toContain("'\\''--model'\\''");
     expect(command).toContain("'\\''gpt-5'\\''");
     expect(command).toContain("'\\''it'\\''\\'\\'''\\''s-ok'\\''");
+    expect(command).toContain('marina_template_status=$?;');
+    expect(command).toContain('if [ "$marina_template_status" -eq 127 ]; then');
+    expect(command).toContain('Marina: remote template command not found or not in PATH: codex');
     expect(command).toContain('exec "${SHELL:-/bin/sh}" -l');
   });
 

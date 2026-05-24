@@ -1874,7 +1874,9 @@ function buildRemoteLoginCommand(
     ? buildRemoteTemplateCommand(options.commandToRun)
     : null;
   const launchCommand = commandLine
-    ? `exec "\${SHELL:-/bin/sh}" -lc ${shQuote(`${commandLine}; ${shellCommand}`)}`
+    // 远端模板(如 claude/codex)常写在交互式 shell 初始化文件里。
+    // 这里用 `-ic` 让行为尽量贴近用户手动在终端里输入命令的路径。
+    ? `exec "\${SHELL:-/bin/sh}" -ic ${shQuote(`${commandLine}; ${shellCommand}`)}`
     : shellCommand;
   if (profile.tmuxMode !== 'attach-or-create') {
     return `${cdCommand} && ${launchCommand}`;
@@ -1923,8 +1925,15 @@ function buildRemoteTemplateCommand(input: {
     .filter(([key]) => key.length > 0)
     .map(([key, value]) => shQuote(`${key}=${value}`));
   const argv = [input.command, ...input.args].map(shQuote);
-  if (envPairs.length === 0) return argv.join(' ');
-  return ['env', ...envPairs, ...argv].join(' ');
+  const runCommand = envPairs.length === 0
+    ? argv.join(' ')
+    : ['env', ...envPairs, ...argv].join(' ');
+  return (
+    `${runCommand}; marina_template_status=$?; ` +
+    `if [ "$marina_template_status" -eq 127 ]; then ` +
+    `{ printf %s\\\\n "Marina: remote template command not found or not in PATH: ${input.command}" >&2; }; fi; ` +
+    `unset marina_template_status`
+  );
 }
 
 function defaultTmuxSessionName(remoteCwd: string): string {
