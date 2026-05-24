@@ -65,6 +65,7 @@ import { useModal } from './Modal';
 import { TemplateIcon } from './TemplateIcon';
 import { useToast } from './Toast';
 import { useTranslation } from './LanguageProvider';
+import { TERMINAL_KEYBINDINGS } from '@shared/terminal-keybindings';
 
 type CategoryId =
   | 'appearance'
@@ -1075,7 +1076,55 @@ function BehaviorPanel({
           </label>
         </div>
       </SettingRow>
+
+      <KeybindingsReference />
     </section>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────
+// 终端快捷键速查(KBD-1 整改,2026-05-24)— 数据源:terminal-keybindings.ts
+//
+// spec §7.2.2 写明唯一权威清单在代码侧的 TERMINAL_KEYBINDINGS,本卡片直接
+// 渲染该数组,保证 spec / 代码 / UI 三处永不漂移。
+//
+// macOS 检测:用 navigator.platform(renderer 不能读 process.platform)。
+// 命中 mac 时优先显示 specMac,否则 spec。
+// ──────────────────────────────────────────────────────────────────
+
+function KeybindingsReference(): JSX.Element {
+  const { tx } = useTranslation();
+  const isMac = navigator.platform.toLowerCase().includes('mac');
+  return (
+    <div className="settings-keybindings-card">
+      <h3 className="settings-keybindings-title">
+        {tx('终端快捷键速查', 'Terminal keybindings')}
+      </h3>
+      <p className="settings-keybindings-hint">
+        {tx(
+          '此清单为唯一权威。Marina 不支持其他应用内快捷键(spec §7.1)。',
+          'Authoritative list. Marina does not support any other in-app shortcuts (spec §7.1).',
+        )}
+      </p>
+      <table className="settings-keybindings-table">
+        <thead>
+          <tr>
+            <th>{tx('键位', 'Key')}</th>
+            <th>{tx('功能', 'Function')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {TERMINAL_KEYBINDINGS.map((b) => (
+            <tr key={b.id}>
+              <td>
+                <kbd>{isMac && b.specMac ? b.specMac : b.spec}</kbd>
+              </td>
+              <td>{b.description}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

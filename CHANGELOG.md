@@ -2,6 +2,20 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [Unreleased]
+
+### 修复 / 改进
+
+- **KBD-1:键盘交互全面整改 — binding table + paste 路径 + overlay 栈 + SCROLL-1 二次修复。** 整合 PR #3(Windows Ctrl+V 不粘贴 / 语音输入失效 / 双倍粘贴)并叠加架构层整改,把 spec / 代码 / 设置页 UI 三处对齐到唯一权威表,从根上消除"键位漂移 / 双倍粘贴 / SIGINT 失效 / Esc 优先级靠注册顺序 / IME 选词被吃 / replay 期 focus 错位"六类历史问题。
+  - **Ctrl+V 不粘贴 + 双倍粘贴**(PR #3):xterm 把 Ctrl+V 当 Unix literal-next 发 `0x16` 给 PTY,且 Ctrl+Shift+V / Shift+Insert 跟 xterm native paste listener 双倍触发;语音输入程序(智模 / 闪电说)依赖"写剪贴板 → 模拟 Ctrl+V"的链路因此整个失效。修法:helper-textarea + container 双层 capture-phase paste listener,`stopImmediatePropagation` 阻 xterm bubble listener,所有粘贴来源(Ctrl+V / Ctrl+Shift+V / Shift+Insert / 语音输入 / 右键 / 浏览器)走同一个 `handlePaste`。Ctrl+V 在键盘 handler `return false` 不发字节,让浏览器 paste 事件由 capture listener 接管。
+  - **SIGINT 失效 bug**(CPB-C3 扩展):Ctrl+Shift+C / Ctrl+Insert 复制后没清选区,残留 selection 让下次 Ctrl+C 走复制分支不发 SIGINT,死循环 / 卡住进程无法中断。修法:三套复制路径(`copy-or-sigint` / `copy-and-clear`)统一清选区。
+  - **数据驱动 binding table**:新建 `src/shared/terminal-keybindings.ts`,8 条 binding 集中,`matchKeybinding` 纯函数扫表;TerminalView 60 行嵌套 if/else 退化为"扫表 + switch dispatch" 50 行。新增 20 个单测覆盖所有键位 + 修饰键守护 + 表结构不变式。
+  - **Modal / ContextMenu IME 守卫**:Modal 全局 keydown 无 `isComposing` 检查,中文 / 日文 / 韩文 IME 选词的 Enter 被误吃,modal 提前关闭。修法:Modal / ContextMenu 全局 keydown 首行 `if (e.isComposing || e.keyCode === 229) return`。
+  - **UiOverlayStack**:Modal / ContextMenu 各自挂 window keydown 拦 Esc,多 overlay 嵌套时 Esc 由"注册顺序的隐式优先级"决定,不可预测。新建 `src/shared/ui-overlay-stack.ts`(命令式核心)+ `src/renderer/ui-overlay-stack.ts`(React hook 包装),overlay mount 时 push、unmount 时 pop;keydown 前问 `isTop()` 决定是否响应。多 overlay 嵌套时 Esc 永远从最上层关起。新增 8 个单测。
+  - **SCROLL-1 二次修复(visibility:hidden + inert)**:一次修复的 fence + scrollToBottom 只锚最终位置,没解决"分片 write + setTimeout(0) yield 之间 xterm RAF 把已处理 chunks 的部分 buffer 画到 canvas"的中间帧暴露。修法:terminal-host 在 `hostRevealed=false` 期间同时 `visibility:hidden` + `inert`,canvas 仍累积像素只跳 compositing,fit 仍能算尺寸;`inert` 阻 focus 落入子树,replay 100-500ms 期间用户按键不会误进 Sidebar 改名框 / Modal 等错位 focus。fence cb + scrollToBottom + 一帧 RAF 后才 reveal,reveal 后 useEffect 主动归还 focus 给 helper-textarea。React 18 不识别 inert 作为 known prop,`src/renderer/global.d.ts` module augmentation 让 TS 接受 `inert={'' | undefined}`(Electron 31 Chromium 126 原生支持)。产品决策:replay 期间不响应按键是有意为之,符合"切换中"直觉,避免 typeahead 误发到错位 focus。
+  - **spec / 文档同步**:`docs/软件定义书.md` §7.1 加"§7.2.2 是唯一权威"不变式,§7.2.2 写完整终端键位清单表(Win/Linux + macOS 等价)+ 6 条实现不变式,§13.2 把"应用内快捷键(除 Ctrl+C/V/F)"扩展为"任何不在 §7.2.2 清单内的键位"。新建 `docs/键盘交互规范.md` 开发者实现锚,工单留档 `docs/issues/kbd-1-shortcut-overhaul-20260524.md`。
+  - **设置页快捷键速查卡片**:设置 → 行为末尾加 `KeybindingsReference`,数据源即 `TERMINAL_KEYBINDINGS` 数组,navigator.platform 判断 mac 显 Cmd 别名。spec / 代码 / UI 三处永不漂移。
+
 ## [0.1.0-beta.9] — 2026-05-19
 
 UI 视觉一致性收尾:把"无边框 / hairline / lucide 矢量图标"语言推进到 ctx-menu 和 sidebar 加号按钮两处遗漏。

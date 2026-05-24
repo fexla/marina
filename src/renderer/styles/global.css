@@ -2308,6 +2308,62 @@ select.settings-input option {
   gap: 8px;
 }
 
+/* KBD-1 终端快捷键速查卡片 — 数据源 src/shared/terminal-keybindings.ts */
+.settings-keybindings-card {
+  margin-top: 28px;
+  padding: 16px;
+  border-radius: 8px;
+  background-color: var(--color-bg-secondary, #f0f);
+}
+
+.settings-keybindings-title {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary, #f0f);
+}
+
+.settings-keybindings-hint {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--color-text-secondary, #f0f);
+}
+
+.settings-keybindings-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.settings-keybindings-table th,
+.settings-keybindings-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-bg-strong, #f0f);
+  color: var(--color-text-primary, #f0f);
+}
+
+.settings-keybindings-table th {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--color-text-secondary, #f0f);
+}
+
+.settings-keybindings-table tr:last-child td {
+  border-bottom: none;
+}
+
+.settings-keybindings-table kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--color-text-primary, #f0f);
+  background-color: var(--color-bg-strong, #f0f);
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
 .settings-radio {
   display: inline-flex;
   align-items: center;

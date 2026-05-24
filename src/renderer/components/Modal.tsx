@@ -30,6 +30,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { useOverlayRegistration } from '../ui-overlay-stack';
 
 // ──────────────────────────────────────────────────────────────────
 // API 形状
@@ -147,12 +148,25 @@ export function ModalProvider({ children }: { children: ReactNode }): JSX.Elemen
     [openModal],
   );
 
+  // KBD-1:接入 UiOverlayStack — modal 在 mount 时 push,unmount 时 pop。
+  // Esc/Enter 响应前先问 isTop(),只有当前栈顶 overlay 吃,嵌套场景
+  // (Modal 内点按钮触发另一个 Modal,或 Modal + ContextMenu 同时存在)
+  // 顺序可预测,Esc 永远从最上层关起。
+  const { isTop } = useOverlayRegistration(!!modal);
+
   // Esc 关闭 = cancel;Enter 在 confirm modal 走确认,prompt modal 在
   // input 自己的 onKeyDown 里处理(避免冲突)。Tab/Shift+Tab 在 panel 内循环
   // (OVR-1 焦点 trap — 头部注释承诺过但原实现只做 mount 聚焦,Tab 仍能漏出 panel)。
   useEffect(() => {
     if (!modal) return undefined;
     const onKey = (e: KeyboardEvent): void => {
+      // KBD-1 IME 守卫:中文 / 日文 / 韩文 IME composition 期间
+      // (isComposing 或 keyCode===229)所有 Enter / Esc 透传给 IME 状态机。
+      // 否则用户输入到一半敲 Enter 选词会被 Modal 误吃 → modal 提前关闭、
+      // IME 状态机卡死。所有全局 window keydown listener 必须有此守卫。
+      if (e.isComposing || e.keyCode === 229) return;
+      // KBD-1 overlay stack:我不是栈顶就不响应,让上层 overlay 吃
+      if (!isTop()) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         if (modal.kind === 'confirm') modal.resolve(false);
@@ -193,7 +207,7 @@ export function ModalProvider({ children }: { children: ReactNode }): JSX.Elemen
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [modal, closeModal]);
+  }, [modal, closeModal, isTop]);
 
   // mount 后聚焦默认按钮(confirm)或 input(prompt),给用户键盘可用入口
   useEffect(() => {

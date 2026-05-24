@@ -20,15 +20,29 @@
  *   2. invoke cmd:session:get-scrollback → 拿到 (data, lastSeq)
  *   3. write scrollback → 把 pending 中 seq > lastSeq 的写入 → 切 listener
  *      为"直接写"模式
- *   4. **视口锚定 (SCROLL-1)**:在第 3 步末尾用 `term.write('', cb)` 作
- *      fence,cb 内调 `term.scrollToBottom()`。**绝不能**在 `.then` 体里
- *      直接调 scrollToBottom — `term.write()` 是异步排队(d.ts:1216:
- *      "callback that fires when the data was processed by the parser"),
- *      此刻 parser 才刚开始消化 writeBuffer,viewport 锚的"底"还在跟着
- *      新行长,用户看到"从上往下刷屏到底部"。fence callback 由 xterm 在
- *      parser drain 后触发,等价 main 端 session-manager.ts 的同模式
- *      drain 写法。任何未来改 scrollback 数据源 / 量级的人都要重读
- *      docs/issues/scroll-1-session-switch-progressive-refresh.md。
+ *   4. **视口锚定 + host 整体隐藏 (SCROLL-1 两轮)**:
+ *      4a. **fence 锚最终底** — 在第 3 步末尾用 `term.write('', cb)` 作
+ *         fence,cb 内调 `term.scrollToBottom()`。**绝不能**在 `.then` 体里
+ *         直接调 scrollToBottom — `term.write()` 是异步排队(d.ts:1216:
+ *         "callback that fires when the data was processed by the parser"),
+ *         此刻 parser 才刚开始消化 writeBuffer,viewport 锚的"底"还在跟着
+ *         新行长,用户看到"从上往下刷屏到底部"。fence callback 由 xterm
+ *         在 parser drain 后触发。
+ *      4b. **host visibility:hidden + inert 防中间帧 + focus 错位**
+ *         (2026-05-24,KBD-1 同 PR):仅靠 4a fence 还不够 — 分片 write +
+ *         setTimeout(0) yield 之间 xterm RAF 会把"已处理 chunks 的部分
+ *         buffer"画到 canvas 上,用户报"刷屏速度快多了但还在抖"。修法:
+ *         mount 默认 `hostRevealed=false` → JSX 给 terminal-host 加
+ *         visibility:hidden + inert,fence cb 内 scrollToBottom 后再过一帧
+ *         RAF 才 setHostRevealed(true) reveal。`visibility:hidden` 保留
+ *         layout(fit 仍能算尺寸)+ canvas pixel 继续累积,只跳屏幕
+ *         compositing;`inert` 阻止 focus 落入子树,replay 期间用户按键
+ *         不会误进 Sidebar/Modal 等其他 focusable 元素(产品决策:replay
+ *         100-500ms 内按键不响应是有意为之,符合"切换中"直觉)。reveal
+ *         后 useEffect 主动归还 focus 给 helper-textarea,继续可敲。
+ *      任何未来改 scrollback 数据源 / 量级 / 视口管理的人都要重读
+ *      docs/issues/scroll-1-session-switch-progressive-refresh.md 与
+ *      docs/键盘交互规范.md(replay 期间 focus 行为不变式)。
  *   后续到达的 output 直接 term.write,无需去重 (lastSeq 为快照时刻)
  * - 用 sessionId 作 React key,session 切换时强制重建 xterm 实例
  *   (避免 viewport / 滚动状态错乱)
@@ -97,6 +111,7 @@ import { useContextMenuApi, type ContextMenuItem } from './ContextMenu';
 import { useToast } from './Toast';
 import { useModal } from './Modal';
 import { useTranslation } from './LanguageProvider';
+import { matchKeybinding } from '@shared/terminal-keybindings';
 import '@xterm/xterm/css/xterm.css';
 
 /**
@@ -597,6 +612,23 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     session.id,
   ]);
 
+  // SCROLL-1 二次修复(2026-05-24,KBD-1 同 PR):scrollback replay 期间整体
+  // 隐藏 terminal-host,直到 fence callback + scrollToBottom + 一帧 RAF 让
+  // xterm 渲染器画到最终态,才置回 visible。canvas 在 hidden 期间继续接收
+  // WebGL/DOM 绘制(visibility:hidden 只跳 compositing,不停 canvas pixel
+  // 累积),用户第一可见帧就是最终态。
+  //
+  // 配合 inert:visibility:hidden 已经让 helper-textarea 不能 focus,但
+  // 浏览器仍可能把焦点落到子树外的 fallback 元素(Sidebar input / Modal
+  // 等)。`inert` 显式声明:replay 期间子树不响应任何 input/focus/click。
+  // 这样用户在切换 session 的 100-500ms 间隙敲键,不会误进 Sidebar 改名 /
+  // 触发任何 keybinding — replay 完 reveal 后焦点立即归还终端可继续敲。
+  //
+  // key={session.id} 强制重建,挂载默认 false → reveal 后 true,无残留。
+  // 详见 docs/issues/scroll-1-session-switch-progressive-refresh.md 与
+  // docs/键盘交互规范.md 中"replay 期间按键不响应"决定。
+  const [hostRevealed, setHostRevealed] = useState(false);
+
   // 搜索栏状态
   const [searchVisible, setSearchVisible] = useState(false);
   const [searchText, setSearchText] = useState('');
@@ -909,82 +941,75 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     // 在所有这些路径之前声明(let 是块作用域,TDZ 不允许后向引用)。
     let disposed = false;
 
-    // CP-4 勘误 #6/#9:Ctrl+F、Esc 必须在 xterm 把它们转成 ^F / 0x1B 字节
-    // 之前拦下来。React 在 wrapper div 上的 onKeyDown 优先级低 (xterm 内部
-    // 直接读 keydown,转成字节写 PTY)。attachCustomKeyEventHandler 是 xterm
-    // 给的官方拦截点:返回 false 即"我已处理,xterm 不要继续"。
+    // KBD-1 整改(2026-05-24):键盘 binding 集中到 terminal-keybindings.ts。
+    // 此处仅"扫表 match → dispatch action",6 处早返 / 5 个嵌套特例都消失。
     //
-    // 勘误第二轮 #2:补完复制 / 粘贴键位 — 此前 Ctrl+C 永远发 ^C,Ctrl+V 不
-    // 动作,用户必须右键菜单。Windows Terminal 业界标准:
-    //   - Ctrl+Shift+C  → 复制(有 selection 时)
-    //   - Ctrl+Shift+V  → 粘贴
-    //   - Ctrl+Insert   → 复制(经典 Windows 兼容)
-    //   - Shift+Insert  → 粘贴(经典 Windows 兼容)
-    //   - Ctrl+C(有 selection)→ 复制,无 selection → 仍发 ^C
-    // 这些拦截都返回 false,xterm 不再透传字节给 PTY。
+    // 历史(已废弃):attachCustomKeyEventHandler 内有一段长 if/else,逐个
+    // 拦 Ctrl+F / Ctrl+Shift+C / Ctrl+Insert / Ctrl+Shift+V / Shift+Insert /
+    // Esc(搜索栏开时)。漏拦 Ctrl+V 导致 0x16(Unix literal-next)发到 PTY,
+    // 三套粘贴还和 xterm native paste listener 双倍触发 — PR #3 与本次整改
+    // 合并修复。
+    //
+    // 不变式:
+    //   - IME composition 期间(isComposing || keyCode===229)所有键透传,
+    //     binding table 不参与匹配
+    //   - 任何 binding 命中都 return false 让 xterm 不发字节给 PTY;唯一例外
+    //     是 'copy-or-sigint' 在无选区时 return true 让 ^C 透传发 SIGINT
+    //   - paste 类 action 的真正动作在 capture-phase 'paste' listener
+    //     (见 term.open 之后的 PASTE-1 注册块),本 handler 只负责 consume
+    //     keyboard event
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== 'keydown') return true;
-      // TYP-3 / FOC-7 / CPB-P9:IME composition 期间所有按键透传给 xterm
-      // (xterm helper-textarea 自己处理 composition,我们不要打断)。
-      // 检测两种信号:
-      //   - ev.isComposing(W3C composition state) — 现代浏览器
-      //   - ev.keyCode === 229(老式 IME 信号) — Chromium 兼容路径
-      // 拦截 IME 期间的 Ctrl+F / Ctrl+Shift+C / V 等组合会让 IME 状态机
-      // 卡死,用户报告"中文输入到一半敲空格 Enter 无反应"的根因。
       if (ev.isComposing || ev.keyCode === 229) return true;
-      const isMod = ev.ctrlKey || ev.metaKey;
-      const key = ev.key.toLowerCase();
+      const binding = matchKeybinding(ev, {
+        searchVisible: searchVisibleRef.current,
+      });
+      if (!binding) return true; // 透传给 xterm 默认处理
+
       // 走 ref 取最新 handler — bracketedPaste/modal 等设置变化时仍生效(P1-1)
       const h = handlersRef.current;
+      const term = termRef.current;
 
-      // Ctrl+F (Cmd+F on macOS) → 唤出搜索栏 — 仅在没 alt/shift 修饰时触发
-      if (isMod && !ev.altKey && !ev.shiftKey && key === 'f') {
-        h.handleOpenSearch();
-        return false;
-      }
-
-      // 复制(三套等价键位):
-      //   Ctrl+Shift+C / Ctrl+Insert / 有选区时的 Ctrl+C
-      // 三者都只在有 selection 时实际写剪贴板;无选区:
-      //   - Ctrl+Shift+C / Ctrl+Insert 静默(consume 掉,不发字节)
-      //   - 裸 Ctrl+C 透传给 PTY(SIGINT / ^C 标准行为)
-      if (isMod && !ev.altKey) {
-        const hasSel = !!termRef.current?.getSelection();
-        if (ev.shiftKey && key === 'c') {
-          if (hasSel) h.handleCopy();
+      switch (binding.action) {
+        case 'open-search':
+          h.handleOpenSearch();
           return false;
-        }
-        if (!ev.shiftKey && ev.key === 'Insert') {
-          if (hasSel) h.handleCopy();
+        case 'close-search':
+          h.handleCloseSearch();
           return false;
-        }
-        if (!ev.shiftKey && key === 'c' && hasSel) {
+        case 'copy-or-sigint': {
+          // 有选区:复制 + 清选区(CPB-C3 — 否则下次 Ctrl+C 残留选区
+          // 让 hasSel=true,永远走复制分支不发 SIGINT);无选区:透传 ^C
+          const hasSel = !!term?.getSelection();
+          if (!hasSel) return true;
           h.handleCopy();
-          // CPB-C3:Ctrl+C 复制后立即清选区 — 否则用户运行死循环想
-          // Ctrl+C 终止时,前一次拖选的残留 selection 让 hasSel=true,
-          // Ctrl+C 永远走"复制"分支不发 ^C → 程序停不下来。清掉
-          // 选区后,下次 Ctrl+C 一定能发 SIGINT。
-          termRef.current?.clearSelection();
+          term?.clearSelection();
           return false;
         }
-        // 粘贴:Ctrl+Shift+V
-        if (ev.shiftKey && key === 'v') {
-          void h.handlePaste();
+        case 'copy-and-clear': {
+          // Ctrl+Shift+C / Ctrl+Insert:有选区复制 + 清选区;
+          // 无选区也要清(防御性,理论上 hasSel=false 时 clearSelection 是 no-op)
+          // 关键修复:之前 Ctrl+Shift+C / Ctrl+Insert 复制后不清选区,
+          // 让随后的 Ctrl+C 误走复制分支,SIGINT 失效。
+          if (term?.getSelection()) {
+            h.handleCopy();
+            term.clearSelection();
+          }
           return false;
         }
+        case 'consume-for-paste':
+          // Ctrl+V 阻 xterm 发 0x16,Ctrl+Shift+V / Shift+Insert 显式 consume。
+          // 浏览器随后触发 paste 事件 → capture-phase listener 接管 → handlePaste()。
+          // 不在此处直接调 handlePaste:capture listener 是唯一入口,确保
+          // 语音输入 / 浏览器右键粘贴 / 这三个键位都走同一条路径,无双倍。
+          return false;
+        default: {
+          // 编译期 exhaustiveness check
+          const _exhaustive: never = binding.action;
+          void _exhaustive;
+          return true;
+        }
       }
-      // 粘贴:Shift+Insert(无 Ctrl)
-      if (ev.shiftKey && !isMod && !ev.altKey && ev.key === 'Insert') {
-        void h.handlePaste();
-        return false;
-      }
-
-      // Esc:仅在搜索栏可见时拦截 — 否则 Esc 应正常透传给终端 (vim 等需要)
-      if (ev.key === 'Escape' && searchVisibleRef.current) {
-        h.handleCloseSearch();
-        return false;
-      }
-      return true; // 其他键交给 xterm 默认处理
     });
 
     // SearchAddon 暴露 onDidChangeResults — 用它拿命中数 + 当前位置 (#7)
@@ -1015,6 +1040,41 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     // 就发 ?25l,Marina 转发,不再二次猜。
 
     term.open(container);
+
+    // PASTE-1(2026-05-24,合并 PR #3):capture-phase paste 监听器 —
+    // 所有粘贴的唯一入口。
+    //
+    // 背景:xterm.js 在 helper-textarea 上注册 bubble-phase paste listener,
+    // 把剪贴板内容直接发到 PTY,不走我们的 handlePaste(bracketed paste /
+    // 大粘贴警告 / 多行确认 / ESC 检测都拿不到)。我们在 capture phase 拦截
+    // 并 stopImmediatePropagation 阻止 xterm 的 bubble listener,统一走
+    // handlersRef.current.handlePaste。
+    //
+    // 覆盖来源:Ctrl+V / Ctrl+Shift+V / Shift+Insert / 语音输入(智模 /
+    // 闪电说等"写剪贴板 → 模拟 Ctrl+V")/ 浏览器右键粘贴 / 剪贴板桥粘贴。
+    //
+    // IME 不变式:paste 事件不挂 composition 状态机,IME 期间 Ctrl+V 仍能
+    // 正常触发 capture listener(不走 attachCustomKeyEventHandler 的 IME
+    // 守卫路径)。
+    //
+    // 双层注册:helper-textarea 是 xterm 的 paste 目标元素;container 是
+    // 兜底(若 xterm 未来重构,helper-textarea 改名 / 不存在,container 这层
+    // 仍能接住事件)。两层都走 capture phase,stopImmediatePropagation 阻
+    // 后续 listener。
+    //
+    // cleanup:container 在 useEffect cleanup 内 (xterm dispose 时整个 DOM
+    // 被 React 卸载),listener 跟着 GC;但显式 remove 给未来读代码的人留
+    // invariant。
+    const pasteInterceptor = (evt: ClipboardEvent): void => {
+      evt.stopImmediatePropagation();
+      evt.preventDefault();
+      void handlersRef.current.handlePaste();
+    };
+    const helperTaForPaste = container.querySelector<HTMLElement>(
+      '.xterm-helper-textarea',
+    );
+    helperTaForPaste?.addEventListener('paste', pasteInterceptor, true);
+    container.addEventListener('paste', pasteInterceptor, true);
 
     // IME-1 探针 ring buffer — 暂存最近 50 条 EV,onData 触发疑似 LEAK 时
     // 一并 IPC 发到 main 端 logger.ime 落盘。capacity=50 覆盖 LEAK 前 1-2s
@@ -1246,23 +1306,38 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         }
         pending = [];
         replayed = true;
-        // BETA-018 + SCROLL-1:scrollback 重放完后锚底,消除"从上往下刷屏"
-        // 观感。重放是同步内容回灌,不是历史浏览,应当锚定底部。
+        // BETA-018 + SCROLL-1 第一轮:scrollback 重放完后锚底,消除"从上
+        // 往下刷屏"观感。重放是同步内容回灌,不是历史浏览,应当锚定底部。
         //
-        // SCROLL-1 修正:scrollToBottom **必须**在 fence callback 内,而不是
-        // 这里直接调。因为 `term.write()` 是异步排队 — 上面所有 write 调用
-        // 返回时,xterm parser 通常还在分批消化 writeBuffer,buffer 里只有
-        // 已 parse 完的那部分行。直接 scrollToBottom 锚的"底"在后续 parser
-        // 解析新行时会被持续往下推 → 视觉上仍是从顶部往下铺。空 chunk +
-        // callback 走 xterm 内部 FIFO writeBuffer,callback 由 parser drain
-        // 后触发(d.ts:1216:"callback that fires when the data was
-        // processed by the parser") — 等价于一道 drain fence,锚的"底"
-        // 才是真正的最终底。disposed 兜底:fence 异步触发,期间用户可能
-        // 已切走 / 关窗,组件已 dispose,跳过避免 throw。
+        // SCROLL-1 第一轮 fence:scrollToBottom **必须**在 fence callback 内,
+        // 而不是这里直接调。因为 `term.write()` 是异步排队 — 上面所有 write
+        // 调用返回时,xterm parser 通常还在分批消化 writeBuffer,buffer 里
+        // 只有已 parse 完的那部分行。直接 scrollToBottom 锚的"底"在后续
+        // parser 解析新行时会被持续往下推 → 视觉上仍是从顶部往下铺。
+        // 空 chunk + callback 走 xterm 内部 FIFO writeBuffer,callback
+        // 由 parser drain 后触发(d.ts:1216:"callback that fires when
+        // the data was processed by the parser") — 等价于一道 drain fence,
+        // 锚的"底"才是真正的最终底。
+        //
+        // SCROLL-1 第二轮(2026-05-24,KBD-1 同 PR):第一轮 fence 只解决
+        // "最终 scroll 位置"对不对,**没解决** "分片 write + setTimeout(0)
+        // yield 之间,xterm RAF 把每个 chunk 处理后的中间 buffer 画到 canvas
+        // 上"的中间帧暴露问题 — 用户报"刷屏速度快多了但还在抖"。修法是
+        // 从 mount 起 host visibility:hidden + inert(见 JSX),fence cb +
+        // scrollToBottom + 一帧 RAF(留给 xterm renderer 把最终 viewport
+        // 画进 canvas)后才 setHostRevealed(true) reveal。第一可见帧 =
+        // 终态 canvas 合成结果。
+        //
+        // disposed 兜底:fence / RAF 都是异步,期间用户可能已切走 / 关窗,
+        // 组件已 dispose,跳过避免 throw / setState on unmounted。
         // 详见 docs/issues/scroll-1-session-switch-progressive-refresh.md。
         term.write('', () => {
           if (disposed) return;
           term.scrollToBottom();
+          requestAnimationFrame(() => {
+            if (disposed) return;
+            setHostRevealed(true);
+          });
         });
       })
       .catch((err) => {
@@ -1271,11 +1346,17 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         for (const c of pending) term.write(c.bytes);
         pending = [];
         replayed = true;
-        // BETA-018 + SCROLL-1:fallback 路径同样走 fence + scrollToBottom,
-        // 保持 viewport 一致行为。fence 理由同主路径。
+        // BETA-018 + SCROLL-1:fallback 路径同样走 fence + scrollToBottom
+        // + host reveal,保持 viewport 与 visibility 行为一致。即便走到
+        // catch(get-scrollback rejected),也必须 reveal host,否则终端
+        // 永远是隐藏的,用户看不到任何输出。
         term.write('', () => {
           if (disposed) return;
           term.scrollToBottom();
+          requestAnimationFrame(() => {
+            if (disposed) return;
+            setHostRevealed(true);
+          });
         });
       });
 
@@ -1446,6 +1527,10 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       cleanupMaxState();
       cleanupOutput();
       detachImeWorkaround?.();
+      // PASTE-1 cleanup:显式 remove。实际上 container 被 React 卸载时
+      // listener 一起 GC,但留显式 remove 让未来读代码的人有 invariant 可循。
+      helperTaForPaste?.removeEventListener('paste', pasteInterceptor, true);
+      container.removeEventListener('paste', pasteInterceptor, true);
       dataHandler.dispose();
       searchResultsDisposable?.dispose();
       searchAddon.dispose();
@@ -1473,6 +1558,18 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       ? LIGHT_THEME_MIN_CONTRAST
       : 1;
   }, [themeId]);
+
+  // SCROLL-1 二次修复 + KBD-1:reveal 后立即归还焦点给 helper-textarea。
+  // 期间 host inert,焦点漂到 body / 上次 active 元素;reveal 让 inert 解除,
+  // 才能让 focus 落上。不走 focusTerminalDom(它有 Modal/Settings/searchBar
+  // guard,reveal 时这些 guard 通常不该挡 — 直接 termRef.focus 更明确)。
+  useEffect(() => {
+    if (!hostRevealed) return;
+    if (searchVisibleRef.current) return; // 搜索栏在,焦点留搜索 input
+    requestAnimationFrame(() => {
+      termRef.current?.focus();
+    });
+  }, [hostRevealed]);
 
   // FLK-10:session.state='exited' 时 stop 光标闪烁,避免"会话已死但光标
   // 在闪"误导用户以为还能交互(配合 TYP-1 的 toast,死后输入有可见反馈)。
@@ -1773,6 +1870,21 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         className="terminal-host"
         ref={containerRef}
         data-drop-zone="files"
+        // SCROLL-1 二次修复 + KBD-1 整改(2026-05-24):replay 期间双重隔离 —
+        //   visibility:hidden  → 消除中间帧暴露(canvas 继续累积像素,
+        //                        只跳 compositing,fit 仍能算尺寸)
+        //   inert              → 阻止 focus 落入子树,helper-textarea 不会
+        //                        "假 focus",按键也不会误进 Sidebar / Modal
+        //                        等其他 focusable 元素
+        //
+        // 产品决策:replay 100-500ms 内按键不响应是有意为之 — 符合"切换中"
+        //   直觉,且避免 typeahead 误发到错位 focus(用户在 Sidebar 改名输入
+        //   框残留焦点时切 session,敲 ls 三个字母可能进改名框)。
+        //
+        // 详见:docs/issues/scroll-1-session-switch-progressive-refresh.md
+        //   docs/键盘交互规范.md(replay 期间 focus 行为不变式)
+        inert={hostRevealed ? undefined : ''}
+        style={hostRevealed ? undefined : { visibility: 'hidden' }}
         onContextMenu={handleContextMenu}
         onWheel={handleWheel}
         onDrop={handleTerminalDrop}
