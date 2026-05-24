@@ -1,0 +1,95 @@
+# Dockerfile.linux-build · Marina Linux 包构建容器(ISO-1,2026-05-20)
+#
+# 用途
+# ----
+# 在 Windows / macOS 开发机上构建 Marina 的 Linux 安装包(.deb / .rpm / AppImage),
+# 不污染主机 node_modules,不需要双系统、双仓库、双 nvm。
+#
+# 历史问题
+# --------
+# beta.5 之前的 Linux 构建是作者本地 ad-hoc 跑的(WSL2 + 手工 docker run),
+# 没把 Dockerfile 入仓。结果:
+#   1. node_modules 被 host(Windows)和容器(Linux)两边的 install-app-deps
+#      反复覆盖,build/Release/pty.node 在 Linux ELF 与 Windows DLL 之间反复横跳
+#   2. release/0.1.0-beta.9/win-unpacked/.../pty.node 里夹了 Linux ELF —— 因为
+#      上一次 Linux 构建留下的 .node 没被清,Windows 包打包时把它当成"node-pty
+#      的产物"装进去了
+#   3. RESIZE-1 排查 checklist 步骤 1 要求"Linux dev 强制开 WebGL 做对照",
+#      因为切平台成本 = 全量重 npm install,作者一直没做
+#
+# 本 Dockerfile 解决这三个问题:
+#   - 主机 node_modules 不进容器(.dockerignore 拦)
+#   - 容器内 npm ci 编译出干净 Linux .node,产物只通过 volume mount 出
+#   - 主机上 npm run build:linux:docker 一行触发,~5 分钟出 3 个包
+#
+# 用法
+# ----
+#   # 一次性构建:
+#   npm run build:linux:docker
+#
+#   # 等价手工命令:
+#   docker build -f Dockerfile.linux-build -t marina-linux-build:local .
+#   docker run --rm -v "$(pwd)/release:/build/release" marina-linux-build:local
+#
+#   # 进容器交互式排查(RESIZE-1 等):
+#   docker run --rm -it \
+#     -v "$(pwd)/release:/build/release" \
+#     -v "$(pwd)/src:/build/src:ro" \
+#     --entrypoint /bin/bash marina-linux-build:local
+#
+# 注意
+# ----
+# - 这是 build container,不是 runtime container。不要把 marina 装进容器跑 GUI。
+# - 镜像 ~1.2GB(Electron + electron-builder 完整工具链),local tag 用完不删
+#   也无所谓;CI 上可以 docker build --no-cache 保证 reproducible。
+# - 不签名(签名证书在主机上,容器里不应有私钥)。签名步骤在 npm postbuild
+#   阶段在主机做,签名对 Linux 包当前不需要。
+#
+# 对应文档
+# ----
+#   docs/issues/iso-1-cross-platform-build-pollution.md
+
+FROM node:20-bullseye AS build
+
+# electron-builder 在 Linux 上跑 deb/rpm/AppImage 三个 target,各自依赖:
+#   - dpkg-dev:.deb 打包(dpkg-deb)
+#   - rpm:.rpm 打包
+#   - fakeroot:无 root 也能 chown / chmod
+#   - libsecret-1-dev:Electron Keytar 编译依赖(虽然 Marina 不直接用,
+#     但 electron-builder 自检会读)
+#   - python3 + make + g++:node-pty native build 工具链
+#   - libxss-dev + libgtk-3-dev:Electron 编译期依赖
+#   - desktop-file-utils:校验 .desktop entry
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      dpkg-dev \
+      rpm \
+      fakeroot \
+      libsecret-1-dev \
+      python3 \
+      make \
+      g++ \
+      libxss-dev \
+      libgtk-3-dev \
+      desktop-file-utils \
+      ca-certificates \
+      git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# 拷依赖 manifest 先,benefit cache:源码变了也不重装依赖
+COPY package.json package-lock.json ./
+
+# npm ci 走 package-lock.json 严格安装,reproducible。
+# postinstall 会跑 electron-builder install-app-deps,自动编 node-pty 给 Linux。
+# ELECTRON_SKIP_BINARY_DOWNLOAD=0 显式确认要下 Electron 二进制(国内镜像有时会偏)。
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=0
+RUN npm ci
+
+# 拷剩下的源码。注意 .dockerignore 已经把 host node_modules / out / release
+# 等挡掉了,所以这里 COPY . . 是干净源码 + 上一步编出的 Linux node_modules。
+COPY . .
+
+# 默认动作:走 build:linux,产物到 /build/release/${version}/。
+# 主机用 -v 把 release/ 挂出来即可拿到 .deb / .rpm / .AppImage。
+CMD ["npm", "run", "build:linux"]

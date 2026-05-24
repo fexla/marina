@@ -1,0 +1,82 @@
+# .dockerignore · Marina(ISO-1,2026-05-20)
+#
+# 关键文件 — 阻断主机 node_modules / 构建产物 / 二进制污染 Docker 构建上下文。
+# 没有这个文件,Windows 主机的 node_modules(含 Windows .node + 错平台 build/
+# Release/pty.node 残留)会被 `docker build` 整个塞进镜像,再让容器内的
+# `npm ci` 反复覆盖,正是 ISO-1 工单要根治的现象。
+#
+# 详见 Dockerfile.linux-build 头注 + docs/issues/iso-1-cross-platform-build-pollution.md
+
+# ============================================================
+# 主机依赖 / 构建产物 — 一律不进容器
+# ============================================================
+node_modules
+out
+release
+dist
+dist-electron
+.electron-builder.cache
+
+# Native rebuild 残留 — 即便项目根没有 node_modules 也防御性挡一道
+**/build/Release/*.node
+**/build/Debug/*.node
+**/prebuilds
+
+# ============================================================
+# 缓存 / 临时
+# ============================================================
+.vite
+.cache
+coverage
+.nyc_output
+*.tsbuildinfo
+
+# ============================================================
+# 版本控制 / IDE / OS
+# ============================================================
+.git
+.gitignore
+.github
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ============================================================
+# 日志 / 临时
+# ============================================================
+*.log
+logs
+npm-debug.log*
+
+# ============================================================
+# 主机 secrets
+# ============================================================
+.env
+.env.local
+.env.*.local
+*.cer
+*.pfx
+*.p12
+
+# ============================================================
+# 文档 / 演示资料 — 不参与构建,缩小 context
+# ============================================================
+docs/checkpoints
+docs/presentation/images
+docs/presentation/slides
+*.pdf
+
+# ============================================================
+# 不需要进容器的开发期文件
+# ============================================================
+build-beta*.log
+README.md
+README.zh-CN.md
+CHANGELOG.md
+AGENTS.md
+LICENSE
+Dockerfile.linux-build
+.dockerignore
