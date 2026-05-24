@@ -188,8 +188,12 @@ export class PathManager extends EventEmitter {
   async initialize(): Promise<{ bookmarksSource: 'main' | 'bak' | 'default' }> {
     const bk = await this.bookmarksStore.load(DEFAULT_BOOKMARKS_FILE);
     const rc = await this.recentStore.load(DEFAULT_RECENT_FILE);
-    this.bookmarks = bk.value.paths.slice();
-    this.recent = rc.value.paths.slice();
+    // v2.1 §II.1:把磁盘上的旧 schema(kind 缺失 / ssh 但 sshProfileId 缺失)
+    // 在内存层 coerce 成新 discriminated union。损坏条目静默丢弃,与旧
+    // validateBookmarksArray "整体拒绝" 不同 —— 启动期不能因为一条坏数据
+    // 让用户进不来 Marina。
+    this.bookmarks = bk.value.paths.flatMap(migrateBookmarkOnLoad);
+    this.recent = rc.value.paths.flatMap(migrateRecentOnLoad);
     this.sortRecent();
     return { bookmarksSource: bk.source };
   }
@@ -227,15 +231,13 @@ export class PathManager extends EventEmitter {
     if (this.findBookmarkByPath(id)) {
       throw new PathManagerError('BookmarkAlreadyExists', `path="${id}" 已收藏`);
     }
-    const bookmark: Bookmark = {
+    const bookmark = buildBookmark({
       id: randomUUID(),
-      path: ref.path,
-      ...(ref.kind !== 'local' ? { kind: ref.kind } : {}),
-      ...(ref.sshProfileId ? { sshProfileId: ref.sshProfileId } : {}),
+      ref,
       ...(input.displayName ? { displayName: input.displayName } : {}),
       ...(input.defaultTemplateId ? { defaultTemplateId: input.defaultTemplateId } : {}),
       addedAt: Date.now(),
-    };
+    });
     this.bookmarks.push(bookmark);
     // 收藏后,该路径自动从 recent 中移出 (避免重复出现)
     this.removeRecentInternal(id);
@@ -445,32 +447,28 @@ export class PathManager extends EventEmitter {
 
     const bookmarks: PathNode[] = this.bookmarks.map((b) => {
       const id = bookmarkPathId(b);
-      return {
+      return buildPathNode({
         id,
-        path: b.path,
-        ...(b.kind ? { kind: b.kind } : {}),
-        ...(b.sshProfileId ? { sshProfileId: b.sshProfileId } : {}),
-        ...(b.displayName ? { displayName: b.displayName } : {}),
+        ref: pathRefFromBookmark(b),
         category: 'bookmarked',
         sessionIds: this.sessionsForPath(id),
+        ...(b.displayName ? { displayName: b.displayName } : {}),
         ...(b.defaultTemplateId ? { defaultTemplateId: b.defaultTemplateId } : {}),
         ...markInvalid(id),
-      };
+      });
     });
 
     const temporary: PathNode[] = [...sessionPaths]
       .filter((p) => !bookmarkPaths.has(p))
       .map((p) => {
         const ref = pathRefFromId(p);
-        return {
+        return buildPathNode({
           id: p,
-          path: ref.path,
-          ...(ref.kind !== 'local' ? { kind: ref.kind } : {}),
-          ...(ref.sshProfileId ? { sshProfileId: ref.sshProfileId } : {}),
-          category: 'temporary' as const,
+          ref,
+          category: 'temporary',
           sessionIds: this.sessionsForPath(p),
           ...markInvalid(p),
-        };
+        });
       });
 
     const recent: PathNode[] = this.recent
@@ -480,15 +478,13 @@ export class PathManager extends EventEmitter {
       })
       .map((r) => {
         const id = recentPathId(r);
-        return {
+        return buildPathNode({
           id,
-          path: r.path,
-          ...(r.kind ? { kind: r.kind } : {}),
-          ...(r.sshProfileId ? { sshProfileId: r.sshProfileId } : {}),
-          category: 'recent' as const,
+          ref: pathRefFromRecent(r),
+          category: 'recent',
           sessionIds: [],
           ...markInvalid(id),
-        };
+        });
       });
 
     return { bookmarks, temporary, recent };
@@ -521,9 +517,15 @@ export class PathManager extends EventEmitter {
   }
 
   hasSshProfileReferences(profileId: string): boolean {
+    const isMatch = (kind: PathKind, sshProfileId: string | undefined): boolean =>
+      kind === 'ssh' && sshProfileId === profileId;
     return (
-      this.bookmarks.some((b) => b.kind === 'ssh' && b.sshProfileId === profileId) ||
-      this.recent.some((r) => r.kind === 'ssh' && r.sshProfileId === profileId) ||
+      this.bookmarks.some((b) =>
+        b.kind === 'ssh' ? isMatch(b.kind, b.sshProfileId) : false,
+      ) ||
+      this.recent.some((r) =>
+        r.kind === 'ssh' ? isMatch(r.kind, r.sshProfileId) : false,
+      ) ||
       [...this.sessionToPath.values()].some((id) => {
         const ref = pathRefFromId(id);
         return ref.kind === 'ssh' && ref.sshProfileId === profileId;
@@ -578,13 +580,9 @@ export class PathManager extends EventEmitter {
       existing.lastUsedAt = Date.now();
       existing.useCount++;
     } else {
-      this.recent.unshift({
-        path: ref.path,
-        ...(ref.kind !== 'local' ? { kind: ref.kind } : {}),
-        ...(ref.sshProfileId ? { sshProfileId: ref.sshProfileId } : {}),
-        lastUsedAt: Date.now(),
-        useCount: 1,
-      });
+      this.recent.unshift(
+        buildRecentEntry({ ref, lastUsedAt: Date.now(), useCount: 1 }),
+      );
     }
   }
 
@@ -636,7 +634,9 @@ export class PathManager extends EventEmitter {
    * @param input.recent 新的最近列表 (按当前数组顺序;内部仍会再 sortRecent)
    * @throws PathManagerError('InvalidName') 任一 entry 形状不合规
    */
-  replaceAll(input: { bookmarks: Bookmark[]; recent: RecentEntry[] }): void {
+  replaceAll(input: { bookmarks: unknown; recent: unknown }): void {
+    // 入参视为外部不可信(导入归档可能跨版本 / kind 缺失 / sshProfileId 缺失);
+    // validateBookmarksArray / validateRecentArray 做严格 narrow + path normalize。
     const bookmarks = validateBookmarksArray(input.bookmarks);
     const recent = validateRecentArray(input.recent);
     this.bookmarks = bookmarks;
@@ -687,21 +687,28 @@ function validateBookmarksArray(input: unknown): Bookmark[] {
     const kind: PathKind = r['kind'] === 'ssh' ? 'ssh' : 'local';
     const sshProfileId =
       typeof r['sshProfileId'] === 'string' ? r['sshProfileId'] : undefined;
+    if (kind === 'ssh' && !sshProfileId) {
+      throw new PathManagerError(
+        'InvalidName',
+        `bookmarks[${i}] kind="ssh" 但缺少 sshProfileId`,
+      );
+    }
     const ref = normalizePathRef({
       kind,
       path: r['path'],
       ...(sshProfileId ? { sshProfileId } : {}),
     });
-    const entry: Bookmark = {
-      id: r['id'],
-      path: ref.path,
-      addedAt: r['addedAt'],
-    };
-    if (ref.kind !== 'local') entry.kind = ref.kind;
-    if (ref.sshProfileId) entry.sshProfileId = ref.sshProfileId;
-    if (typeof r['displayName'] === 'string') entry.displayName = r['displayName'];
-    if (typeof r['defaultTemplateId'] === 'string') entry.defaultTemplateId = r['defaultTemplateId'];
-    out.push(entry);
+    out.push(
+      buildBookmark({
+        id: r['id'],
+        ref,
+        addedAt: r['addedAt'],
+        ...(typeof r['displayName'] === 'string' ? { displayName: r['displayName'] } : {}),
+        ...(typeof r['defaultTemplateId'] === 'string'
+          ? { defaultTemplateId: r['defaultTemplateId'] }
+          : {}),
+      }),
+    );
   }
   return out;
 }
@@ -734,18 +741,20 @@ function validateRecentArray(input: unknown): RecentEntry[] {
     const kind: PathKind = o['kind'] === 'ssh' ? 'ssh' : 'local';
     const sshProfileId =
       typeof o['sshProfileId'] === 'string' ? o['sshProfileId'] : undefined;
+    if (kind === 'ssh' && !sshProfileId) {
+      throw new PathManagerError(
+        'InvalidName',
+        `recent[${i}] kind="ssh" 但缺少 sshProfileId`,
+      );
+    }
     const ref = normalizePathRef({
       kind,
       path: o['path'],
       ...(sshProfileId ? { sshProfileId } : {}),
     });
-    out.push({
-      path: ref.path,
-      ...(ref.kind !== 'local' ? { kind: ref.kind } : {}),
-      ...(ref.sshProfileId ? { sshProfileId: ref.sshProfileId } : {}),
-      lastUsedAt: o['lastUsedAt'],
-      useCount: o['useCount'],
-    });
+    out.push(
+      buildRecentEntry({ ref, lastUsedAt: o['lastUsedAt'], useCount: o['useCount'] }),
+    );
   }
   return out;
 }
@@ -759,17 +768,146 @@ function recentPathId(recent: RecentEntry): string {
 }
 
 function pathRefFromBookmark(bookmark: Bookmark): PathRef {
-  return normalizePathRef({
-    kind: bookmark.kind ?? 'local',
-    path: bookmark.path,
-    ...(bookmark.sshProfileId ? { sshProfileId: bookmark.sshProfileId } : {}),
-  });
+  switch (bookmark.kind) {
+    case 'local':
+      return { kind: 'local', path: normalizePath(bookmark.path) };
+    case 'ssh':
+      return {
+        kind: 'ssh',
+        sshProfileId: bookmark.sshProfileId,
+        path: normalizeRemotePath(bookmark.path),
+      };
+  }
 }
 
 function pathRefFromRecent(recent: RecentEntry): PathRef {
-  return normalizePathRef({
-    kind: recent.kind ?? 'local',
-    path: recent.path,
-    ...(recent.sshProfileId ? { sshProfileId: recent.sshProfileId } : {}),
-  });
+  switch (recent.kind) {
+    case 'local':
+      return { kind: 'local', path: normalizePath(recent.path) };
+    case 'ssh':
+      return {
+        kind: 'ssh',
+        sshProfileId: recent.sshProfileId,
+        path: normalizeRemotePath(recent.path),
+      };
+  }
+}
+
+/**
+ * Bookmark 构造器 — 把 PathRef 当作"权威 kind 来源",discriminated union
+ * 保证 ssh 分支必带 sshProfileId(本地分支必无)。所有 Bookmark 构造点
+ * 统一走这里,避免散落 `...(ref.kind !== 'local' ? { kind } : {})` 模式。
+ */
+function buildBookmark(input: {
+  id: string;
+  ref: PathRef;
+  addedAt: number;
+  displayName?: string;
+  defaultTemplateId?: string;
+}): Bookmark {
+  const common = {
+    id: input.id,
+    path: input.ref.path,
+    addedAt: input.addedAt,
+    ...(input.displayName ? { displayName: input.displayName } : {}),
+    ...(input.defaultTemplateId ? { defaultTemplateId: input.defaultTemplateId } : {}),
+  };
+  switch (input.ref.kind) {
+    case 'local':
+      return { ...common, kind: 'local' };
+    case 'ssh':
+      return { ...common, kind: 'ssh', sshProfileId: input.ref.sshProfileId! };
+  }
+}
+
+function buildRecentEntry(input: {
+  ref: PathRef;
+  lastUsedAt: number;
+  useCount: number;
+}): RecentEntry {
+  const common = {
+    path: input.ref.path,
+    lastUsedAt: input.lastUsedAt,
+    useCount: input.useCount,
+  };
+  switch (input.ref.kind) {
+    case 'local':
+      return { ...common, kind: 'local' };
+    case 'ssh':
+      return { ...common, kind: 'ssh', sshProfileId: input.ref.sshProfileId! };
+  }
+}
+
+function buildPathNode(input: {
+  id: string;
+  ref: PathRef;
+  category: PathNode['category'];
+  sessionIds: string[];
+  displayName?: string;
+  defaultTemplateId?: string;
+  invalid?: true;
+}): PathNode {
+  const common = {
+    id: input.id,
+    path: input.ref.path,
+    category: input.category,
+    sessionIds: input.sessionIds,
+    ...(input.displayName ? { displayName: input.displayName } : {}),
+    ...(input.defaultTemplateId ? { defaultTemplateId: input.defaultTemplateId } : {}),
+    ...(input.invalid ? { invalid: true as const } : {}),
+  };
+  switch (input.ref.kind) {
+    case 'local':
+      return { ...common, kind: 'local' };
+    case 'ssh':
+      return { ...common, kind: 'ssh', sshProfileId: input.ref.sshProfileId! };
+  }
+}
+
+/**
+ * v2.1 §II.1 启动期 migrate:磁盘 Bookmark 缺 kind 时 coerce 'local';
+ * kind === 'ssh' 但缺 sshProfileId 视为损坏数据,丢弃(配合 flatMap)。
+ * 与 validateBookmarksArray 不同的是 — 启动期容错,损坏数据让用户能进
+ * Marina;import 走严格校验。
+ */
+function migrateBookmarkOnLoad(raw: unknown): Bookmark[] {
+  if (typeof raw !== 'object' || raw === null) return [];
+  const r = raw as Record<string, unknown>;
+  if (typeof r['id'] !== 'string' || typeof r['path'] !== 'string') return [];
+  if (typeof r['addedAt'] !== 'number') return [];
+  const rawKind = r['kind'];
+  const kind: PathKind = rawKind === 'ssh' ? 'ssh' : 'local';
+  const sshProfileId =
+    typeof r['sshProfileId'] === 'string' ? r['sshProfileId'] : undefined;
+  if (kind === 'ssh' && !sshProfileId) return [];
+  const base = {
+    id: r['id'],
+    path: r['path'],
+    addedAt: r['addedAt'],
+    ...(typeof r['displayName'] === 'string' ? { displayName: r['displayName'] } : {}),
+    ...(typeof r['defaultTemplateId'] === 'string'
+      ? { defaultTemplateId: r['defaultTemplateId'] }
+      : {}),
+  };
+  if (kind === 'local') return [{ ...base, kind: 'local' }];
+  return [{ ...base, kind: 'ssh', sshProfileId: sshProfileId! }];
+}
+
+function migrateRecentOnLoad(raw: unknown): RecentEntry[] {
+  if (typeof raw !== 'object' || raw === null) return [];
+  const r = raw as Record<string, unknown>;
+  if (typeof r['path'] !== 'string') return [];
+  if (typeof r['lastUsedAt'] !== 'number' || typeof r['useCount'] !== 'number') return [];
+  const rawKind = r['kind'];
+  const kind: PathKind = rawKind === 'ssh' ? 'ssh' : 'local';
+  const sshProfileId =
+    typeof r['sshProfileId'] === 'string' ? r['sshProfileId'] : undefined;
+  if (kind === 'ssh' && !sshProfileId) return [];
+  const base = {
+    path: r['path'],
+    lastUsedAt: r['lastUsedAt'],
+    useCount: r['useCount'],
+  };
+  if (kind === 'local') return [{ ...base, kind: 'local' }];
+  return [{ ...base, kind: 'ssh', sshProfileId: sshProfileId! }];
 }

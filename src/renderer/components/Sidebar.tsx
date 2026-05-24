@@ -83,6 +83,22 @@ interface DeviceSection {
 // 旧版内嵌 provider 已删除,文件因此短了 100+ 行。
 // ──────────────────────────────────────────────────────────────────
 
+/**
+ * SSH 方案 v2.1 §II.3:Sidebar 顶部 segmented control。
+ * 'local' = 本机 + 所有 WSL 发行版,'remote' = 所有 SSH profile。
+ * 持久化到 localStorage,跨重启保留;但 segmented control 本身只在用户已
+ * 加 SSH profile 或勾了 advanced.enableRemote 时才渲染 — 否则 UI 与
+ * beta.9 完全一致(本地视野不变式)。
+ */
+type SidebarSegment = 'local' | 'remote';
+const SIDEBAR_SEGMENT_LS_KEY = 'marina.sidebar.segment';
+
+function readSegmentFromStorage(): SidebarSegment {
+  if (typeof window === 'undefined' || !window.localStorage) return 'local';
+  const v = window.localStorage.getItem(SIDEBAR_SEGMENT_LS_KEY);
+  return v === 'remote' ? 'remote' : 'local';
+}
+
 export function Sidebar(): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
@@ -93,10 +109,42 @@ export function Sidebar(): JSX.Element {
   const [collapsedCategoryIds, setCollapsedCategoryIds] = useState<Set<string>>(
     () => new Set(),
   );
-  const deviceSections = useMemo(
+  const [segment, setSegmentState] = useState<SidebarSegment>(() =>
+    readSegmentFromStorage(),
+  );
+  const setSegment = (next: SidebarSegment): void => {
+    setSegmentState(next);
+    try {
+      window.localStorage?.setItem(SIDEBAR_SEGMENT_LS_KEY, next);
+    } catch {
+      // localStorage 在 incognito / 严格模式下可能抛 SecurityError,忽略即可
+    }
+  };
+
+  const enableRemote = state.settings?.advanced?.enableRemote === true;
+  const hasSshProfiles = state.sshProfiles.length > 0;
+  /**
+   * 本地不变式的核心:没 profile 且没勾 enableRemote 时,segmented control
+   * 整体不渲染,segment 强制视为 'local',sidebar 跟 beta.9 完全一致。
+   */
+  const showSegmented = hasSshProfiles || enableRemote;
+  const effectiveSegment: SidebarSegment = showSegmented ? segment : 'local';
+
+  const allDeviceSections = useMemo(
     () => buildDeviceSections(state.pathTree, state.sshProfiles),
     [state.pathTree, state.sshProfiles],
   );
+  const deviceSections = useMemo(
+    () =>
+      allDeviceSections.filter((s) =>
+        effectiveSegment === 'remote' ? s.kind === 'ssh' : s.kind !== 'ssh',
+      ),
+    [allDeviceSections, effectiveSegment],
+  );
+  const filterNodesBySegment = (nodes: PathNode[]): PathNode[] =>
+    effectiveSegment === 'remote'
+      ? nodes.filter((n) => n.kind === 'ssh')
+      : nodes.filter((n) => n.kind === 'local');
 
   const isCategoryCollapsed = (categoryId: string): boolean =>
     collapsedCategoryIds.has(categoryId);
@@ -319,7 +367,36 @@ export function Sidebar(): JSX.Element {
         <span className="sidebar-drop-hint-icon">📁</span>
         <span className="sidebar-drop-hint-label">{t('sidebar.dropHint')}</span>
       </div>
-      <div className="sidebar-bookmarks-dropzone">
+      {showSegmented && (
+        <div
+          className="sidebar-segmented"
+          role="tablist"
+          aria-label={t('sidebar.segment.label') || '路径来源'}
+          data-testid="sidebar-segmented"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={effectiveSegment === 'local'}
+            className={`sidebar-segmented-item${effectiveSegment === 'local' ? ' active' : ''}`}
+            onClick={() => setSegment('local')}
+            data-testid="sidebar-segment-local"
+          >
+            {t('sidebar.segment.local') || '本地'}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={effectiveSegment === 'remote'}
+            className={`sidebar-segmented-item${effectiveSegment === 'remote' ? ' active' : ''}`}
+            onClick={() => setSegment('remote')}
+            data-testid="sidebar-segment-remote"
+          >
+            {t('sidebar.segment.remote') || '远程'}
+          </button>
+        </div>
+      )}
+      <div className="sidebar-bookmarks-dropzone" data-segment={effectiveSegment}>
         {deviceSections.map((section) => (
           <Category
             key={section.id}
@@ -340,7 +417,11 @@ export function Sidebar(): JSX.Element {
           categoryId="temporary"
           title={t('sidebar.category.temporary')}
           iconName="clock"
-          paths={deviceSections.length > 0 ? withoutBookmarked(state.pathTree.temporary) : state.pathTree.temporary}
+          paths={filterNodesBySegment(
+            deviceSections.length > 0
+              ? withoutBookmarked(state.pathTree.temporary)
+              : state.pathTree.temporary,
+          )}
           collapsed={isCategoryCollapsed('temporary')}
           onToggleCollapsed={handleToggleCategory}
           actionLabel={<Icon name="plus" size={12} />}
@@ -351,7 +432,11 @@ export function Sidebar(): JSX.Element {
           categoryId="recent"
           title={t('sidebar.category.recent')}
           iconName="history"
-          paths={deviceSections.length > 0 ? withoutBookmarked(state.pathTree.recent) : state.pathTree.recent}
+          paths={filterNodesBySegment(
+            deviceSections.length > 0
+              ? withoutBookmarked(state.pathTree.recent)
+              : state.pathTree.recent,
+          )}
           collapsed={isCategoryCollapsed('recent')}
           onToggleCollapsed={handleToggleCategory}
         />
@@ -1022,7 +1107,7 @@ function buildDeviceSections(pathTree: {
   recent: PathNode[];
 }, sshProfiles: SshProfile[]): DeviceSection[] {
   const bookmarks = uniquePathNodes(pathTree.bookmarks);
-  const localPaths = bookmarks.filter((p) => (p.kind ?? 'local') === 'local' && !getWslDistroName(p.path));
+  const localPaths = bookmarks.filter((p) => p.kind === 'local' && !getWslDistroName(p.path));
   const sections: DeviceSection[] = [
     {
       id: 'device:local',

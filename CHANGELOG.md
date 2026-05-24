@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **SSH 阶段 1:UI 分离 + 类型强化 + PR #2 polish。** 落地 `docs/方案-SSH-完整支持-20260524.md` §阶段 1,把 PR #2 的 SSH MVP 收尾成"本地用户视野与 beta.9 100% 一致 + SSH 用户专属入口"。
+  - **PathKind discriminated union(§II.1)**:`Bookmark / RecentEntry / PathNode` 改严格 discriminated union,`kind` 必填,ssh 变体 `sshProfileId` narrow 为必填。所有使用 Path 的函数走 `switch on kind` 自动 exhaustiveness check;新增 `assertNeverPathKind` 兜底,未来加 `'wsl'`/`'docker'` 时编译器强制找出所有需要补 case 的位置。
+  - **磁盘迁移**:beta.9 之前的旧 schema(无 kind 字段)在 PathManager 启动时由 `migrateBookmarkOnLoad`/`migrateRecentOnLoad` 静默 coerce 为 local;损坏条目(kind=ssh 缺 sshProfileId)启动期丢弃不让用户进不来 Marina,导入 archive 走严格校验直接拒。新增 `PersistedBookmark`/`PersistedRecentEntry` 磁盘宽松 schema,与内存严格类型分离。
+  - **Sidebar segmented control(§II.3)**:顶部加 `[本地] [远程]` segmented control,默认本地;`hasSshProfiles || advanced.enableRemote` 时才渲染(本地用户 = sidebar 跟 beta.9 完全一致);切到本地段时 device sections / temporary / recent 都按 `kind !== 'ssh'` 过滤,反之亦然。状态 localStorage 持久化跨重启保留。
+  - **设置页 SSH 条件渲染(§II.6)**:把 SSH UI 从"数据"分类抽出来,做成顶级"远程"分类。`buildVisibleCategories` 纯函数控制 nav 显示:无 SshProfile 且 `advanced.enableRemote=false` 时不出现,设置页永远 8 个分类;有 profile 或勾了 enableRemote 时第 5 位插入"远程"成 9 个。RemotePanel 含 SSH 服务器 CRUD / 远程文件夹收藏 / `enableRemote` 开关。
+  - **`advanced.enableRemote` 设置**:新增字段,默认 false。是"本地视野守护"的唯一显式触发条件;RemotePanel 内可勾掉,关掉后无 profile 则刷新设置后远程分类隐藏。
+  - **PR #2 polish**:RemotePanel 全部 inline style → CSS class(`ssh-profile-form / ssh-profile-grid / ssh-key-picker / ssh-password-field / ssh-profile-actions / ssh-enable-toggle / remote-bookmark-form`)。Sidebar segmented control + 远程分类 i18n 中英全覆盖(`sidebar.segment.* / settings.category.remote`)。SSH profile edit / 密钥文件选择器 / 保存密码 PR #2 已实现,本阶段无需重做。
+  - **CI Gate-1 invariant 测试**:新增 `src/shared/path-invariants.test.ts`(13 条 — 包含 `// @ts-expect-error` 验证 local 分支不能访问 sshProfileId)+ `path-manager.test.ts` 增 4 条迁移不变量。全量 466 个测试通过(原 452 + 新增 14),typecheck + ESLint + stylelint 全过。
+  - **M1 里程碑前进**:阶段 0(spec §14 草案、PR #2 merge)+ 阶段 1(本次)完成。剩 ssh_config / 完整认证矩阵 / ProxyJump(阶段 2)+ known_hosts UX / 重连 / tmux / ControlMaster(阶段 3)。
+
 ### 修复 / 改进
 
 - **KBD-1:键盘交互全面整改 — binding table + paste 路径 + overlay 栈 + SCROLL-1 二次修复。** 整合 PR #3(Windows Ctrl+V 不粘贴 / 语音输入失效 / 双倍粘贴)并叠加架构层整改,把 spec / 代码 / 设置页 UI 三处对齐到唯一权威表,从根上消除"键位漂移 / 双倍粘贴 / SIGINT 失效 / Esc 优先级靠注册顺序 / IME 选词被吃 / replay 期 focus 错位"六类历史问题。

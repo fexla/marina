@@ -10,6 +10,7 @@ function node(id: string, path: string, displayName?: string): PathNode {
   return {
     id,
     path,
+    kind: 'local',
     category: 'bookmarked',
     sessionIds: [],
     ...(displayName !== undefined ? { displayName } : {}),

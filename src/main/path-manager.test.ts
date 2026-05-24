@@ -142,6 +142,78 @@ describe('PathManager — 初始化', () => {
     const tree = mgr.getTree();
     expect(tree.recent.map((r) => r.path)).toEqual([TEST_PATH_B, TEST_PATH_C, TEST_PATH_A]);
   });
+
+  // ──────────────────────────────────────────────────────────────────
+  // SSH 方案 v2.1 §II.1:磁盘迁移不变式 — 老 schema(kind 缺失)、损坏
+  // schema(kind=ssh 缺 sshProfileId)都要能让 Marina 启动起来。
+  // ──────────────────────────────────────────────────────────────────
+
+  it('迁移:旧 bookmark 缺 kind → 自动按 local 加载', async () => {
+    const { mgr } = makeManager({
+      initialBookmarks: {
+        version: 1,
+        paths: [{ id: 'legacy', path: TEST_PATH_A, addedAt: 1 }],
+      },
+    });
+    await mgr.initialize();
+    const tree = mgr.getTree();
+    expect(tree.bookmarks).toHaveLength(1);
+    expect(tree.bookmarks[0]!.kind).toBe('local');
+  });
+
+  it('迁移:旧 recent 缺 kind → 自动按 local 加载', async () => {
+    const { mgr } = makeManager({
+      initialRecent: {
+        version: 1,
+        paths: [{ path: TEST_PATH_A, lastUsedAt: 100, useCount: 3 }],
+      },
+    });
+    await mgr.initialize();
+    const tree = mgr.getTree();
+    expect(tree.recent).toHaveLength(1);
+    expect(tree.recent[0]!.kind).toBe('local');
+  });
+
+  it('迁移:kind=ssh 但缺 sshProfileId 的 bookmark → 启动期静默丢弃', async () => {
+    const { mgr } = makeManager({
+      initialBookmarks: {
+        version: 1,
+        paths: [
+          { id: 'ok', path: TEST_PATH_A, addedAt: 1 },
+          { id: 'broken', path: '~/x', kind: 'ssh', addedAt: 2 },
+        ],
+      },
+    });
+    await mgr.initialize();
+    const tree = mgr.getTree();
+    expect(tree.bookmarks).toHaveLength(1);
+    expect(tree.bookmarks[0]!.id).toBe(normalizePath(TEST_PATH_A));
+  });
+
+  it('迁移:kind=ssh 完整 bookmark 正常加载,narrow 出 sshProfileId', async () => {
+    const { mgr } = makeManager({
+      initialBookmarks: {
+        version: 1,
+        paths: [
+          {
+            id: 'r',
+            path: '~/repo',
+            kind: 'ssh',
+            sshProfileId: 'profile-a',
+            addedAt: 1,
+          },
+        ],
+      },
+    });
+    await mgr.initialize();
+    const tree = mgr.getTree();
+    expect(tree.bookmarks).toHaveLength(1);
+    const node = tree.bookmarks[0]!;
+    expect(node.kind).toBe('ssh');
+    if (node.kind === 'ssh') {
+      expect(node.sshProfileId).toBe('profile-a');
+    }
+  });
 });
 
 describe('PathManager — addBookmark / removeBookmark', () => {

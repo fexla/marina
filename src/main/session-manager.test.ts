@@ -200,6 +200,7 @@ function makeStubSettingsManager(
     advanced: {
       logLevel: 'INFO',
       activeIdleThresholdSeconds: 2,
+      enableRemote: false,
       terminalRenderer: 'auto',
       ...overrides,
     },

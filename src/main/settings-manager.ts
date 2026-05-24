@@ -66,6 +66,10 @@ export const DEFAULT_SETTINGS: Settings = {
   advanced: {
     logLevel: 'INFO',
     activeIdleThresholdSeconds: 2,
+    // SSH 方案 v2.1 §II.6:本地用户视野守护。默认 false,只有当用户加了
+    // SshProfile 或主动勾此项时,远程相关 UI 才出现。本地用户的 sidebar /
+    // 设置页视野与 beta.9 一致。
+    enableRemote: false,
     // 终端渲染器默认 'auto':Windows/macOS WebGL、Linux DOM(PER-LINUX,
     // BETA-003 修复)。'webgl' / 'dom' 是显式覆盖,通常给调研某些 WebGL
     // 兼容性 bug 用(例如某些 TUI 的光标渲染在 WebGL 下异常)。

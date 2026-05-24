@@ -27,9 +27,33 @@ export type PathCategory = 'bookmarked' | 'temporary' | 'recent';
 
 /**
  * Path 的来源。local 是本机文件夹;ssh 是某个 SSH profile 下的远程目录。
- * 旧数据没有 kind 字段时一律按 local 处理。
+ *
+ * Phase 1(SSH 方案 v2.1 §II.1):本字段在所有 Path-bearing 类型(Bookmark /
+ * RecentEntry / PathNode / PathRef)上都是 **required**,通过 discriminated
+ * union 把"路径来源"做成类型层 invariant — 任何忘记处理 ssh 分支的代码
+ * 立刻编译失败。
+ *
+ * 旧磁盘数据(beta.9 之前)没有 kind 字段,在持久化层(PathManager.initialize
+ * / validateBookmarksArray / validateRecentArray)读取时统一 coerce 为
+ * 'local',对类型层保持透明。
  */
 export type PathKind = 'local' | 'ssh';
+
+/**
+ * Discriminated union helper — 编译期 exhaustiveness check 的兜底。
+ * 在 switch on PathKind 的 default / 末尾调用一次,任何未覆盖的 kind 会
+ * 让 TS 编译报错。
+ *
+ * @example
+ *   switch (b.kind) {
+ *     case 'local': return doLocal(b);
+ *     case 'ssh':   return doRemote(b);
+ *     default:      return assertNeverPathKind(b);
+ *   }
+ */
+export function assertNeverPathKind(_value: never): never {
+  throw new Error(`unhandled PathKind: ${JSON.stringify(_value)}`);
+}
 
 /**
  * Session 的运行时状态 (软件定义书 8.3 节状态机)。
@@ -190,17 +214,14 @@ export interface SessionInfo {
 }
 
 /**
- * 路径节点,用于侧栏渲染。
+ * 路径节点公共字段(本地 / SSH 共用)。具体类型必须从 PathNode discriminated
+ * union 选用对应变体。
  */
-export interface PathNode {
-  /** UUID 内部 id */
+interface PathNodeBase {
+  /** 稳定 path id(本地 = normalizePath 结果;SSH = ssh:profileId:remotePath) */
   id: string;
   /** 本地文件系统绝对路径,或 SSH 远程目录路径 */
   path: string;
-  /** 路径来源。旧节点缺省视为 local。 */
-  kind?: PathKind;
-  /** kind === 'ssh' 时指向 SshProfile.id */
-  sshProfileId?: string;
   /** 用户自定义显示名,无则取路径最后一段 */
   displayName?: string;
   category: PathCategory;
@@ -214,6 +235,24 @@ export interface PathNode {
    */
   invalid?: boolean;
 }
+
+export interface LocalPathNode extends PathNodeBase {
+  kind: 'local';
+}
+
+export interface RemotePathNode extends PathNodeBase {
+  kind: 'ssh';
+  /** 必填:指向 SshProfile.id。本地节点不应出现此字段。 */
+  sshProfileId: string;
+}
+
+/**
+ * 路径节点(用于侧栏渲染),按 kind discriminated union。
+ *
+ * v2.1 起 kind 必填。switch on `node.kind` 让 TS exhaustiveness check 强制
+ * 处理所有分支,sshProfileId 在 ssh 分支自动 narrow 为 required。
+ */
+export type PathNode = LocalPathNode | RemotePathNode;
 
 /**
  * 完整路径树 (snapshot / 广播用)。
@@ -317,6 +356,19 @@ export interface Settings {
     activeIdleThresholdSeconds: number;
     // 注:v1.2 起 sessionTombstoneMinutes 已删除 (砍墓地,见 ADR-008)
     /**
+     * SSH 方案 v2.1 §II.6:本地用户视野守护开关。
+     *
+     * - false(默认):未添加任何 SshProfile 时,设置页"远程"分类完全隐藏,
+     *   sidebar 顶部 segmented control 也按本地 + WSL 排列(SSH 段空时不渲染)。
+     *   全新用户进 Marina = 体验跟 beta.9 一致。
+     * - true:即使没有 profile 也显示"远程"分类入口(给试图先看怎么配置
+     *   再加 profile 的用户)。
+     *
+     * 不变式:`sshProfiles.length > 0 || advanced.enableRemote === true`
+     * 是"渲染远程相关 UI"的唯一触发条件。
+     */
+    enableRemote: boolean;
+    /**
      * 终端渲染器选择(影响 xterm.js 渲染层)。
      * - 'auto' = 平台默认:Windows / macOS 用 WebGL(性能 10-50× DOM),Linux
      *           强制 DOM(Chromium Mesa/EGL 软渲会让 xterm 滚动秒级响应)。
@@ -371,42 +423,96 @@ export interface Settings {
 }
 
 /**
- * bookmarks.json
+ * bookmarks.json 磁盘 schema(宽松版本)。kind 可选,kind === 'ssh' 时
+ * sshProfileId 可缺(进程内 PathManager.initialize → migrateBookmarkOnLoad
+ * 会丢弃损坏条目)。所有写盘前的内存 Bookmark 都是严格 discriminated union,
+ * 通过 buildBookmark 构造。
  */
 export interface BookmarksFile {
   version: 1;
-  paths: Bookmark[];
+  paths: PersistedBookmark[];
 }
 
-export interface Bookmark {
+/**
+ * 磁盘层 Bookmark 形状:跟 beta.9 之前的旧 schema 兼容(无 kind / 缺
+ * sshProfileId)。新代码请用严格类型 Bookmark(discriminated union)。
+ */
+export interface PersistedBookmark {
   id: string;
-  /** 旧数据缺省为 local */
-  kind?: PathKind;
   path: string;
+  kind?: PathKind;
   sshProfileId?: string;
+  displayName?: string;
+  defaultTemplateId?: string;
+  addedAt: number;
+}
+
+interface BookmarkBase {
+  id: string;
+  path: string;
   displayName?: string;
   defaultTemplateId?: string;
   /** Unix ms */
   addedAt: number;
 }
 
+export interface LocalBookmark extends BookmarkBase {
+  kind: 'local';
+}
+
+export interface RemoteBookmark extends BookmarkBase {
+  kind: 'ssh';
+  /** 必填:指向 SshProfile.id。本地 bookmark 不应出现此字段。 */
+  sshProfileId: string;
+}
+
 /**
- * recent.json
+ * 收藏路径,按 kind discriminated union。v2.1 起 kind 必填。
+ *
+ * 旧磁盘数据(无 kind 字段或 kind === undefined)在 PathManager.initialize /
+ * validateBookmarksArray 读取时统一 coerce 为 LocalBookmark。
+ */
+export type Bookmark = LocalBookmark | RemoteBookmark;
+
+/**
+ * recent.json 磁盘 schema(宽松版本)。同 BookmarksFile,kind/sshProfileId
+ * 可选,启动期 migrateRecentOnLoad 丢弃损坏条目。
  */
 export interface RecentFile {
   version: 1;
-  paths: RecentEntry[];
+  paths: PersistedRecentEntry[];
 }
 
-export interface RecentEntry {
-  /** 旧数据缺省为 local */
-  kind?: PathKind;
+export interface PersistedRecentEntry {
   path: string;
+  kind?: PathKind;
   sshProfileId?: string;
+  lastUsedAt: number;
+  useCount: number;
+}
+
+interface RecentEntryBase {
+  path: string;
   /** Unix ms,降序排序的依据 */
   lastUsedAt: number;
   useCount: number;
 }
+
+export interface LocalRecentEntry extends RecentEntryBase {
+  kind: 'local';
+}
+
+export interface RemoteRecentEntry extends RecentEntryBase {
+  kind: 'ssh';
+  /** 必填:指向 SshProfile.id。本地 recent 不应出现此字段。 */
+  sshProfileId: string;
+}
+
+/**
+ * 最近列表项,按 kind discriminated union。v2.1 起 kind 必填。
+ * 旧数据缺 kind 时由持久化层 coerce 为 LocalRecentEntry。
+ */
+export type RecentEntry = LocalRecentEntry | RemoteRecentEntry;
 
 /**
  * SSH 服务器连接配置。可选保存密码:passwordEncrypted 是 Electron
