@@ -1749,9 +1749,9 @@ html[data-maximized='true'] .app-root.with-shell {
 
 /* F5(beta 勘误2):.tab.orphan 用斜体表达"游离的会话",但 .tab-name 的
    overflow:hidden + text-overflow:ellipsis 会把末字符的 italic 右倾笔画
-   切掉,与紧贴右侧的 .tab-close 一起看上去像"末字残缺连着 ×"(截图证据
-   docs/checkpoints/切断.png)。给 orphan 状态下的 .tab-name 加 3px 右内
-   边距 + 让 .tab-close 略左移,留出 italic 余量;非 italic 路径不受影响。 */
+   切掉,与紧贴右侧的 .tab-close 一起看上去像"末字残缺连着 ×"。给 orphan
+   状态下的 .tab-name 加 3px 右内边距 + 让 .tab-close 略左移,留出 italic
+   余量;非 italic 路径不受影响。 */
 .tab.orphan .tab-name {
   padding-right: 3px;
 }
