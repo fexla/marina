@@ -2173,6 +2173,20 @@ function normalizeCwd(raw: string): string {
   if (value.startsWith('~')) {
     value = value.replace(/^~/, homedir());
   }
+  // Git Bash / MSYS / Cygwin POSIX 风格驱动器路径 → Windows 风格。
+  // bash hook 已用 `cygpath -w` 兜底,但首个 prompt 之前 / hook 加载失败 /
+  // cygpath 不可用时,OSC 1337 仍可能发 `/c/Users/foo`。直接交给 path.resolve
+  // 会把 `/c` 当成 Windows 当前盘根下相对路径,结果是 `<drive>:\c\Users\foo`,
+  // 与 originalCwd 不一致 → 误触 cwdDrifted ⚠️。
+  // 仅在 Windows 平台做转换;POSIX 平台 `/c/foo` 是合法绝对路径,不能动。
+  if (process.platform === 'win32') {
+    const posixDriveMatch = value.match(/^\/([a-zA-Z])(\/.*)?$/);
+    if (posixDriveMatch) {
+      const drive = posixDriveMatch[1]!.toUpperCase();
+      const rest = (posixDriveMatch[2] ?? '\\').replace(/\//g, '\\');
+      value = `${drive}:${rest}`;
+    }
+  }
   try {
     return resolvePath(value);
   } catch {

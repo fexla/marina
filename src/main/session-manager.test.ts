@@ -1373,6 +1373,47 @@ describe('SessionManager — OSC 1337 cwd 跟踪 (ADR-008)', () => {
     const after = mgr.get(info.id)!;
     expect(after.currentCwd.toLowerCase()).toBe('c:\\polled');
   });
+
+  // Git Bash 通过 OSC 1337 在 cygpath 不可用 / 首 prompt 之前发的 POSIX 风格
+  // cwd(`/c/Users/foo`),Windows 上 path.resolve 会错解成 `<drive>:\c\Users\foo`
+  // 让 cwdDrifted 一直亮 ⚠️ 警告。归一逻辑应该把它转回 `C:\Users\foo` 与
+  // originalCwd 对齐。本测试仅在 win32 平台有意义。
+  it.skipIf(process.platform !== 'win32')(
+    'Git Bash POSIX 风格 cwd(/c/Users/foo)归一为 Windows 风格 → 不误触 cwdDrifted',
+    async () => {
+      const { mgr } = makeManager();
+      const info = await mgr.createSession({
+        pathId: 'C:\\Users\\foo',
+        templateId: 'shell',
+        ownerWindowId: 'w',
+        cols: 80,
+        rows: 24,
+      });
+      expect(info.currentCwd.toLowerCase()).toBe('c:\\users\\foo');
+      const fp = FakePty.instances[0]!;
+      fp.emitData('\x1b]1337;CurrentDir=/c/Users/foo\x07');
+      const after = mgr.get(info.id)!;
+      expect(after.currentCwd.toLowerCase()).toBe('c:\\users\\foo');
+    },
+  );
+
+  it.skipIf(process.platform !== 'win32')(
+    'POSIX 驱动器根 `/c` 归一为 `C:\\`',
+    async () => {
+      const { mgr } = makeManager();
+      const info = await mgr.createSession({
+        pathId: 'C:\\',
+        templateId: 'shell',
+        ownerWindowId: 'w',
+        cols: 80,
+        rows: 24,
+      });
+      const fp = FakePty.instances[0]!;
+      fp.emitData('\x1b]1337;CurrentDir=/c\x07');
+      const after = mgr.get(info.id)!;
+      expect(after.currentCwd.toLowerCase()).toBe('c:\\');
+    },
+  );
 });
 
 describe('SessionManager — OSC 0/1/2 标题 (displayName 自动跟随)', () => {
