@@ -2,6 +2,20 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [0.2.1] — 2026-05-26
+
+0.2.0 后的体验微调 patch — sidebar 形态调整 + Git Bash 警告标志根因修复。
+
+### 改进
+
+- **Sidebar 右侧 resize handle:宽度可拖动 + localStorage 持久化。** 在 sidebar 右边缘加 4px 拖动条,鼠标按下后全局 mousemove 接管,松开落盘到 `marina.sidebar.width`(范围 [180, 600],默认 280)。双击 handle 复位默认宽度。拖动期间 `document.body.cursor = 'ew-resize'` + `userSelect = 'none'`,避免越过边界进入终端区时光标抖 / 误选中文本。hover 时 handle 显出莫紫色半透明高亮线,平时透明不抢视觉。
+- **Sidebar 全顶格 — padding-left 统一压到 8px。** 旧版三层缩进(category 12 / path 28 / session 44)在 280px 窄边栏里把内容推得太靠右,无 chevron 的路径行被"夹在中间不顶格"。改为五处行(`.sidebar-category-header` / `.path-item-row` / `.session-item` / `.sidebar-empty` / `.sidebar-footer`)共享 8px 左 padding,内容左缘共线;session 层不再额外缩进,由 state-dot 圆点形状区分层级。
+- **移除右上角"隐藏侧边栏"按钮 + 整套 sidebarVisible 状态机。** 实际从未被高频使用,删除后 Sidebar 永远显示。`WindowChrome` Windows / macOS 两套标题栏的 toggle 按钮、`toggleSidebar` handler、`PanelLeftClose` / `PanelLeftOpen` import、`useAppDispatch` import 全删;App.tsx 不再按 `state.sidebarVisible` 条件渲染;store 的 `sidebarVisible` 字段、`view/toggle-sidebar` / `view/set-sidebar-visible` 两个 action、reducer case、初始值一并清掉。
+
+### 修复
+
+- **Git Bash 路径误触 cwdDrifted ⚠️ — `normalizeCwd` 加 POSIX 驱动器路径转换。** bash hook 用 `cygpath -w` 把 `/c/Users/foo` 转 Windows 风格再 emit OSC 1337,但首个 prompt 之前 / hook 加载失败 / cygpath 不可用三种边缘情况下,发的仍是 POSIX 风格。Windows 上 `path.resolve('/c/Users/foo')` 会把 `/c` 当当前盘根下的相对路径,解出 `<drive>:\c\Users\foo` 这个不存在的怪路径 → `currentCwd ≠ originalCwd` → Sidebar / Tab / 状态栏 ⚠️ 一直亮。修法:在 `normalizeCwd` 的 PSDrive 剥离 + `~` 展开之后,win32 平台新增一步 POSIX 驱动器路径(`^/[a-zA-Z](/.*)?$`)→ Windows 风格转换;POSIX 平台不动(`/c/foo` 在 Linux 是合法绝对路径)。新增 2 条 `it.skipIf(process.platform !== 'win32')` 测试覆盖 `/c/Users/foo` 与驱动器根 `/c` 归一。
+
 ## [0.2.0] — 2026-05-25
 
 **M1 里程碑达成 — Marina SSH 终端模式正式就位。** 本地用户视野与 beta.9 完全一致(UI 层 segmented + filter 守住),SSH 用户能完成"管理远程服务器 + 进 shell 干活 + 用 tmux 保持会话 + 多 session 复用 SSH 连接 + 主动重连"完整工作流。同期合入 KBD-1 键盘交互全面整改 / SCROLL-1 session 切换二次修复 / ISO-1 跨平台构建隔离三层防御 / IME-2 候选框位置锁定 / spec §14 远程 SSH 模式定型 + presentation 三件升 v0.2.0 + 28 份 alpha 历史档案清理。
