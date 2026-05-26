@@ -973,6 +973,9 @@ html[data-maximized='true'] .app-root.with-shell {
 /* ── Sidebar ── */
 
 .sidebar {
+  /* flex-basis 由 Sidebar.tsx inline style 动态注入(可拖动宽度,localStorage 持久化);
+     这里 280px 仅作为 inline style 未挂载前的兜底初值,grow/shrink 都为 0 保证宽度
+     完全由 basis 决定,不被 flex 容器 stretch 影响。 */
   flex: 0 0 280px;
   display: flex;
   flex-direction: column;
@@ -981,8 +984,28 @@ html[data-maximized='true'] .app-root.with-shell {
   /* 无边框版:靠 surface/base 背景色差分区,不画 1px 分隔线 */
   overflow: hidden;
 
-  /* F10:为 .sidebar-drag-overlay 提供绝对定位锚点 */
+  /* F10:为 .sidebar-drag-overlay 提供绝对定位锚点 — 同时也给 resize handle 用 */
   position: relative;
+}
+
+/* Sidebar 右侧 resize handle:4px 物理宽,绝对定位贴右边。hover 时显出 1px
+   浅色高亮线作为 affordance,平时透明不抢视觉。光标 ew-resize。拖动期间
+   全局 mousemove 接管,这里只负责按下时启动。 */
+.sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: ew-resize;
+  z-index: 5;
+  background-color: transparent;
+  transition: background-color 120ms ease;
+}
+
+.sidebar-resize-handle:hover,
+.sidebar-resize-handle:active {
+  background-color: color-mix(in srgb, var(--color-accent-special, #c4a7e7) 55%, transparent);
 }
 
 .sidebar-bookmarks-dropzone {
@@ -1107,7 +1130,7 @@ html[data-maximized='true'] .app-root.with-shell {
      居中(align-items: center 已设)。padding 改纯水平,不再用 4px 上下挤
      压高度。 */
   min-height: 32px;
-  padding: 0 12px;
+  padding: 0 8px;
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.6px;
@@ -1180,7 +1203,7 @@ html[data-maximized='true'] .app-root.with-shell {
 
 .sidebar-empty {
   margin: 0;
-  padding: 6px 16px;
+  padding: 6px 8px;
   font-size: 11px;
   color: var(--color-text-muted, #f0f);
   font-style: italic;
@@ -1200,7 +1223,9 @@ html[data-maximized='true'] .app-root.with-shell {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 12px 4px 28px;
+  /* 全顶格:与 .sidebar-category-header / .session-item / .sidebar-empty
+     同列(padding-left:8px),所有 sidebar 行内容左缘共线。 */
+  padding: 4px 8px;
   cursor: pointer;
   color: var(--color-text-primary, #f0f);
 }
@@ -1292,7 +1317,9 @@ html[data-maximized='true'] .app-root.with-shell {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 12px 3px 44px;
+  /* 全顶格:与 path-item-row 同 padding-left,session 不再额外缩进 — 由 state-dot
+     的圆点形状本身区分层级,而不是靠空白缩进。 */
+  padding: 3px 8px;
   font-size: 12px;
   color: var(--color-text-primary, #f0f);
   cursor: pointer;
@@ -1352,7 +1379,7 @@ html[data-maximized='true'] .app-root.with-shell {
 
 .sidebar-footer {
   flex: 0 0 auto;
-  padding: 6px 12px;
+  padding: 6px 8px;
 }
 
 .settings-entry {

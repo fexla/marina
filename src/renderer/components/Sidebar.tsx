@@ -87,6 +87,32 @@ function readSegmentFromStorage(): SidebarSegment {
   return v === 'remote' ? 'remote' : 'local';
 }
 
+/**
+ * Sidebar 宽度持久化(localStorage)。右侧 resize handle 拖动调整,松开时落盘。
+ *
+ * 范围 [SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH]:小于 min 路径名挤成省略号,大于
+ * max 抢占终端区视觉权重。中间档默认 280px 与历史 CSS 一致,无 sidebarWidth
+ * 时回落到该值(旧用户首次升级看不出变化)。
+ */
+const SIDEBAR_WIDTH_LS_KEY = 'marina.sidebar.width';
+const SIDEBAR_DEFAULT_WIDTH = 280;
+const SIDEBAR_MIN_WIDTH = 180;
+const SIDEBAR_MAX_WIDTH = 600;
+
+function clampSidebarWidth(n: number): number {
+  if (!Number.isFinite(n)) return SIDEBAR_DEFAULT_WIDTH;
+  return Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, Math.round(n)));
+}
+
+function readSidebarWidthFromStorage(): number {
+  if (typeof window === 'undefined' || !window.localStorage) return SIDEBAR_DEFAULT_WIDTH;
+  const v = window.localStorage.getItem(SIDEBAR_WIDTH_LS_KEY);
+  if (v === null) return SIDEBAR_DEFAULT_WIDTH;
+  const n = Number.parseInt(v, 10);
+  if (Number.isNaN(n)) return SIDEBAR_DEFAULT_WIDTH;
+  return clampSidebarWidth(n);
+}
+
 export function Sidebar(): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
@@ -106,6 +132,64 @@ export function Sidebar(): JSX.Element {
       window.localStorage?.setItem(SIDEBAR_SEGMENT_LS_KEY, next);
     } catch {
       // localStorage 在 incognito / 严格模式下可能抛 SecurityError,忽略即可
+    }
+  };
+
+  // ── Sidebar 宽度可拖动 + 持久化 ──
+  // 拖动期间只 setWidth 不写 localStorage(快速移动会大量触发 setItem),松开
+  // 时才落盘一次。全局 mousemove/mouseup 监听通过 ref 标记 isResizing,避免
+  // 鼠标移出 sidebar 边缘后丢失事件;widthRef 镜像 state 让 onUp 拿到最新值
+  // 而不依赖 setState updater(updater 内 throw 会把异常抛到 commit)。
+  // document.body.style.cursor 临时锁成 ew-resize,防止拖动越过 sidebar 边界
+  // 进入终端区时鼠标光标抖。
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() =>
+    readSidebarWidthFromStorage(),
+  );
+  const widthRef = useRef(sidebarWidth);
+  widthRef.current = sidebarWidth;
+  const isResizingRef = useRef(false);
+
+  const handleResizeMouseDown = (e: MouseEvent<HTMLDivElement>): void => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    isResizingRef.current = true;
+    document.body.style.cursor = 'ew-resize';
+    // 不允许拖动时选中文本
+    document.body.style.userSelect = 'none';
+  };
+
+  useEffect(() => {
+    const onMove = (e: globalThis.MouseEvent): void => {
+      if (!isResizingRef.current) return;
+      // sidebar 左边贴 viewport 左缘(无窗口阴影/边距),clientX 直接当宽度用
+      setSidebarWidth(clampSidebarWidth(e.clientX));
+    };
+    const onUp = (): void => {
+      if (!isResizingRef.current) return;
+      isResizingRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      try {
+        window.localStorage?.setItem(SIDEBAR_WIDTH_LS_KEY, String(widthRef.current));
+      } catch {
+        // localStorage 失败容忍 — 本次会话内拖动仍生效,下次重启回落默认
+      }
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+
+  const handleResizeDoubleClick = (): void => {
+    // 双击 handle 复位默认宽度(类似浏览器 devtools 分隔条惯例)
+    setSidebarWidth(SIDEBAR_DEFAULT_WIDTH);
+    try {
+      window.localStorage?.setItem(SIDEBAR_WIDTH_LS_KEY, String(SIDEBAR_DEFAULT_WIDTH));
+    } catch {
+      // ignore
     }
   };
 
@@ -340,6 +424,7 @@ export function Sidebar(): JSX.Element {
     <aside
       className={`sidebar${dragOver ? ' drag-over' : ''}`}
       data-drop-zone="files"
+      style={{ flexBasis: `${sidebarWidth}px` }}
       onClick={(e) => {
         if (e.target === e.currentTarget) {
           dispatch({ type: 'view/select-path', pathId: null });
@@ -428,6 +513,18 @@ export function Sidebar(): JSX.Element {
           <span>设置</span>
         </button>
       </div>
+      {/*
+        右侧 resize handle:绝对定位,4px 宽,贴右边。鼠标按下时 setIsResizing,
+        全局 mousemove 计算新宽度。双击复位默认宽度。aria-hidden 因为只是视觉
+        affordance,不进辅助技术导航树(用户操作纯靠鼠标拖)。
+      */}
+      <div
+        className="sidebar-resize-handle"
+        onMouseDown={handleResizeMouseDown}
+        onDoubleClick={handleResizeDoubleClick}
+        title="拖动调整宽度 (双击复位)"
+        aria-hidden="true"
+      />
     </aside>
   );
 }
