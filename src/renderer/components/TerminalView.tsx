@@ -910,12 +910,20 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       // "You must set allowProposedApi option to true" → 错误边界。
       // xterm 这个 API 已在 5.x 稳定使用,proposed 标签只是它内部 RFC 流程慢。
       allowProposedApi: true,
-      // 勘误第二轮 #5:启用 Windows 模式。
-      // 解决:在 Windows 上(尤其 ConPTY 下),PowerShell / cmd 输出的 \r\n
-      // 与 xterm 的换行/重绘语义不完全匹配,某些字符宽度计算偏差导致行末出
-      // 现"残影"字符 / 行尾空格被吃掉。windowsMode=true 让 xterm 用 Windows
-      // 风格处理 LF / CR / 行尾,实测对 ConPTY 输出的 stability 有明显改进。
-      windowsMode: true,
+      // ConPTY 兼容选项。xterm 5.x 时是 `windowsMode: true`(单旗标),6.x 改成
+      // `windowsPty: { backend, buildNumber }`,内部根据 buildNumber 选 workaround
+      // 路径:>= 21376(Win11 Insider 22000-ish 起)走现代分支(reflow 启用),
+      // 否则走兼容分支(scrollback 兜底 + 行尾启发式)。buildNumber 从 preload
+      // 通过 `os.release()` 同步拿到,非 Windows / 解析失败时整个 windowsPty
+      // 不传,xterm 走通用路径(配合 exactOptionalPropertyTypes 走 spread)。
+      ...(window.api.windowsBuild
+        ? {
+            windowsPty: {
+              backend: 'conpty' as const,
+              buildNumber: window.api.windowsBuild,
+            },
+          }
+        : {}),
     });
     termRef.current = term;
 

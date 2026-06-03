@@ -18,6 +18,7 @@
  * 完整业务方法 (session/bookmark/template) 在 CP-2/3/4 加入。
  */
 import { contextBridge, ipcRenderer, webFrame } from 'electron';
+import { platform, release } from 'os';
 import {
   COMMAND_CHANNELS,
   type ClipboardReadTextResponse,
@@ -25,6 +26,21 @@ import {
   type ClipboardWriteTextResponse,
   type CommandEnvelope,
 } from '@shared/protocol';
+
+/**
+ * 解析当前 OS 的 Windows build 号(如 22621),非 Windows 或解析失败返回 null。
+ * @xterm/xterm 6.x 的 windowsPty 选项需要 buildNumber 来决定 ConPTY workaround
+ * 走哪条:>= 21376 走现代分支(reflow 启用),否则走兼容分支(scrollback 兜底
+ * + 行尾启发式)。preload 是同步可访问 os 模块的最早入口,handshake 之前就能拿,
+ * Terminal 实例构造时直接读 window.api.windowsBuild,无需绕一次 IPC。
+ */
+const windowsBuild = ((): number | null => {
+  if (platform() !== 'win32') return null;
+  const parts = release().split('.');
+  if (parts.length < 3) return null;
+  const n = Number.parseInt(parts[2] ?? '0', 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+})();
 
 /**
  * 从 URL query string 提取窗口元数据。
@@ -78,6 +94,11 @@ const api = {
   windowId,
   /** 当前窗口编号 (Window N),0 表示未由 WindowManager 分配 */
   windowNumber,
+  /**
+   * Windows build 号(如 22621),非 Windows 或解析失败为 null。
+   * TerminalView 构造 xterm 实例时传给 windowsPty.buildNumber。
+   */
+  windowsBuild,
 
   /** 协议版本握手 — handshake 第一步 (ipc-protocol.md 第 4 章) */
   getProtocolVersion: (): Promise<{
