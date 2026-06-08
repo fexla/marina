@@ -107,6 +107,7 @@ import {
   type ImeProbeEntry,
 } from '@shared/ime-probe-ring';
 import { isDeviceAttributesResponse } from '@shared/terminal-input-filter';
+import { activateMarinaUnicodeWidth } from '@shared/terminal-unicode-width';
 import { useAppDispatch, useAppState } from '../store';
 import { readClipboardText, writeClipboardText } from '../clipboard';
 import { Icon } from './icons';
@@ -925,6 +926,10 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
           }
         : {}),
     });
+    // cc-switch / lazygit 这类远端 TUI 常按现代 wcwidth 把 emoji 当 2 列。
+    // xterm 5.5 默认 UnicodeV6 会把很多 emoji 当 1 列,导致 cursor advance
+    // 与应用输出的绝对定位分叉,边框随 emoji 累计错位。
+    activateMarinaUnicodeWidth(term);
     termRef.current = term;
 
     const fitAddon = new FitAddon();
@@ -1622,7 +1627,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       searchRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session.id]);
+  }, [session.id, terminalRenderer]);
 
   // 主题运行时切换
   useEffect(() => {

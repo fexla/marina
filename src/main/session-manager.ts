@@ -73,6 +73,7 @@ import { pathRefFromId } from './path-manager';
 import { getPlatformAdapter, type PlatformAdapter, type ShellInfo } from './platform';
 import { buildSpawnEnv, injectTerminalHintEnv, validateDimensions } from './pty-utils';
 import { logger } from './logger';
+import { activateMarinaUnicodeWidth } from '@shared/terminal-unicode-width';
 
 const SPAWN_ENV_SKIP = ['ELECTRON_RUN_AS_NODE', 'ELECTRON_RENDERER_URL'];
 
@@ -793,6 +794,7 @@ export class SessionManager extends EventEmitter {
     };
     // CURSOR-1:绑 SerializeAddon。loadAddon 必须在 headless 实例创建后,
     // 字段挂回 managed.serializeAddon 供 getScrollback 调用。
+    activateMarinaUnicodeWidth(managed.headlessTerm!);
     const serializeAddon = new SerializeAddon();
     managed.headlessTerm!.loadAddon(serializeAddon);
     managed.serializeAddon = serializeAddon;
