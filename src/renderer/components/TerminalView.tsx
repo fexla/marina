@@ -100,7 +100,7 @@ import {
 } from '@shared/protocol';
 import type { SessionInfo, ThemeId } from '@shared/types';
 import { attachImeCompositionEndCleaner } from '@shared/ime-textarea-workaround';
-import { attachImeCompositionPositionLock } from '@shared/ime-composition-position-lock';
+import { attachImeCaretPositioner } from '@shared/ime-caret-positioner';
 import {
   createImeProbeRing,
   isLikelyHistoryFlush,
@@ -1121,51 +1121,59 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       console.warn('[TerminalView] IME-1 workaround attach failed', err);
     }
 
-    // IME-2 workaround:在 _core._compositionHelper 上 monkey-patch
-    // updateCompositionElements,让 composition 期间 helper-textarea 位置锁定在
-    // compositionstart 瞬间的 buffer.x/y,不再跟着 Claude Code / aider / vim
-    // insert mode 等 TUI 的 cursor save→move→draw→restore 抖动。
+    // IME-3 候选框定位修复:从外部接管 helper-textarea 像素定位,统一治搜狗 /
+    // 微软拼音的「候选框来回跳」与「跑到屏幕右下角」。锁快照 + clamp 进视口,
+    // 覆盖 core._syncTextArea(搜狗+非composition)与 updateCompositionElements
+    // (微软拼音 composition)两个挂钩点。取代旧 IME-2 lock(只覆盖微软拼音、不 clamp)。
     //
-    // 走的是 term['_core'] 私有 API(与 xterm-serialize-mode-polyfill 同套妥协),
-    // 字段缺失走 try/catch + 字段存在性判定,失败仅 console.warn 不阻塞挂载 —
-    // 退化为 xterm 默认行为(候选框跟着抖,功能可用)。
-    // 详见 docs/issues/ime-2-composition-textarea-position-drift.md 与
-    // src/shared/ime-composition-position-lock.ts 的 JSDoc。
-    let detachImePositionLock: (() => void) | null = null;
+    // 走 term['_core'] 私有 API(与 xterm-serialize-mode-polyfill 同套妥协),
+    // 字段缺失 try/catch + 存在性 guard,失败仅 console.warn 不阻塞 — 退化为
+    // xterm 默认行为(候选框抖/跑角,功能仍可用)。
+    // 详见 src/shared/ime-caret-positioner.ts 的 JSDoc 与
+    // docs/issues/ime-2-composition-textarea-position-drift.md。
+    let detachImePositioner: (() => void) | null = null;
     try {
-      const helperTaForLock = container.querySelector(
+      const helperTaForPos = container.querySelector(
         '.xterm-helper-textarea',
       ) as HTMLTextAreaElement | null;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const core = (term as any)._core;
       const compHelper = core?._compositionHelper;
       const bufferService = core?._bufferService;
+      const renderService = core?._renderService;
       if (
-        helperTaForLock &&
-        compHelper &&
-        typeof compHelper.updateCompositionElements === 'function' &&
+        helperTaForPos &&
+        core &&
+        typeof core._syncTextArea === 'function' &&
         bufferService?.buffer &&
         typeof bufferService.buffer.x === 'number' &&
-        typeof bufferService.buffer.y === 'number'
+        typeof bufferService.buffer.y === 'number' &&
+        typeof bufferService.cols === 'number' &&
+        typeof bufferService.rows === 'number' &&
+        renderService
       ) {
-        detachImePositionLock = attachImeCompositionPositionLock(
-          helperTaForLock,
-          compHelper,
+        detachImePositioner = attachImeCaretPositioner({
+          textarea: helperTaForPos,
+          core,
+          compositionHelper: compHelper,
           bufferService,
-        );
+          renderService,
+        });
       } else {
         console.warn(
-          '[TerminalView] IME-2 position lock skipped — _core shape changed?',
+          '[TerminalView] IME positioner skipped — _core shape changed?',
           {
-            hasHelperTa: !!helperTaForLock,
+            hasHelperTa: !!helperTaForPos,
+            hasCore: !!core,
+            hasSyncTextArea: typeof core?._syncTextArea,
             hasCompHelper: !!compHelper,
-            hasUpdateFn: typeof compHelper?.updateCompositionElements,
             hasBufferService: !!bufferService,
+            hasRenderService: !!renderService,
           },
         );
       }
     } catch (err) {
-      console.warn('[TerminalView] IME-2 position lock attach failed', err);
+      console.warn('[TerminalView] IME positioner attach failed', err);
     }
 
     // [IME-1 PROBE B] 临时探针:追踪 helper-textarea 的 composition 时序与
@@ -1606,7 +1614,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       cleanupMaxState();
       cleanupOutput();
       detachImeWorkaround?.();
-      detachImePositionLock?.();
+      detachImePositioner?.();
       // PASTE-1 cleanup:显式 remove。实际上 container 被 React 卸载时
       // listener 一起 GC,但留显式 remove 让未来读代码的人有 invariant 可循。
       helperTaForPaste?.removeEventListener('paste', pasteInterceptor, true);
