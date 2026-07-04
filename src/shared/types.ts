@@ -278,7 +278,7 @@ export interface Settings {
 
   appearance: {
     theme: ThemeId;
-    windowStyle: WindowStyle;             // M1-A:窗口风格 (windows / macos)
+    windowStyle: WindowStyle; // M1-A:窗口风格 (windows / macos)
     /**
      * BETA-004 UI 语言。'system' 表示跟随系统 locale(app.getLocale()):
      * zh-* 默认中文,其他默认英文。固定 'zh-CN' / 'en-US' 强制使用对应语言。
@@ -454,6 +454,42 @@ export interface Settings {
      * 里残留的 'raw' 值在 SettingsManager 读取时会被 coerce 到 'headless'。
      */
     statusRecheckSource: 'headless' | 'screenshot';
+  };
+
+  /**
+   * 终端侧边文件预览面板(MARINA_SERVICE 远程调用功能)。
+   *
+   * 终端里跑的程序(agent / 脚本 / CLI)通过注入的 env(MARINA_SERVICE /
+   * MARINA_TOKEN / TERMINAL_ID)调本机 RESTful 服务,把文件"打开"到绑定该
+   * 终端的侧边面板里。面板支持 文本 / 图片 / Markdown。
+   *
+   * - enabled:false → 不起 HTTP 服务、不注入 env、不渲染面板(功能完全关闭)
+   * - port:0 = 启动时让系统分配空闲端口(避免冲突,默认);正整数 = 尝试该固定
+   *   端口,被占用则回退自动并 log warn。无论哪种,实际 baseUrl 都注入 env,
+   *   客户端不必关心端口。
+   *
+   * 安全面:HTTP 只绑 127.0.0.1 回环 + Bearer token;REST 只改面板视图,
+   * 不提供任意文件读(读内容走 renderer→main 的 IPC,且仅限面板已打开列表)。
+   */
+  filePanel: {
+    enabled: boolean;
+    /** 0 = 自动选空闲端口;正整数 = 尝试固定端口(占用则回退自动) */
+    port: number;
+    /**
+     * markdown 面板的渲染风格(用户在设置页选)。Typora 式可扩展:
+     * - 'auto' 用 marina 主题变量样式(与 7+ 主题配色协调,默认)
+     * - 'github-light' / 'github-dark' 用 github-markdown-css(GitHub 官方版式 +
+     *   配色),通过 color-scheme 属性在面板内强制明暗,不跟随系统。
+     * - 'custom:<id>' 用户往 userData/markdown-themes/ 放的 .css 主题,
+     *   id 由 markdown-theme-manager 从文件名 sanitize 而来。CSS 约定写
+     *   `.markdown-body` 选择器(与 github-markdown-css 一致),由 renderer
+     *   注入 <style> 生效(CSP 允许 inline style,禁 file:// link)。
+     *
+     * 类型放宽为 string 而非 union:自定义主题 id 在编译期无法穷举,且用户
+     * 可能删除正被选中的主题文件 —— 此时 MarkdownViewer fallback 到 'auto',
+     * 不在 settings 校验处阻塞保存。
+     */
+    markdownStyle: string;
   };
 }
 
@@ -643,4 +679,62 @@ export interface SessionRuntimeShape {
   info: SessionInfo;
   /** 环形 scrollback buffer,2MB 上限,CP-3 接入 (CP-2 留空) */
   scrollback: Buffer | null;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// 终端侧边文件预览面板 (MARINA_SERVICE 远程调用功能)
+// ──────────────────────────────────────────────────────────────────
+
+/**
+ * 文件在面板里能渲染的类型。按扩展名判定(见 src/shared/file-kind.ts 的
+ * detectFileKind),未知扩展名归 'unknown' —— 面板显示"暂不支持预览"占位,
+ * 不报错(终端程序 open 一个二进制文件是正常场景)。
+ *
+ * 'web' 是为未来网页预览(本地 HTML / 远程 URL)预留的槽位,本轮 detectFileKind
+ * 不会返回它;FileViewer 里有对应分支但渲染占位提示。
+ */
+export type FileKind = 'text' | 'markdown' | 'image' | 'unknown';
+
+/**
+ * 一个"已打开"文件的元数据。**不含文件内容** —— 内容按需由 renderer 通过
+ * cmd:file-panel:read 拉取(text/markdown 返回字符串,image 返回 base64 dataUrl)。
+ * 这样切换 tab / 关闭文件时不浪费 IPC 带宽,也避免大文件一次性塞进 store。
+ *
+ * mtimeMs 是自动刷新的关键:main 端 fs.watch 检测到文件变化后更新它并广播,
+ * renderer 的 viewer 把 mtimeMs 列入 useEffect 依赖,变化即重新 read。
+ */
+export interface OpenedFile {
+  /** 规范化绝对路径(main 端 normalizePath 处理),也是面板里的去重/active 主键 */
+  path: string;
+  /** basename,供 tab 显示与 tooltip */
+  name: string;
+  /** 渲染类型,决定 FileViewer 用哪个子 viewer */
+  kind: FileKind;
+  /** 字节数,fs.stat 结果(超限文件 read 会被截断) */
+  size: number;
+  /** fs.stat mtimeMs;变化驱动 viewer 重新 read(自动刷新) */
+  mtimeMs: number;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Markdown 面板主题(Typora 式可扩展)
+// ──────────────────────────────────────────────────────────────────
+
+/**
+ * 一个用户自定义的 markdown 面板主题(= userData/markdown-themes/ 下的一个 .css)。
+ *
+ * 「文件即主题」模型,与 Typora 一致:用户/社区把 CSS 文件丢进目录就多一个
+ * 风格,无需改代码、无需打包。main 端 markdown-theme-manager 扫描目录生成
+ * 此列表,fs.watch 自动发现增删。
+ *
+ * - id:稳定标识,`custom:<sanitized-baseName>`,作为 Settings.markdownStyle
+ *   的取值持久化。sanitize 保证 id 安全(小写 + 非 [a-z0-9-] 转 -)且稳定
+ *   (同一文件名始终产出同一 id)。
+ * - name:展示名,直接用 baseName(去 .css 扩展)。
+ * - fileName:磁盘文件名(含 .css),main 端 readCss 用;renderer 不直接碰磁盘。
+ */
+export interface MdTheme {
+  id: string;
+  name: string;
+  fileName: string;
 }

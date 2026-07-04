@@ -443,6 +443,15 @@ export class SessionManagerError extends Error {
 /**
  * 可选的注入项,主要给测试用。生产代码不传则用默认实现。
  */
+/**
+ * FilePanelService 对 session-manager 的最小依赖面:只需"当前服务地址 + token"
+ * 来注入终端 env。用接口而非具体类,既避免与 file-panel-service.ts 形成静态
+ * 依赖环,又让单测能注入一个 stub getUrl() 而不必起真实 HTTP server。
+ */
+export interface FilePanelEnvSource {
+  getUrl(): { baseUrl: string; token: string } | null;
+}
+
 export interface SessionManagerOptions {
   spawnFn?: PtySpawnFn;
   platformAdapter?: PlatformAdapter;
@@ -481,6 +490,16 @@ export interface SessionManagerOptions {
    * (避免 CI 上从 VS Code 终端继承到的 vscode 版本号污染断言)。
    */
   appVersion?: string;
+  /**
+   * 终端侧边文件面板服务(MARINA_SERVICE)。传入则把 MARINA_SERVICE /
+   * MARINA_TOKEN / TERMINAL_ID 写进每个新 session 的 PTY env,让终端里跑的
+   * 程序(agent / 脚本 / CLI)能 REST 调面板打开/切换/关闭文件。
+   * 不传 / null = 不注入(功能关闭)。详见 src/main/file-panel-service.ts。
+   *
+   * 实际是否注入 MARINA_SERVICE/MARINA_TOKEN 还看运行时 settings.filePanel
+   * .enabled(getUrl() 在 disabled 时返回 null);TERMINAL_ID 一律注入。
+   */
+  filePanelService?: FilePanelEnvSource | null;
 }
 
 export class SessionManager extends EventEmitter {
@@ -495,6 +514,8 @@ export class SessionManager extends EventEmitter {
   private readonly skipCwdValidation: boolean;
   private readonly emitBatchMs: number;
   private readonly appVersion: string;
+  /** 终端侧边文件面板服务(可选),用于注入 MARINA_SERVICE/MARINA_TOKEN env。 */
+  private readonly filePanelService: FilePanelEnvSource | null;
   /**
    * 最近一次 createSession 的非阻塞警告(例如保存了密码但缺 sshpass)。
    * ipc 层在 createSession resolve 后立即读取并清空,传给 renderer 弹 toast。
@@ -536,6 +557,7 @@ export class SessionManager extends EventEmitter {
     // 测试缺省传 0(立即 emit,保持时序断言)
     this.emitBatchMs = options.emitBatchMs ?? EMIT_BATCH_MS;
     this.appVersion = options.appVersion ?? '';
+    this.filePanelService = options.filePanelService ?? null;
   }
 
   // ──────────────────────────────────────────────────────────────────
@@ -640,11 +662,13 @@ export class SessionManager extends EventEmitter {
       : this.platformAdapter.buildShellLaunchParams(
           shell,
           hookFile,
-          template.command
-            ? { command: template.command, args: template.args }
-            : undefined,
+          template.command ? { command: template.command, args: template.args } : undefined,
         );
 
+    // TERMINAL_ID 是"本 session 唯一标识",终端里程序读它来告诉 MARINA_SERVICE
+    // 该把文件开到哪个终端的面板。必须在 env 构建之前生成,因为下面要把
+    // 它写进 env;原先生成点在 PTY spawn 之后(line 743),那里改成直接引用。
+    const sessionId = randomUUID();
     const env = buildSpawnEnv(process.env, SPAWN_ENV_SKIP);
     // BETA-001:Windows 上 process.env.PATH 是启动时的快照,装新软件后不会自动
     // 刷新。每次 spawn 前从注册表合并最新 PATH 覆写过去,确保新装的 python.exe /
@@ -662,6 +686,20 @@ export class SessionManager extends EventEmitter {
       programName: 'Marina',
       appVersion: this.appVersion,
     });
+    // 终端侧边文件面板:把服务地址 / token 注入子进程 env,让终端里跑的程序
+    // 能 REST 调面板。放 hint env 之后、launchParams/template env 之前,与
+    // TERM_PROGRAM 等宿主提示同档位(模板仍可覆盖,但通常不会)。运行时
+    // settings.filePanel.enabled=false 则不注入服务地址 —— 终端程序拿不到
+    // MARINA_SERVICE 自然无法调用,与 renderer 不渲染面板保持一致。
+    // TERMINAL_ID 无条件注入:即便没开面板,它也是稳定的"哪个终端"标识。
+    if (this.settingsManager.get().filePanel.enabled) {
+      const fpUrl = this.filePanelService?.getUrl();
+      if (fpUrl) {
+        env.MARINA_SERVICE = fpUrl.baseUrl;
+        env.MARINA_TOKEN = fpUrl.token;
+      }
+    }
+    env.TERMINAL_ID = sessionId;
     Object.assign(env, launchParams.env);
     Object.assign(env, template.env);
     // BETA-ENV-1:Windows 上必做的最后一道防御 —— 补齐 canonical SystemRoot
@@ -740,7 +778,6 @@ export class SessionManager extends EventEmitter {
       );
     }
 
-    const sessionId = randomUUID();
     const info: SessionInfo = {
       id: sessionId,
       pathId: sessionPathId,
@@ -937,16 +974,10 @@ export class SessionManager extends EventEmitter {
     this.releaseAllOwnedBy(windowId, { exceptSessionId: sessionId });
   }
 
-  private releaseAllOwnedBy(
-    windowId: string,
-    options?: { exceptSessionId?: string },
-  ): void {
+  private releaseAllOwnedBy(windowId: string, options?: { exceptSessionId?: string }): void {
     const except = options?.exceptSessionId;
     for (const managed of this.sessions.values()) {
-      if (
-        managed.info.ownerWindowId === windowId &&
-        managed.info.id !== except
-      ) {
+      if (managed.info.ownerWindowId === windowId && managed.info.id !== except) {
         managed.info.ownerWindowId = null;
         this.emit('sessionOwnerChanged', {
           sessionId: managed.info.id,
@@ -1037,10 +1068,7 @@ export class SessionManager extends EventEmitter {
     const kind = classifyInput(text);
     managed.recentKeys.push({ ts: now, kind });
     const cutoff = now - RECENT_KEYS_TTL_MS;
-    while (
-      managed.recentKeys.length > 0 &&
-      (managed.recentKeys[0]?.ts ?? Infinity) < cutoff
-    ) {
+    while (managed.recentKeys.length > 0 && (managed.recentKeys[0]?.ts ?? Infinity) < cutoff) {
       managed.recentKeys.shift();
     }
     while (managed.recentKeys.length > RECENT_KEYS_CAP) {
@@ -1056,9 +1084,7 @@ export class SessionManager extends EventEmitter {
     } catch (err) {
       logger.warn(
         'SessionManager',
-        `pty.write failed sid=${sessionId}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `pty.write failed sid=${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
       );
       return { accepted: false, reason: 'pty-write-failed' };
     }
@@ -1167,9 +1193,7 @@ export class SessionManager extends EventEmitter {
    *
    * session 不存在返回 { data: '', lastSeq: -1 }。
    */
-  async getScrollbackForReplay(
-    sessionId: string,
-  ): Promise<{ data: string; lastSeq: number }> {
+  async getScrollbackForReplay(sessionId: string): Promise<{ data: string; lastSeq: number }> {
     const managed = this.sessions.get(sessionId);
     if (!managed || !managed.headlessTerm || !managed.serializeAddon) {
       return { data: '', lastSeq: -1 };
@@ -1199,12 +1223,14 @@ export class SessionManager extends EventEmitter {
     // headless _core 内部状态把这两条补到字节流末尾 — 与 master 自身实现
     // 字节级等价,不是猜测。完整背景与删除条件见
     // docs/issues/xterm-serialize-mode-polyfill.md。
-    const core = (term as unknown as {
-      _core?: {
-        coreService?: { isCursorHidden?: boolean };
-        buffer?: { scrollTop?: number; scrollBottom?: number };
-      };
-    })._core;
+    const core = (
+      term as unknown as {
+        _core?: {
+          coreService?: { isCursorHidden?: boolean };
+          buffer?: { scrollTop?: number; scrollBottom?: number };
+        };
+      }
+    )._core;
     if (core?.coreService?.isCursorHidden) {
       ansi += '\x1b[?25l';
     }
@@ -1372,10 +1398,7 @@ export class SessionManager extends EventEmitter {
     if (managed.pendingEmit === null) {
       managed.pendingEmit = { bytes, lastSeq: seq };
     } else {
-      managed.pendingEmit.bytes = Buffer.concat([
-        managed.pendingEmit.bytes,
-        bytes,
-      ]);
+      managed.pendingEmit.bytes = Buffer.concat([managed.pendingEmit.bytes, bytes]);
       managed.pendingEmit.lastSeq = seq;
     }
     if (managed.pendingEmitTimer === null) {
@@ -1491,9 +1514,7 @@ export class SessionManager extends EventEmitter {
       } catch (err) {
         logger.warn(
           'SessionManager',
-          `kill failed sid=${sid}: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
+          `kill failed sid=${sid}: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
       managed.pty = null;
@@ -1539,18 +1560,12 @@ export class SessionManager extends EventEmitter {
       // 仅在用户开启 statusRecheckEnabled 且 aiClient.isConfigured() 时生效。
       // 失败 / LLM 异常时回退到原行为(直接转 idle),不阻塞主流程。
       const s = this.settingsManager.get();
-      if (
-        s.ai?.statusRecheckEnabled &&
-        this.aiClient &&
-        this.aiClient.isConfigured()
-      ) {
+      if (s.ai?.statusRecheckEnabled && this.aiClient && this.aiClient.isConfigured()) {
         // BETA-006 v2:从 @xterm/headless buffer 拿"已渲染"文本(无 ANSI
         // 噪音 / 无 PSReadLine 重绘残影)。
         // CURSOR-1 后:原 settings.ai.statusRecheckSource='raw' 路径(裸字节
         // ring 末 2KB)已删除,headless 是唯一输入源。screenshot 选项仍预留。
-        const tail = managed.headlessTerm
-          ? this.getHeadlessTail(managed, 40)
-          : '';
+        const tail = managed.headlessTerm ? this.getHeadlessTail(managed, 40) : '';
         // BETA-006 v2.1:把"上次 Enter / 上次任意输入距今多久"喂给 LLM,
         // 帮它区分"长命令在跑"vs"用户打字未按回车"。
         // BETA-006 v2.2:再附最近按键事件 ring buffer(类别+时间,无内容),
@@ -1744,10 +1759,7 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  private emitStateChanged(
-    managed: ManagedSession,
-    changes: Partial<SessionInfo>,
-  ): void {
+  private emitStateChanged(managed: ManagedSession, changes: Partial<SessionInfo>): void {
     const payload: SessionStateChangedPayload = {
       sessionId: managed.info.id,
       changes,
@@ -1762,10 +1774,7 @@ export class SessionManager extends EventEmitter {
 
   private async getShells(): Promise<ShellInfo[]> {
     const now = Date.now();
-    if (
-      this.cachedShells &&
-      now - this.cachedShellsAt < SessionManager.SHELL_CACHE_TTL_MS
-    ) {
+    if (this.cachedShells && now - this.cachedShellsAt < SessionManager.SHELL_CACHE_TTL_MS) {
       return this.cachedShells;
     }
     this.cachedShells = await this.platformAdapter.detectShells();
@@ -1798,11 +1807,7 @@ export class SessionManager extends EventEmitter {
  * override 命中失败 (id 不在 detectShells 结果里) 时回退到 settings 兜底,
  * 不抛错 — 给用户的视觉效果是"用默认 shell 启动",比报错更友好。
  */
-function pickShell(
-  shells: ShellInfo[],
-  settings: Settings,
-  override?: string,
-): ShellInfo {
+function pickShell(shells: ShellInfo[], settings: Settings, override?: string): ShellInfo {
   if (override) {
     const found = shells.find((s) => s.id === override);
     if (found) return found;
@@ -1849,13 +1854,7 @@ export function buildSshLaunchParams(
     controlPath?: string;
   } = {},
 ): { args: string[]; env: Record<string, string> } {
-  const args = [
-    '-tt',
-    '-p',
-    String(profile.port),
-    '-o',
-    'ServerAliveInterval=30',
-  ];
+  const args = ['-tt', '-p', String(profile.port), '-o', 'ServerAliveInterval=30'];
   if (profile.authType === 'keyFile' && profile.keyFilePath) {
     args.push('-i', profile.keyFilePath);
   }
@@ -1873,9 +1872,12 @@ export function buildSshLaunchParams(
   // Marina 不需要兜底逻辑。
   if (options.enableControlMaster && options.controlPath) {
     args.push(
-      '-o', 'ControlMaster=auto',
-      '-o', `ControlPath=${options.controlPath}`,
-      '-o', 'ControlPersist=10m',
+      '-o',
+      'ControlMaster=auto',
+      '-o',
+      `ControlPath=${options.controlPath}`,
+      '-o',
+      'ControlPersist=10m',
     );
   }
   args.push(`${profile.username}@${profile.host}`);
@@ -1918,9 +1920,9 @@ function buildRemoteLoginCommand(
     ? buildRemoteTemplateCommand(options.commandToRun)
     : null;
   const launchCommand = commandLine
-    // 远端模板(如 claude/codex)常写在交互式 shell 初始化文件里。
-    // 这里用 `-ic` 让行为尽量贴近用户手动在终端里输入命令的路径。
-    ? `exec "\${SHELL:-/bin/sh}" -ic ${shQuote(`${commandLine}; ${shellCommand}`)}`
+    ? // 远端模板(如 claude/codex)常写在交互式 shell 初始化文件里。
+      // 这里用 `-ic` 让行为尽量贴近用户手动在终端里输入命令的路径。
+      `exec "\${SHELL:-/bin/sh}" -ic ${shQuote(`${commandLine}; ${shellCommand}`)}`
     : shellCommand;
   if (profile.tmuxMode !== 'attach-or-create') {
     return `${cdCommand} && ${launchCommand}`;
@@ -1930,14 +1932,10 @@ function buildRemoteLoginCommand(
   // marina-<leaf> / marina-<leaf>-N。旧版 profile 里可能残留
   // tmuxSessionName 或 new-per-launch,这里故意不再读取,避免旧配置覆盖
   // "按目录智能选择"规则。
-  const tmuxCommand = buildSmartTmuxCommand(
-    baseSessionName,
-    !!options.forceTmuxChoice,
-  );
+  const tmuxCommand = buildSmartTmuxCommand(baseSessionName, !!options.forceTmuxChoice);
   const failCommand =
     'printf %s\\\\n "Marina: tmux attach/create failed on the remote host." >&2; exit 127';
-  const fallbackAfterFailure =
-    profile.tmuxOnMissing === 'fail' ? failCommand : launchCommand;
+  const fallbackAfterFailure = profile.tmuxOnMissing === 'fail' ? failCommand : launchCommand;
   // tmux 本身只是远端 shell 里的一个全屏程序,不是 Marina session 的终点。
   // 用户在 tmux pane 里输入 exit 后,tmux client 会正常返回;此时必须继续
   // exec 回登录 shell,否则 ssh.exe 会结束,Main 只能把整个 Marina session
@@ -1969,9 +1967,8 @@ function buildRemoteTemplateCommand(input: {
     .filter(([key]) => key.length > 0)
     .map(([key, value]) => shQuote(`${key}=${value}`));
   const argv = [input.command, ...input.args].map(shQuote);
-  const runCommand = envPairs.length === 0
-    ? argv.join(' ')
-    : ['env', ...envPairs, ...argv].join(' ');
+  const runCommand =
+    envPairs.length === 0 ? argv.join(' ') : ['env', ...envPairs, ...argv].join(' ');
   return (
     `${runCommand}; marina_template_status=$?; ` +
     `if [ "$marina_template_status" -eq 127 ]; then ` +
@@ -1982,9 +1979,7 @@ function buildRemoteTemplateCommand(input: {
 
 function defaultTmuxSessionName(remoteCwd: string): string {
   const normalized = remoteCwd.replace(/\/+$/g, '') || '~';
-  const leaf = normalized === '~'
-    ? 'home'
-    : normalized.split('/').filter(Boolean).pop() || 'root';
+  const leaf = normalized === '~' ? 'home' : normalized.split('/').filter(Boolean).pop() || 'root';
   const safe = leaf
     .trim()
     .toLowerCase()

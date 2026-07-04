@@ -251,14 +251,14 @@
   --color-bg-strong: #e8a3bd;
 
   /* 文字 / 中性色对比度统一 ≥ 4.5:1(BETA-035 浅色标准) */
-  --color-text-primary: #5c1d3e;     /* 深莓酒红 */
-  --color-text-secondary: #8a4566;   /* 中莓棕 */
-  --color-text-muted: #a8627e;       /* 淡莓棕 */
+  --color-text-primary: #5c1d3e; /* 深莓酒红 */
+  --color-text-secondary: #8a4566; /* 中莓棕 */
+  --color-text-muted: #a8627e; /* 淡莓棕 */
 
   /* 状态色 */
-  --color-danger: #e91e63;           /* 草莓粉(主强调) */
-  --color-warning: #d4795c;          /* 蜜桃驼(替代黄,与粉系协调) */
-  --color-success: #4d8a5e;          /* BETA-038:真·成功绿。
+  --color-danger: #e91e63; /* 草莓粉(主强调) */
+  --color-warning: #d4795c; /* 蜜桃驼(替代黄,与粉系协调) */
+  --color-success: #4d8a5e; /* BETA-038:真·成功绿。
                                           原 cutie 把 --pine 槽填莓紫 #b85d8e 是
                                           为统一莓系美学,但 var(--pine) 在组件层
                                           用作"OK / success"语义时变红了。
@@ -266,9 +266,9 @@
                                           保证 success/danger 语义对比;旧 --pine
                                           别名仍保留莓紫,Phase 2 按消费者意图
                                           分别迁到 --color-success 或装饰槽。 */
-  --color-info: #b89cd9;             /* 薰衣草 */
+  --color-info: #b89cd9; /* 薰衣草 */
   --color-accent-secondary: #ff7aa8; /* 糖霜玫瑰 */
-  --color-accent-special: #c558a0;   /* 紫莓 */
+  --color-accent-special: #c558a0; /* 紫莓 */
 
   /* Layer 3 — 旧 Layer 1 别名(兼容期) */
   --base: var(--color-bg-primary, #f0f);
@@ -283,7 +283,7 @@
   --love: var(--color-danger, #f0f);
   --gold: var(--color-warning, #f0f);
   --rose: var(--color-accent-secondary, #f0f);
-  --pine: #b85d8e;                   /* 故意不指向 --color-success——保留 cutie
+  --pine: #b85d8e; /* 故意不指向 --color-success——保留 cutie
                                           原桑葚紫,Phase 1 视觉零变化;Phase 2
                                           决定哪些消费者要"成功绿"(迁
                                           --color-success)还是"莓紫装饰"(迁
@@ -619,7 +619,7 @@
   --color-bg-strong: var(--ctp-surface2, #acb0be);
   --color-text-primary: var(--ctp-text, #4c4f69);
   --color-text-secondary: var(--ctp-subtext1, #5c5f77); /* ≥4.5:1 */
-  --color-text-muted: var(--ctp-subtext0, #6c6f85);     /* ~4.5:1 */
+  --color-text-muted: var(--ctp-subtext0, #6c6f85); /* ~4.5:1 */
   --color-danger: var(--ctp-red, #d20f39);
   --color-warning: var(--ctp-yellow, #df8e1d);
   --color-success: var(--ctp-green, #40a02b);
@@ -645,9 +645,9 @@
   --color-bg-hover: #d8dae0;
   --color-bg-active: #b6bdcf;
   --color-bg-strong: #a8adc0;
-  --color-text-primary: #3760bf;     /* 钢蓝 body — Tokyo Night Day 标志 */
-  --color-text-secondary: #4d5996;   /* ≥4.5:1 */
-  --color-text-muted: #555f8c;       /* ≥4.5:1 */
+  --color-text-primary: #3760bf; /* 钢蓝 body — Tokyo Night Day 标志 */
+  --color-text-secondary: #4d5996; /* ≥4.5:1 */
+  --color-text-muted: #555f8c; /* ≥4.5:1 */
   --color-danger: #c64343;
   --color-warning: #8c6c3e;
   --color-success: #587539;
@@ -670,21 +670,21 @@
  *   (原主题 comment #BA9AB9 在 #f5f5f5 上仅 ~2.5:1,muted 已加深到 #7d6770) */
 [data-theme='light-pink'] {
   /* Layer 2 — Semantic;直接采用上游 hex,无独立 Layer 1 调色板词汇 */
-  --color-bg-primary: #f5f5f5;       /* 冷灰白(editor.background) */
-  --color-bg-secondary: #f5f0f3;     /* 奶霜粉(sideBar) */
-  --color-bg-elevated: #f5e3ef;      /* 樱花霜(sideBarSectionHeader) */
-  --color-bg-hover: #ede5ed;         /* 淡灰粉 hover */
-  --color-bg-active: #f1dde9;        /* 莓糖选中态 */
-  --color-bg-strong: #ffb8ca;        /* 婴儿粉(emphasis) */
-  --color-text-primary: #54494b;     /* 暖炭灰(editorCursor) */
-  --color-text-secondary: #736a6d;   /* 暖中灰(lineNumber) ≥4.5:1 */
-  --color-text-muted: #7d6770;       /* 暖莓棕 ≥4.5:1(上游 #BA9AB9 不达标,加深) */
-  --color-danger: #d2304b;           /* 玫瑰红(invalid) */
-  --color-warning: #b08b35;          /* 暖金(constants) */
-  --color-success: #4d8a5e;          /* 鼠尾草绿(上游无 success,与 Cutie 一致) */
-  --color-info: #1f6e89;             /* 海蓝(comment.documentation) */
+  --color-bg-primary: #f5f5f5; /* 冷灰白(editor.background) */
+  --color-bg-secondary: #f5f0f3; /* 奶霜粉(sideBar) */
+  --color-bg-elevated: #f5e3ef; /* 樱花霜(sideBarSectionHeader) */
+  --color-bg-hover: #ede5ed; /* 淡灰粉 hover */
+  --color-bg-active: #f1dde9; /* 莓糖选中态 */
+  --color-bg-strong: #ffb8ca; /* 婴儿粉(emphasis) */
+  --color-text-primary: #54494b; /* 暖炭灰(editorCursor) */
+  --color-text-secondary: #736a6d; /* 暖中灰(lineNumber) ≥4.5:1 */
+  --color-text-muted: #7d6770; /* 暖莓棕 ≥4.5:1(上游 #BA9AB9 不达标,加深) */
+  --color-danger: #d2304b; /* 玫瑰红(invalid) */
+  --color-warning: #b08b35; /* 暖金(constants) */
+  --color-success: #4d8a5e; /* 鼠尾草绿(上游无 success,与 Cutie 一致) */
+  --color-info: #1f6e89; /* 海蓝(comment.documentation) */
   --color-accent-secondary: #9466aa; /* 紫莓(types/classes) — 多色少女的紫调点睛 */
-  --color-accent-special: #ff7ab3;   /* 热粉(statusbar) — Light Pink 标志色 */
+  --color-accent-special: #ff7ab3; /* 热粉(statusbar) — Light Pink 标志色 */
 
   /* Layer 3 (旧 --base / --surface 等别名) 故意省略 — 全代码库零消费者 */
 
@@ -700,21 +700,21 @@
  *   "深/浅 × 甜美/帅气"象限里互补 */
 [data-theme='fairyfloss'] {
   /* Layer 2 — Semantic;直接采用上游 hex */
-  --color-bg-primary: #5a5475;       /* 暗紫底(招牌色) */
-  --color-bg-secondary: #464258;     /* 深一档(sidebar/header) */
-  --color-bg-elevated: #514c66;      /* 浮卡 */
+  --color-bg-primary: #5a5475; /* 暗紫底(招牌色) */
+  --color-bg-secondary: #464258; /* 深一档(sidebar/header) */
+  --color-bg-elevated: #514c66; /* 浮卡 */
   --color-bg-hover: #4a4361;
-  --color-bg-active: #6959aa;        /* 选中态紫高亮 */
+  --color-bg-active: #6959aa; /* 选中态紫高亮 */
   --color-bg-strong: #716799;
-  --color-text-primary: #f8f8f2;     /* 奶油白 */
-  --color-text-secondary: #bcb3e7;   /* 淡薰衣草 */
-  --color-text-muted: #a186cf;       /* 灰薰衣草(注释色) */
-  --color-danger: #ff857f;           /* 桃粉红 */
-  --color-warning: #ffea00;          /* 校车黄(signature) */
-  --color-success: #c2ffdf;          /* 薄荷绿(signature) */
-  --color-info: #9673d3;             /* 紫罗兰 */
+  --color-text-primary: #f8f8f2; /* 奶油白 */
+  --color-text-secondary: #bcb3e7; /* 淡薰衣草 */
+  --color-text-muted: #a186cf; /* 灰薰衣草(注释色) */
+  --color-danger: #ff857f; /* 桃粉红 */
+  --color-warning: #ffea00; /* 校车黄(signature) */
+  --color-success: #c2ffdf; /* 薄荷绿(signature) */
+  --color-info: #9673d3; /* 紫罗兰 */
   --color-accent-secondary: #ffb8d1; /* 泡泡糖粉(keywords) */
-  --color-accent-special: #c5a3ff;   /* 薰衣草(主标志色) */
+  --color-accent-special: #c5a3ff; /* 薰衣草(主标志色) */
 
   /* Layer 3 故意省略;深色,不需要 color-scheme 显式声明 */
 }
@@ -960,7 +960,10 @@ html[data-maximized='true'] .app-root.with-shell {
   transition: opacity 80ms ease;
 }
 
-.app-titlebar-macos.show-hover-symbols .titlebar-traffic:hover .titlebar-traffic-btn .traffic-symbol {
+.app-titlebar-macos.show-hover-symbols
+  .titlebar-traffic:hover
+  .titlebar-traffic-btn
+  .traffic-symbol {
   opacity: 1;
 }
 
@@ -1065,7 +1068,11 @@ html[data-maximized='true'] .app-root.with-shell {
  * 浮起作为唯一的"放这里"视觉信号。不依赖任何边沿渲染。 */
 
 .sidebar.drag-over {
-  background-color: color-mix(in srgb, var(--color-accent-special, #c4a7e7) 16%, var(--color-bg-secondary, #f0f));
+  background-color: color-mix(
+    in srgb,
+    var(--color-accent-special, #c4a7e7) 16%,
+    var(--color-bg-secondary, #f0f)
+  );
 }
 
 .sidebar-drop-hint {
@@ -1083,7 +1090,8 @@ html[data-maximized='true'] .app-root.with-shell {
   padding: 16px 24px;
   background-color: var(--color-bg-secondary, #f0f);
   color: var(--color-text-primary, #f0f);
-  border: 1px solid color-mix(in srgb, var(--color-accent-special, #c4a7e7) 60%, var(--color-bg-elevated, #f0f));
+  border: 1px solid
+    color-mix(in srgb, var(--color-accent-special, #c4a7e7) 60%, var(--color-bg-elevated, #f0f));
   border-radius: 10px;
   box-shadow:
     0 10px 28px rgb(0 0 0 / 36%),
@@ -1193,7 +1201,9 @@ html[data-maximized='true'] .app-root.with-shell {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background-color 0.12s ease, color 0.12s ease;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
 }
 
 .sidebar-category-action:hover {
@@ -1223,6 +1233,7 @@ html[data-maximized='true'] .app-root.with-shell {
   display: flex;
   align-items: center;
   gap: 6px;
+
   /* 全顶格:与 .sidebar-category-header / .session-item / .sidebar-empty
      同列(padding-left:8px),所有 sidebar 行内容左缘共线。 */
   padding: 4px 8px;
@@ -1317,6 +1328,7 @@ html[data-maximized='true'] .app-root.with-shell {
   display: flex;
   align-items: center;
   gap: 6px;
+
   /* 全顶格:与 path-item-row 同 padding-left,session 不再额外缩进 — 由 state-dot
      的圆点形状本身区分层级,而不是靠空白缩进。 */
   padding: 3px 8px;
@@ -1429,6 +1441,399 @@ html[data-maximized='true'] .app-root.with-shell {
   position: relative;
 }
 
+/* ── 终端侧边文件面板 (MARINA_SERVICE 远程调用) ───────────────────
+ * .terminal-area 是 TabBar 之下的行容器:左 = 终端(flex:1),右 = .file-panel
+ * (固定宽,可拖边缘改宽,可折叠成竖条)。切终端时父级换 key 重挂,内容跟着切。
+ */
+.terminal-area {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+}
+
+/* 终端 / 空状态占满剩余宽度;面板固定宽(flex:0 0 auto,宽由 inline style) */
+.terminal-area > :first-child {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.file-panel {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-left: 1px solid var(--color-bg-elevated, #f0f);
+  background-color: var(--color-bg-secondary, #f0f);
+  position: relative;
+  overflow: hidden;
+}
+
+/* 折叠态:只剩窄竖条 + 展开按钮 */
+.file-panel-collapsed {
+  width: 22px;
+  border-left: 1px solid var(--color-bg-elevated, #f0f);
+}
+
+.file-panel-expand-btn {
+  width: 22px;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted, #f0f);
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.file-panel-expand-btn:hover {
+  color: var(--color-text-primary, #f0f);
+  background-color: var(--color-bg-elevated, #f0f);
+}
+
+/* 左边缘 resize handle:镜像 .sidebar-resize-handle。绝对定位贴左、跨边界,
+ * 命中区 6px(手感),视觉高亮 1px。hover/active 显浅线作 affordance。 */
+.file-panel-resize-handle {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+  z-index: 5;
+}
+
+.file-panel-resize-handle:hover,
+.file-panel-resize-handle:active {
+  background-color: var(--color-accent-special, #f0f);
+  opacity: 0.4;
+}
+
+.file-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-bg-elevated, #f0f);
+  flex: 0 0 auto;
+}
+
+.file-panel-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-primary, #f0f);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.file-panel-collapse-btn {
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted, #f0f);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.file-panel-collapse-btn:hover {
+  color: var(--color-text-primary, #f0f);
+  background-color: var(--color-bg-elevated, #f0f);
+}
+
+.file-panel-tabs {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--color-bg-elevated, #f0f);
+  flex: 0 0 auto;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.file-panel-empty-hint {
+  font-size: 11px;
+  color: var(--color-text-muted, #f0f);
+  padding: 4px 2px;
+}
+
+.file-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px 2px 8px;
+  border-radius: 4px;
+  background-color: var(--color-bg-elevated, #f0f);
+  max-width: 160px;
+}
+
+.file-tab.active {
+  background-color: var(--color-bg-active, #f0f);
+}
+
+.file-tab.active .file-tab-name,
+.file-tab.active .file-tab-close {
+  color: var(--color-text-primary, #f0f);
+}
+
+.file-tab-name {
+  border: none;
+  background: transparent;
+  color: var(--color-text-primary, #f0f);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 0;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-tab-name:hover {
+  text-decoration: underline;
+}
+
+.file-tab-close {
+  color: var(--color-text-muted, #f0f);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  border-radius: 3px;
+}
+
+.file-tab-close:hover {
+  color: var(--color-text-primary, #f0f);
+  background-color: var(--color-bg-primary, #f0f);
+}
+
+.file-panel-body {
+  flex: 1 1 0;
+
+  /* 横向滚动只发生在 pre/table 内部,面板自身宽度不被内容撑大 → 不出现
+   * 面板级横向滚动条。纵向正常滚。 */
+  overflow-x: hidden;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 8px 12px;
+
+  /* 终端区为方便拖选常把 user-select 设为 none,这里显式恢复,允许选中
+   * 复制 markdown / 文本内容(Ctrl+C)。 */
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* body 里是自带背景的 .markdown-body 时,去掉本容器 padding,让 .markdown-body
+ * 撑满整个可视区 —— 它的自带背景(github 白/深、custom 用户的米黄…)覆盖整片,
+ * 不再"内容区周围一圈 marina 主题色",短内容时下方也不露 marina。
+ * text / image / placeholder 没有 .markdown-body 子节点,padding 保留。
+ * 不认风格名,对所有 markdown 风格统一生效。 */
+.file-panel-body:has(.markdown-body) {
+  padding: 0;
+}
+
+.file-panel-placeholder,
+.file-viewer-loading,
+.file-viewer-error {
+  color: var(--color-text-muted, #f0f);
+  font-size: 12px;
+  padding: 8px 0;
+}
+
+.file-viewer-error {
+  color: var(--color-danger, #f0f);
+}
+
+/* 文本 viewer:等宽 + wrap,顶部对齐。长行不出现水平滚动条(pre-wrap)。 */
+.file-text-viewer {
+  margin: 0;
+  font-family: ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-primary, #f0f);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.file-truncated-mark {
+  color: var(--color-text-muted, #f0f);
+  font-style: italic;
+}
+
+.md-img-error,
+.md-img-loading {
+  color: var(--color-text-muted, #f0f);
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* Markdown viewer:正文排版。react-markdown 输出原生 h1~h6/p/ul/pre/code 等,
+ * 这里给基础间距 + 代码块底色。颜色走主题变量。 */
+
+/* github-markdown-css 融入面板:用户选 github-light/dark 时,react-markdown 的
+ * 输出包在 .markdown-body 里(样式来自 github-markdown-css 包)。这里去掉它
+ * 自带的白/黑底、16px 大字号、24px padding,只留 GitHub 的版式与配色,让它融
+ * 进面板背景。明暗由 MarkdownViewer 的 color-scheme 控制,不跟随系统。 */
+.file-panel .markdown-body {
+  /* 撑满外层 body(其 padding 已被 :has 规则在本元素存在时清零),让自带背景
+   * 覆盖整个面板内容区。padding 给文档内边距(背景覆盖到 padding 边)。
+   * box-sizing border-box 让 min-height:100% 含 padding,短内容也撑满不溢出
+   * 滚动条。对所有自带背景的风格(github / custom)统一,不认风格名。 */
+  padding: 8px 12px;
+  font-size: 13px;
+  min-width: 0;
+  min-height: 100%;
+  box-sizing: border-box;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+/* GitHub light/dark 配色:不依赖 @media prefers-color-scheme(Chromium 对元素级
+ * color-scheme 触发第三方 CSS 的 @media 不可靠,实测 light/dark 都退化成 light),
+ * 直接在 class 上设 GitHub 的核心变量 + 容器背景/字色。变量供 .markdown-body
+ * 的子元素(table th / pre / code / a)消费,使它们与容器背景搭,不再出现"深紫
+ * 面板上白表格黑字"。值复制自 github-markdown-css 的 light/dark 块。
+ * 用 .file-panel .markdown-body.md-github-* 三类选择器抬高特异性,压过 github
+ * css 自带的 .markdown-body(单类)。 */
+/* stylelint-disable custom-property-pattern, custom-property-empty-line-before --
+ * github-markdown-css 包用 camelCase 变量名(--bgColor-default 等),必须同名
+ * 才能覆盖,无法改成项目的 kebab-case。仅这两个规则块豁免。 */
+.file-panel .markdown-body.md-github-light {
+  color-scheme: light;
+  background-color: #ffffff;
+  color: #1f2328;
+  --bgColor-default: #ffffff;
+  --bgColor-muted: #f6f8fa;
+  --bgColor-neutral-muted: #818b981f;
+  --borderColor-default: #d1d9e0;
+  --fgColor-default: #1f2328;
+  --fgColor-muted: #59636e;
+  --fgColor-accent: #0969da;
+}
+
+.file-panel .markdown-body.md-github-dark {
+  color-scheme: dark;
+  background-color: #0d1117;
+  color: #f0f6fc;
+  --bgColor-default: #0d1117;
+  --bgColor-muted: #151b23;
+  --bgColor-neutral-muted: #656c7633;
+  --borderColor-default: #3d444d;
+  --fgColor-default: #f0f6fc;
+  --fgColor-muted: #9198a1;
+  --fgColor-accent: #4493f8;
+}
+
+/* stylelint-enable custom-property-pattern, custom-property-empty-line-before */
+
+.file-markdown-viewer {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-text-primary, #f0f);
+  min-width: 0;
+
+  /* 长 URL / 无空格长串换行,不撑出面板宽度导致横向滚动 */
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.file-markdown-viewer h1,
+.file-markdown-viewer h2,
+.file-markdown-viewer h3 {
+  margin: 16px 0 8px;
+  line-height: 1.3;
+}
+
+.file-markdown-viewer h1 {
+  font-size: 20px;
+}
+.file-markdown-viewer h2 {
+  font-size: 17px;
+}
+.file-markdown-viewer h3 {
+  font-size: 15px;
+}
+
+.file-markdown-viewer p {
+  margin: 8px 0;
+}
+
+.file-markdown-viewer ul,
+.file-markdown-viewer ol {
+  margin: 8px 0;
+  padding-left: 24px;
+}
+
+.file-markdown-viewer pre {
+  margin: 8px 0;
+  padding: 8px;
+  background-color: var(--color-bg-elevated, #f0f);
+  border-radius: 4px;
+  overflow-x: auto;
+  max-width: 100%;
+  font-family: ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
+  font-size: 12px;
+}
+
+.file-markdown-viewer code {
+  font-family: ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
+  font-size: 12px;
+}
+
+/* 行内 code(p 内)给底色;pre 内 code 不重复加底色 */
+.file-markdown-viewer p code,
+.file-markdown-viewer li code {
+  padding: 1px 4px;
+  background-color: var(--color-bg-elevated, #f0f);
+  border-radius: 3px;
+}
+
+.file-markdown-viewer a {
+  color: var(--color-accent-special, #f0f);
+}
+
+.file-markdown-viewer table {
+  border-collapse: collapse;
+  margin: 8px 0;
+
+  /* 宽表格在自身内部横向滚动,不撑出面板宽度 */
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.file-markdown-viewer th,
+.file-markdown-viewer td {
+  border: 1px solid var(--color-bg-elevated, #f0f);
+  padding: 4px 8px;
+}
+
+/* 图片 viewer:居中、可滚动;图按宽度等比缩放(max-width:100%)。 */
+.file-image-viewer {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.file-image-viewer img {
+  max-width: 100%;
+  height: auto;
+}
+
+.file-unknown-viewer {
+  color: var(--color-text-muted, #f0f);
+  font-size: 12px;
+}
+
+.file-unknown-viewer .file-unknown-path {
+  font-family: ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
+  font-size: 11px;
+  word-break: break-all;
+  opacity: 0.7;
+}
+
 /* 勘误第二轮:.main-pane.drag-over / .main-pane-drop-hint* 已删除
  * (移除了"拖文件夹到主区 → 新建终端"自定义,详见 MainPane.tsx 顶部注释)。 */
 
@@ -1517,7 +1922,9 @@ html[data-maximized='true'] .app-root.with-shell {
   border-radius: 6px;
   font-size: 13px;
   text-align: left;
-  transition: border-color 80ms ease, background-color 80ms ease;
+  transition:
+    border-color 80ms ease,
+    background-color 80ms ease;
 }
 
 .template-button:hover:not(:disabled) {
@@ -1583,7 +1990,9 @@ html[data-maximized='true'] .app-root.with-shell {
   border-radius: 3px;
   color: var(--color-text-secondary, #f0f);
   cursor: pointer;
-  transition: background-color 80ms ease, color 80ms ease;
+  transition:
+    background-color 80ms ease,
+    color 80ms ease;
 }
 
 .status-simple-toggle:hover {
@@ -1652,8 +2061,7 @@ html[data-maximized='true'] .app-root.with-shell {
    * shadow line,视觉重量比实色 token 低一个数量级。
    * 双层 ring 同步删除 — drop shadow 已经够撑立体感。
    */
-  border: 1px solid
-    color-mix(in srgb, var(--color-text-primary, #e0def4) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-text-primary, #e0def4) 8%, transparent);
   border-radius: 6px;
   box-shadow: 0 6px 18px rgb(0 0 0 / 28%);
   padding: 4px;
@@ -2509,7 +2917,9 @@ select.settings-input option {
   background-color: var(--color-bg-secondary, #f0f);
   position: relative;
   cursor: pointer;
-  transition: background-color 120ms ease, border-color 120ms ease;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
   flex-shrink: 0;
 }
 
@@ -2919,8 +3329,12 @@ select.settings-input option {
 }
 
 @keyframes app-modal-fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .app-modal-panel {

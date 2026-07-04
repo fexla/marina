@@ -23,6 +23,8 @@
  */
 import { app, BrowserWindow, clipboard, ipcMain, dialog, safeStorage, shell } from 'electron';
 import { getBuildType } from './build-type';
+import type { FilePanelService } from './file-panel-service';
+import type { MarkdownThemeManager } from './markdown-theme-manager';
 import {
   getExplorerIntegrationStatus,
   setClassicIntegration,
@@ -48,6 +50,18 @@ import {
   type ClipboardReadTextResponse,
   type ClipboardWriteTextPayload,
   type ClipboardWriteTextResponse,
+  type FilePanelActionPayload,
+  type FilePanelSnapshot,
+  type FilePanelUpdatedPayload,
+  type GetOpenFilesPayload,
+  type ReadFilePayload,
+  type ReadImagePayload,
+  type ReadImageResponse,
+  type GetMdThemeCssPayload,
+  type GetMdThemeCssResponse,
+  type ListMdThemesResponse,
+  type MdThemeListUpdatedPayload,
+  type ReadFileResponse,
   type CloseSessionPayload,
   type CommandEnvelope,
   type CreateSessionPayload,
@@ -119,7 +133,7 @@ import {
   type ImeProbeDumpPayload,
   type ImeProbeDumpResponse,
 } from '@shared/protocol';
-import type { AppSnapshot, Settings, Template } from '@shared/types';
+import type { AppSnapshot, MdTheme, Settings, Template } from '@shared/types';
 import type { WindowManager } from './window-manager';
 import type { PathManager } from './path-manager';
 import { pathRefFromId } from './path-manager';
@@ -143,6 +157,16 @@ export interface IpcLayerDeps {
   /** SSH 方案 §阶段 3.1:已知主机指纹历史,可选(无 SSH 用户不创建) */
   knownHostsManager?: KnownHostsManager;
   templatesManager: TemplatesManager;
+  /**
+   * 终端侧边文件面板服务(MARINA_SERVICE)。HTTP REST + 状态源 + fs.watch。
+   * 生产必填;ipc 层本身不单测(AGENTS.md 5.4 转发逻辑测在 file-panel-service)。
+   */
+  filePanelService: FilePanelService;
+  /**
+   * Markdown 面板主题管理器(Typora 式可扩展)。生产必填;负责扫主题目录、
+   * 读 CSS 文本、fs.watch 自动发现增删。
+   */
+  markdownThemeManager: MarkdownThemeManager;
   /** BETA-031:可选,未注入时 AI_TEST_CONNECTION 返回 ok:false */
   aiClient?: AIClient;
 }
@@ -158,6 +182,8 @@ export function installIpcLayer(deps: IpcLayerDeps): void {
   installed = true;
   aiClient = deps.aiClient;
   registerCommandHandlers(deps);
+  registerFilePanelHandlers(deps);
+  registerMdThemeHandlers(deps);
   wireEventBroadcasts(deps);
 }
 
@@ -277,11 +303,9 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       }
       const win = windowManager.getById(envelope.payload.windowId);
       if (win) {
-        sendEventTo<WindowFocusRequestedPayload>(
-          win,
-          EVENT_CHANNELS.WINDOW_FOCUS_REQUESTED,
-          { reason: 'manual' },
-        );
+        sendEventTo<WindowFocusRequestedPayload>(win, EVENT_CHANNELS.WINDOW_FOCUS_REQUESTED, {
+          reason: 'manual',
+        });
       }
     },
   );
@@ -289,10 +313,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   // Session
   ipcMain.handle(
     COMMAND_CHANNELS.SESSION_CREATE,
-    async (
-      _e,
-      envelope: CommandEnvelope<CreateSessionPayload>,
-    ): Promise<CreateSessionResponse> => {
+    async (_e, envelope: CommandEnvelope<CreateSessionPayload>): Promise<CreateSessionResponse> => {
       const {
         pathId,
         templateId,
@@ -303,8 +324,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
         sshTmuxMode,
       } = envelope.payload;
       const oldTreeJson = JSON.stringify(pathManager.getTree());
-      const effectiveTemplateId =
-        templateId ?? templatesManager.getDefaultTemplateId();
+      const effectiveTemplateId = templateId ?? templatesManager.getDefaultTemplateId();
       const pathRef = pathId ? pathRefFromId(pathId) : null;
       const sshProfile =
         pathRef?.kind === 'ssh' && pathRef.sshProfileId
@@ -324,8 +344,8 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
             // 这样即使旧 profile 里残留 tmuxMode,首页"连接"仍稳定是纯 SSH。
             tmuxMode:
               sshTmuxMode === 'attach-or-create'
-                ? 'attach-or-create' as const
-                : 'disabled' as const,
+                ? ('attach-or-create' as const)
+                : ('disabled' as const),
             tmuxOnMissing: 'fallback-shell' as const,
             // 在 main 进程里立刻解密;session-manager 只看到明文,不持有
             // safeStorage 句柄。解密失败(profile 文件来自另一台机器 / 用户)
@@ -347,8 +367,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
         ...(shellId ? { shellIdOverride: shellId } : {}),
         ...(sshProfileForLaunch ? { sshProfile: sshProfileForLaunch } : {}),
       });
-      const pathTreeChanged =
-        JSON.stringify(pathManager.getTree()) !== oldTreeJson;
+      const pathTreeChanged = JSON.stringify(pathManager.getTree()) !== oldTreeJson;
       const warning = sessionManager.lastLaunchWarning ?? undefined;
       return warning ? { session, pathTreeChanged, warning } : { session, pathTreeChanged };
     },
@@ -379,29 +398,21 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
 
   ipcMain.handle(
     COMMAND_CHANNELS.SESSION_CLAIM,
-    async (
-      _e,
-      envelope: CommandEnvelope<ClaimSessionPayload>,
-    ): Promise<ClaimSessionResponse> => {
+    async (_e, envelope: CommandEnvelope<ClaimSessionPayload>): Promise<ClaimSessionResponse> => {
       sessionManager.claimOwner(envelope.payload.sessionId, envelope.windowId);
       // CP-2 勘误后:scrollback ring buffer 已实现。带回历史以保协议自洽,
       // 但 renderer 通常用 cmd:session:get-scrollback 单独拉,以避免 claim
       // 动作和 history-replay 时序耦合 (TerminalView 重新挂载场景非 claim 触发)
       // CURSOR-1 后:替换路径 = getScrollbackForReplay(state-replay 架构,
       // 返回完整终端状态 ANSI 流),需 async + await。
-      const sb = await sessionManager.getScrollbackForReplay(
-        envelope.payload.sessionId,
-      );
+      const sb = await sessionManager.getScrollbackForReplay(envelope.payload.sessionId);
       return { scrollback: sb.data, lastSeq: sb.lastSeq };
     },
   );
 
   ipcMain.handle(
     COMMAND_CHANNELS.SESSION_GET_SCROLLBACK,
-    async (
-      _e,
-      envelope: CommandEnvelope<GetScrollbackPayload>,
-    ): Promise<GetScrollbackResponse> => {
+    async (_e, envelope: CommandEnvelope<GetScrollbackPayload>): Promise<GetScrollbackResponse> => {
       // CURSOR-1:走 state-replay 路径(SerializeAddon),不再返回裸字节。
       // 详见 SessionManager.getScrollbackForReplay 与 docs/issues/cursor-1-...
       return sessionManager.getScrollbackForReplay(envelope.payload.sessionId);
@@ -410,10 +421,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
 
   ipcMain.handle(
     COMMAND_CHANNELS.SESSION_EXPORT_SCROLLBACK,
-    async (
-      _e,
-      envelope: CommandEnvelope<{ sessionId: string }>,
-    ): Promise<{ text: string }> => {
+    async (_e, envelope: CommandEnvelope<{ sessionId: string }>): Promise<{ text: string }> => {
       // BETA-028:工具栏"复制全部"按钮 → 返回 UTF-8 字符串。
       // CURSOR-1 后 exportScrollback 改 async(读 headless 前需 drain parser)。
       return sessionManager.exportScrollback(envelope.payload.sessionId);
@@ -422,10 +430,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
 
   ipcMain.handle(
     COMMAND_CHANNELS.SESSION_CLEAR_SCROLLBACK,
-    (
-      _e,
-      envelope: CommandEnvelope<{ sessionId: string }>,
-    ): void => {
+    (_e, envelope: CommandEnvelope<{ sessionId: string }>): void => {
       // BETA-028:工具栏"清屏"按钮配合 term.clear() 使用
       sessionManager.clearScrollback(envelope.payload.sessionId);
     },
@@ -453,10 +458,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       //   1) 当前 owner 就是调用方 → 先释放再 claim 给新窗口(经典"移到新窗口")
       //   2) session 是 orphan(无主) → 不需要释放,直接 claim 给新窗口
       // 拒绝:其他窗口正持有 — 跨窗口偷会话不在本协议允许范围。
-      if (
-        session.ownerWindowId !== null &&
-        session.ownerWindowId !== envelope.windowId
-      ) {
+      if (session.ownerWindowId !== null && session.ownerWindowId !== envelope.windowId) {
         throw makeIpcError(
           'NotOwner',
           `sessionId="${sessionId}" 由其他窗口持有(${session.ownerWindowId}),不能从此窗口移动`,
@@ -504,31 +506,24 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     (_e, envelope: CommandEnvelope<FocusSessionOwnerPayload>): void => {
       const session = sessionManager.get(envelope.payload.sessionId);
       if (!session) {
-        throw makeIpcError(
-          'SessionNotFound',
-          `sessionId="${envelope.payload.sessionId}"`,
-        );
+        throw makeIpcError('SessionNotFound', `sessionId="${envelope.payload.sessionId}"`);
       }
       if (!session.ownerWindowId) return; // 无主无可聚焦
       const ok = windowManager.focus(session.ownerWindowId);
       if (!ok) return; // owner 窗口已不存在,静默
       const ownerWin = windowManager.getById(session.ownerWindowId);
       if (ownerWin) {
-        sendEventTo<WindowFocusRequestedPayload>(
-          ownerWin,
-          EVENT_CHANNELS.WINDOW_FOCUS_REQUESTED,
-          { reason: 'session-click', selectSessionId: session.id },
-        );
+        sendEventTo<WindowFocusRequestedPayload>(ownerWin, EVENT_CHANNELS.WINDOW_FOCUS_REQUESTED, {
+          reason: 'session-click',
+          selectSessionId: session.id,
+        });
       }
     },
   );
 
   ipcMain.handle(
     COMMAND_CHANNELS.SESSION_SEND_INPUT,
-    (
-      _e,
-      envelope: CommandEnvelope<SendInputPayload>,
-    ): SendInputResponse => {
+    (_e, envelope: CommandEnvelope<SendInputPayload>): SendInputResponse => {
       // IPC-3:ownership 校验 — 防止 renderer 状态短暂落后于 main 时,
       // 一个已不归本窗口的 session 仍接受写入(用户视觉上"打字了但没回显",
       // 因为 sessionOutput 推给了真 owner)。
@@ -541,26 +536,16 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       // 拒绝的情况:
       //   - session.ownerWindowId 是其他窗口 — 真的不该写,返回 not-owner
       const sess = sessionManager.get(envelope.payload.sessionId);
-      if (
-        sess &&
-        sess.ownerWindowId !== null &&
-        sess.ownerWindowId !== envelope.windowId
-      ) {
+      if (sess && sess.ownerWindowId !== null && sess.ownerWindowId !== envelope.windowId) {
         return { accepted: false, reason: 'not-owner' };
       }
-      return sessionManager.sendInput(
-        envelope.payload.sessionId,
-        envelope.payload.data,
-      );
+      return sessionManager.sendInput(envelope.payload.sessionId, envelope.payload.data);
     },
   );
 
   ipcMain.handle(
     COMMAND_CHANNELS.SESSION_RESIZE,
-    (
-      _e,
-      envelope: CommandEnvelope<ResizeSessionPayload>,
-    ): ResizeSessionResponse => {
+    (_e, envelope: CommandEnvelope<ResizeSessionPayload>): ResizeSessionResponse => {
       return sessionManager.resize(
         envelope.payload.sessionId,
         envelope.payload.cols,
@@ -572,10 +557,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   // Bookmark / Path
   ipcMain.handle(
     COMMAND_CHANNELS.BOOKMARK_ADD,
-    async (
-      _e,
-      envelope: CommandEnvelope<AddBookmarkPayload>,
-    ): Promise<AddBookmarkResponse> => {
+    async (_e, envelope: CommandEnvelope<AddBookmarkPayload>): Promise<AddBookmarkResponse> => {
       // 校验路径是目录 (软件定义书 5.1.1 要求文件夹选择器/拖拽路径,
       // ipc-protocol PathNotDirectory / PathNotExist 错误码)
       await assertDirectory(envelope.payload.path);
@@ -613,23 +595,14 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
 
   ipcMain.handle(
     COMMAND_CHANNELS.BOOKMARK_SET_DEFAULT_TEMPLATE,
-    (
-      _e,
-      envelope: CommandEnvelope<SetDefaultTemplateForBookmarkPayload>,
-    ): void => {
-      pathManager.setDefaultTemplate(
-        envelope.payload.pathId,
-        envelope.payload.templateId,
-      );
+    (_e, envelope: CommandEnvelope<SetDefaultTemplateForBookmarkPayload>): void => {
+      pathManager.setDefaultTemplate(envelope.payload.pathId, envelope.payload.templateId);
     },
   );
 
   ipcMain.handle(
     COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER,
-    async (
-      _e,
-      envelope: CommandEnvelope<PickFolderPayload>,
-    ): Promise<PickFolderResponse> => {
+    async (_e, envelope: CommandEnvelope<PickFolderPayload>): Promise<PickFolderResponse> => {
       const fromWindow = BrowserWindow.fromWebContents(_e.sender);
       const result = await dialog.showOpenDialog(fromWindow ?? BrowserWindow.getFocusedWindow()!, {
         title: '选择文件夹',
@@ -698,16 +671,11 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       envelope: CommandEnvelope<PickSshKeyFilePayload>,
     ): Promise<PickSshKeyFileResponse> => {
       const fromWindow = BrowserWindow.fromWebContents(_e.sender);
-      const result = await dialog.showOpenDialog(
-        fromWindow ?? BrowserWindow.getFocusedWindow()!,
-        {
-          title: '选择 SSH 私钥文件',
-          properties: ['openFile', 'showHiddenFiles'],
-          ...(envelope.payload.defaultPath
-            ? { defaultPath: envelope.payload.defaultPath }
-            : {}),
-        },
-      );
+      const result = await dialog.showOpenDialog(fromWindow ?? BrowserWindow.getFocusedWindow()!, {
+        title: '选择 SSH 私钥文件',
+        properties: ['openFile', 'showHiddenFiles'],
+        ...(envelope.payload.defaultPath ? { defaultPath: envelope.payload.defaultPath } : {}),
+      });
       if (result.canceled || result.filePaths.length === 0) {
         return { path: null };
       }
@@ -753,10 +721,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     (_e, envelope: CommandEnvelope<AddRemoteBookmarkPayload>): AddBookmarkResponse => {
       const profile = sshProfileManager?.get(envelope.payload.sshProfileId);
       if (!profile) {
-        throw makeIpcError(
-          'SshProfileNotFound',
-          `sshProfileId="${envelope.payload.sshProfileId}"`,
-        );
+        throw makeIpcError('SshProfileNotFound', `sshProfileId="${envelope.payload.sshProfileId}"`);
       }
       const bookmark = pathManager.addBookmark({
         kind: 'ssh',
@@ -871,10 +836,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   // System
   ipcMain.handle(
     COMMAND_CHANNELS.SYSTEM_SHOW_IN_EXPLORER,
-    async (
-      _e,
-      envelope: CommandEnvelope<ShowInExplorerPayload>,
-    ): Promise<void> => {
+    async (_e, envelope: CommandEnvelope<ShowInExplorerPayload>): Promise<void> => {
       shell.showItemInFolder(envelope.payload.path);
     },
   );
@@ -934,10 +896,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   // 兜底),让 renderer 的 fire-and-forget 调用永不影响主链路。
   ipcMain.handle(
     COMMAND_CHANNELS.LOGGER_IME_DUMP,
-    (
-      _e,
-      envelope: CommandEnvelope<ImeProbeDumpPayload>,
-    ): ImeProbeDumpResponse => {
+    (_e, envelope: CommandEnvelope<ImeProbeDumpPayload>): ImeProbeDumpResponse => {
       const { meta, entries } = envelope.payload;
       logger.ime(
         'ime-probe',
@@ -958,14 +917,8 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
 
   ipcMain.handle(
     COMMAND_CHANNELS.EXPLORER_INTEGRATION_SET_CLASSIC,
-    async (
-      _e,
-      envelope: CommandEnvelope<{ enabled: boolean }>,
-    ) => {
-      const result = await setClassicIntegration(
-        envelope.payload.enabled,
-        app.getPath('exe'),
-      );
+    async (_e, envelope: CommandEnvelope<{ enabled: boolean }>) => {
+      const result = await setClassicIntegration(envelope.payload.enabled, app.getPath('exe'));
       const status = await getExplorerIntegrationStatus();
       return { ok: result.ok, message: result.message, status };
     },
@@ -973,10 +926,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
 
   ipcMain.handle(
     COMMAND_CHANNELS.EXPLORER_INTEGRATION_SET_MODERN,
-    async (
-      _e,
-      envelope: CommandEnvelope<{ enabled: boolean }>,
-    ) => {
+    async (_e, envelope: CommandEnvelope<{ enabled: boolean }>) => {
       const result = await setModernIntegration(envelope.payload.enabled);
       const status = await getExplorerIntegrationStatus();
       return { ok: result.ok, message: result.message, status };
@@ -992,10 +942,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
 
   ipcMain.handle(
     COMMAND_CHANNELS.SYSTEM_OPEN_EXTERNAL,
-    async (
-      _e,
-      envelope: CommandEnvelope<OpenExternalPayload>,
-    ): Promise<void> => {
+    async (_e, envelope: CommandEnvelope<OpenExternalPayload>): Promise<void> => {
       const url = envelope.payload.url;
       // 安全:仅允许 http / https / mailto,拒绝 file:// 等本地协议
       if (!/^(https?|mailto):/i.test(url)) {
@@ -1011,10 +958,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   // 勘误第二轮工作记录)。Electron clipboard 模块没有权限层。
   ipcMain.handle(
     COMMAND_CHANNELS.SYSTEM_CLIPBOARD_READ_TEXT,
-    (
-      _e,
-      _envelope: CommandEnvelope<undefined>,
-    ): ClipboardReadTextResponse => {
+    (_e, _envelope: CommandEnvelope<undefined>): ClipboardReadTextResponse => {
       try {
         return { text: clipboard.readText() };
       } catch {
@@ -1025,10 +969,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
 
   ipcMain.handle(
     COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT,
-    (
-      _e,
-      envelope: CommandEnvelope<ClipboardWriteTextPayload>,
-    ): ClipboardWriteTextResponse => {
+    (_e, envelope: CommandEnvelope<ClipboardWriteTextPayload>): ClipboardWriteTextResponse => {
       try {
         clipboard.writeText(envelope.payload.text);
         return { ok: true };
@@ -1049,10 +990,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
 
   ipcMain.handle(
     COMMAND_CHANNELS.TEMPLATE_UPDATE,
-    (
-      _e,
-      envelope: CommandEnvelope<UpdateTemplatePayload>,
-    ): UpdateTemplateResponse => {
+    (_e, envelope: CommandEnvelope<UpdateTemplatePayload>): UpdateTemplateResponse => {
       const t = templatesManager.update(envelope.payload.id, envelope.payload.partial);
       return { template: t };
     },
@@ -1078,19 +1016,14 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   // 文档 6.6.2 描述为 zip,未来加 archiver 包可平滑升级。
   ipcMain.handle(
     COMMAND_CHANNELS.SETTINGS_EXPORT,
-    async (
-      _e,
-      _envelope: CommandEnvelope<undefined>,
-    ): Promise<ExportSettingsResponse> => {
+    async (_e, _envelope: CommandEnvelope<undefined>): Promise<ExportSettingsResponse> => {
       const fromWindow = BrowserWindow.fromWebContents(_e.sender);
       const owner = fromWindow ?? BrowserWindow.getFocusedWindow()!;
 
       // M1-F:先弹隐私警告 — 模板可能含 API key (env);用户三选一:
       // 取消 / 仅导出公开字段(env 清空) / 完整导出(含敏感凭据)
       const tmpls = deps.templatesManager.list();
-      const hasEnvKeys = tmpls.some(
-        (t) => t.env && Object.keys(t.env).length > 0,
-      );
+      const hasEnvKeys = tmpls.some((t) => t.env && Object.keys(t.env).length > 0);
       let includeSecrets = false;
       if (hasEnvKeys) {
         const askRes = await dialog.showMessageBox(owner, {
@@ -1111,11 +1044,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
         includeSecrets = true;
       }
 
-      const suffix = hasEnvKeys
-        ? includeSecrets
-          ? '-with-secrets'
-          : '-public'
-        : '';
+      const suffix = hasEnvKeys ? (includeSecrets ? '-with-secrets' : '-public') : '';
       const result = await dialog.showSaveDialog(owner, {
         title: '导出 Marina 配置',
         defaultPath: `marina-config-${formatDateForFilename(new Date())}${suffix}.json`,
@@ -1138,19 +1067,13 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
 
   ipcMain.handle(
     COMMAND_CHANNELS.SETTINGS_IMPORT,
-    async (
-      _e,
-      _envelope: CommandEnvelope<undefined>,
-    ): Promise<ImportSettingsResponse> => {
+    async (_e, _envelope: CommandEnvelope<undefined>): Promise<ImportSettingsResponse> => {
       const fromWindow = BrowserWindow.fromWebContents(_e.sender);
-      const result = await dialog.showOpenDialog(
-        fromWindow ?? BrowserWindow.getFocusedWindow()!,
-        {
-          title: '导入 Marina 配置',
-          properties: ['openFile'],
-          filters: [{ name: 'Marina Archive (JSON)', extensions: ['json'] }],
-        },
-      );
+      const result = await dialog.showOpenDialog(fromWindow ?? BrowserWindow.getFocusedWindow()!, {
+        title: '导入 Marina 配置',
+        properties: ['openFile'],
+        filters: [{ name: 'Marina Archive (JSON)', extensions: ['json'] }],
+      });
       if (result.canceled || result.filePaths.length === 0) {
         return { status: 'cancelled' };
       }
@@ -1273,10 +1196,7 @@ function validateArchive(input: unknown): asserts input is SettingsArchiveV1 {
  * - 不依赖 app.relaunch 在 dev 模式工作
  * - settings.appearance.theme 等"即改即生效"路径自然走通
  */
-async function applyArchiveInMemory(
-  deps: IpcLayerDeps,
-  archive: SettingsArchiveV1,
-): Promise<void> {
+async function applyArchiveInMemory(deps: IpcLayerDeps, archive: SettingsArchiveV1): Promise<void> {
   // M1-L:事务化 — 先 dry-run validate(都走各 Manager 的 validate),全部通过
   // 才正式 commit。否则中途 settings 已替换但 templates 失败,会出现一边新
   // 一边旧的"半应用"状态。
@@ -1342,6 +1262,106 @@ async function flushAllStores(deps: IpcLayerDeps): Promise<void> {
 // 事件桥接
 // ──────────────────────────────────────────────────────────────────
 
+// ──────────────────────────────────────────────────────────────────
+// File panel handlers (终端侧边文件预览面板)
+// 这些 IPC 供 renderer UI 主动操作:拉列表(接管/claim 后初始化)、点 tab 切换、
+// 关闭、读内容。终端程序经 HTTP 触发的 open/show/close 走 FilePanelService
+// 内部,不经这些 IPC;两类入口共享 service 状态机,事件统一从
+// 'filePanelUpdated' 出(见 wireEventBroadcasts)。
+// ──────────────────────────────────────────────────────────────────
+function registerFilePanelHandlers(deps: IpcLayerDeps): void {
+  const { filePanelService } = deps;
+
+  ipcMain.handle(
+    COMMAND_CHANNELS.FILE_PANEL_GET_OPEN_FILES,
+    (_e, envelope: CommandEnvelope<GetOpenFilesPayload>): FilePanelSnapshot =>
+      filePanelService.getOpenFiles(envelope.payload.sessionId),
+  );
+
+  ipcMain.handle(
+    COMMAND_CHANNELS.FILE_PANEL_OPEN,
+    async (_e, envelope: CommandEnvelope<FilePanelActionPayload>): Promise<FilePanelSnapshot> =>
+      filePanelService.openFile(envelope.payload.sessionId, envelope.payload.path),
+  );
+
+  ipcMain.handle(
+    COMMAND_CHANNELS.FILE_PANEL_SHOW,
+    (_e, envelope: CommandEnvelope<FilePanelActionPayload>): FilePanelSnapshot =>
+      filePanelService.showFile(envelope.payload.sessionId, envelope.payload.path),
+  );
+
+  ipcMain.handle(
+    COMMAND_CHANNELS.FILE_PANEL_CLOSE,
+    (_e, envelope: CommandEnvelope<FilePanelActionPayload>): FilePanelSnapshot =>
+      filePanelService.closeFile(envelope.payload.sessionId, envelope.payload.path),
+  );
+
+  ipcMain.handle(
+    COMMAND_CHANNELS.FILE_PANEL_READ,
+    async (_e, envelope: CommandEnvelope<ReadFilePayload>): Promise<ReadFileResponse> =>
+      filePanelService.readFile(envelope.payload.sessionId, envelope.payload.path),
+  );
+
+  ipcMain.handle(
+    COMMAND_CHANNELS.FILE_PANEL_READ_IMAGE,
+    async (_e, envelope: CommandEnvelope<ReadImagePayload>): Promise<ReadImageResponse> =>
+      filePanelService.readImageAsset(
+        envelope.payload.sessionId,
+        envelope.payload.mdPath,
+        envelope.payload.src,
+      ),
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Markdown 主题(Typora 式可扩展面板风格)。这些 IPC 供 renderer:
+// - 拉主题列表(设置页下拉 + 启动初始化)
+// - 取某主题 CSS 文本(注入 <style>)
+// - 打开主题目录(放/编辑 .css)
+// 增删 .css 由 manager 的 fs.watch 自动发现,经 wireEventBroadcasts 广播。
+// ──────────────────────────────────────────────────────────────────
+function registerMdThemeHandlers(deps: IpcLayerDeps): void {
+  const { markdownThemeManager } = deps;
+
+  ipcMain.handle(
+    COMMAND_CHANNELS.MD_THEME_LIST,
+    async (): Promise<ListMdThemesResponse> => ({ themes: await markdownThemeManager.list() }),
+  );
+
+  ipcMain.handle(
+    COMMAND_CHANNELS.MD_THEME_GET_CSS,
+    async (_e, envelope: CommandEnvelope<GetMdThemeCssPayload>): Promise<GetMdThemeCssResponse> => {
+      // 按 id 反查 fileName(用户传的是 custom:sepia 这种稳定 id,不是磁盘名)。
+      const hit = (await markdownThemeManager.list()).find((t) => t.id === envelope.payload.id);
+      // 找不到(用户刚删了该主题文件)→ 返回空 css,renderer 清空 <style> 并
+      // fallback 到 auto。这是正常竞态,不报错。
+      if (!hit) return { css: '' };
+      try {
+        return { css: await markdownThemeManager.readCss(hit.fileName) };
+      } catch (err) {
+        logger.warn(
+          'MdTheme',
+          `readCss failed for ${hit.fileName}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return { css: '' };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    COMMAND_CHANNELS.MD_THEME_OPEN_DIR,
+    async (_e, _envelope: CommandEnvelope<undefined>): Promise<void> => {
+      // 复用 SYSTEM_OPEN_LOGS_DIR 范式:先确保目录存在(并补种预置)再打开。
+      try {
+        await markdownThemeManager.ensureFirstRun();
+      } catch {
+        /* ensureFirstRun 内部已 try/catch + log,这里再吞一次保证打开 */
+      }
+      await shell.openPath(markdownThemeManager.getDir());
+    },
+  );
+}
+
 function wireEventBroadcasts(deps: IpcLayerDeps): void {
   const {
     windowManager,
@@ -1350,6 +1370,8 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     sessionManager,
     sshProfileManager,
     templatesManager,
+    filePanelService,
+    markdownThemeManager,
   } = deps;
 
   // Path 树变化 → 广播 evt:path:tree-updated
@@ -1366,22 +1388,16 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   });
 
   sshProfileManager?.on('sshProfilesUpdated', (e: SshProfilesUpdatedPayload) => {
-    broadcastEvent<SshProfilesUpdatedPayload>(
-      EVENT_CHANNELS.SSH_PROFILES_UPDATED,
-      e,
-    );
+    broadcastEvent<SshProfilesUpdatedPayload>(EVENT_CHANNELS.SSH_PROFILES_UPDATED, e);
   });
 
   // 设置变化 → 广播 evt:settings:changed
-  settingsManager.on(
-    'settingsChanged',
-    (e: { settings: Settings; changedKeys: string[] }) => {
-      broadcastEvent<SettingsChangedPayload>(EVENT_CHANNELS.SETTINGS_CHANGED, {
-        settings: e.settings,
-        changedKeys: e.changedKeys,
-      });
-    },
-  );
+  settingsManager.on('settingsChanged', (e: { settings: Settings; changedKeys: string[] }) => {
+    broadcastEvent<SettingsChangedPayload>(EVENT_CHANNELS.SETTINGS_CHANGED, {
+      settings: e.settings,
+      changedKeys: e.changedKeys,
+    });
+  });
 
   // Session 事件
   sessionManager.on('sessionCreated', (session) => {
@@ -1396,10 +1412,7 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   // CP-3: state-changed 涵盖 active/idle 转移、currentCwd 更新、exited 状态。
   // SessionExitedPayload 仍单独发,因为它带 exitCode 等额外信息。
   sessionManager.on('sessionStateChanged', (e: SessionStateChangedPayload) => {
-    broadcastEvent<SessionStateChangedPayload>(
-      EVENT_CHANNELS.SESSION_STATE_CHANGED,
-      e,
-    );
+    broadcastEvent<SessionStateChangedPayload>(EVENT_CHANNELS.SESSION_STATE_CHANGED, e);
     // active/idle 转移可能影响 trayManager 的图标 (V1.1),广播 app state
     broadcastAppState(deps);
   });
@@ -1412,16 +1425,32 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   templatesManager.on(
     'templatesUpdated',
     (e: { templates: Template[]; defaultTemplateId: string }) => {
-      broadcastEvent<TemplateListUpdatedPayload>(
-        EVENT_CHANNELS.TEMPLATES_UPDATED,
-        e,
-      );
+      broadcastEvent<TemplateListUpdatedPayload>(EVENT_CHANNELS.TEMPLATES_UPDATED, e);
     },
   );
 
   sessionManager.on('sessionDestroyed', (e: SessionDestroyedPayload) => {
+    // 文件面板:session 没了,清掉它的已打开文件 + fs.watch 句柄
+    filePanelService.onSessionDestroyed(e.sessionId);
     broadcastEvent<SessionDestroyedPayload>(EVENT_CHANNELS.SESSION_DESTROYED, e);
     broadcastAppState(deps);
+  });
+
+  // 终端侧边文件面板状态变化(REST open/show/close 或 fs.watch 自动刷新触发)
+  // → 仅推给该 session 的 owner 窗口(与 session output 同策略,见上)。
+  filePanelService.on('filePanelUpdated', (p: FilePanelUpdatedPayload) => {
+    const session = sessionManager.get(p.sessionId);
+    if (!session?.ownerWindowId) return;
+    const ownerWin = windowManager.getById(session.ownerWindowId);
+    if (ownerWin) {
+      sendEventTo<FilePanelUpdatedPayload>(ownerWin, EVENT_CHANNELS.FILE_PANEL_UPDATED, p);
+    }
+  });
+
+  // 自定义 markdown 主题列表变化(用户往 markdown-themes/ 增删 .css)→ 广播给
+  // 所有窗口,renderer 更新设置页下拉。每次 emit 已做去抖 + 内容比对。
+  markdownThemeManager.on('listUpdated', (themes: MdTheme[]) => {
+    broadcastEvent<MdThemeListUpdatedPayload>(EVENT_CHANNELS.MD_THEME_LIST_UPDATED, { themes });
   });
 
   // Session output → 仅推 owner
@@ -1487,11 +1516,7 @@ interface IpcError extends Error {
   details?: Record<string, unknown>;
 }
 
-function makeIpcError(
-  code: string,
-  message: string,
-  details?: Record<string, unknown>,
-): IpcError {
+function makeIpcError(code: string, message: string, details?: Record<string, unknown>): IpcError {
   const err = new Error(`[ipc] ${code}: ${message}`) as IpcError;
   err.code = code;
   if (details) err.details = details;

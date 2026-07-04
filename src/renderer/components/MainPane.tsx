@@ -20,12 +20,7 @@
  *
  * @对应文档章节: 软件定义书.md 6.3 (右侧标签页)、6.4 (终端区域)
  */
-import {
-  useEffect,
-  useRef,
-  useState,
-  type MouseEvent,
-} from 'react';
+import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import {
   COMMAND_CHANNELS,
   type CreateSessionResponse,
@@ -42,6 +37,7 @@ import {
   useAppState,
 } from '../store';
 import { TerminalView } from './TerminalView';
+import { FilePanel } from './file-panel/FilePanel';
 import { focusTerminalDom } from '../focus';
 import { Icon, type IconName } from './icons';
 import { TemplateIcon } from './TemplateIcon';
@@ -187,15 +183,25 @@ export function MainPane(): JSX.Element {
           showBlankTab={!displayable}
         />
       )}
-      {displayable ? (
-        <TerminalView
-          // 用 sessionId 作 key,确保切换时彻底重建 xterm 实例
-          key={displayable.id}
-          session={displayable}
-        />
-      ) : (
-        <EmptyPathState pathId={state.selectedPathId} />
-      )}
+      <div className="terminal-area">
+        {displayable ? (
+          <TerminalView
+            // 用 sessionId 作 key,确保切换时彻底重建 xterm 实例
+            key={displayable.id}
+            session={displayable}
+          />
+        ) : (
+          <EmptyPathState pathId={state.selectedPathId} />
+        )}
+        {/*
+          终端侧边文件面板:绑定当前 displayable 终端,切终端时 key 变 → 重挂,
+          内容自动跟着切。条件:有终端 + 非简易模式 + settings.filePanel.enabled。
+          SSH 终端也渲染面板,但远程程序到不了本机 MARINA_SERVICE,实际无文件。
+        */}
+        {displayable && !state.simpleMode && state.settings.filePanel?.enabled && (
+          <FilePanel key={`fp-${displayable.id}`} sessionId={displayable.id} />
+        )}
+      </div>
     </main>
   );
 }
@@ -207,8 +213,7 @@ function WelcomeState(): JSX.Element {
       <h2>Marina</h2>
       <p>
         {tx('从左侧选一个路径开始,或点击', 'Pick a path on the left, or click')}{' '}
-        <strong>{tx('收藏 +', 'Bookmark +')}</strong>{' '}
-        {tx('添加文件夹。', 'to add a folder.')}
+        <strong>{tx('收藏 +', 'Bookmark +')}</strong> {tx('添加文件夹。', 'to add a folder.')}
       </p>
     </div>
   );
@@ -224,12 +229,7 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
   const isSshPath = node?.kind === 'ssh';
   const wslDistroName = node ? getWslDistroName(node.path) : null;
   const isWslPath = !!wslDistroName;
-  const displayPath =
-    isSshPath && node
-      ? node.path
-      : node
-        ? formatPathDisplayPath(node)
-        : pathId;
+  const displayPath = isSshPath && node ? node.path : node ? formatPathDisplayPath(node) : pathId;
   // 勘误第二轮 #3:启动期拉一次 detectShells,缓存到组件状态。SessionManager
   // 内部已 cache,所以二次以上调用是 O(1)。
   const [shells, setShells] = useState<DetectedShell[] | null>(null);
@@ -241,10 +241,7 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
     }
     let cancelled = false;
     window.api
-      .invoke<unknown, ListShellsResponse>(
-        COMMAND_CHANNELS.SETTINGS_LIST_SHELLS,
-        {},
-      )
+      .invoke<unknown, ListShellsResponse>(COMMAND_CHANNELS.SETTINGS_LIST_SHELLS, {})
       .then((res) => {
         if (!cancelled) setShells(res.shells);
       })
@@ -289,7 +286,10 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
       console.error('[MainPane] create-session failed', err);
       toast.push({
         kind: 'error',
-        message: tx(`新建终端失败:${err instanceof Error ? err.message : String(err)}`, `Failed to create terminal: ${err instanceof Error ? err.message : String(err)}`),
+        message: tx(
+          `新建终端失败:${err instanceof Error ? err.message : String(err)}`,
+          `Failed to create terminal: ${err instanceof Error ? err.message : String(err)}`,
+        ),
       });
     } finally {
       setCreating(false);
@@ -365,14 +365,17 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
       <div className="empty-section">
         <div className="empty-section-title">{tx('启动模板', 'Launch templates')}</div>
         <div className="empty-button-grid">
-          {(isSshPath || !isWslPath || wslShellId) && templates.map((t) => (
-            <TemplateLaunchButton
-              key={t.id}
-              template={t}
-              creating={creating}
-              onLaunch={() => void handleCreate(t.id, isSshPath ? undefined : wslShellId, 'disabled')}
-            />
-          ))}
+          {(isSshPath || !isWslPath || wslShellId) &&
+            templates.map((t) => (
+              <TemplateLaunchButton
+                key={t.id}
+                template={t}
+                creating={creating}
+                onLaunch={() =>
+                  void handleCreate(t.id, isSshPath ? undefined : wslShellId, 'disabled')
+                }
+              />
+            ))}
         </div>
       </div>
     </div>
@@ -456,7 +459,9 @@ function TabBar({ sessions, selectedSessionId, showBlankTab }: TabBarProps): JSX
           onClick={handleClickBlankTab}
           title={tx('新建终端 — 选择 Shell 或模板', 'New terminal — pick a shell or template')}
         >
-          <span className="tab-blank-icon" aria-hidden="true">+</span>
+          <span className="tab-blank-icon" aria-hidden="true">
+            +
+          </span>
           <span className="tab-name">{tx('新建', 'New')}</span>
         </button>
       </div>
@@ -507,7 +512,10 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
           // 但触发体验各按各侧的惯例)。
           const next = await modal.prompt({
             title: tx('重命名会话', 'Rename session'),
-            message: tx('为此会话指定新的显示名(不影响 sessionId)', 'New display name for this session (sessionId stays the same)'),
+            message: tx(
+              '为此会话指定新的显示名(不影响 sessionId)',
+              'New display name for this session (sessionId stays the same)',
+            ),
             defaultValue: session.displayName,
             confirmLabel: tx('保存', 'Save'),
           });
@@ -560,25 +568,23 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
       });
       dispatch({ type: 'view/select-session', sessionId: session.id });
 
-      window.api
-        .invoke(COMMAND_CHANNELS.SESSION_CLAIM, { sessionId: session.id })
-        .catch((err) => {
-          console.error('[Tab] claim failed, rolling back', err);
-          // 回滚:目标变回 orphan,旧持有变回 myWindow
+      window.api.invoke(COMMAND_CHANNELS.SESSION_CLAIM, { sessionId: session.id }).catch((err) => {
+        console.error('[Tab] claim failed, rolling back', err);
+        // 回滚:目标变回 orphan,旧持有变回 myWindow
+        dispatch({
+          type: 'sessions/owner-changed',
+          sessionId: session.id,
+          ownerWindowId: null,
+        });
+        if (prevOwnedId && prevOwnedId !== session.id) {
           dispatch({
             type: 'sessions/owner-changed',
-            sessionId: session.id,
-            ownerWindowId: null,
+            sessionId: prevOwnedId,
+            ownerWindowId: myWindowId,
           });
-          if (prevOwnedId && prevOwnedId !== session.id) {
-            dispatch({
-              type: 'sessions/owner-changed',
-              sessionId: prevOwnedId,
-              ownerWindowId: myWindowId,
-            });
-          }
-          dispatch({ type: 'view/select-session', sessionId: prevOwnedId });
-        });
+        }
+        dispatch({ type: 'view/select-session', sessionId: prevOwnedId });
+      });
       // FOC-2:乐观接管成功路径也需要送焦点;rAF + 选择器在新 TerminalView
       // 挂上后命中。失败 rollback 后 EmptyPathState 没 xterm,focusTerminalDom
       // 会 no-op,无副作用。
@@ -611,16 +617,25 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
 
   const tooltipParts: string[] = [];
   if (variant === 'other') {
-    tooltipParts.push(tx(`${session.displayName} (在其他窗口)`, `${session.displayName} (owned by another window)`));
+    tooltipParts.push(
+      tx(`${session.displayName} (在其他窗口)`, `${session.displayName} (owned by another window)`),
+    );
   } else {
     tooltipParts.push(session.displayName);
   }
   if (cwdDrifted) {
-    tooltipParts.push(tx(`当前目录 → ${session.currentCwd}`, `Current dir → ${session.currentCwd}`));
+    tooltipParts.push(
+      tx(`当前目录 → ${session.currentCwd}`, `Current dir → ${session.currentCwd}`),
+    );
     tooltipParts.push(tx(`(原: ${session.originalCwd})`, `(orig: ${session.originalCwd})`));
   }
   if (session.state === 'exited') {
-    tooltipParts.push(tx(`已退出 (exitCode=${session.exitCode ?? 0})`, `Exited (exitCode=${session.exitCode ?? 0})`));
+    tooltipParts.push(
+      tx(
+        `已退出 (exitCode=${session.exitCode ?? 0})`,
+        `Exited (exitCode=${session.exitCode ?? 0})`,
+      ),
+    );
   }
 
   return (
@@ -639,17 +654,15 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
     >
       <span className="tab-name">{session.displayName}</span>
       {cwdDrifted && (
-        <span className="tab-cwd-drift" aria-label={tx('当前目录已变', 'Current directory changed')}>
+        <span
+          className="tab-cwd-drift"
+          aria-label={tx('当前目录已变', 'Current directory changed')}
+        >
           <Icon name="alertTriangle" size={11} />
         </span>
       )}
       {variant !== 'other' && (
-        <span
-          className="tab-close"
-          onClick={handleClose}
-          title={tx('关闭', 'Close')}
-          role="button"
-        >
+        <span className="tab-close" onClick={handleClose} title={tx('关闭', 'Close')} role="button">
           ×
         </span>
       )}

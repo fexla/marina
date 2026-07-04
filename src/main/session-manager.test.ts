@@ -136,9 +136,7 @@ function makeStubPathManager(): StubPathManager {
   return stub as unknown as StubPathManager;
 }
 
-function makeStubTemplatesManager(
-  extraTemplates: Template[] = [],
-): TemplatesManager {
+function makeStubTemplatesManager(extraTemplates: Template[] = []): TemplatesManager {
   // 用真实的 BUILTIN_TEMPLATES,resolve('shell') 返回内置 shell 模板
   const templates = [...BUILTIN_TEMPLATES, ...extraTemplates];
   return {
@@ -158,14 +156,16 @@ function makeStubTemplatesManager(
     get(id: string): Template | null {
       return templates.find((t) => t.id === id) ?? null;
     },
-    on() { return this; },
-    emit() { return true; },
+    on() {
+      return this;
+    },
+    emit() {
+      return true;
+    },
   } as unknown as TemplatesManager;
 }
 
-function makeStubSettingsManager(
-  overrides: Partial<Settings['advanced']> = {},
-): SettingsManager {
+function makeStubSettingsManager(overrides: Partial<Settings['advanced']> = {}): SettingsManager {
   const settings: Settings = {
     version: 1,
     appearance: {
@@ -198,6 +198,7 @@ function makeStubSettingsManager(
       bracketedPaste: true,
     },
     systemIntegration: { explorerOpenIn: 'new-window' },
+    filePanel: { enabled: true, port: 0, markdownStyle: 'auto' },
     advanced: {
       logLevel: 'INFO',
       activeIdleThresholdSeconds: 2,
@@ -278,6 +279,8 @@ function makeManager(
     /** PER-2 / F1:默认 0 — 测试每个 chunk 立即 emit,保持现有时序断言 */
     emitBatchMs?: number;
     templates?: Template[];
+    /** 终端侧边文件面板 env 注入源;不传 = 不注入 MARINA_SERVICE/MARINA_TOKEN */
+    filePanelService?: { getUrl(): { baseUrl: string; token: string } | null };
   } = {},
 ): {
   mgr: SessionManager;
@@ -298,6 +301,7 @@ function makeManager(
     inputQuietMs: opts.inputQuietMs ?? 0,
     emitBatchMs: opts.emitBatchMs ?? 0,
     skipCwdValidation: true,
+    filePanelService: opts.filePanelService ?? null,
   });
   return { mgr, win, path };
 }
@@ -450,9 +454,7 @@ describe('SessionManager — createSession', () => {
     });
 
     expect(info.displayName).toBe('prod:~/repo');
-    expect(FakePty.instances[0]!.file).toBe(
-      'C:\\Windows\\System32\\OpenSSH\\ssh.exe',
-    );
+    expect(FakePty.instances[0]!.file).toBe('C:\\Windows\\System32\\OpenSSH\\ssh.exe');
     expect(FakePty.instances[0]!.args).toEqual([
       '-tt',
       '-p',
@@ -460,7 +462,7 @@ describe('SessionManager — createSession', () => {
       '-o',
       'ServerAliveInterval=30',
       'alice@example.com',
-      "cd \"$HOME\"/'repo' && exec \"${SHELL:-/bin/sh}\" -l",
+      'cd "$HOME"/\'repo\' && exec "${SHELL:-/bin/sh}" -l',
     ]);
   });
 
@@ -494,9 +496,7 @@ describe('SessionManager — createSession', () => {
       },
     });
 
-    expect(FakePty.instances[0]!.args).toContain(
-      'cd && exec "${SHELL:-/bin/sh}" -l',
-    );
+    expect(FakePty.instances[0]!.args).toContain('cd && exec "${SHELL:-/bin/sh}" -l');
   });
 
   it('SSH 启动模板在远端 cwd 中执行命令/参数/env', async () => {
@@ -1398,23 +1398,20 @@ describe('SessionManager — OSC 1337 cwd 跟踪 (ADR-008)', () => {
     },
   );
 
-  it.skipIf(process.platform !== 'win32')(
-    'POSIX 驱动器根 `/c` 归一为 `C:\\`',
-    async () => {
-      const { mgr } = makeManager();
-      const info = await mgr.createSession({
-        pathId: 'C:\\',
-        templateId: 'shell',
-        ownerWindowId: 'w',
-        cols: 80,
-        rows: 24,
-      });
-      const fp = FakePty.instances[0]!;
-      fp.emitData('\x1b]1337;CurrentDir=/c\x07');
-      const after = mgr.get(info.id)!;
-      expect(after.currentCwd.toLowerCase()).toBe('c:\\');
-    },
-  );
+  it.skipIf(process.platform !== 'win32')('POSIX 驱动器根 `/c` 归一为 `C:\\`', async () => {
+    const { mgr } = makeManager();
+    const info = await mgr.createSession({
+      pathId: 'C:\\',
+      templateId: 'shell',
+      ownerWindowId: 'w',
+      cols: 80,
+      rows: 24,
+    });
+    const fp = FakePty.instances[0]!;
+    fp.emitData('\x1b]1337;CurrentDir=/c\x07');
+    const after = mgr.get(info.id)!;
+    expect(after.currentCwd.toLowerCase()).toBe('c:\\');
+  });
 });
 
 describe('SessionManager — OSC 0/1/2 标题 (displayName 自动跟随)', () => {
@@ -1607,9 +1604,7 @@ describe('SessionManager — OSC 0/1/2 标题 (displayName 自动跟随)', () =>
 
     // Claude Code 自定义标题(含路径但有描述前缀)— 必须放行
     fp.emitData('\x1b]0;✻ Claude · ~/p (working…)\x07');
-    expect(mgr.get(info.id)!.displayName).toBe(
-      '✻ Claude · ~/p (working…)',
-    );
+    expect(mgr.get(info.id)!.displayName).toBe('✻ Claude · ~/p (working…)');
 
     // 其他常见合法标题
     fp.emitData('\x1b]0;node app.js\x07');
@@ -1843,9 +1838,7 @@ describe('SessionManager — sendInput / resize', () => {
     });
     const fp = FakePty.instances[0]!;
     fp.emitExit(0);
-    expect(() =>
-      mgr.sendInput(info.id, Buffer.from('x', 'utf8').toString('base64')),
-    ).not.toThrow();
+    expect(() => mgr.sendInput(info.id, Buffer.from('x', 'utf8').toString('base64'))).not.toThrow();
   });
 
   // TYP-1 / IPC-4:sendInput 现在返回 { accepted, reason }
@@ -1860,20 +1853,14 @@ describe('SessionManager — sendInput / resize', () => {
     });
     const fp = FakePty.instances[0]!;
     fp.emitExit(0);
-    const res = mgr.sendInput(
-      info.id,
-      Buffer.from('x', 'utf8').toString('base64'),
-    );
+    const res = mgr.sendInput(info.id, Buffer.from('x', 'utf8').toString('base64'));
     expect(res.accepted).toBe(false);
     expect(res.reason).toBe('pty-exited');
   });
 
   it('sendInput 在不存在 session 上返回 accepted=false reason=session-not-found', () => {
     const { mgr } = makeManager();
-    const res = mgr.sendInput(
-      'no-such-id',
-      Buffer.from('x', 'utf8').toString('base64'),
-    );
+    const res = mgr.sendInput('no-such-id', Buffer.from('x', 'utf8').toString('base64'));
     expect(res.accepted).toBe(false);
     expect(res.reason).toBe('session-not-found');
   });
@@ -1887,10 +1874,7 @@ describe('SessionManager — sendInput / resize', () => {
       cols: 80,
       rows: 24,
     });
-    const res = mgr.sendInput(
-      info.id,
-      Buffer.from('x', 'utf8').toString('base64'),
-    );
+    const res = mgr.sendInput(info.id, Buffer.from('x', 'utf8').toString('base64'));
     expect(res.accepted).toBe(true);
     expect(res.reason).toBeUndefined();
   });
@@ -1921,9 +1905,7 @@ describe('SessionManager — sendInput / resize', () => {
       vi.advanceTimersByTime(10);
       expect(outputs.length).toBe(1);
       // base64 解码后是 'aaabbbccc'
-      expect(Buffer.from(outputs[0]!.data, 'base64').toString('utf8')).toBe(
-        'aaabbbccc',
-      );
+      expect(Buffer.from(outputs[0]!.data, 'base64').toString('utf8')).toBe('aaabbbccc');
       // seq 是最后一条 chunk 对应的(3 个 chunk → outputSeq 0,1,2)
       expect(outputs[0]!.seq).toBe(2);
     } finally {
@@ -1964,10 +1946,7 @@ describe('SessionManager — sendInput / resize', () => {
     });
     const fp = FakePty.instances[0]!;
     fp.writeShouldThrow = true;
-    const res = mgr.sendInput(
-      info.id,
-      Buffer.from('x', 'utf8').toString('base64'),
-    );
+    const res = mgr.sendInput(info.id, Buffer.from('x', 'utf8').toString('base64'));
     expect(res.accepted).toBe(false);
     expect(res.reason).toBe('pty-write-failed');
   });
@@ -2032,9 +2011,7 @@ describe('SessionManager — PER-2 emit 聚合 / state-replay 不变量', () => 
     // 返回时 chunk1 已通过 sessionOutput 发出,lastSeq 反映该 chunk 的 seq。
     const res = await mgr.getScrollbackForReplay(info.id);
     expect(outputs).toHaveLength(1);
-    expect(Buffer.from(outputs[0]!.data, 'base64').toString('utf8')).toBe(
-      'AAAA',
-    );
+    expect(Buffer.from(outputs[0]!.data, 'base64').toString('utf8')).toBe('AAAA');
     expect(outputs[0]!.seq).toBe(res.lastSeq);
 
     // serialize 输出反映 headless 已经接受了 AAAA(headless 已 drain)
@@ -2296,5 +2273,61 @@ describe('SessionManagerError', () => {
     expect(err.code).toBe('SessionNotFound');
     expect(err.message).toContain('SessionNotFound');
     expect(err.details).toEqual({ sid: 'abc' });
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────
+// 终端侧边文件面板:env 注入(MARINA_SERVICE / MARINA_TOKEN / TERMINAL_ID)
+// ──────────────────────────────────────────────────────────────────
+
+describe('SessionManager — file panel env 注入', () => {
+  it('enabled + service → 注入三项,TERMINAL_ID 等于 sessionId', async () => {
+    const fpService = {
+      getUrl: () => ({ baseUrl: 'http://127.0.0.1:19999', token: 'fake-token-xyz' }),
+    };
+    const { mgr } = makeManager({ filePanelService: fpService });
+    const info = await mgr.createSession({
+      pathId: 'C:\\fake',
+      templateId: 'shell',
+      ownerWindowId: 'w1',
+      cols: 80,
+      rows: 24,
+    });
+    const env = FakePty.instances[0]!.options.env;
+    expect(env.MARINA_SERVICE).toBe('http://127.0.0.1:19999');
+    expect(env.MARINA_TOKEN).toBe('fake-token-xyz');
+    expect(env.TERMINAL_ID).toBe(info.id);
+  });
+
+  it('enabled=false → 不注入服务地址/token,但仍注入 TERMINAL_ID', async () => {
+    const sm = makeStubSettingsManager();
+    sm.get().filePanel.enabled = false;
+    const fpService = { getUrl: () => ({ baseUrl: 'http://127.0.0.1:1', token: 't' }) };
+    const { mgr } = makeManager({ settings: sm, filePanelService: fpService });
+    const info = await mgr.createSession({
+      pathId: 'C:\\fake',
+      templateId: 'shell',
+      ownerWindowId: 'w1',
+      cols: 80,
+      rows: 24,
+    });
+    const env = FakePty.instances[0]!.options.env;
+    expect(env.MARINA_SERVICE).toBeUndefined();
+    expect(env.MARINA_TOKEN).toBeUndefined();
+    expect(env.TERMINAL_ID).toBe(info.id);
+  });
+
+  it('未传 service → 不注入服务地址,TERMINAL_ID 仍在', async () => {
+    const { mgr } = makeManager();
+    const info = await mgr.createSession({
+      pathId: 'C:\\fake',
+      templateId: 'shell',
+      ownerWindowId: 'w1',
+      cols: 80,
+      rows: 24,
+    });
+    const env = FakePty.instances[0]!.options.env;
+    expect(env.MARINA_SERVICE).toBeUndefined();
+    expect(env.TERMINAL_ID).toBe(info.id);
   });
 });

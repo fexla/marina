@@ -23,6 +23,8 @@ import { COMMAND_CHANNELS } from '@shared/protocol';
 import type { CommandEnvelope, CreateSessionPayload } from '@shared/protocol';
 import type { SessionInfo } from '@shared/types';
 import type * as IpcModule from './ipc';
+import { FilePanelService } from './file-panel-service';
+import { MarkdownThemeManager } from './markdown-theme-manager';
 import { makePathId } from './path-manager';
 
 // ──────────────────────────────────────────────────────────────────
@@ -64,7 +66,15 @@ const { handlers, mockApp, mockBrowserWindow, mockClipboard, mockDialog, mockShe
       openPath: (): Promise<string> => Promise.resolve(''),
       showItemInFolder: (): void => {},
     };
-    return { handlers, mockApp, mockBrowserWindow, mockClipboard, mockDialog, mockShell, mockIpcMain };
+    return {
+      handlers,
+      mockApp,
+      mockBrowserWindow,
+      mockClipboard,
+      mockDialog,
+      mockShell,
+      mockIpcMain,
+    };
   });
 
 vi.mock('electron', () => ({
@@ -228,6 +238,14 @@ function makeStubs() {
       settingsManager: settingsManager as unknown,
       windowManager: windowManager as unknown,
       sshProfileManager: sshProfileManager as unknown,
+      // 真实 FilePanelService 实例(不 start):ipc 层 wireEventBroadcasts 只用到
+      // 它的 on('filePanelUpdated') / onSessionDestroyed,以及 registerFilePanelHandlers
+      // 注册的 5 个方法。EventEmitter + 这些方法在不 start 时都能正常工作。
+      filePanelService: new FilePanelService(),
+      // 真实 MarkdownThemeManager(不 ensureFirstRun / startWatch):ipc 层
+      // wireEventBroadcasts 只用到它的 on('listUpdated'),以及 registerMdThemeHandlers
+      // 注册的 3 个方法。构造无副作用(懒 getter),EventEmitter 在不 watch 时也正常。
+      markdownThemeManager: new MarkdownThemeManager(),
     },
     stubs: {
       sessionManager,
@@ -277,7 +295,10 @@ describe('IPC SESSION_CREATE', () => {
       payload: { pathId: 'C:\\foo', cols: 80, rows: 24 }, // takeOwnership 默认 true
     };
 
-    const result = (await handler!({}, envelope)) as { session: SessionInfo; pathTreeChanged: boolean };
+    const result = (await handler!({}, envelope)) as {
+      session: SessionInfo;
+      pathTreeChanged: boolean;
+    };
     expect(result.session.id).toBe('sess-1');
     expect(createCalls).toHaveLength(1);
     expect(createCalls[0]!.ownerWindowId).toBe('win-aaa');

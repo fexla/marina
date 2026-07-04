@@ -43,9 +43,12 @@
     "@xterm/addon-webgl": "0.20.0-beta.255",
     "@xterm/headless": "6.1.0-beta.256",
     "@xterm/xterm": "6.1.0-beta.256",
+    "github-markdown-css": "^5.9.0",
     "lucide-react": "^1.14.0",
     "node-pty": "^1.0.0",
     "openai": "^6.37.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "uuid": "^11.0.0"
   },
   "devDependencies": {

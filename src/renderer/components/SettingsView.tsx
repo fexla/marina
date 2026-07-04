@@ -101,7 +101,11 @@ const BASE_CATEGORIES: CategoryDef[] = [
   { id: 'shell', iconName: 'shell', titleKey: 'settings.category.shell' },
   { id: 'behavior', iconName: 'behavior', titleKey: 'settings.category.behavior' },
   { id: 'data', iconName: 'data', titleKey: 'settings.category.data' },
-  { id: 'system-integration', iconName: 'systemIntegration', titleKey: 'settings.category.systemIntegration' },
+  {
+    id: 'system-integration',
+    iconName: 'systemIntegration',
+    titleKey: 'settings.category.systemIntegration',
+  },
   { id: 'ai', iconName: 'ai', titleKey: 'settings.category.ai' },
   { id: 'advanced', iconName: 'advanced', titleKey: 'settings.category.advanced' },
   { id: 'about', iconName: 'about', titleKey: 'settings.category.about' },
@@ -275,11 +279,7 @@ const THEMES: Array<{ id: ThemeId; label: string; tone: '深色' | '浅色'; not
   { id: 'catppuccin-latte', label: 'Catppuccin Latte', tone: '浅色' },
 ];
 
-function AppearancePanel({
-  setError,
-}: {
-  setError: (msg: string | null) => void;
-}): JSX.Element {
+function AppearancePanel({ setError }: { setError: (msg: string | null) => void }): JSX.Element {
   const { tx } = useTranslation();
   const state = useAppState();
   const a = state.settings.appearance;
@@ -298,9 +298,7 @@ function AppearancePanel({
   const [terminalFonts, setTerminalFonts] = useState<FontEntry[]>(() =>
     probeFonts(RECOMMENDED_TERMINAL_FONTS),
   );
-  const [uiFonts, setUiFonts] = useState<FontEntry[]>(() =>
-    probeFonts(RECOMMENDED_UI_FONTS),
-  );
+  const [uiFonts, setUiFonts] = useState<FontEntry[]>(() => probeFonts(RECOMMENDED_UI_FONTS));
   useEffect(() => {
     let cancelled = false;
     void Promise.all([
@@ -326,17 +324,17 @@ function AppearancePanel({
 
       <SettingRow
         label={tx('主题', 'Theme')}
-        hint={tx('所有窗口立即同步;xterm 颜色与 UI 同步切换', 'Applies to all windows immediately; xterm colors stay in sync')}
+        hint={tx(
+          '所有窗口立即同步;xterm 颜色与 UI 同步切换',
+          'Applies to all windows immediately; xterm colors stay in sync',
+        )}
       >
         <select
           className="settings-input"
           value={theme}
           aria-label={tx('主题', 'Theme')}
           onChange={(e) =>
-            void updateSettings(
-              { appearance: { theme: e.target.value as ThemeId } },
-              setError,
-            )
+            void updateSettings({ appearance: { theme: e.target.value as ThemeId } }, setError)
           }
         >
           {THEMES.map((t) => (
@@ -350,7 +348,10 @@ function AppearancePanel({
 
       <SettingRow
         label={tx('窗口风格', 'Window style')}
-        hint={tx('影响标题栏布局与窗口控制按钮位置(不影响主题配色)', 'Title bar layout and control button position (does not affect theme colors)')}
+        hint={tx(
+          '影响标题栏布局与窗口控制按钮位置(不影响主题配色)',
+          'Title bar layout and control button position (does not affect theme colors)',
+        )}
       >
         <div className="settings-radio-group">
           <label className="settings-radio">
@@ -386,44 +387,49 @@ function AppearancePanel({
         </div>
       </SettingRow>
 
-      <SettingRow label={tx('终端字体', 'Terminal font')} hint={tx('系统已安装的等宽字体 + 推荐字体', 'Installed monospace fonts + recommended')}>
+      <SettingRow
+        label={tx('终端字体', 'Terminal font')}
+        hint={tx('系统已安装的等宽字体 + 推荐字体', 'Installed monospace fonts + recommended')}
+      >
         <FontPicker
           value={terminalFontFamily}
           fonts={terminalFonts}
           onChange={(value) =>
-            void updateSettings(
-              { appearance: { terminalFontFamily: value } },
-              setError,
-            )
+            void updateSettings({ appearance: { terminalFontFamily: value } }, setError)
           }
         />
       </SettingRow>
 
-      <SettingRow label={tx('终端字号', 'Terminal font size')} hint={tx('范围 8 - 24', 'Range 8 - 24')}>
+      <SettingRow
+        label={tx('终端字号', 'Terminal font size')}
+        hint={tx('范围 8 - 24', 'Range 8 - 24')}
+      >
         <NumberInput
           value={terminalFontSize}
           min={8}
           max={24}
           step={1}
-          onChange={(v) =>
-            void updateSettings({ appearance: { terminalFontSize: v } }, setError)
-          }
+          onChange={(v) => void updateSettings({ appearance: { terminalFontSize: v } }, setError)}
         />
       </SettingRow>
 
-      <SettingRow label={tx('终端行高', 'Terminal line height')} hint={tx('范围 1.0 - 2.0', 'Range 1.0 - 2.0')}>
+      <SettingRow
+        label={tx('终端行高', 'Terminal line height')}
+        hint={tx('范围 1.0 - 2.0', 'Range 1.0 - 2.0')}
+      >
         <NumberInput
           value={terminalLineHeight}
           min={1}
           max={2}
           step={0.05}
-          onChange={(v) =>
-            void updateSettings({ appearance: { terminalLineHeight: v } }, setError)
-          }
+          onChange={(v) => void updateSettings({ appearance: { terminalLineHeight: v } }, setError)}
         />
       </SettingRow>
 
-      <SettingRow label={tx('UI 字体', 'UI font')} hint={tx('侧栏 / 按钮 / 标签等 UI 区域', 'Sidebar / buttons / tabs and other UI areas')}>
+      <SettingRow
+        label={tx('UI 字体', 'UI font')}
+        hint={tx('侧栏 / 按钮 / 标签等 UI 区域', 'Sidebar / buttons / tabs and other UI areas')}
+      >
         <FontPicker
           value={uiFontFamily}
           fonts={uiFonts}
@@ -433,23 +439,27 @@ function AppearancePanel({
         />
       </SettingRow>
 
-      <SettingRow label={tx('UI 缩放', 'UI zoom')} hint={tx('范围 75% - 150%,影响整个 UI 字号', 'Range 75% - 150%, affects all UI font sizes')}>
+      <SettingRow
+        label={tx('UI 缩放', 'UI zoom')}
+        hint={tx('范围 75% - 150%,影响整个 UI 字号', 'Range 75% - 150%, affects all UI font sizes')}
+      >
         <NumberInput
           value={uiZoom}
           min={0.75}
           max={1.5}
           step={0.05}
           formatPercent
-          onChange={(v) =>
-            void updateSettings({ appearance: { uiZoom: v } }, setError)
-          }
+          onChange={(v) => void updateSettings({ appearance: { uiZoom: v } }, setError)}
         />
       </SettingRow>
 
       {/* BETA-004:语言切换 */}
       <SettingRow
         label={tx('语言', 'Language')}
-        hint={tx("切换 UI 显示语言;'跟随系统'下 zh-* 系统显示中文,其他显示英文", "Switch UI language; 'Follow system' picks Chinese for zh-* locales, English otherwise")}
+        hint={tx(
+          "切换 UI 显示语言;'跟随系统'下 zh-* 系统显示中文,其他显示英文",
+          "Switch UI language; 'Follow system' picks Chinese for zh-* locales, English otherwise",
+        )}
       >
         <select
           className="settings-input"
@@ -471,7 +481,10 @@ function AppearancePanel({
       {windowStyle === 'macos' && (
         <SettingRow
           label={tx('红绿灯悬浮符号', 'Traffic-light hover symbols')}
-          hint={tx('macOS 风格下,鼠标移到红绿灯按钮上是否显示 ×/−/+;默认关(更克制)', 'Show ×/−/+ when hovering traffic-light buttons in macOS style; off by default (more minimal)')}
+          hint={tx(
+            'macOS 风格下,鼠标移到红绿灯按钮上是否显示 ×/−/+;默认关(更克制)',
+            'Show ×/−/+ when hovering traffic-light buttons in macOS style; off by default (more minimal)',
+          )}
         >
           <label className="settings-checkbox">
             <input
@@ -489,6 +502,52 @@ function AppearancePanel({
         </SettingRow>
       )}
 
+      {/* 终端侧边面板:markdown 渲染风格(Typora 式可扩展) */}
+      <SettingRow
+        label={tx('Markdown 渲染风格', 'Markdown style')}
+        hint={tx(
+          '终端侧边面板里 markdown 的渲染风格。跟随主题=与 marina 配色协调;GitHub=官方样式;列表里其它项来自主题目录的 .css(写 .markdown-body 选择器,增删即时生效)',
+          'How markdown renders in the side panel. Follow theme matches marina; GitHub uses the official style; other entries come from .css files in the themes folder (use the .markdown-body selector; add/remove takes effect immediately)',
+        )}
+      >
+        <select
+          className="settings-input"
+          value={state.settings.filePanel?.markdownStyle ?? 'auto'}
+          onChange={(e) =>
+            void updateSettings({ filePanel: { markdownStyle: e.target.value } }, setError)
+          }
+        >
+          <option value="auto">{tx('跟随主题', 'Follow theme')}</option>
+          <option value="github-light">GitHub Light</option>
+          <option value="github-dark">GitHub Dark</option>
+          {state.mdThemes.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name}
+            </option>
+          ))}
+        </select>
+      </SettingRow>
+
+      <SettingRow
+        label={tx('主题目录', 'Themes folder')}
+        hint={tx(
+          '自定义 markdown 主题(.css)放这里即出现在上方下拉。文件名即主题名,改完 CSS 切走再切回即生效',
+          'Drop custom markdown themes (.css) here to add them to the list above. The file name is the theme name; after editing CSS, switch away and back to see changes',
+        )}
+      >
+        <button
+          type="button"
+          className="settings-button"
+          onClick={() =>
+            window.api
+              .invoke(COMMAND_CHANNELS.MD_THEME_OPEN_DIR, {})
+              .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+          }
+        >
+          {tx('打开主题目录', 'Open themes folder')}
+        </button>
+      </SettingRow>
+
       {/* issue #4:隐藏顶部标签栏 */}
       <SettingRow
         label={tx('隐藏顶部标签栏', 'Hide top tab bar')}
@@ -502,10 +561,7 @@ function AppearancePanel({
             type="checkbox"
             checked={a?.hideTopTabBar ?? false}
             onChange={(e) =>
-              void updateSettings(
-                { appearance: { hideTopTabBar: e.target.checked } },
-                setError,
-              )
+              void updateSettings({ appearance: { hideTopTabBar: e.target.checked } }, setError)
             }
           />
           <span>{tx('启用', 'Enable')}</span>
@@ -519,11 +575,7 @@ function AppearancePanel({
 // Shell 与启动分类
 // ──────────────────────────────────────────────────────────────────
 
-function ShellPanel({
-  setError,
-}: {
-  setError: (msg: string | null) => void;
-}): JSX.Element {
+function ShellPanel({ setError }: { setError: (msg: string | null) => void }): JSX.Element {
   const { tx } = useTranslation();
   const state = useAppState();
   const sh = state.settings.shell;
@@ -534,17 +586,13 @@ function ShellPanel({
     Array<{ id: string; displayName: string; executablePath: string }>
   >([]);
   const [templateMode, setTemplateMode] = useState<
-    | { kind: 'list' }
-    | { kind: 'edit'; templateId: string | null /* null = 新建 */ }
+    { kind: 'list' } | { kind: 'edit'; templateId: string | null /* null = 新建 */ }
   >({ kind: 'list' });
 
   useEffect(() => {
     let cancelled = false;
     window.api
-      .invoke<unknown, ListShellsResponse>(
-        COMMAND_CHANNELS.SETTINGS_LIST_SHELLS,
-        {},
-      )
+      .invoke<unknown, ListShellsResponse>(COMMAND_CHANNELS.SETTINGS_LIST_SHELLS, {})
       .then((res) => {
         if (!cancelled) setShells(res.shells);
       })
@@ -571,18 +619,23 @@ function ShellPanel({
     <section className="settings-panel">
       <h2 className="settings-panel-title">{tx('Shell 与启动', 'Shell & Startup')}</h2>
 
-      <SettingRow label={tx('默认 shell', 'Default shell')} hint={tx('新终端启动时使用的 shell', 'Shell used when a new terminal starts')}>
+      <SettingRow
+        label={tx('默认 shell', 'Default shell')}
+        hint={tx('新终端启动时使用的 shell', 'Shell used when a new terminal starts')}
+      >
         <select
           className="settings-input"
           value={defaultShellId}
           onChange={(e) =>
-            void updateSettings(
-              { shell: { defaultShellId: e.target.value } },
-              setError,
-            )
+            void updateSettings({ shell: { defaultShellId: e.target.value } }, setError)
           }
         >
-          <option value="">{tx('自动检测最优(pwsh > powershell > cmd)', 'Auto-detect best (pwsh > powershell > cmd)')}</option>
+          <option value="">
+            {tx(
+              '自动检测最优(pwsh > powershell > cmd)',
+              'Auto-detect best (pwsh > powershell > cmd)',
+            )}
+          </option>
           {shells.map((s) => (
             <option key={s.id} value={s.id}>
               {s.displayName} — {s.executablePath}
@@ -637,7 +690,13 @@ function ShellPanel({
         </div>
       </SettingRow>
 
-      <SettingRow label={tx('启动模板', 'Launch templates')} hint={tx('新建终端时可选的模板;内置不可删,可改名', 'Templates for new terminals; built-ins can be renamed but not deleted')}>
+      <SettingRow
+        label={tx('启动模板', 'Launch templates')}
+        hint={tx(
+          '新建终端时可选的模板;内置不可删,可改名',
+          'Templates for new terminals; built-ins can be renamed but not deleted',
+        )}
+      >
         <TemplateList
           onEdit={(id) => setTemplateMode({ kind: 'edit', templateId: id })}
           onCreate={() => setTemplateMode({ kind: 'edit', templateId: null })}
@@ -669,11 +728,9 @@ function TemplateList({
 
   const handleSetDefault = (id: string): void => {
     setError(null);
-    window.api
-      .invoke(COMMAND_CHANNELS.TEMPLATE_SET_DEFAULT, { id })
-      .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : String(err));
-      });
+    window.api.invoke(COMMAND_CHANNELS.TEMPLATE_SET_DEFAULT, { id }).catch((err: unknown) => {
+      setError(err instanceof Error ? err.message : String(err));
+    });
   };
 
   const handleDelete = async (id: string): Promise<void> => {
@@ -690,11 +747,9 @@ function TemplateList({
     });
     if (!ok) return;
     setError(null);
-    window.api
-      .invoke(COMMAND_CHANNELS.TEMPLATE_DELETE, { id })
-      .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : String(err));
-      });
+    window.api.invoke(COMMAND_CHANNELS.TEMPLATE_DELETE, { id }).catch((err: unknown) => {
+      setError(err instanceof Error ? err.message : String(err));
+    });
   };
 
   return (
@@ -709,8 +764,13 @@ function TemplateList({
           </span>
           <span className="template-list-name">{t.name}</span>
           {t.isBuiltin && <span className="template-list-tag">{tx('内置', 'Built-in')}</span>}
-          {t.id === defaultId && <span className="template-list-tag default">{tx('默认', 'Default')}</span>}
-          <span className="template-list-cmd" title={t.command || tx('(纯 shell)', '(plain shell)')}>
+          {t.id === defaultId && (
+            <span className="template-list-tag default">{tx('默认', 'Default')}</span>
+          )}
+          <span
+            className="template-list-cmd"
+            title={t.command || tx('(纯 shell)', '(plain shell)')}
+          >
             {t.command || tx('(纯 shell)', '(plain shell)')}
           </span>
           <div className="template-list-actions">
@@ -723,11 +783,7 @@ function TemplateList({
                 {tx('设为默认', 'Set as default')}
               </button>
             )}
-            <button
-              type="button"
-              className="settings-button"
-              onClick={() => onEdit(t.id)}
-            >
+            <button type="button" className="settings-button" onClick={() => onEdit(t.id)}>
               {tx('编辑', 'Edit')}
             </button>
             {!t.isBuiltin && (
@@ -812,11 +868,19 @@ function TemplateEditor({
         if (!trimmed) continue;
         const eqIdx = trimmed.indexOf('=');
         if (eqIdx <= 0) {
-          throw new Error(tx(`环境变量行格式错: "${line}" 应为 KEY=VALUE`, `Invalid env line "${line}", expected KEY=VALUE`));
+          throw new Error(
+            tx(
+              `环境变量行格式错: "${line}" 应为 KEY=VALUE`,
+              `Invalid env line "${line}", expected KEY=VALUE`,
+            ),
+          );
         }
         const key = trimmed.slice(0, eqIdx).trim();
         const value = trimmed.slice(eqIdx + 1);
-        if (!key) throw new Error(tx(`环境变量名不能为空: "${line}"`, `Env var name cannot be empty: "${line}"`));
+        if (!key)
+          throw new Error(
+            tx(`环境变量名不能为空: "${line}"`, `Env var name cannot be empty: "${line}"`),
+          );
         parsedEnv[key] = value;
       }
 
@@ -871,10 +935,15 @@ function TemplateEditor({
         >
           {tx('< 返回', '< Back')}
         </button>
-        {isCreate ? tx('新建模板', 'New template') : tx(`编辑模板:${draft.name}`, `Edit template: ${draft.name}`)}
+        {isCreate
+          ? tx('新建模板', 'New template')
+          : tx(`编辑模板:${draft.name}`, `Edit template: ${draft.name}`)}
         {draft.isBuiltin && (
           <span className="template-list-tag" style={{ marginLeft: 8 }}>
-            {tx('内置(可改 name/icon/command/args/env,不可删)', 'Built-in (editable, not deletable)')}
+            {tx(
+              '内置(可改 name/icon/command/args/env,不可删)',
+              'Built-in (editable, not deletable)',
+            )}
           </span>
         )}
       </h2>
@@ -901,7 +970,13 @@ function TemplateEditor({
         />
       </SettingRow>
 
-      <SettingRow label={tx('命令', 'Command')} hint={tx('留空表示启动纯 shell;不要写 shell 路径,Marina 会自动注入 shell', 'Leave empty for plain shell; do not specify the shell binary, Marina injects it')}>
+      <SettingRow
+        label={tx('命令', 'Command')}
+        hint={tx(
+          '留空表示启动纯 shell;不要写 shell 路径,Marina 会自动注入 shell',
+          'Leave empty for plain shell; do not specify the shell binary, Marina injects it',
+        )}
+      >
         <input
           type="text"
           className="settings-input"
@@ -911,7 +986,13 @@ function TemplateEditor({
         />
       </SettingRow>
 
-      <SettingRow label={tx('参数', 'Arguments')} hint={tx('空格分隔(简单 shell quoting,有空格的参数请避免)', 'Space-separated (avoid args with spaces — simple shell quoting only)')}>
+      <SettingRow
+        label={tx('参数', 'Arguments')}
+        hint={tx(
+          '空格分隔(简单 shell quoting,有空格的参数请避免)',
+          'Space-separated (avoid args with spaces — simple shell quoting only)',
+        )}
+      >
         <input
           type="text"
           className="settings-input"
@@ -923,14 +1004,20 @@ function TemplateEditor({
 
       <SettingRow
         label={tx('环境变量', 'Environment variables')}
-        hint={tx('每行一个 KEY=VALUE。默认遮罩,点👁切显示(防被旁人看到 API key)', 'One KEY=VALUE per line. Masked by default; click 👁 to reveal (avoid leaking API keys)')}
+        hint={tx(
+          '每行一个 KEY=VALUE。默认遮罩,点👁切显示(防被旁人看到 API key)',
+          'One KEY=VALUE per line. Masked by default; click 👁 to reveal (avoid leaking API keys)',
+        )}
       >
         <EnvTextarea value={envText} onChange={setEnvText} />
       </SettingRow>
 
       <SettingRow
         label={tx('启动方式', 'Launch mode')}
-        hint={tx('"先启动 shell"让命令退出后用户能继续看到 shell 提示符;"直接运行命令"启动更快', '"Shell first" keeps a prompt visible after the command exits; "Run command directly" is faster to start')}
+        hint={tx(
+          '"先启动 shell"让命令退出后用户能继续看到 shell 提示符;"直接运行命令"启动更快',
+          '"Shell first" keeps a prompt visible after the command exits; "Run command directly" is faster to start',
+        )}
       >
         <div className="settings-radio-group">
           <label className="settings-radio">
@@ -986,9 +1073,7 @@ function TemplateEditor({
               type="radio"
               name="post-exit"
               checked={draft.postExitAction === 'hold'}
-              onChange={() =>
-                setDraft({ ...draft, postExitAction: 'hold' as PostExitAction })
-              }
+              onChange={() => setDraft({ ...draft, postExitAction: 'hold' as PostExitAction })}
             />
             {tx('保留显示,等待用户手动关闭', 'Hold view until user closes manually')}
           </label>
@@ -1021,11 +1106,7 @@ function TemplateEditor({
 // 行为分类
 // ──────────────────────────────────────────────────────────────────
 
-function BehaviorPanel({
-  setError,
-}: {
-  setError: (msg: string | null) => void;
-}): JSX.Element {
+function BehaviorPanel({ setError }: { setError: (msg: string | null) => void }): JSX.Element {
   const { tx } = useTranslation();
   const state = useAppState();
   const b = state.settings.behavior;
@@ -1038,7 +1119,10 @@ function BehaviorPanel({
     <section className="settings-panel">
       <h2 className="settings-panel-title">{tx('行为', 'Behavior')}</h2>
 
-      <SettingRow label={tx('启动时行为', 'Startup behavior')} hint={tx('配开机启动用', 'Used together with auto-start at login')}>
+      <SettingRow
+        label={tx('启动时行为', 'Startup behavior')}
+        hint={tx('配开机启动用', 'Used together with auto-start at login')}
+      >
         <div className="settings-radio-group">
           <label className="settings-radio">
             <input
@@ -1083,40 +1167,46 @@ function BehaviorPanel({
 
       <SettingRow
         label={tx('完全退出前确认', 'Confirm before full quit')}
-        hint={tx('托盘点"完全退出"且有 session 在跑时弹确认。关单窗口永远不弹', 'Asks for confirmation when quitting from the tray with active sessions. Never asked when closing a single window.')}
+        hint={tx(
+          '托盘点"完全退出"且有 session 在跑时弹确认。关单窗口永远不弹',
+          'Asks for confirmation when quitting from the tray with active sessions. Never asked when closing a single window.',
+        )}
       >
         <label className="settings-checkbox">
           <input
             type="checkbox"
             checked={confirmOnQuit}
             onChange={(e) =>
-              void updateSettings(
-                { behavior: { confirmOnQuit: e.target.checked } },
-                setError,
-              )
+              void updateSettings({ behavior: { confirmOnQuit: e.target.checked } }, setError)
             }
           />
           <span>{tx('启用', 'Enable')}</span>
         </label>
       </SettingRow>
 
-      <SettingRow label={tx('选中即复制', 'Copy on select')} hint={tx('终端选中文本自动复制(类 Linux)', 'Automatically copy selected text in terminal (Linux style)')}>
+      <SettingRow
+        label={tx('选中即复制', 'Copy on select')}
+        hint={tx(
+          '终端选中文本自动复制(类 Linux)',
+          'Automatically copy selected text in terminal (Linux style)',
+        )}
+      >
         <label className="settings-checkbox">
           <input
             type="checkbox"
             checked={selectOnCopy}
             onChange={(e) =>
-              void updateSettings(
-                { behavior: { selectOnCopy: e.target.checked } },
-                setError,
-              )
+              void updateSettings({ behavior: { selectOnCopy: e.target.checked } }, setError)
             }
           />
           <span>{tx('启用', 'Enable')}</span>
         </label>
       </SettingRow>
 
-      <SettingRow label={tx('终端右键行为', 'Terminal right-click action')} hint={tx('弹菜单 或 直接粘贴', 'Show menu or paste directly')}>
+      <SettingRow
+        label={tx('终端右键行为', 'Terminal right-click action')}
+        hint={tx('弹菜单 或 直接粘贴', 'Show menu or paste directly')}
+      >
         <div className="settings-radio-group">
           <label className="settings-radio">
             <input
@@ -1179,9 +1269,7 @@ function KeybindingsReference(): JSX.Element {
   const isMac = navigator.platform.toLowerCase().includes('mac');
   return (
     <div className="settings-keybindings-card">
-      <h3 className="settings-keybindings-title">
-        {tx('终端快捷键速查', 'Terminal keybindings')}
-      </h3>
+      <h3 className="settings-keybindings-title">{tx('终端快捷键速查', 'Terminal keybindings')}</h3>
       <p className="settings-keybindings-hint">
         {tx(
           '此清单为唯一权威。Marina 不支持其他应用内快捷键(spec §7.1)。',
@@ -1214,11 +1302,7 @@ function KeybindingsReference(): JSX.Element {
 // 数据分类 (chunk 4 完整接通,chunk 2 仅 "打开数据目录")
 // ──────────────────────────────────────────────────────────────────
 
-function DataPanel({
-  setError,
-}: {
-  setError: (msg: string | null) => void;
-}): JSX.Element {
+function DataPanel({ setError }: { setError: (msg: string | null) => void }): JSX.Element {
   const { tx } = useTranslation();
   const [busy, setBusy] = useState<'export' | 'import' | null>(null);
   const [lastExportPath, setLastExportPath] = useState<string | null>(null);
@@ -1250,10 +1334,7 @@ function DataPanel({
   useEffect(() => {
     let cancelled = false;
     window.api
-      .invoke<unknown, ListShellsResponse>(
-        COMMAND_CHANNELS.SETTINGS_LIST_SHELLS,
-        {},
-      )
+      .invoke<unknown, ListShellsResponse>(COMMAND_CHANNELS.SETTINGS_LIST_SHELLS, {})
       .then((res) => {
         if (cancelled) return;
         const distros = res.shells
@@ -1275,11 +1356,9 @@ function DataPanel({
 
   const handleOpenDataDir = (): void => {
     setError(null);
-    window.api
-      .invoke(COMMAND_CHANNELS.SYSTEM_OPEN_DATA_DIR, {})
-      .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : String(err));
-      });
+    window.api.invoke(COMMAND_CHANNELS.SYSTEM_OPEN_DATA_DIR, {}).catch((err: unknown) => {
+      setError(err instanceof Error ? err.message : String(err));
+    });
   };
 
   const handleExport = async (): Promise<void> => {
@@ -1308,7 +1387,12 @@ function DataPanel({
         {},
       );
       if (res.status === 'error') {
-        setError(tx(`导入失败:${res.errorMessage ?? '未知错误'}`, `Import failed: ${res.errorMessage ?? 'unknown error'}`));
+        setError(
+          tx(
+            `导入失败:${res.errorMessage ?? '未知错误'}`,
+            `Import failed: ${res.errorMessage ?? 'unknown error'}`,
+          ),
+        );
       }
       // 'imported' / 'cancelled' 不需提示;'imported' 之后 main 会立即 relaunch
     } catch (err: unknown) {
@@ -1321,24 +1405,24 @@ function DataPanel({
   const handleAddWslBookmark = async (): Promise<void> => {
     setError(null);
     try {
-      const distro = wslDistroId.startsWith('wsl:')
-        ? wslDistroId.slice('wsl:'.length)
-        : '';
+      const distro = wslDistroId.startsWith('wsl:') ? wslDistroId.slice('wsl:'.length) : '';
       if (!distro) {
         setError(tx('请先选择 WSL 发行版', 'Select a WSL distro first'));
         return;
       }
       const normalizedPath = wslPath.trim().replaceAll('\\', '/');
       const usePickedUnc =
-        wslPickedUncPath !== null &&
-        formatDisplayPath(wslPickedUncPath) === normalizedPath;
+        wslPickedUncPath !== null && formatDisplayPath(wslPickedUncPath) === normalizedPath;
       if (!normalizedPath.startsWith('/') && !usePickedUnc) {
-        setError(tx('WSL 路径必须是 Linux 绝对路径,例如 /home/user/project', 'WSL path must be an absolute Linux path, for example /home/user/project'));
+        setError(
+          tx(
+            'WSL 路径必须是 Linux 绝对路径,例如 /home/user/project',
+            'WSL path must be an absolute Linux path, for example /home/user/project',
+          ),
+        );
         return;
       }
-      const uncPath = usePickedUnc
-        ? wslPickedUncPath
-        : toWslUncPath(distro, normalizedPath);
+      const uncPath = usePickedUnc ? wslPickedUncPath : toWslUncPath(distro, normalizedPath);
       await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_ADD, {
         path: uncPath,
         ...(wslName.trim() ? { displayName: wslName.trim() } : {}),
@@ -1354,9 +1438,7 @@ function DataPanel({
   const handlePickWslFolder = async (): Promise<void> => {
     setError(null);
     try {
-      const distro = wslDistroId.startsWith('wsl:')
-        ? wslDistroId.slice('wsl:'.length)
-        : '';
+      const distro = wslDistroId.startsWith('wsl:') ? wslDistroId.slice('wsl:'.length) : '';
       if (!distro) {
         setError(tx('请先选择 WSL 发行版', 'Select a WSL distro first'));
         return;
@@ -1379,7 +1461,10 @@ function DataPanel({
 
       <SettingRow
         label={tx('WSL 文件夹', 'WSL folder')}
-        hint={tx('选择 WSL 发行版并填写 Linux 绝对路径;添加后会出现在左侧对应 WSL 分组', 'Pick a WSL distro and enter an absolute Linux path; it appears under the matching WSL group in the sidebar')}
+        hint={tx(
+          '选择 WSL 发行版并填写 Linux 绝对路径;添加后会出现在左侧对应 WSL 分组',
+          'Pick a WSL distro and enter an absolute Linux path; it appears under the matching WSL group in the sidebar',
+        )}
       >
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           <select
@@ -1407,19 +1492,38 @@ function DataPanel({
             }}
             placeholder="/home/user/project"
           />
-          <input className="settings-input" value={wslName} onChange={(e) => setWslName(e.target.value)} placeholder={tx('显示名(可选)', 'Display name (optional)')} />
-          <button type="button" className="settings-button" onClick={() => void handleAddWslBookmark()} disabled={wslDistros.length === 0}>
+          <input
+            className="settings-input"
+            value={wslName}
+            onChange={(e) => setWslName(e.target.value)}
+            placeholder={tx('显示名(可选)', 'Display name (optional)')}
+          />
+          <button
+            type="button"
+            className="settings-button"
+            onClick={() => void handleAddWslBookmark()}
+            disabled={wslDistros.length === 0}
+          >
             {tx('加入 WSL', 'Add WSL')}
           </button>
-          <button type="button" className="settings-button" onClick={() => void handlePickWslFolder()}>
+          <button
+            type="button"
+            className="settings-button"
+            onClick={() => void handlePickWslFolder()}
+          >
             {tx('选择文件夹', 'Pick folder')}
           </button>
         </div>
       </SettingRow>
 
-      <SettingRow label={tx('数据目录', 'Data directory')} hint={tx('所有 Marina 配置文件存放处', 'Where all Marina configuration files live')}>
+      <SettingRow
+        label={tx('数据目录', 'Data directory')}
+        hint={tx('所有 Marina 配置文件存放处', 'Where all Marina configuration files live')}
+      >
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <span className="settings-info-text" title={dataDir}>{dataDir}</span>
+          <span className="settings-info-text" title={dataDir}>
+            {dataDir}
+          </span>
           <button type="button" className="settings-button" onClick={handleOpenDataDir}>
             {tx('在文件管理器中打开', 'Open in file manager')}
           </button>
@@ -1428,7 +1532,10 @@ function DataPanel({
 
       <SettingRow
         label={tx('导出设置', 'Export settings')}
-        hint={tx('把全部配置(收藏 / 最近 / 模板 / 设置)导出为 JSON 文件', 'Export everything (bookmarks / recent / templates / settings) to a JSON file')}
+        hint={tx(
+          '把全部配置(收藏 / 最近 / 模板 / 设置)导出为 JSON 文件',
+          'Export everything (bookmarks / recent / templates / settings) to a JSON file',
+        )}
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <button
@@ -1449,7 +1556,10 @@ function DataPanel({
 
       <SettingRow
         label={tx('导入设置', 'Import settings')}
-        hint={tx('选择导出文件,二次确认后整体替换并重启应用', 'Pick an export file; after a confirm, everything is replaced and the app restarts')}
+        hint={tx(
+          '选择导出文件,二次确认后整体替换并重启应用',
+          'Pick an export file; after a confirm, everything is replaced and the app restarts',
+        )}
       >
         <button
           type="button"
@@ -1473,11 +1583,7 @@ function DataPanel({
 //     本面板下次进设置不再显示)
 // ──────────────────────────────────────────────────────────────────
 
-function RemotePanel({
-  setError,
-}: {
-  setError: (msg: string | null) => void;
-}): JSX.Element {
+function RemotePanel({ setError }: { setError: (msg: string | null) => void }): JSX.Element {
   const { tx } = useTranslation();
   const state = useAppState();
   const [sshName, setSshName] = useState('');
@@ -1743,9 +1849,7 @@ function RemotePanel({
             <select
               className="settings-input"
               value={sshAuthType}
-              onChange={(e) =>
-                setSshAuthType(e.target.value as 'keyFile' | 'password')
-              }
+              onChange={(e) => setSshAuthType(e.target.value as 'keyFile' | 'password')}
             >
               <option value="password">{tx('密码', 'Password')}</option>
               <option value="keyFile">{tx('密钥文件', 'Key file')}</option>
@@ -1788,10 +1892,7 @@ function RemotePanel({
                 onChange={(e) => setSshPassword(e.target.value)}
                 placeholder={
                   editingProfileId
-                    ? tx(
-                        '新密码(留空则保留旧密码)',
-                        'New password (leave blank to keep existing)',
-                      )
+                    ? tx('新密码(留空则保留旧密码)', 'New password (leave blank to keep existing)')
                     : tx(
                         '密码(可选,留空则连接时手动输入)',
                         'Password (optional; leave blank to type at connect time)',
@@ -1825,16 +1926,10 @@ function RemotePanel({
               className="settings-button"
               onClick={() => void handleSubmitSshProfile()}
             >
-              {editingProfileId
-                ? tx('保存修改', 'Save changes')
-                : tx('添加服务器', 'Add server')}
+              {editingProfileId ? tx('保存修改', 'Save changes') : tx('添加服务器', 'Add server')}
             </button>
             {editingProfileId && (
-              <button
-                type="button"
-                className="settings-button"
-                onClick={resetSshForm}
-              >
+              <button type="button" className="settings-button" onClick={resetSshForm}>
                 {tx('取消', 'Cancel')}
               </button>
             )}
@@ -1917,15 +2012,9 @@ function RemotePanel({
               )}
             </>
           ) : (
-            <span className="ssh-agent-status-line warn">
-              ⚠️ {agentStatus.message}
-            </span>
+            <span className="ssh-agent-status-line warn">⚠️ {agentStatus.message}</span>
           )}
-          <button
-            type="button"
-            className="settings-button"
-            onClick={refreshAgent}
-          >
+          <button type="button" className="settings-button" onClick={refreshAgent}>
             {tx('刷新', 'Refresh')}
           </button>
         </div>
@@ -1944,18 +2033,20 @@ function RemotePanel({
               type="checkbox"
               checked={includeSshConfig}
               onChange={(e) =>
-                void updateSettings(
-                  { advanced: { includeSshConfig: e.target.checked } },
-                  setError,
-                )
+                void updateSettings({ advanced: { includeSshConfig: e.target.checked } }, setError)
               }
             />
-            <span>{tx('合并 ~/.ssh/config 到 profile 列表', 'Merge ~/.ssh/config into profile list')}</span>
+            <span>
+              {tx('合并 ~/.ssh/config 到 profile 列表', 'Merge ~/.ssh/config into profile list')}
+            </span>
           </label>
           {includeSshConfig && (
             <>
               <span className="settings-info-text">
-                {tx(`发现 ${sshConfigEntries.length} 条 Host`, `Discovered ${sshConfigEntries.length} Host entries`)}
+                {tx(
+                  `发现 ${sshConfigEntries.length} 条 Host`,
+                  `Discovered ${sshConfigEntries.length} Host entries`,
+                )}
               </span>
               {sshConfigEntries.length > 0 && (
                 <ul className="ssh-config-list">
@@ -1965,7 +2056,8 @@ function RemotePanel({
                       {e.hostName}:{e.port}
                       {e.proxyJump.length > 0 && (
                         <span className="ssh-config-hint">
-                          {' '}· {tx('via', 'via')} {e.proxyJump.join(',')}
+                          {' '}
+                          · {tx('via', 'via')} {e.proxyJump.join(',')}
                         </span>
                       )}
                     </li>
@@ -1980,11 +2072,7 @@ function RemotePanel({
                   )}
                 </ul>
               )}
-              <button
-                type="button"
-                className="settings-button"
-                onClick={refreshSshConfig}
-              >
+              <button type="button" className="settings-button" onClick={refreshSshConfig}>
                 {tx('重新加载 ssh_config', 'Reload ssh_config')}
               </button>
             </>
@@ -2004,10 +2092,7 @@ function RemotePanel({
             type="checkbox"
             checked={enableControlMaster}
             onChange={(e) =>
-              void updateSettings(
-                { advanced: { enableControlMaster: e.target.checked } },
-                setError,
-              )
+              void updateSettings({ advanced: { enableControlMaster: e.target.checked } }, setError)
             }
           />
           <span>{tx('启用 ControlMaster(推荐)', 'Enable ControlMaster (recommended)')}</span>
@@ -2030,7 +2115,8 @@ function RemotePanel({
                 <ul className="ssh-known-hosts-changes">
                   {knownHosts.changes.map((c) => (
                     <li key={`${c.host}:${c.newFingerprint}`}>
-                      ⚠️ <strong>{c.host}</strong> {c.keyType} {tx('指纹已变化', 'fingerprint changed')}:
+                      ⚠️ <strong>{c.host}</strong> {c.keyType}{' '}
+                      {tx('指纹已变化', 'fingerprint changed')}:
                       <br />
                       &nbsp;&nbsp;{tx('原', 'was')}: <code>{c.previousFingerprint}</code>
                       <br />
@@ -2046,8 +2132,8 @@ function RemotePanel({
                 <ul className="ssh-known-hosts-list">
                   {knownHosts.entries.slice(0, 10).map((e) => (
                     <li key={`${e.hosts}#${e.fingerprint}`}>
-                      <strong>{e.isHashed ? '(hashed)' : e.hosts}</strong> · {e.keyType}{' '}
-                      · <code>{e.fingerprint}</code>
+                      <strong>{e.isHashed ? '(hashed)' : e.hosts}</strong> · {e.keyType} ·{' '}
+                      <code>{e.fingerprint}</code>
                     </li>
                   ))}
                   {knownHosts.entries.length > 10 && (
@@ -2060,11 +2146,7 @@ function RemotePanel({
                   )}
                 </ul>
               )}
-              <button
-                type="button"
-                className="settings-button"
-                onClick={refreshKnownHosts}
-              >
+              <button type="button" className="settings-button" onClick={refreshKnownHosts}>
                 {tx('刷新', 'Refresh')}
               </button>
             </>
@@ -2084,10 +2166,7 @@ function RemotePanel({
             type="checkbox"
             checked={enableRemote}
             onChange={(e) =>
-              void updateSettings(
-                { advanced: { enableRemote: e.target.checked } },
-                setError,
-              )
+              void updateSettings({ advanced: { enableRemote: e.target.checked } }, setError)
             }
           />
           <span>{tx('启用远程入口', 'Enable remote entry')}</span>
@@ -2136,10 +2215,7 @@ function SystemIntegrationPanel({
     void refreshStatus();
   }, [refreshStatus]);
 
-  const handleSet = async (
-    kind: 'classic' | 'modern',
-    enabled: boolean,
-  ): Promise<void> => {
+  const handleSet = async (kind: 'classic' | 'modern', enabled: boolean): Promise<void> => {
     setError(null);
     setBusy(kind);
     try {
@@ -2147,10 +2223,10 @@ function SystemIntegrationPanel({
         kind === 'classic'
           ? COMMAND_CHANNELS.EXPLORER_INTEGRATION_SET_CLASSIC
           : COMMAND_CHANNELS.EXPLORER_INTEGRATION_SET_MODERN;
-      const res = await window.api.invoke<
-        { enabled: boolean },
-        SetExplorerIntegrationResponse
-      >(channel, { enabled });
+      const res = await window.api.invoke<{ enabled: boolean }, SetExplorerIntegrationResponse>(
+        channel,
+        { enabled },
+      );
       setStatus(res.status);
       if (!res.ok) {
         setError(res.message || `操作失败 (${kind})`);
@@ -2160,7 +2236,10 @@ function SystemIntegrationPanel({
         // 按钮(用户选了最保守的方案)。详见 docs/known-issues.md。
         toast.push({
           kind: 'info',
-          message: tx('右键菜单已更新,确保设置生效请重启计算机', 'Context menu updated. Restart the computer to ensure the change takes effect.'),
+          message: tx(
+            '右键菜单已更新,确保设置生效请重启计算机',
+            'Context menu updated. Restart the computer to ensure the change takes effect.',
+          ),
         });
       }
     } catch (err) {
@@ -2183,10 +2262,7 @@ function SystemIntegrationPanel({
             type="checkbox"
             checked={autoStart}
             onChange={(e) =>
-              void updateSettings(
-                { behavior: { autoStart: e.target.checked } },
-                setError,
-              )
+              void updateSettings({ behavior: { autoStart: e.target.checked } }, setError)
             }
           />
           <span>{tx('开机启动', 'Launch on login')}</span>
@@ -2196,7 +2272,10 @@ function SystemIntegrationPanel({
       {/* —— Win11 新菜单卡片 —— */}
       <ExplorerIntegrationCard
         title={tx('Win11 新菜单', 'Win11 modern menu')}
-        subtitle={tx('圆角右键菜单,无需展开「显示更多选项」;走 IExplorerCommand,需 MSIX 包 + 证书', 'Modern right-click menu; uses IExplorerCommand, requires MSIX package + cert')}
+        subtitle={tx(
+          '圆角右键菜单,无需展开「显示更多选项」;走 IExplorerCommand,需 MSIX 包 + 证书',
+          'Modern right-click menu; uses IExplorerCommand, requires MSIX package + cert',
+        )}
         status={status?.modern}
         unsupportedReason={status?.modernUnsupportedReason ?? null}
         busy={busy === 'modern'}
@@ -2205,7 +2284,8 @@ function SystemIntegrationPanel({
           status?.modern === 'enabled' && status.package ? (
             <div className="explorer-integration-meta">
               <div>
-                <strong>{tx('包:', 'Package:')}</strong> {status.package.name} {status.package.version}
+                <strong>{tx('包:', 'Package:')}</strong> {status.package.name}{' '}
+                {status.package.version}
               </div>
               <div className="text-muted" style={{ wordBreak: 'break-all' }}>
                 {status.package.installLocation}
@@ -2219,7 +2299,10 @@ function SystemIntegrationPanel({
       {/* —— 经典右键菜单卡片 —— */}
       <ExplorerIntegrationCard
         title={tx('经典右键菜单', 'Classic right-click menu')}
-        subtitle={tx('HKCU 注册表项,藏在「显示更多选项」内;Win10 / Win11 通用,无 UAC、无证书', 'HKCU registry entries, under "Show more options"; works on Win10 / Win11, no UAC or cert needed')}
+        subtitle={tx(
+          'HKCU 注册表项,藏在「显示更多选项」内;Win10 / Win11 通用,无 UAC、无证书',
+          'HKCU registry entries, under "Show more options"; works on Win10 / Win11, no UAC or cert needed',
+        )}
         status={status?.classic}
         unsupportedReason={status?.classicUnsupportedReason ?? null}
         busy={busy === 'classic'}
@@ -2231,7 +2314,10 @@ function SystemIntegrationPanel({
       {/* —— 打开方式(纯偏好,保留在 settings.json) —— */}
       <SettingRow
         label={tx('打开方式', 'Open in')}
-        hint={tx('Marina 已在运行时,从 Explorer 触发的新会话开在哪里', 'When Marina is already running, where new sessions from the file manager appear')}
+        hint={tx(
+          'Marina 已在运行时,从 Explorer 触发的新会话开在哪里',
+          'When Marina is already running, where new sessions from the file manager appear',
+        )}
       >
         <div className="settings-radio-group">
           <label className="settings-radio">
@@ -2335,12 +2421,12 @@ function ExplorerIntegrationCard({
             <strong>{tx('证书:', 'Cert:')}</strong> {certInfo.subject}
           </div>
           <div className="text-muted">
-            {tx('指纹', 'Fingerprint')} {certInfo.thumbprint.slice(0, 8)}…{certInfo.thumbprint.slice(-4)} · {tx('至', 'until')}{' '}
+            {tx('指纹', 'Fingerprint')} {certInfo.thumbprint.slice(0, 8)}…
+            {certInfo.thumbprint.slice(-4)} · {tx('至', 'until')}{' '}
             {new Date(certInfo.notAfter).toISOString().slice(0, 10)} · {tx('已信任', 'trusted')}
           </div>
         </div>
       )}
-
     </div>
   );
 }
@@ -2349,11 +2435,7 @@ function ExplorerIntegrationCard({
 // AI 助手分类(BETA-031)
 // ──────────────────────────────────────────────────────────────────
 
-function AiPanel({
-  setError,
-}: {
-  setError: (msg: string | null) => void;
-}): JSX.Element {
+function AiPanel({ setError }: { setError: (msg: string | null) => void }): JSX.Element {
   const { tx } = useTranslation();
   const state = useAppState();
   const toast = useToast();
@@ -2377,12 +2459,17 @@ function AiPanel({
       );
       toast.push({
         kind: res.ok ? 'success' : 'error',
-        message: res.message || (res.ok ? tx('连接成功', 'Connected') : tx('连接失败', 'Connection failed')),
+        message:
+          res.message ||
+          (res.ok ? tx('连接成功', 'Connected') : tx('连接失败', 'Connection failed')),
       });
     } catch (err) {
       toast.push({
         kind: 'error',
-        message: tx(`测试失败:${err instanceof Error ? err.message : String(err)}`, `Test failed: ${err instanceof Error ? err.message : String(err)}`),
+        message: tx(
+          `测试失败:${err instanceof Error ? err.message : String(err)}`,
+          `Test failed: ${err instanceof Error ? err.message : String(err)}`,
+        ),
       });
     } finally {
       setTesting(false);
@@ -2399,7 +2486,10 @@ function AiPanel({
         )}
       </p>
 
-      <SettingRow label={tx('服务商', 'Provider')} hint={tx('选择后才会激活其它字段', 'Other fields activate after you pick a provider')}>
+      <SettingRow
+        label={tx('服务商', 'Provider')}
+        hint={tx('选择后才会激活其它字段', 'Other fields activate after you pick a provider')}
+      >
         <select
           className="settings-input"
           value={provider ?? ''}
@@ -2421,16 +2511,20 @@ function AiPanel({
 
       {provider !== null && (
         <>
-          <SettingRow label={tx('API key', 'API key')} hint={tx('存储于本地 settings.json,导出时会带出', 'Stored locally in settings.json and included when exporting')}>
+          <SettingRow
+            label={tx('API key', 'API key')}
+            hint={tx(
+              '存储于本地 settings.json,导出时会带出',
+              'Stored locally in settings.json and included when exporting',
+            )}
+          >
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
               <input
                 type={showKey ? 'text' : 'password'}
                 className="settings-input"
                 value={apiKey}
                 placeholder={provider === 'anthropic' ? 'sk-ant-…' : 'sk-…'}
-                onChange={(e) =>
-                  void updateSettings({ ai: { apiKey: e.target.value } }, setError)
-                }
+                onChange={(e) => void updateSettings({ ai: { apiKey: e.target.value } }, setError)}
                 style={{ minWidth: 280 }}
               />
               <button
@@ -2445,43 +2539,45 @@ function AiPanel({
 
           <SettingRow
             label={tx('Base URL', 'Base URL')}
-            hint={tx('留空走官方默认;代理网关 / Azure OpenAI / 自托管 LLM 在此覆盖', 'Empty = official default; override here for proxy / Azure OpenAI / self-hosted LLM')}
+            hint={tx(
+              '留空走官方默认;代理网关 / Azure OpenAI / 自托管 LLM 在此覆盖',
+              'Empty = official default; override here for proxy / Azure OpenAI / self-hosted LLM',
+            )}
           >
             <input
               type="text"
               className="settings-input"
               value={baseURL}
               placeholder={
-                provider === 'anthropic'
-                  ? 'https://api.anthropic.com'
-                  : 'https://api.openai.com/v1'
+                provider === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.openai.com/v1'
               }
-              onChange={(e) =>
-                void updateSettings({ ai: { baseURL: e.target.value } }, setError)
-              }
+              onChange={(e) => void updateSettings({ ai: { baseURL: e.target.value } }, setError)}
               style={{ minWidth: 320 }}
               spellCheck={false}
             />
           </SettingRow>
 
-          <SettingRow label={tx('模型', 'Model')} hint={tx('留空走默认(haiku / gpt-4o-mini)', 'Empty = default (haiku / gpt-4o-mini)')}>
+          <SettingRow
+            label={tx('模型', 'Model')}
+            hint={tx('留空走默认(haiku / gpt-4o-mini)', 'Empty = default (haiku / gpt-4o-mini)')}
+          >
             <input
               type="text"
               className="settings-input"
               value={model}
-              placeholder={
-                provider === 'anthropic'
-                  ? 'claude-haiku-4-5-20251001'
-                  : 'gpt-4o-mini'
-              }
-              onChange={(e) =>
-                void updateSettings({ ai: { model: e.target.value } }, setError)
-              }
+              placeholder={provider === 'anthropic' ? 'claude-haiku-4-5-20251001' : 'gpt-4o-mini'}
+              onChange={(e) => void updateSettings({ ai: { model: e.target.value } }, setError)}
               style={{ minWidth: 280 }}
             />
           </SettingRow>
 
-          <SettingRow label={tx('测试连接', 'Test connection')} hint={tx('跑一次最小 ping 请求验证 key 有效', 'Run a minimal ping to verify the key works')}>
+          <SettingRow
+            label={tx('测试连接', 'Test connection')}
+            hint={tx(
+              '跑一次最小 ping 请求验证 key 有效',
+              'Run a minimal ping to verify the key works',
+            )}
+          >
             <button
               type="button"
               className="settings-button"
@@ -2493,27 +2589,26 @@ function AiPanel({
           </SettingRow>
 
           <div className="settings-privacy-notice" role="note">
-            <strong>{tx('隐私提示', 'Privacy notice')}</strong> · {tx(
+            <strong>{tx('隐私提示', 'Privacy notice')}</strong> ·{' '}
+            {tx(
               '开启"状态复核"后,Marina 在每次 active→idle 跃迁时会把以下数据通过 HTTPS 发送给你配置的 AI 服务商(可能是第三方,如 Kimi / DeepSeek / OpenAI / Anthropic):',
               'When "Status recheck" is on, Marina sends the following over HTTPS to the AI provider you configured (may be a third party such as Kimi / DeepSeek / OpenAI / Anthropic) on each active→idle transition:',
             )}
             <ul>
               <li>
-                <strong>{tx('终端尾部内容', 'Terminal tail content')}</strong> — {tx(
+                <strong>{tx('终端尾部内容', 'Terminal tail content')}</strong> —{' '}
+                {tx(
                   '最近约 40 行已渲染文本(会包含你看到的命令、输出、错误信息、API 输出等)',
                   'Last ~40 rendered lines (commands, output, error messages, API responses, etc.)',
                 )}
               </li>
               <li>
-                <strong>{tx('按键时间元数据', 'Keystroke timing metadata')}</strong> — {tx(
-                  '最近 ≤20 个按键的',
-                  'Up to 20 most recent keystrokes:',
-                )}
-                <em>{tx('时间戳 + 类别', 'timestamps + categories')}</em>{tx(
-                  '(char / enter / backspace / other),',
-                  ' (char / enter / backspace / other), ',
-                )}
-                <strong>{tx('不包含按键内容', 'NOT the key content')}</strong>{tx(
+                <strong>{tx('按键时间元数据', 'Keystroke timing metadata')}</strong> —{' '}
+                {tx('最近 ≤20 个按键的', 'Up to 20 most recent keystrokes:')}
+                <em>{tx('时间戳 + 类别', 'timestamps + categories')}</em>
+                {tx('(char / enter / backspace / other),', ' (char / enter / backspace / other), ')}
+                <strong>{tx('不包含按键内容', 'NOT the key content')}</strong>
+                {tx(
                   ',不会泄露密码 / token / 命令体',
                   ' — passwords / tokens / command bodies are never sent',
                 )}
@@ -2527,17 +2622,17 @@ function AiPanel({
 
           <SettingRow
             label={tx('状态复核(BETA-006)', 'Status recheck (BETA-006)')}
-            hint={tx('active→idle 跃迁前让 LLM 复核;失败时回退原阈值,不阻塞', 'Let the LLM verify before active→idle transition; falls back to the threshold on error, never blocks')}
+            hint={tx(
+              'active→idle 跃迁前让 LLM 复核;失败时回退原阈值,不阻塞',
+              'Let the LLM verify before active→idle transition; falls back to the threshold on error, never blocks',
+            )}
           >
             <label className="settings-checkbox">
               <input
                 type="checkbox"
                 checked={statusRecheckEnabled}
                 onChange={(e) =>
-                  void updateSettings(
-                    { ai: { statusRecheckEnabled: e.target.checked } },
-                    setError,
-                  )
+                  void updateSettings({ ai: { statusRecheckEnabled: e.target.checked } }, setError)
                 }
                 disabled={!apiKey.trim()}
               />
@@ -2547,7 +2642,10 @@ function AiPanel({
 
           <SettingRow
             label={tx('复核输入源', 'Recheck input source')}
-            hint={tx('headless=已渲染的字符矩阵(无 ANSI 噪音、无重绘残影)', 'headless=rendered character matrix (no ANSI noise, no redraw artifacts)')}
+            hint={tx(
+              'headless=已渲染的字符矩阵(无 ANSI 噪音、无重绘残影)',
+              'headless=rendered character matrix (no ANSI noise, no redraw artifacts)',
+            )}
           >
             <select
               className="settings-input"
@@ -2564,7 +2662,9 @@ function AiPanel({
               }
               disabled={!statusRecheckEnabled}
             >
-              <option value="headless">{tx('headless (已渲染文本)', 'headless (rendered text)')}</option>
+              <option value="headless">
+                {tx('headless (已渲染文本)', 'headless (rendered text)')}
+              </option>
             </select>
           </SettingRow>
         </>
@@ -2577,11 +2677,7 @@ function AiPanel({
 // 高级分类
 // ──────────────────────────────────────────────────────────────────
 
-function AdvancedPanel({
-  setError,
-}: {
-  setError: (msg: string | null) => void;
-}): JSX.Element {
+function AdvancedPanel({ setError }: { setError: (msg: string | null) => void }): JSX.Element {
   const { tx } = useTranslation();
   const state = useAppState();
   const adv = state.settings.advanced;
@@ -2597,11 +2693,9 @@ function AdvancedPanel({
 
   const handleOpenLogs = (): void => {
     setError(null);
-    window.api
-      .invoke(COMMAND_CHANNELS.SYSTEM_OPEN_LOGS_DIR, {})
-      .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : String(err));
-      });
+    window.api.invoke(COMMAND_CHANNELS.SYSTEM_OPEN_LOGS_DIR, {}).catch((err: unknown) => {
+      setError(err instanceof Error ? err.message : String(err));
+    });
   };
 
   const handleReset = (): void => {
@@ -2620,7 +2714,13 @@ function AdvancedPanel({
     <section className="settings-panel">
       <h2 className="settings-panel-title">{tx('高级', 'Advanced')}</h2>
 
-      <SettingRow label={tx('日志级别', 'Log level')} hint={tx('DEBUG 会记录所有 IPC 与 PTY 字节(性能影响)', 'DEBUG logs all IPC and PTY bytes (performance impact)')}>
+      <SettingRow
+        label={tx('日志级别', 'Log level')}
+        hint={tx(
+          'DEBUG 会记录所有 IPC 与 PTY 字节(性能影响)',
+          'DEBUG logs all IPC and PTY bytes (performance impact)',
+        )}
+      >
         <div className="settings-radio-group">
           <label className="settings-radio">
             <input
@@ -2628,12 +2728,7 @@ function AdvancedPanel({
               name="loglevel"
               value="INFO"
               checked={logLevel === 'INFO'}
-              onChange={() =>
-                void updateSettings(
-                  { advanced: { logLevel: 'INFO' } },
-                  setError,
-                )
-              }
+              onChange={() => void updateSettings({ advanced: { logLevel: 'INFO' } }, setError)}
             />
             INFO
           </label>
@@ -2643,19 +2738,17 @@ function AdvancedPanel({
               name="loglevel"
               value="DEBUG"
               checked={logLevel === 'DEBUG'}
-              onChange={() =>
-                void updateSettings(
-                  { advanced: { logLevel: 'DEBUG' } },
-                  setError,
-                )
-              }
+              onChange={() => void updateSettings({ advanced: { logLevel: 'DEBUG' } }, setError)}
             />
             DEBUG
           </label>
         </div>
       </SettingRow>
 
-      <SettingRow label={tx('日志目录', 'Log directory')} hint={tx('用户数据目录下的 logs/ 子目录', 'logs/ under the user data directory')}>
+      <SettingRow
+        label={tx('日志目录', 'Log directory')}
+        hint={tx('用户数据目录下的 logs/ 子目录', 'logs/ under the user data directory')}
+      >
         <button type="button" className="settings-button" onClick={handleOpenLogs}>
           {tx('打开日志目录', 'Open log directory')}
         </button>
@@ -2673,10 +2766,7 @@ function AdvancedPanel({
             type="checkbox"
             checked={enableRemote}
             onChange={(e) =>
-              void updateSettings(
-                { advanced: { enableRemote: e.target.checked } },
-                setError,
-              )
+              void updateSettings({ advanced: { enableRemote: e.target.checked } }, setError)
             }
           />
           <span>{tx('启用远程入口(看 ↑ hint)', 'Enable remote entry (see hint above)')}</span>
@@ -2697,10 +2787,7 @@ function AdvancedPanel({
             void updateSettings(
               {
                 advanced: {
-                  terminalRenderer: e.target.value as
-                    | 'auto'
-                    | 'webgl'
-                    | 'dom',
+                  terminalRenderer: e.target.value as 'auto' | 'webgl' | 'dom',
                 },
               },
               setError,
@@ -2715,7 +2802,10 @@ function AdvancedPanel({
 
       <SettingRow
         label={tx('重置所有设置', 'Reset all settings')}
-        hint={tx('把所有设置回到出厂默认。收藏 / 模板 / 最近不受影响', 'Reset all settings to factory default. Bookmarks / templates / recent are unaffected.')}
+        hint={tx(
+          '把所有设置回到出厂默认。收藏 / 模板 / 最近不受影响',
+          'Reset all settings to factory default. Bookmarks / templates / recent are unaffected.',
+        )}
       >
         {!confirmingReset ? (
           <button
@@ -2730,11 +2820,7 @@ function AdvancedPanel({
             <span style={{ color: 'var(--color-danger, #f0f)', fontSize: 12 }}>
               {tx('确认重置?', 'Confirm reset?')}
             </span>
-            <button
-              type="button"
-              className="settings-button danger"
-              onClick={handleReset}
-            >
+            <button type="button" className="settings-button danger" onClick={handleReset}>
               {tx('确认', 'Confirm')}
             </button>
             <button
@@ -2766,21 +2852,19 @@ const ACKNOWLEDGEMENTS: Array<{ name: string; url: string; tone: string }> = [
   { name: 'node-pty', url: 'https://github.com/microsoft/node-pty', tone: 'PTY 绑定 (MIT)' },
   { name: 'lucide-react', url: 'https://lucide.dev/', tone: 'UI 图标库 (ISC)' },
   { name: 'Rose Pine theme', url: 'https://rosepinetheme.com/', tone: '默认主题灵感 (MIT)' },
-  { name: '霞鹜文楷 (LXGW WenKai)', url: 'https://github.com/lxgw/LxgwWenKai', tone: '中文字体 (OFL)' },
+  {
+    name: '霞鹜文楷 (LXGW WenKai)',
+    url: 'https://github.com/lxgw/LxgwWenKai',
+    tone: '中文字体 (OFL)',
+  },
 ];
 
 function AboutPanel(): JSX.Element {
   const { tx } = useTranslation();
   // build define 在 dev 模式可能未定义,做个兜底
   // (vite 实际上 dev 时也会做 string 替换,但为了万无一失)
-  const commit =
-    typeof __MARINA_BUILD_COMMIT__ !== 'undefined'
-      ? __MARINA_BUILD_COMMIT__
-      : 'dev';
-  const builtAt =
-    typeof __MARINA_BUILD_TIME__ !== 'undefined'
-      ? __MARINA_BUILD_TIME__
-      : 'dev';
+  const commit = typeof __MARINA_BUILD_COMMIT__ !== 'undefined' ? __MARINA_BUILD_COMMIT__ : 'dev';
+  const builtAt = typeof __MARINA_BUILD_TIME__ !== 'undefined' ? __MARINA_BUILD_TIME__ : 'dev';
 
   // app 版本号通过 handshake 已经拿到,从 store 读不太合适 (store 里没存)
   // 走一次 getProtocolVersion 就够,这里 inline state
@@ -2818,7 +2902,13 @@ function AboutPanel(): JSX.Element {
         </span>
       </SettingRow>
 
-      <SettingRow label={tx('检查更新', 'Check for updates')} hint={tx('V1 仅打开 GitHub Releases 页面;auto-updater 留 V1.1', 'V1 just opens the GitHub Releases page; auto-updater is V1.1')}>
+      <SettingRow
+        label={tx('检查更新', 'Check for updates')}
+        hint={tx(
+          'V1 仅打开 GitHub Releases 页面;auto-updater 留 V1.1',
+          'V1 just opens the GitHub Releases page; auto-updater is V1.1',
+        )}
+      >
         <button
           type="button"
           className="settings-button"
@@ -2829,11 +2919,7 @@ function AboutPanel(): JSX.Element {
       </SettingRow>
 
       <SettingRow label={tx('GitHub 仓库', 'GitHub repository')}>
-        <button
-          type="button"
-          className="settings-button"
-          onClick={() => openExternal(GITHUB_REPO)}
-        >
+        <button type="button" className="settings-button" onClick={() => openExternal(GITHUB_REPO)}>
           {GITHUB_REPO}
         </button>
       </SettingRow>
@@ -2842,7 +2928,10 @@ function AboutPanel(): JSX.Element {
         <span className="settings-info-text">MIT</span>
       </SettingRow>
 
-      <SettingRow label={tx('致谢', 'Acknowledgements')} hint={tx('Marina 站在这些项目的肩上', 'Marina stands on the shoulders of these projects')}>
+      <SettingRow
+        label={tx('致谢', 'Acknowledgements')}
+        hint={tx('Marina 站在这些项目的肩上', 'Marina stands on the shoulders of these projects')}
+      >
         <ul className="acknowledgements-list">
           {ACKNOWLEDGEMENTS.map((a) => (
             <li key={a.name}>
@@ -3052,11 +3141,7 @@ function FontPicker({ value, fonts, onChange }: FontPickerProps): JSX.Element {
           onBlur={() => onChange(customText)}
           placeholder={tx("例如 'My Font', monospace", "e.g. 'My Font', monospace")}
         />
-        <button
-          type="button"
-          className="settings-button"
-          onClick={() => setIsCustom(false)}
-        >
+        <button type="button" className="settings-button" onClick={() => setIsCustom(false)}>
           {tx('切回下拉', 'Back to dropdown')}
         </button>
       </span>
@@ -3088,7 +3173,9 @@ function FontPicker({ value, fonts, onChange }: FontPickerProps): JSX.Element {
         ))}
       </optgroup>
       {others.length > 0 && (
-        <optgroup label={tx(`系统已安装 (${others.length})`, `Installed on system (${others.length})`)}>
+        <optgroup
+          label={tx(`系统已安装 (${others.length})`, `Installed on system (${others.length})`)}
+        >
           {others.map((f) => (
             <option
               key={f.family}
