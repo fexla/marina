@@ -224,6 +224,17 @@ export class WsServer {
   }
 
   /**
+   * 定向发任意帧给指定 client(供 daemon 发 response / 下行 command)。
+   * 找不到 client 或连接已关 → 返回 false(调用方可据此知道 response 丢失)。
+   */
+  sendFrame(clientId: string, frame: WsFrame): boolean {
+    const ws = this.wsByClient.get(clientId);
+    if (!ws || ws.readyState !== ws.OPEN) return false;
+    ws.send(serializeFrame(frame));
+    return true;
+  }
+
+  /**
    * 设置认证处理器。设置后,新连接必须先通过握手:发首帧 → authHandler 校验 →
    * 返回 { clientId } 才注册并 emit connected;返回 { error } 关闭连接(4003)。
    * 未设置时,连接立即分配随机 clientId(1.3 行为,loopback 自测/测试用)。

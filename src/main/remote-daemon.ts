@@ -27,7 +27,8 @@
 import { randomUUID } from 'node:crypto';
 import type { ClientRegistry, ClientTransport } from './client-registry';
 import type { SessionManager } from './session-manager';
-import type { WsServer, AuthHandler, AuthResult } from './transport-ws';
+import type { WsServer, AuthHandler, AuthResult, WsCommandFrame } from './transport-ws';
+import type { CommandEnvelope } from '../shared/protocol';
 
 /** 握手首帧的期望 JSON 结构(client → daemon)。 */
 export interface AuthFrame {
@@ -53,12 +54,23 @@ export function parseAuthFrame(data: unknown): AuthFrame | null {
   return null;
 }
 
+/**
+ * dispatcher 入口签名(通常传 ipc.ts 的 dispatchCommand)。
+ * 用依赖注入而非直接 import ipc.ts,避免 remote-daemon 测试拉入 electron 全链。
+ */
+export type DispatchFn = (
+  channel: string,
+  envelope: CommandEnvelope,
+) => Promise<{ ok: true; result: unknown } | { ok: false; error: { code: string; message: string } }>;
+
 export interface RemoteDaemonDeps {
   wsServer: WsServer;
   registry: ClientRegistry;
   sessionManager: SessionManager;
   /** daemon 启动时持久化生成的 token;client 必须带它握手。 */
   token: string;
+  /** dispatcher 入口:收到 command 帧后调它,把结果包成 response 帧发回 client。 */
+  dispatch: DispatchFn;
   /** 可选:握手通过的回调(注册完 registry 后触发),daemon UI 可据此更新"当前连接"。 */
   onClientAuthenticated?: (clientId: string) => void;
   /** 可选:断开回调,daemon UI 更新 + 日志。 */
@@ -99,6 +111,12 @@ export class RemoteDaemon {
       sessionManager.handleWindowClosed(clientId);
       this.deps.onClientGone?.(clientId);
     });
+    // command 帧 → dispatcher → response 帧发回。其他类型(response/event 从
+    // client 发来)忽略:client 只该发 command。
+    wsServer.onMessage((clientId, frame) => {
+      if (frame.type !== 'command') return;
+      void this.handleCommand(clientId, frame);
+    });
   }
 
   /** 当前已认证连接数(供上限检查:V1 最多 1 个远程 client)。 */
@@ -124,5 +142,22 @@ export class RemoteDaemon {
   private registerAuthenticated(transport: ClientTransport): void {
     this.deps.registry.add(transport);
     this.deps.onClientAuthenticated?.(transport.clientId);
+  }
+
+  /**
+   * 处理一个 WS command 帧:调 dispatcher,把结果包成 response 帧发回 client。
+   * envelope.windowId 填 clientId(WS client 标识;字段名仍 v1 windowId,完整
+   * 重命名留后续),handler 内部用它作 client 标识(createSession 设 owner 等)语义正确。
+   */
+  private async handleCommand(clientId: string, frame: WsCommandFrame): Promise<void> {
+    const requestId = frame.envelope.requestId;
+    const envelope: CommandEnvelope = { ...frame.envelope, windowId: clientId };
+    const result = await this.deps.dispatch(frame.channel, envelope);
+    this.deps.wsServer.sendFrame(clientId, {
+      type: 'response',
+      requestId,
+      ok: result.ok,
+      ...(result.ok ? { result: result.result } : { error: result.error }),
+    });
   }
 }
