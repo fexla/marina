@@ -31,7 +31,7 @@ import {
   setModernIntegration,
   getPsCommands,
 } from './explorer-integration';
-import { randomUUID } from 'node:crypto';
+import { ClientRegistry, type ClientTransport } from './client-registry';
 import { promises as fs } from 'node:fs';
 import { join as joinPath } from 'node:path';
 import {
@@ -68,7 +68,6 @@ import {
   type CreateSessionResponse,
   type CreateWindowPayload,
   type CreateWindowResponse,
-  type EventEnvelope,
   type FocusSessionOwnerPayload,
   type FocusWindowPayload,
   type AddTemplatePayload,
@@ -173,6 +172,12 @@ export interface IpcLayerDeps {
 
 let installed = false;
 let aiClient: AIClient | undefined;
+/**
+ * v2.0 dispatcher 基座(阶段1.2):所有 client(本地窗口 + 远程 WS)注册于此,
+ * 广播/定向发都走它。installIpcLayer 时创建并挂窗口生命周期钩子。
+ * 远程 WS client 在阶段1.4 也注册进同一实例。
+ */
+let registry: ClientRegistry | null = null;
 
 /**
  * 注册全部 IPC handler 与事件桥接。整个应用只能调用一次。
@@ -181,6 +186,27 @@ export function installIpcLayer(deps: IpcLayerDeps): void {
   if (installed) throw new Error('[ipc] installIpcLayer() already called');
   installed = true;
   aiClient = deps.aiClient;
+
+  // dispatcher 基座:创建 registry,把每个 BrowserWindow 注册成 local client。
+  // 本地零改动兼容:clientId = windowId(ipc-protocol §2.6.1),renderer 仍走
+  // Electron IPC。远程 WS client(阶段1.4)也注册进同一 reg,两种 client 同构。
+  const reg = new ClientRegistry();
+  registry = reg;
+  const wm = deps.windowManager;
+  wm.onWindowCreated((info, win) => {
+    reg.add({
+      clientId: info.id,
+      send(channel, envelope) {
+        // webContents 可能在窗口关闭瞬间已 destroyed(与原 broadcastEvent 的
+        // isDestroyed guard 等价;registry.safeSend 也会兜底吞错)。
+        if (!win.isDestroyed()) win.webContents.send(channel, envelope);
+      },
+    } satisfies ClientTransport);
+  });
+  wm.onWindowClosed((windowId) => {
+    reg.remove(windowId);
+  });
+
   registerCommandHandlers(deps);
   registerFilePanelHandlers(deps);
   registerMdThemeHandlers(deps);
@@ -188,23 +214,28 @@ export function installIpcLayer(deps: IpcLayerDeps): void {
 }
 
 // ──────────────────────────────────────────────────────────────────
-// 工具:事件广播
+// 工具:事件广播(委托 ClientRegistry)
 // ──────────────────────────────────────────────────────────────────
-
-function wrapEvent<P>(payload: P): EventEnvelope<P> {
-  return { eventId: randomUUID(), timestamp: Date.now(), payload };
-}
+//
+// v2.0 dispatcher 基座(阶段1.2):广播不再直接遍历 BrowserWindow,而是走
+// ClientRegistry。本地 in-process 窗口在 installIpcLayer 里注册成 local
+// client(clientId=windowId,send 包 webContents.send);远程 WS client 在
+// 阶段1.4 也注册进同一 registry。两种 client 同构,broadcast/sendTo 不区分。
+//
+// 本步是零回归重构:本地路径行为完全不变 —— 发送通道从"遍历窗口"改成
+// "遍历 registry 里的 local client",而 local client 就是这些窗口。
 
 function broadcastEvent<P>(channel: string, payload: P): void {
-  const envelope = wrapEvent(payload);
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(channel, envelope);
-  }
+  // registry 在 installIpcLayer 里创建;可选链防御未初始化场景(测试/未调 install)。
+  registry?.broadcast(channel, payload);
 }
 
-function sendEventTo<P>(win: BrowserWindow, channel: string, payload: P): void {
-  if (win.isDestroyed()) return;
-  win.webContents.send(channel, wrapEvent(payload));
+function sendEventTo<P>(clientId: string, channel: string, payload: P): void {
+  // 参数从 BrowserWindow 改为 clientId:远程 client 没有 BrowserWindow。
+  // session.ownerWindowId 在 v2.0 升级为 ownerClientId 后(阶段1.5),
+  // 定向广播只认 clientId。本地路径下 clientId = windowId。
+  // 找不到该 client(已关闭/未注册)静默,与原 destroyed window guard 等价。
+  registry?.sendTo(clientId, channel, payload);
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -301,12 +332,11 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       if (!ok) {
         throw makeIpcError('WindowNotFound', `windowId="${envelope.payload.windowId}"`);
       }
-      const win = windowManager.getById(envelope.payload.windowId);
-      if (win) {
-        sendEventTo<WindowFocusRequestedPayload>(win, EVENT_CHANNELS.WINDOW_FOCUS_REQUESTED, {
-          reason: 'manual',
-        });
-      }
+      sendEventTo<WindowFocusRequestedPayload>(
+        envelope.payload.windowId,
+        EVENT_CHANNELS.WINDOW_FOCUS_REQUESTED,
+        { reason: 'manual' },
+      );
     },
   );
 
@@ -511,13 +541,11 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       if (!session.ownerWindowId) return; // 无主无可聚焦
       const ok = windowManager.focus(session.ownerWindowId);
       if (!ok) return; // owner 窗口已不存在,静默
-      const ownerWin = windowManager.getById(session.ownerWindowId);
-      if (ownerWin) {
-        sendEventTo<WindowFocusRequestedPayload>(ownerWin, EVENT_CHANNELS.WINDOW_FOCUS_REQUESTED, {
-          reason: 'session-click',
-          selectSessionId: session.id,
-        });
-      }
+      sendEventTo<WindowFocusRequestedPayload>(
+        session.ownerWindowId,
+        EVENT_CHANNELS.WINDOW_FOCUS_REQUESTED,
+        { reason: 'session-click', selectSessionId: session.id },
+      );
     },
   );
 
@@ -1441,10 +1469,12 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   filePanelService.on('filePanelUpdated', (p: FilePanelUpdatedPayload) => {
     const session = sessionManager.get(p.sessionId);
     if (!session?.ownerWindowId) return;
-    const ownerWin = windowManager.getById(session.ownerWindowId);
-    if (ownerWin) {
-      sendEventTo<FilePanelUpdatedPayload>(ownerWin, EVENT_CHANNELS.FILE_PANEL_UPDATED, p);
-    }
+    // 定向发 owner(sendTo 找不到 client 静默,等价原 destroyed guard)。
+    sendEventTo<FilePanelUpdatedPayload>(
+      session.ownerWindowId,
+      EVENT_CHANNELS.FILE_PANEL_UPDATED,
+      p,
+    );
   });
 
   // 自定义 markdown 主题列表变化(用户往 markdown-themes/ 增删 .css)→ 广播给
@@ -1457,10 +1487,11 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   sessionManager.on('sessionOutput', (payload: SessionOutputPayload) => {
     const session = sessionManager.get(payload.sessionId);
     if (!session?.ownerWindowId) return; // 无 owner 不推 (CP-3 写 scrollback)
-    const ownerWin = windowManager.getById(session.ownerWindowId);
-    if (ownerWin) {
-      sendEventTo<SessionOutputPayload>(ownerWin, EVENT_CHANNELS.SESSION_OUTPUT, payload);
-    }
+    sendEventTo<SessionOutputPayload>(
+      session.ownerWindowId,
+      EVENT_CHANNELS.SESSION_OUTPUT,
+      payload,
+    );
   });
 
   // 窗口列表变化 → 广播 evt:window:list-updated
