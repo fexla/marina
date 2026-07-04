@@ -6,8 +6,15 @@
 > 这份文档定义所有消息的 schema、语义、错误码、时序约束。
 > 实现代码必须严格遵循,不允许"自由发挥"。
 
-文档版本:1.3 · 最后更新:2026-05-14
+文档版本:2.0 · 最后更新:2026-07-05
 
+> **v2.0 变更**(2026-07-05,远程后端模式立项,ADR-014):
+> - **major bump**:命令信封 `windowId` → `clientId`(§2.3);事件信封加 `targetClientId`(§2.4)。原因:远程后端模式下 client ≠ 窗口,且断线重连 windowId 变而 clientId 不变。本地 in-process client 的 clientId 等于其 windowId,语义兼容
+> - 新增 §2.6 **Transport-Ws**(WebSocket + TLS),与现有 Transport-Local(Electron IPC)并存,跑同一套语义
+> - §4 Handshake 加 WS 握手分支(token 认证 + clientId 分配 + TLS 指纹确认)
+> - §5.2 Session 扩展:`cmd:session:claim` 复用 + 新增 `cmd:session:release`;client 断线自动 release;重连凭 token 复用 clientId 重新 claim
+> - 详见 `docs/软件定义书.md` §14.9 + ADR-014 + `docs/方案-远程后端-20260705.md`
+>
 > **v1.3 变更**(Milestone 1 收尾 + 勘误第二轮回写):
 > - domain 白名单加 `explorer-integration`(原仅 9 个 domain,接 Win11 新菜单 / 经典菜单后多一个域)
 > - 新增 Section 5.7:`cmd:explorer-integration:get-status` / `set-classic` / `set-modern` / `get-ps-commands`(4 条)
@@ -119,7 +126,7 @@ const myWindowId = params.get('windowId')!;
 
 ```typescript
 interface CommandEnvelope<P = unknown> {
-  windowId: string;        // 自动附加,标识发起命令的窗口
+  clientId: string;       // v2.0:原 windowId。本地 in-process client = windowId;远程 WS client = 握手分配的稳定 id,断线重连不变
   requestId: string;       // UUID,用于日志追踪
   payload: P;              // 命令的具体参数
 }
@@ -129,7 +136,7 @@ interface CommandEnvelope<P = unknown> {
 ```typescript
 async function invoke<P, R>(channel: string, payload: P): Promise<R> {
   const envelope: CommandEnvelope<P> = {
-    windowId: getMyWindowId(),
+    clientId: getClientId(),    // v2.0:transport 抽象层提供;本地=windowId,远程=WS 握手分配的 id
     requestId: crypto.randomUUID(),
     payload,
   };
@@ -140,7 +147,7 @@ async function invoke<P, R>(channel: string, payload: P): Promise<R> {
 Main 端处理:
 ```typescript
 ipcMain.handle('cmd:session:create', async (event, envelope: CommandEnvelope<CreateSessionPayload>) => {
-  log.info(`[IPC] cmd:session:create requestId=${envelope.requestId} windowId=${envelope.windowId}`);
+  log.info(`[IPC] cmd:session:create requestId=${envelope.requestId} clientId=${envelope.clientId}`);
   // ... 执行
 });
 ```
@@ -153,6 +160,7 @@ ipcMain.handle('cmd:session:create', async (event, envelope: CommandEnvelope<Cre
 interface EventEnvelope<P = unknown> {
   eventId: string;         // UUID,用于日志和去重
   timestamp: number;       // Unix ms
+  targetClientId?: string; // v2.0:定向事件的目标 client(不填=广播)。dispatcher 按此决定走 IPC 还是 WS
   payload: P;
 }
 ```
@@ -182,6 +190,35 @@ function sendTo<P>(windowId: string, channel: string, payload: P) {
   if (win) win.webContents.send(channel, wrapEvent(payload));
 }
 ```
+
+### 2.6 Transport 抽象(v2.0,远程后端模式 ADR-014)
+
+原 v1.x 传输层只有 Electron IPC。v2.0 引入 transport 抽象,支持两种实现:
+
+| Transport | 用途 | 实现 |
+|---|---|---|
+| **Transport-Local** | 本地 in-process client(daemon 机器上的 BrowserWindow) | Electron `ipcRenderer.invoke` / `ipcMain.handle` / `webContents.send`(原 v1.x 路径,零改动) |
+| **Transport-Ws** | 远程 client(另一台机器上的 Electron) | WebSocket + TLS;命令/事件序列化为 JSON 帧 |
+
+**关键不变式**:两种 transport 上跑**同一套语义**(channel 命名 / 信封 / 错误码 / 时序约束,§3-§9 全部适用)。上层 handler 不感知 transport 来源。
+
+**dispatcher**(daemon 侧,`ipc.ts`):
+- 把每个 `ipcMain.handle` 的处理体抽成纯函数 `handleCommand(source: ClientSource, envelope) => result`
+- `ClientSource = { transport: 'local' | 'ws', clientId: string, ... }`
+- IPC 来源和 WS 来源都汇到同一组 `handleCommand`
+- 事件广播 `broadcastEvent(envelope)` 内部按 `targetClientId`(§2.4)查 client 表,决定走 `webContents.send`(local)还是 WS send(ws)
+
+**Transport-Ws 细节**:
+- 协议:`wss://`(TLS 必选,自签证书,首次连接指纹确认,对齐 §14.3 known_hosts 体验)
+- 认证:握手首帧带 `Authorization: Bearer <token>`(token 由 daemon 持久化生成,详见软件定义书 §14.9.4)
+- 帧格式:命令/事件各一种 JSON 帧,字段对齐 §2.3/2.4 信封
+- PTY 字节流(`evt:session:output`):走 WS binary frame(对齐 §8 性能)
+- 心跳:ping/pong 30s,3 次未响应判定断线 → 触发自动 release(§5.2)
+- 重连:client 端指数 backoff(1s/2s/4s/.../max 30s);重连后凭 token 复用 clientId(§4 WS 握手)
+
+**本地用户零影响**:不开远程后端时,Transport-Ws 代码 lazy load,不注册 WS server,本地走 Transport-Local 与 v1.x 完全一致。
+
+详见软件定义书 §14.9.3 与 `docs/方案-远程后端-20260705.md` §IV。
 
 ---
 
@@ -286,6 +323,13 @@ Renderer 启动
   ↓
 准备好,UI 显示
 ```
+
+> **v2.0 远程后端模式下的 WS 握手**(Transport-Ws,详见 §2.6):远程 client 不走 Electron
+> IPC,而是先建立 `wss://` 连接,握手序列为:
+> 1. TLS 握手 → client 展示 daemon 证书指纹给用户确认(对齐 known_hosts 体验)
+> 2. 首帧 `Authorization: Bearer <token>` → daemon 校验 token,通过则**分配/复用 clientId**(凭 token 认主,断线重连复用同一 clientId)
+> 3. 后续命令/事件走 WS JSON 帧(信封同 §2.3/2.4,clientId 已确定)
+> 4. handshake 内容(get-protocol-version / get-snapshot)在 WS 上同样适用,只是 transport 换成 WS
 
 ### 4.2 cmd:app:get-protocol-version
 
@@ -557,7 +601,35 @@ interface ClaimSessionResponse {
 
 **Errors**:
 - `SessionNotFound`
-- `SessionAlreadyOwned`:已有其他窗口持有(应该先让那个窗口释放,或用 `cmd:session:focus-owner` 而不是 claim)
+- `SessionAlreadyOwned`:已有其他 client 持有(应该先让那个 client 释放,或用 `cmd:session:focus-owner` 而不是 claim)
+
+> v2.0(远程后端):`claim` 的语义从"窗口间接管"扩展为"client 接管",`clientId` 替代 `windowId`。
+> 远程 client 重连后凭 token 复用 clientId,可直接 claim 原 session。
+
+---
+
+#### `cmd:session:release`(v2.0 新增)
+本 client 主动释放一个 session 的 ownership(session 不销毁,owner 置空)。
+
+```typescript
+// Payload
+interface ReleaseSessionPayload {
+  sessionId: string;
+}
+// Response: {}
+```
+
+**Errors**:
+- `SessionNotFound`
+- `NotOwner`:本 client 不是该 session 的 owner
+
+**Side Effects**:
+- `ownerClientId = null`,广播 `evt:session:owner-changed`
+- session 不销毁,PTY 继续跑,scrollback 保留(等待被 claim 或用户在 daemon UI 手动关闭)
+
+**自动 release(v2.0 关键语义)**:client 断线(WS 关闭 / 心跳超时)→ daemon 自动把该
+`clientId` 持有的所有 session 走上述 release 流程。这是"断网不丢 session"的基础:
+session 留在 daemon 上,client 重连后凭 token 复用 clientId → 重新 claim → 拿回 scrollback。
 
 **Side Effects**:
 - 把 session 的 owner 改为本窗口
@@ -1663,7 +1735,10 @@ try {
 
 ### 10.1 当前版本
 
-`PROTOCOL_VERSION = 1`(在 `src/shared/protocol.ts` 中定义为常量)。
+`PROTOCOL_VERSION = 2`(在 `src/shared/protocol.ts` 中定义为常量)。
+
+> v2.0(2026-07-05):major bump。触发原因 = 命令信封 `windowId` → `clientId`(字段重命名,
+> 见 §10.2"必须 bump major")。详见顶部 v2.0 changelog。
 
 ### 10.2 兼容策略
 
