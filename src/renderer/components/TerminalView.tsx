@@ -680,14 +680,12 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     if (!term) return;
     const sel = term.getSelection();
     if (sel) {
-      // CPB-C4:Windows 平台多行复制用 CRLF,符合 Notepad / Office 等
-      // 原生程序对换行的预期(xterm getSelection 默认只给 LF)。
-      // 平台分支:process.platform 在 renderer 走 preload 不可读,
-      // 用 navigator.platform 判断 win(包含 'win32' / 'windows' 兼容)。
-      // 跨平台时 macOS/Linux 拷贝走 LF 不动。
-      const onWindows = navigator.platform.toLowerCase().includes('win');
-      const finalText = onWindows ? sel.replace(/\n/g, '\r\n') : sel;
-      void writeClipboardText(finalText);
+      // CPB-C4(勘误 — xterm 6 升级后):term.getSelection() 已按平台给换行符
+      // (Windows = \r\n,见 xterm SelectionService.ts 的 Browser.isWindows 分支),
+      // 这里直传即可,不再补 CRLF。旧版 xterm(v5)getSelection 只给 LF,这层
+      // shim 当时是必要的;6.x 起它会把 \r\n 二次替换成 \r\r\n,粘贴出来每行
+      // 多一个空行,故废弃。
+      void writeClipboardText(sel);
     }
     // CPB-C1:复制完归还焦点 — 避免右键菜单选"复制"后菜单关闭 → 焦点
     // 漂到 body → 用户敲键无反应的反馈
@@ -1717,16 +1715,15 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     const term = termRef.current;
     if (!term || !selectOnCopy) return undefined;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const onWindows = navigator.platform.toLowerCase().includes('win');
     const disp = term.onSelectionChange(() => {
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = null;
         const sel = term.getSelection();
         if (!sel) return;
-        // 同 handleCopy 的 CPB-C4:Windows 走 CRLF。
-        const finalText = onWindows ? sel.replace(/\n/g, '\r\n') : sel;
-        void writeClipboardText(finalText);
+        // 同 handleCopy 的 CPB-C4:xterm 6 的 getSelection 已按平台给换行符,
+        // 直传即可,不再补 CRLF(否则 \r\r\n 双换行 → 每行多一空行)。
+        void writeClipboardText(sel);
       }, 100);
     });
     return () => {
