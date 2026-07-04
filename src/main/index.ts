@@ -30,6 +30,7 @@ import { SettingsManager, DEFAULT_SETTINGS } from './settings-manager';
 import { TemplatesManager } from './templates-manager';
 import { JsonStore } from './persistence';
 import { installIpcLayer } from './ipc';
+import { ClientRegistry } from './client-registry';
 import { FilePanelService } from './file-panel-service';
 import { MarkdownThemeManager } from './markdown-theme-manager';
 import { getPlatformAdapter } from './platform';
@@ -393,7 +394,11 @@ function bootstrap(): void {
       await markdownThemeManager.ensureFirstRun();
       markdownThemeManager.startWatch();
 
+      // v2.0 dispatcher 基座:本地窗口 + 远程 WS client 都注册于此。
+      // 在 installIpcLayer 前创建,远程后端模式下与 daemon 协调器(remote-daemon.ts)共享。
+      const clientRegistry = new ClientRegistry();
       installIpcLayer({
+        clientRegistry,
         windowManager,
         pathManager,
         settingsManager,

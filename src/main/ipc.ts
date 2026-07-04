@@ -166,6 +166,11 @@ export interface IpcLayerDeps {
    * 读 CSS 文本、fs.watch 自动发现增删。
    */
   markdownThemeManager: MarkdownThemeManager;
+  /**
+   * v2.0 dispatcher 基座:所有 client(本地窗口 + 远程 WS)注册于此。
+   * 由调用方(index.ts)创建并注入,与 daemon 协调器(remote-daemon.ts)共享同一实例。
+   */
+  clientRegistry: ClientRegistry;
   /** BETA-031:可选,未注入时 AI_TEST_CONNECTION 返回 ok:false */
   aiClient?: AIClient;
 }
@@ -187,10 +192,11 @@ export function installIpcLayer(deps: IpcLayerDeps): void {
   installed = true;
   aiClient = deps.aiClient;
 
-  // dispatcher 基座:创建 registry,把每个 BrowserWindow 注册成 local client。
-  // 本地零改动兼容:clientId = windowId(ipc-protocol §2.6.1),renderer 仍走
-  // Electron IPC。远程 WS client(阶段1.4)也注册进同一 reg,两种 client 同构。
-  const reg = new ClientRegistry();
+  // dispatcher 基座:registry 由调用方(index.ts)创建并注入,让 daemon 协调器
+  // (remote-daemon.ts)和 ipc 共享同一实例 —— 远程 WS client(阶段1.4)也注册进它。
+  // 本地零改动兼容:每个 BrowserWindow 注册成 local client(clientId=windowId,
+  // ipc-protocol §2.6.1),renderer 仍走 Electron IPC。
+  const reg = deps.clientRegistry;
   registry = reg;
   const wm = deps.windowManager;
   wm.onWindowCreated((info, win) => {

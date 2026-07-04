@@ -25,6 +25,7 @@ import type { SessionInfo } from '@shared/types';
 import type * as IpcModule from './ipc';
 import { FilePanelService } from './file-panel-service';
 import { MarkdownThemeManager } from './markdown-theme-manager';
+import { ClientRegistry } from './client-registry';
 import { makePathId } from './path-manager';
 
 // ──────────────────────────────────────────────────────────────────
@@ -246,6 +247,7 @@ function makeStubs() {
       // wireEventBroadcasts 只用到它的 on('listUpdated'),以及 registerMdThemeHandlers
       // 注册的 3 个方法。构造无副作用(懒 getter),EventEmitter 在不 watch 时也正常。
       markdownThemeManager: new MarkdownThemeManager(),
+      clientRegistry: new ClientRegistry(),
     },
     stubs: {
       sessionManager,
