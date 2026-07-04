@@ -220,6 +220,18 @@ function sendTo<P>(windowId: string, channel: string, payload: P) {
 
 详见软件定义书 §14.9.3 与 `docs/方案-远程后端-20260705.md` §IV。
 
+#### 2.6.1 `clientId` vs `windowId` 命名空间边界(v2.0)
+
+v2.0 引入 `clientId` 后,两个字段名容易混淆,明确边界:
+
+| 用途 | 字段 | 出现位置 | 说明 |
+|---|---|---|---|
+| 命令/事件的传输端点标识 | `clientId` | 信封(§2.3/§2.4) | 本地 in-process client = 其 windowId;远程 WS client = 握手分配的稳定 id |
+| session 的 owner 引用 | `ownerClientId` | session payload 字段、`claim`/`release` 语义 | v2.0 起替代 `ownerWindowId`;`null` = 无 owner |
+| 窗口实体引用(聚焦、窗口列表) | `windowId` | `cmd:window:*` payload、`focus-owner` 的 ownerWindowId 等 | 仍是"哪个窗口"的物理标识,仅本地 in-process client 有意义 |
+
+**原则**:**envelope 走 clientId;session ownership 走 ownerClientId;窗口实体操作才走 windowId**。远程 WS client 没有 windowId 概念(它不在 daemon 机器上开窗口),其 clientId 即其身份。
+
 ---
 
 ## 3. 消息分类与命名
@@ -606,10 +618,15 @@ interface ClaimSessionResponse {
 > v2.0(远程后端):`claim` 的语义从"窗口间接管"扩展为"client 接管",`clientId` 替代 `windowId`。
 > 远程 client 重连后凭 token 复用 clientId,可直接 claim 原 session。
 
+**Side Effects**:
+- 把 session 的 owner 改为本 client(v2.0:`ownerClientId`)
+- 旧的字节流推送停止(若 owner 是其他 client)
+- 广播 `evt:session:owner-changed`
+
 ---
 
-#### `cmd:session:release`(v2.0 新增)
-本 client 主动释放一个 session 的 ownership(session 不销毁,owner 置空)。
+#### `cmd:session:release`
+本 client 主动释放对某 session 的 ownership(session 不销毁,owner 置空)。
 
 ```typescript
 // Payload
@@ -624,39 +641,14 @@ interface ReleaseSessionPayload {
 - `NotOwner`:本 client 不是该 session 的 owner
 
 **Side Effects**:
-- `ownerClientId = null`,广播 `evt:session:owner-changed`
-- session 不销毁,PTY 继续跑,scrollback 保留(等待被 claim 或用户在 daemon UI 手动关闭)
-
-**自动 release(v2.0 关键语义)**:client 断线(WS 关闭 / 心跳超时)→ daemon 自动把该
-`clientId` 持有的所有 session 走上述 release 流程。这是"断网不丢 session"的基础:
-session 留在 daemon 上,client 重连后凭 token 复用 clientId → 重新 claim → 拿回 scrollback。
-
-**Side Effects**:
-- 把 session 的 owner 改为本窗口
-- 旧的字节流推送停止(若 owner 是其他窗口)
-- 广播 `evt:session:owner-changed`
-
----
-
-#### `cmd:session:release`
-本窗口主动释放对某 session 的 ownership。
-
-```typescript
-// Payload
-interface ReleaseSessionPayload {
-  sessionId: string;
-}
-// Response: {}
-```
-
-**Errors**:
-- `SessionNotFound`
-- `NotOwner`:本窗口不是该 session 的 owner
-
-**Side Effects**:
-- session 的 owner 变 null
+- session 的 owner 变 null(`ownerClientId = null`)
 - 字节流推送停止
 - 广播 `evt:session:owner-changed`
+
+**v2.0 语义扩展**(远程后端,ADR-014):
+- owner 标识从 `windowId` 改为 `ownerClientId`。**注意:此 channel v1 就存在**(`src/shared/protocol.ts` `SESSION_RELEASE`、`src/main/ipc.ts` handler),v2.0 是**语义扩展**而非新增 channel
+- **自动 release**:client 断线(WS 关闭 / 心跳超时)→ daemon 自动把该 `clientId` 持有的所有 session 走上述 release 流程。这是"断网不丢 session"的基础:session 留在 daemon 上,client 重连后凭 token 复用 clientId → 重新 claim → 拿回 scrollback
+- **互斥保证**:自动 release 与重连握手在 daemon 端 client 表的单一锁上串行化,避免"断线瞬间重连"的竞争(见软件定义书 §14.9.3)
 
 ---
 
@@ -1878,11 +1870,11 @@ async function handleCreateSessionClick(pathId: string, templateId: string) {
 async function handleSessionTabClick(sessionId: string) {
   const session = store.getSession(sessionId);
   
-  if (session.ownerWindowId === myWindowId) {
-    // 本窗口已持有 → 简单切换显示
+  if (session.ownerClientId === myClientId) {
+    // 本 client 已持有 → 简单切换显示
     uiStore.selectSession(sessionId);
-  } else if (session.ownerWindowId !== null) {
-    // 其他窗口持有 → 聚焦那个窗口
+  } else if (session.ownerClientId !== null) {
+    // 其他 client 持有 → 聚焦那个 owner(本地)或提示"被占用,点这里抢"(远程)
     await ipc.invoke(Channels.CMD_SESSION_FOCUS_OWNER, { sessionId });
   } else {
     // 无 owner → 接管
