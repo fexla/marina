@@ -75,16 +75,21 @@ import { buildSpawnEnv, injectTerminalHintEnv, validateDimensions } from './pty-
 import { logger } from './logger';
 import { activateMarinaUnicodeWidth } from '@shared/terminal-unicode-width';
 
-// file-panel 服务地址 / token:Marina 终端里启动的子进程(可能是另一个 Marina /
-// 测试 / agent)不该继承父 Marina 的值 —— 否则会误调父的 file-panel(指向错误地址)。
-// 本 Marina 的真实值由 createSession 按 settings.filePanel.enabled 注入。同理见
-// injectTerminalHintEnv 对 TERM_PROGRAM 继承值的处理("Marina 从别的终端启动时
-// 子 shell 会看到上游宿主的值,完全不对")。
+// Marina 注入给终端子进程的标识类变量,子进程(可能是另一个 Marina / 测试 /
+// agent)不该继承父 Marina 的值:
+// - MARINA_SERVICE / MARINA_TOKEN:file-panel 服务地址。继承会导致子进程误调
+//   父的 file-panel(指向错误地址)。本 Marina 的真实值由 createSession 按
+//   settings.filePanel.enabled 注入
+// - TERMINAL_ID:本 session 唯一标识。createSession 无条件覆盖,但"唯一标识"
+//   语义上不该对继承开放,加进黑名单防御未来某路径忘了覆盖
+// 同理见 injectTerminalHintEnv 对 TERM_PROGRAM 继承值的处理("Marina 从别的终端
+// 启动时子 shell 会看到上游宿主的值,完全不对")。
 const SPAWN_ENV_SKIP = [
   'ELECTRON_RUN_AS_NODE',
   'ELECTRON_RENDERER_URL',
   'MARINA_SERVICE',
   'MARINA_TOKEN',
+  'TERMINAL_ID',
 ];
 
 /**
