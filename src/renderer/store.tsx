@@ -31,6 +31,10 @@ import {
   COMMAND_CHANNELS,
   EVENT_CHANNELS,
   type BookmarksUpdatedPayload,
+  type FilePanelSnapshot,
+  type FilePanelUpdatedPayload,
+  type ListMdThemesResponse,
+  type MdThemeListUpdatedPayload,
   type GetSnapshotResponse,
   type PathTreeUpdatedPayload,
   type SessionCreatedPayload,
@@ -39,16 +43,20 @@ import {
   type SessionOwnerChangedPayload,
   type SessionStateChangedPayload,
   type SettingsChangedPayload,
+  type SshProfilesUpdatedPayload,
   type TemplateListUpdatedPayload,
   type WindowFocusRequestedPayload,
   type WindowListUpdatedPayload,
 } from '@shared/protocol';
 import type {
   Bookmark,
+  MdTheme,
+  OpenedFile,
   PathNode,
   PathTree,
   SessionInfo,
   Settings,
+  SshProfile,
   Template,
   WindowInfo,
 } from '@shared/types';
@@ -62,6 +70,7 @@ export interface AppState {
   pathTree: PathTree;
   sessions: Map<string, SessionInfo>;
   bookmarks: Bookmark[];
+  sshProfiles: SshProfile[];
   windows: WindowInfo[];
   templates: Template[];
   defaultTemplateId: string;
@@ -99,6 +108,20 @@ export interface AppState {
    * 也可通过工具栏按钮(BETA-028)在普通页面里切换。本窗口私有,不跨窗口同步。
    */
   simpleMode: boolean;
+
+  /**
+   * 终端侧边文件面板:每个 session 独立的已打开文件快照。evt:file-panel
+   * :updated 推来时覆盖该 session 的快照;session 销毁时清理。文件**内容**
+   * 按需 cmd:file-panel:read,不存进 state(避免大文件占内存 + 切 tab 浪费)。
+   */
+  filePanels: Map<string, FilePanelSnapshot>;
+
+  /**
+   * 自定义 markdown 面板主题列表(扫 userData/markdown-themes/*.css)。evt:md-
+   * theme:list-updated 推来时整体替换;启动时 cmd:md-theme:list 拉一次。设置页
+   * 下拉据此渲染选项;CSS 内容不存 state(按需 cmd:md-theme:get-css 注入)。
+   */
+  mdThemes: MdTheme[];
 }
 
 const EMPTY_TREE: PathTree = {
@@ -115,6 +138,7 @@ export type AppAction =
   | { type: 'snapshot/load'; snapshot: GetSnapshotResponse }
   | { type: 'pathTree/update'; tree: PathTree }
   | { type: 'bookmarks/update'; bookmarks: Bookmark[] }
+  | { type: 'sshProfiles/update'; profiles: SshProfile[] }
   | { type: 'sessions/created'; session: SessionInfo }
   | { type: 'sessions/owner-changed'; sessionId: string; ownerWindowId: string | null }
   | { type: 'sessions/state-changed'; sessionId: string; changes: Partial<SessionInfo> }
@@ -136,7 +160,15 @@ export type AppAction =
       selectSessionId?: string;
       enterSettings?: boolean;
     }
-  | { type: 'view/update-terminal-dims'; dims: { cols: number; rows: number } };
+  | { type: 'view/update-terminal-dims'; dims: { cols: number; rows: number } }
+  | {
+      type: 'file-panel/updated';
+      sessionId: string;
+      files: OpenedFile[];
+      activePath: string | null;
+    }
+  | { type: 'file-panel/clear'; sessionId: string }
+  | { type: 'md-themes/update'; themes: MdTheme[] };
 
 // ──────────────────────────────────────────────────────────────────
 // Reducer
@@ -154,6 +186,7 @@ function reducer(state: AppState, action: AppAction): AppState {
         pathTree: s.pathTree,
         sessions: sessionsMap,
         windows: s.windows,
+        sshProfiles: s.sshProfiles,
         templates: s.templates,
         defaultTemplateId: s.defaultTemplateId,
         settings: s.settings,
@@ -163,11 +196,32 @@ function reducer(state: AppState, action: AppAction): AppState {
         selectedPathId: state.selectedPathId ?? firstBookmark?.id ?? null,
       };
     }
-    case 'pathTree/update':
-      return { ...state, pathTree: action.tree };
+    case 'pathTree/update': {
+      const selectedPathStillExists =
+        state.selectedPathId !== null &&
+        findPathNode(action.tree, state.selectedPathId) !== undefined;
+      const validPathIds = new Set([
+        ...action.tree.bookmarks.map((p) => p.id),
+        ...action.tree.temporary.map((p) => p.id),
+        ...action.tree.recent.map((p) => p.id),
+      ]);
+      const expandedPathIds = new Set(
+        [...state.expandedPathIds].filter((pathId) => validPathIds.has(pathId)),
+      );
+      return {
+        ...state,
+        pathTree: action.tree,
+        expandedPathIds,
+        selectedPathId: selectedPathStillExists ? state.selectedPathId : null,
+        selectedSessionId: selectedPathStillExists ? state.selectedSessionId : null,
+      };
+    }
 
     case 'bookmarks/update':
       return { ...state, bookmarks: action.bookmarks };
+
+    case 'sshProfiles/update':
+      return { ...state, sshProfiles: action.profiles };
 
     case 'sessions/created': {
       const sessions = new Map(state.sessions);
@@ -247,13 +301,34 @@ function reducer(state: AppState, action: AppAction): AppState {
     case 'sessions/destroyed': {
       const sessions = new Map(state.sessions);
       sessions.delete(action.sessionId);
-      const next: AppState = { ...state, sessions };
+      // 文件面板:session 没了,清掉它的快照(不再显示残留文件列表)
+      const filePanels = new Map(state.filePanels);
+      filePanels.delete(action.sessionId);
+      const next: AppState = { ...state, sessions, filePanels };
       // 当前选中的 session 被销毁 → 取消选中
       if (state.selectedSessionId === action.sessionId) {
         next.selectedSessionId = null;
       }
       return next;
     }
+
+    case 'file-panel/updated': {
+      const filePanels = new Map(state.filePanels);
+      filePanels.set(action.sessionId, {
+        files: action.files,
+        activePath: action.activePath,
+      });
+      return { ...state, filePanels };
+    }
+    case 'file-panel/clear': {
+      if (!state.filePanels.has(action.sessionId)) return state;
+      const filePanels = new Map(state.filePanels);
+      filePanels.delete(action.sessionId);
+      return { ...state, filePanels };
+    }
+
+    case 'md-themes/update':
+      return { ...state, mdThemes: action.themes };
 
     case 'windows/list-update':
       return { ...state, windows: action.windows };
@@ -272,8 +347,16 @@ function reducer(state: AppState, action: AppAction): AppState {
       // 点击 tab 才会切换 owner。
       // 如果该 path 下没有本窗口持有的 session → selectedSessionId=null
       // → MainPane 显示 EmptyPathState (新建终端页面)。
+      //
+      // issue #4:hideTopTabBar=true 时强制走 EmptyPathState 路径,
+      // 用户切到已有 session 必须从 Sidebar 显式点 SessionItem。
+      // 注意:这里不能加 `action.pathId !== state.selectedPathId` 守卫 —
+      // 否则当前 path 已选中时再点同一 path 不会清空 selectedSessionId,
+      // 用户得"先切 B 再切回 A"才能看到新建页(用户反馈 issue #4 续)。
       let selectedSessionId: string | null = state.selectedSessionId;
-      if (action.pathId !== state.selectedPathId) {
+      if (state.settings.appearance?.hideTopTabBar) {
+        selectedSessionId = null;
+      } else if (action.pathId !== state.selectedPathId) {
         const node = findPathNode(state.pathTree, action.pathId ?? '');
         const myOwnedSid =
           node?.sessionIds.find((sid) => {
@@ -342,10 +425,7 @@ function reducer(state: AppState, action: AppAction): AppState {
     case 'view/update-terminal-dims': {
       const { cols, rows } = action.dims;
       // 简单去抖:相同尺寸不更新 (避免无意义重渲染)
-      if (
-        state.lastTerminalDims.cols === cols &&
-        state.lastTerminalDims.rows === rows
-      ) {
+      if (state.lastTerminalDims.cols === cols && state.lastTerminalDims.rows === rows) {
         return state;
       }
       return { ...state, lastTerminalDims: { cols, rows } };
@@ -363,10 +443,7 @@ function reducer(state: AppState, action: AppAction): AppState {
  * 历史搜索 等),曾经有调用方在外面重写过这条 fallback 链(MainPane Tab 内
  * 找 path 字段,P2-13)。统一从这里导出。
  */
-export function findPathNode(
-  tree: PathTree,
-  pathId: string,
-): PathNode | undefined {
+export function findPathNode(tree: PathTree, pathId: string): PathNode | undefined {
   return (
     tree.bookmarks.find((p) => p.id === pathId) ??
     tree.temporary.find((p) => p.id === pathId) ??
@@ -383,6 +460,7 @@ export function makeDefaultState(myWindowId: string, myWindowNumber: number): Ap
     pathTree: EMPTY_TREE,
     sessions: new Map(),
     bookmarks: [],
+    sshProfiles: [],
     windows: [],
     templates: [],
     defaultTemplateId: 'shell',
@@ -396,6 +474,8 @@ export function makeDefaultState(myWindowId: string, myWindowNumber: number): Ap
     lastTerminalDims: { cols: 120, rows: 30 },
     // BETA-027:默认普通页面;Explorer 简易模式打开时在 startup 显式 dispatch set
     simpleMode: false,
+    filePanels: new Map(),
+    mdThemes: [],
   };
 }
 
@@ -482,9 +562,7 @@ export function useIpcSync(): { ready: boolean; error: string | null } {
   const [status, setStatus] = useReducer(
     (
       _: { ready: boolean; error: string | null },
-      action:
-        | { type: 'ready' }
-        | { type: 'error'; message: string },
+      action: { type: 'ready' } | { type: 'error'; message: string },
     ) => {
       switch (action.type) {
         case 'ready':
@@ -504,85 +582,95 @@ export function useIpcSync(): { ready: boolean; error: string | null } {
 
     void (async () => {
       try {
-        const snapshot = await window.api.invoke<
-          { myWindowId: string },
-          GetSnapshotResponse
-        >(COMMAND_CHANNELS.APP_GET_SNAPSHOT, { myWindowId });
+        const snapshot = await window.api.invoke<{ myWindowId: string }, GetSnapshotResponse>(
+          COMMAND_CHANNELS.APP_GET_SNAPSHOT,
+          { myWindowId },
+        );
         if (cancelled) return;
         dispatch({ type: 'snapshot/load', snapshot });
 
         // 订阅事件
         cleanups.push(
-          window.api.on<PathTreeUpdatedPayload>(
-            EVENT_CHANNELS.PATH_TREE_UPDATED,
-            (p) => dispatch({ type: 'pathTree/update', tree: p.tree }),
+          window.api.on<PathTreeUpdatedPayload>(EVENT_CHANNELS.PATH_TREE_UPDATED, (p) =>
+            dispatch({ type: 'pathTree/update', tree: p.tree }),
           ),
-          window.api.on<BookmarksUpdatedPayload>(
-            EVENT_CHANNELS.BOOKMARKS_UPDATED,
-            (p) => dispatch({ type: 'bookmarks/update', bookmarks: p.bookmarks }),
+          window.api.on<BookmarksUpdatedPayload>(EVENT_CHANNELS.BOOKMARKS_UPDATED, (p) =>
+            dispatch({ type: 'bookmarks/update', bookmarks: p.bookmarks }),
           ),
-          window.api.on<SessionCreatedPayload>(
-            EVENT_CHANNELS.SESSION_CREATED,
-            (p) => dispatch({ type: 'sessions/created', session: p.session }),
+          window.api.on<SshProfilesUpdatedPayload>(EVENT_CHANNELS.SSH_PROFILES_UPDATED, (p) =>
+            dispatch({ type: 'sshProfiles/update', profiles: p.profiles }),
           ),
-          window.api.on<SessionOwnerChangedPayload>(
-            EVENT_CHANNELS.SESSION_OWNER_CHANGED,
-            (p) =>
-              dispatch({
-                type: 'sessions/owner-changed',
-                sessionId: p.sessionId,
-                ownerWindowId: p.newOwnerWindowId,
-              }),
+          window.api.on<SessionCreatedPayload>(EVENT_CHANNELS.SESSION_CREATED, (p) =>
+            dispatch({ type: 'sessions/created', session: p.session }),
           ),
-          window.api.on<SessionExitedPayload>(
-            EVENT_CHANNELS.SESSION_EXITED,
-            (p) =>
-              dispatch({
-                type: 'sessions/exited',
-                sessionId: p.sessionId,
-                exitCode: p.exitCode,
-              }),
+          window.api.on<SessionOwnerChangedPayload>(EVENT_CHANNELS.SESSION_OWNER_CHANGED, (p) =>
+            dispatch({
+              type: 'sessions/owner-changed',
+              sessionId: p.sessionId,
+              ownerWindowId: p.newOwnerWindowId,
+            }),
           ),
-          window.api.on<SessionStateChangedPayload>(
-            EVENT_CHANNELS.SESSION_STATE_CHANGED,
-            (p) =>
-              dispatch({
-                type: 'sessions/state-changed',
-                sessionId: p.sessionId,
-                changes: p.changes,
-              }),
+          window.api.on<SessionExitedPayload>(EVENT_CHANNELS.SESSION_EXITED, (p) =>
+            dispatch({
+              type: 'sessions/exited',
+              sessionId: p.sessionId,
+              exitCode: p.exitCode,
+            }),
           ),
-          window.api.on<SessionDestroyedPayload>(
-            EVENT_CHANNELS.SESSION_DESTROYED,
-            (p) => dispatch({ type: 'sessions/destroyed', sessionId: p.sessionId }),
+          window.api.on<SessionStateChangedPayload>(EVENT_CHANNELS.SESSION_STATE_CHANGED, (p) =>
+            dispatch({
+              type: 'sessions/state-changed',
+              sessionId: p.sessionId,
+              changes: p.changes,
+            }),
           ),
-          window.api.on<TemplateListUpdatedPayload>(
-            EVENT_CHANNELS.TEMPLATES_UPDATED,
-            (p) =>
-              dispatch({
-                type: 'templates/update',
-                templates: p.templates,
-                defaultTemplateId: p.defaultTemplateId,
-              }),
+          window.api.on<SessionDestroyedPayload>(EVENT_CHANNELS.SESSION_DESTROYED, (p) =>
+            dispatch({ type: 'sessions/destroyed', sessionId: p.sessionId }),
           ),
-          window.api.on<WindowListUpdatedPayload>(
-            EVENT_CHANNELS.WINDOW_LIST_UPDATED,
-            (p) => dispatch({ type: 'windows/list-update', windows: p.windows }),
+          window.api.on<FilePanelUpdatedPayload>(EVENT_CHANNELS.FILE_PANEL_UPDATED, (p) =>
+            dispatch({
+              type: 'file-panel/updated',
+              sessionId: p.sessionId,
+              files: p.files,
+              activePath: p.activePath,
+            }),
           ),
-          window.api.on<SettingsChangedPayload>(
-            EVENT_CHANNELS.SETTINGS_CHANGED,
-            (p) => dispatch({ type: 'settings/changed', settings: p.settings }),
+          window.api.on<MdThemeListUpdatedPayload>(EVENT_CHANNELS.MD_THEME_LIST_UPDATED, (p) =>
+            dispatch({ type: 'md-themes/update', themes: p.themes }),
           ),
-          window.api.on<WindowFocusRequestedPayload>(
-            EVENT_CHANNELS.WINDOW_FOCUS_REQUESTED,
-            (p) =>
-              dispatch({
-                type: 'view/focus-requested',
-                ...(p.selectSessionId ? { selectSessionId: p.selectSessionId } : {}),
-                ...(p.reason === 'tray-open-settings' ? { enterSettings: true } : {}),
-              }),
+          window.api.on<TemplateListUpdatedPayload>(EVENT_CHANNELS.TEMPLATES_UPDATED, (p) =>
+            dispatch({
+              type: 'templates/update',
+              templates: p.templates,
+              defaultTemplateId: p.defaultTemplateId,
+            }),
+          ),
+          window.api.on<WindowListUpdatedPayload>(EVENT_CHANNELS.WINDOW_LIST_UPDATED, (p) =>
+            dispatch({ type: 'windows/list-update', windows: p.windows }),
+          ),
+          window.api.on<SettingsChangedPayload>(EVENT_CHANNELS.SETTINGS_CHANGED, (p) =>
+            dispatch({ type: 'settings/changed', settings: p.settings }),
+          ),
+          window.api.on<WindowFocusRequestedPayload>(EVENT_CHANNELS.WINDOW_FOCUS_REQUESTED, (p) =>
+            dispatch({
+              type: 'view/focus-requested',
+              ...(p.selectSessionId ? { selectSessionId: p.selectSessionId } : {}),
+              ...(p.reason === 'tray-open-settings' ? { enterSettings: true } : {}),
+            }),
           ),
         );
+
+        // 自定义 markdown 主题列表:启动拉一次(订阅已覆盖后续增删广播)。
+        // 失败不阻塞主流程 —— 设置页下拉只是少自定义项,内置主题仍可用。
+        try {
+          const { themes } = await window.api.invoke<undefined, ListMdThemesResponse>(
+            COMMAND_CHANNELS.MD_THEME_LIST,
+            undefined,
+          );
+          if (!cancelled) dispatch({ type: 'md-themes/update', themes });
+        } catch (err) {
+          console.warn('[md-theme] initial list failed', err);
+        }
 
         setStatus({ type: 'ready' });
       } catch (err) {

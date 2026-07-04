@@ -21,6 +21,7 @@ import { ToastProvider } from './components/Toast';
 import { ModalProvider } from './components/Modal';
 import { LanguageProvider } from './components/LanguageProvider';
 import { LastSessionConfirmBridge } from './components/LastSessionConfirmBridge';
+import { MdThemeInjector } from './components/file-panel/MdThemeInjector';
 
 type HandshakeState =
   | { status: 'pending' }
@@ -137,14 +138,8 @@ export function App(): JSX.Element {
 
   // handshake OK
   return (
-    <AppStateProvider
-      myWindowId={window.api.windowId}
-      myWindowNumber={window.api.windowNumber}
-    >
-      <ConnectedShell
-        buildVersion={handshake.buildVersion}
-        buildType={handshake.buildType}
-      />
+    <AppStateProvider myWindowId={window.api.windowId} myWindowNumber={window.api.windowNumber}>
+      <ConnectedShell buildVersion={handshake.buildVersion} buildType={handshake.buildType} />
     </AppStateProvider>
   );
 }
@@ -261,39 +256,40 @@ function ConnectedShell({
 
   return (
     <LanguageProvider>
-    <ToastProvider>
-      <ModalProvider>
-        <LastSessionConfirmBridge />
-        <ContextMenuProvider>
-          <div
-            className="app-root with-shell"
-            data-theme={currentTheme}
-            data-window-style={windowStyle}
-            data-simple-mode={state.simpleMode ? 'true' : 'false'}
-          >
-            <WindowChrome
-              windowStyle={windowStyle}
-              buildVersion={buildVersion}
-              buildType={buildType}
-            />
-            {state.inSettingsView ? (
-              <SettingsView />
-            ) : state.simpleMode ? (
-              // BETA-027:简易页面 — 隐藏 Sidebar / Tab bar,只保留 WindowChrome
-              // + 终端区。退出简易模式的入口现在嵌在 terminal-statusbar 里(pid 之后)。
-              <div className="app-body simple-mode">
-                <MainPane />
-              </div>
-            ) : (
-              <div className="app-body">
-                <Sidebar />
-                <MainPane />
-              </div>
-            )}
-          </div>
-        </ContextMenuProvider>
-      </ModalProvider>
-    </ToastProvider>
+      <ToastProvider>
+        <ModalProvider>
+          <LastSessionConfirmBridge />
+          <ContextMenuProvider>
+            <MdThemeInjector />
+            <div
+              className="app-root with-shell"
+              data-theme={currentTheme}
+              data-window-style={windowStyle}
+              data-simple-mode={state.simpleMode ? 'true' : 'false'}
+            >
+              <WindowChrome
+                windowStyle={windowStyle}
+                buildVersion={buildVersion}
+                buildType={buildType}
+              />
+              {state.inSettingsView ? (
+                <SettingsView />
+              ) : state.simpleMode ? (
+                // BETA-027:简易页面 — 隐藏 Sidebar / Tab bar,只保留 WindowChrome
+                // + 终端区。退出简易模式的入口现在嵌在 terminal-statusbar 里(pid 之后)。
+                <div className="app-body simple-mode">
+                  <MainPane />
+                </div>
+              ) : (
+                <div className="app-body">
+                  <Sidebar />
+                  <MainPane />
+                </div>
+              )}
+            </div>
+          </ContextMenuProvider>
+        </ModalProvider>
+      </ToastProvider>
     </LanguageProvider>
   );
 }

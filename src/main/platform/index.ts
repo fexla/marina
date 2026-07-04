@@ -56,6 +56,19 @@ export interface PlatformAdapter {
   detectShells(): Promise<ShellInfo[]>;
 
   /**
+   * 解析一个命令名对应的可执行文件路径。
+   *
+   * 主要服务于 SSH 这类"不是登录 shell,但需要由 PTY 直接 spawn"的本机工具。
+   * Windows 上 CreateProcess / node-pty 对 PATH、PATHEXT 和 SystemRoot casing
+   * 很敏感,由平台层统一解析能避免核心 SessionManager 写平台分支。
+   *
+   * @param commandName 命令名或路径,如 "ssh" / "ssh.exe" / "/usr/bin/ssh"
+   * @param env 即将传给 spawn 的环境变量;平台层可用它读取 PATH / PATHEXT
+   * @returns 可直接传给 node-pty spawn 的路径;找不到时返回 null
+   */
+  resolveExecutable(commandName: string, env: Record<string, string>): string | null;
+
+  /**
    * 给定一个 shell,返回启动它时注入 OSC 1337 hook 所需的额外参数和环境变量。
    *
    * 当 `commandToRun` 提供时,hook 注入完成后还要 exec 该命令。具体如何
@@ -131,6 +144,18 @@ export interface PlatformAdapter {
    * 不存在(JsonStore source==='default')时才生效一次,后续启动不会重播。
    */
   getDefaultBookmarkSeeds(): DefaultBookmarkSeed[];
+
+  /**
+   * SSH 方案 v2.1 §阶段 3.5:OpenSSH ControlPath socket 文件路径模板。
+   *
+   * - Linux/macOS:返回 `~/.ssh/cm-%r@%h:%p`(OpenSSH 自动展开 %r/%h/%p,
+   *   ~ 由 OpenSSH 而非 shell 展开 — OpenSSH 文档明示)。
+   * - Windows:返回固定模板字符串即可。Windows OpenSSH 8.x+ 走 named pipe,
+   *   ControlPath 值被忽略,实际不读;传它只是为了 args 一致。
+   *
+   * 可选 — 旧 PlatformAdapter 实现不提供则 SessionManager 用默认值。
+   */
+  getSshControlPath?(): string;
 }
 
 /**

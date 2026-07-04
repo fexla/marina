@@ -26,6 +26,36 @@
 export type PathCategory = 'bookmarked' | 'temporary' | 'recent';
 
 /**
+ * Path 的来源。local 是本机文件夹;ssh 是某个 SSH profile 下的远程目录。
+ *
+ * Phase 1(SSH 方案 v2.1 §II.1):本字段在所有 Path-bearing 类型(Bookmark /
+ * RecentEntry / PathNode / PathRef)上都是 **required**,通过 discriminated
+ * union 把"路径来源"做成类型层 invariant — 任何忘记处理 ssh 分支的代码
+ * 立刻编译失败。
+ *
+ * 旧磁盘数据(beta.9 之前)没有 kind 字段,在持久化层(PathManager.initialize
+ * / validateBookmarksArray / validateRecentArray)读取时统一 coerce 为
+ * 'local',对类型层保持透明。
+ */
+export type PathKind = 'local' | 'ssh';
+
+/**
+ * Discriminated union helper — 编译期 exhaustiveness check 的兜底。
+ * 在 switch on PathKind 的 default / 末尾调用一次,任何未覆盖的 kind 会
+ * 让 TS 编译报错。
+ *
+ * @example
+ *   switch (b.kind) {
+ *     case 'local': return doLocal(b);
+ *     case 'ssh':   return doRemote(b);
+ *     default:      return assertNeverPathKind(b);
+ *   }
+ */
+export function assertNeverPathKind(_value: never): never {
+  throw new Error(`unhandled PathKind: ${JSON.stringify(_value)}`);
+}
+
+/**
  * Session 的运行时状态 (软件定义书 8.3 节状态机)。
  *
  * v1.2 起 (ADR-008):状态机砍掉了 tombstoned (5 分钟自动过期 + 重启)。
@@ -100,6 +130,28 @@ export type StartupBehavior = 'open-window' | 'tray-only';
  */
 export type NewTerminalShellPolicy = 'default' | 'last-used';
 
+/**
+ * SSH 远端 tmux 启动策略。
+ *
+ * 这是 SSH 启动链路的轻量增强,不是 Marina 的 tmux session 管理模型:
+ * Marina 仍只管理本地 ssh.exe PTY;远端 tmux 仅用于断线后 attach 回同一个
+ * 远端会话。
+ */
+export type SshTmuxMode = 'disabled' | 'attach-or-create';
+
+/**
+ * 远端没有 tmux 命令时的行为。
+ */
+export type SshTmuxOnMissing = 'fallback-shell' | 'fail';
+
+/**
+ * SSH tmux session 命名策略。
+ *
+ * - reuse:按远程目录末级派生基名,远端已有同名 session 时按数量智能选择
+ * - new-per-launch:每次从 Marina 新建 session 都创建新的 tmux session,适合强制多开
+ */
+export type SshTmuxSessionPolicy = 'reuse' | 'new-per-launch';
+
 // ──────────────────────────────────────────────────────────────────
 // 内存数据 (Window / Session / Path)
 // ──────────────────────────────────────────────────────────────────
@@ -162,12 +214,13 @@ export interface SessionInfo {
 }
 
 /**
- * 路径节点,用于侧栏渲染。
+ * 路径节点公共字段(本地 / SSH 共用)。具体类型必须从 PathNode discriminated
+ * union 选用对应变体。
  */
-export interface PathNode {
-  /** UUID 内部 id */
+interface PathNodeBase {
+  /** 稳定 path id(本地 = normalizePath 结果;SSH = ssh:profileId:remotePath) */
   id: string;
-  /** 文件系统绝对路径 */
+  /** 本地文件系统绝对路径,或 SSH 远程目录路径 */
   path: string;
   /** 用户自定义显示名,无则取路径最后一段 */
   displayName?: string;
@@ -182,6 +235,24 @@ export interface PathNode {
    */
   invalid?: boolean;
 }
+
+export interface LocalPathNode extends PathNodeBase {
+  kind: 'local';
+}
+
+export interface RemotePathNode extends PathNodeBase {
+  kind: 'ssh';
+  /** 必填:指向 SshProfile.id。本地节点不应出现此字段。 */
+  sshProfileId: string;
+}
+
+/**
+ * 路径节点(用于侧栏渲染),按 kind discriminated union。
+ *
+ * v2.1 起 kind 必填。switch on `node.kind` 让 TS exhaustiveness check 强制
+ * 处理所有分支,sshProfileId 在 ssh 分支自动 narrow 为 required。
+ */
+export type PathNode = LocalPathNode | RemotePathNode;
 
 /**
  * 完整路径树 (snapshot / 广播用)。
@@ -207,7 +278,7 @@ export interface Settings {
 
   appearance: {
     theme: ThemeId;
-    windowStyle: WindowStyle;             // M1-A:窗口风格 (windows / macos)
+    windowStyle: WindowStyle; // M1-A:窗口风格 (windows / macos)
     /**
      * BETA-004 UI 语言。'system' 表示跟随系统 locale(app.getLocale()):
      * zh-* 默认中文,其他默认英文。固定 'zh-CN' / 'en-US' 强制使用对应语言。
@@ -224,6 +295,15 @@ export interface Settings {
      * 设为 true 可恢复原生 macOS 观感。
      */
     macOSTrafficLightHoverSymbols: boolean;
+    /**
+     * issue #4:隐藏顶部 TabBar。侧边栏已按路径分组显示所有 session,
+     * TabBar 内容重复且占纵向空间。开启后:
+     * - MainPane 不渲染 TabBar
+     * - 点 PathItem 永远进 EmptyPathState 新建页(不再自动选第一个持有的 session)
+     * - 切到已有 session 必须从 Sidebar 点 SessionItem
+     * 与 simpleMode 正交:simpleMode 优先(它连 Sidebar 一起藏)。
+     */
+    hideTopTabBar: boolean;
   };
 
   /**
@@ -285,6 +365,45 @@ export interface Settings {
     activeIdleThresholdSeconds: number;
     // 注:v1.2 起 sessionTombstoneMinutes 已删除 (砍墓地,见 ADR-008)
     /**
+     * SSH 方案 v2.1 §阶段 2.1:读取 ~/.ssh/config 合并到 profile 列表。
+     *
+     * - true:Marina 自管 SshProfile + ssh_config 的 Host 块在 sidebar /
+     *   设置页"远程"分类合并显示;ssh_config 来源的条目带"ssh_config" 标签,
+     *   只读不能编辑/删除(改请直接编辑 ~/.ssh/config)。
+     * - false(默认):只显示 Marina 自管 profile。
+     *
+     * 设置入口在 RemotePanel(advanced.enableRemote → 'remote' 分类内)。
+     */
+    includeSshConfig: boolean;
+
+    /**
+     * SSH 方案 v2.1 §阶段 3.5:启用 OpenSSH ControlMaster。
+     *
+     * true(默认):同一 host:port:user 的多个 session 复用第一个连接,
+     * 启动后 ControlPersist=10m,期间新 session 0 握手(从 ~3s 降到 <100ms)。
+     * Windows OpenSSH 8.x+ 支持但 socket 走 named pipe,部分老版本不稳定 —
+     * OpenSSH 自身在 master 不可用时会回退到新连接,Marina 不需要兜底。
+     *
+     * false:每个 session 独立握手(beta.9 行为)。
+     *
+     * 设置入口在 RemotePanel。
+     */
+    enableControlMaster: boolean;
+
+    /**
+     * SSH 方案 v2.1 §II.6:本地用户视野守护开关。
+     *
+     * - false(默认):未添加任何 SshProfile 时,设置页"远程"分类完全隐藏,
+     *   sidebar 顶部 segmented control 也按本地 + WSL 排列(SSH 段空时不渲染)。
+     *   全新用户进 Marina = 体验跟 beta.9 一致。
+     * - true:即使没有 profile 也显示"远程"分类入口(给试图先看怎么配置
+     *   再加 profile 的用户)。
+     *
+     * 不变式:`sshProfiles.length > 0 || advanced.enableRemote === true`
+     * 是"渲染远程相关 UI"的唯一触发条件。
+     */
+    enableRemote: boolean;
+    /**
      * 终端渲染器选择(影响 xterm.js 渲染层)。
      * - 'auto' = 平台默认:Windows / macOS 用 WebGL(性能 10-50× DOM),Linux
      *           强制 DOM(Chromium Mesa/EGL 软渲会让 xterm 滚动秒级响应)。
@@ -336,17 +455,70 @@ export interface Settings {
      */
     statusRecheckSource: 'headless' | 'screenshot';
   };
+
+  /**
+   * 终端侧边文件预览面板(MARINA_SERVICE 远程调用功能)。
+   *
+   * 终端里跑的程序(agent / 脚本 / CLI)通过注入的 env(MARINA_SERVICE /
+   * MARINA_TOKEN / TERMINAL_ID)调本机 RESTful 服务,把文件"打开"到绑定该
+   * 终端的侧边面板里。面板支持 文本 / 图片 / Markdown。
+   *
+   * - enabled:false → 不起 HTTP 服务、不注入 env、不渲染面板(功能完全关闭)
+   * - port:0 = 启动时让系统分配空闲端口(避免冲突,默认);正整数 = 尝试该固定
+   *   端口,被占用则回退自动并 log warn。无论哪种,实际 baseUrl 都注入 env,
+   *   客户端不必关心端口。
+   *
+   * 安全面:HTTP 只绑 127.0.0.1 回环 + Bearer token;REST 只改面板视图,
+   * 不提供任意文件读(读内容走 renderer→main 的 IPC,且仅限面板已打开列表)。
+   */
+  filePanel: {
+    enabled: boolean;
+    /** 0 = 自动选空闲端口;正整数 = 尝试固定端口(占用则回退自动) */
+    port: number;
+    /**
+     * markdown 面板的渲染风格(用户在设置页选)。Typora 式可扩展:
+     * - 'auto' 用 marina 主题变量样式(与 7+ 主题配色协调,默认)
+     * - 'github-light' / 'github-dark' 用 github-markdown-css(GitHub 官方版式 +
+     *   配色),通过 color-scheme 属性在面板内强制明暗,不跟随系统。
+     * - 'custom:<id>' 用户往 userData/markdown-themes/ 放的 .css 主题,
+     *   id 由 markdown-theme-manager 从文件名 sanitize 而来。CSS 约定写
+     *   `.markdown-body` 选择器(与 github-markdown-css 一致),由 renderer
+     *   注入 <style> 生效(CSP 允许 inline style,禁 file:// link)。
+     *
+     * 类型放宽为 string 而非 union:自定义主题 id 在编译期无法穷举,且用户
+     * 可能删除正被选中的主题文件 —— 此时 MarkdownViewer fallback 到 'auto',
+     * 不在 settings 校验处阻塞保存。
+     */
+    markdownStyle: string;
+  };
 }
 
 /**
- * bookmarks.json
+ * bookmarks.json 磁盘 schema(宽松版本)。kind 可选,kind === 'ssh' 时
+ * sshProfileId 可缺(进程内 PathManager.initialize → migrateBookmarkOnLoad
+ * 会丢弃损坏条目)。所有写盘前的内存 Bookmark 都是严格 discriminated union,
+ * 通过 buildBookmark 构造。
  */
 export interface BookmarksFile {
   version: 1;
-  paths: Bookmark[];
+  paths: PersistedBookmark[];
 }
 
-export interface Bookmark {
+/**
+ * 磁盘层 Bookmark 形状:跟 beta.9 之前的旧 schema 兼容(无 kind / 缺
+ * sshProfileId)。新代码请用严格类型 Bookmark(discriminated union)。
+ */
+export interface PersistedBookmark {
+  id: string;
+  path: string;
+  kind?: PathKind;
+  sshProfileId?: string;
+  displayName?: string;
+  defaultTemplateId?: string;
+  addedAt: number;
+}
+
+interface BookmarkBase {
   id: string;
   path: string;
   displayName?: string;
@@ -355,19 +527,101 @@ export interface Bookmark {
   addedAt: number;
 }
 
+export interface LocalBookmark extends BookmarkBase {
+  kind: 'local';
+}
+
+export interface RemoteBookmark extends BookmarkBase {
+  kind: 'ssh';
+  /** 必填:指向 SshProfile.id。本地 bookmark 不应出现此字段。 */
+  sshProfileId: string;
+}
+
 /**
- * recent.json
+ * 收藏路径,按 kind discriminated union。v2.1 起 kind 必填。
+ *
+ * 旧磁盘数据(无 kind 字段或 kind === undefined)在 PathManager.initialize /
+ * validateBookmarksArray 读取时统一 coerce 为 LocalBookmark。
+ */
+export type Bookmark = LocalBookmark | RemoteBookmark;
+
+/**
+ * recent.json 磁盘 schema(宽松版本)。同 BookmarksFile,kind/sshProfileId
+ * 可选,启动期 migrateRecentOnLoad 丢弃损坏条目。
  */
 export interface RecentFile {
   version: 1;
-  paths: RecentEntry[];
+  paths: PersistedRecentEntry[];
 }
 
-export interface RecentEntry {
+export interface PersistedRecentEntry {
+  path: string;
+  kind?: PathKind;
+  sshProfileId?: string;
+  lastUsedAt: number;
+  useCount: number;
+}
+
+interface RecentEntryBase {
   path: string;
   /** Unix ms,降序排序的依据 */
   lastUsedAt: number;
   useCount: number;
+}
+
+export interface LocalRecentEntry extends RecentEntryBase {
+  kind: 'local';
+}
+
+export interface RemoteRecentEntry extends RecentEntryBase {
+  kind: 'ssh';
+  /** 必填:指向 SshProfile.id。本地 recent 不应出现此字段。 */
+  sshProfileId: string;
+}
+
+/**
+ * 最近列表项,按 kind discriminated union。v2.1 起 kind 必填。
+ * 旧数据缺 kind 时由持久化层 coerce 为 LocalRecentEntry。
+ */
+export type RecentEntry = LocalRecentEntry | RemoteRecentEntry;
+
+/**
+ * SSH 服务器连接配置。可选保存密码:passwordEncrypted 是 Electron
+ * safeStorage 加密后的 base64 文本,仅 main 进程能解密。送到 renderer
+ * 的副本始终剥去 passwordEncrypted,仅保留 hasSavedPassword 标志。
+ */
+export interface SshProfile {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  authType: 'agent' | 'keyFile' | 'password';
+  keyFilePath?: string;
+  /** safeStorage.encryptString 结果的 base64;只在 main 内部保留 */
+  passwordEncrypted?: string;
+  /** 仅 renderer 副本带:是否已保存密码 */
+  hasSavedPassword?: boolean;
+  defaultRemoteCwd?: string;
+  /**
+   * SSH 方案 v2.1 §阶段 2.3:ProxyJump 多级跳板。
+   *
+   * 数组形式:`['bastion.example.com', 'inner.example.com']` → `ssh -J bastion.example.com,inner.example.com`。
+   * 每段可写 `user@host:port` 形式(与 OpenSSH -J 相同);空数组或缺失 = 不跳板。
+   * Marina 不校验跳板格式,完整转发给 OpenSSH,跳板鉴权由 OpenSSH 自己处理
+   * (复用主机已配的 SSH agent / key)。
+   */
+  proxyJump?: string[];
+  tmuxMode?: SshTmuxMode;
+  tmuxSessionName?: string;
+  tmuxSessionPolicy?: SshTmuxSessionPolicy;
+  tmuxOnMissing?: SshTmuxOnMissing;
+  addedAt: number;
+}
+
+export interface SshProfilesFile {
+  version: 1;
+  profiles: SshProfile[];
 }
 
 /**
@@ -404,6 +658,7 @@ export interface AppSnapshot {
   windows: WindowInfo[];
   sessions: SessionInfo[];
   pathTree: PathTree;
+  sshProfiles: SshProfile[];
   templates: Template[];
   defaultTemplateId: string;
   settings: Settings;
@@ -424,4 +679,62 @@ export interface SessionRuntimeShape {
   info: SessionInfo;
   /** 环形 scrollback buffer,2MB 上限,CP-3 接入 (CP-2 留空) */
   scrollback: Buffer | null;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// 终端侧边文件预览面板 (MARINA_SERVICE 远程调用功能)
+// ──────────────────────────────────────────────────────────────────
+
+/**
+ * 文件在面板里能渲染的类型。按扩展名判定(见 src/shared/file-kind.ts 的
+ * detectFileKind),未知扩展名归 'unknown' —— 面板显示"暂不支持预览"占位,
+ * 不报错(终端程序 open 一个二进制文件是正常场景)。
+ *
+ * 'web' 是为未来网页预览(本地 HTML / 远程 URL)预留的槽位,本轮 detectFileKind
+ * 不会返回它;FileViewer 里有对应分支但渲染占位提示。
+ */
+export type FileKind = 'text' | 'markdown' | 'image' | 'unknown';
+
+/**
+ * 一个"已打开"文件的元数据。**不含文件内容** —— 内容按需由 renderer 通过
+ * cmd:file-panel:read 拉取(text/markdown 返回字符串,image 返回 base64 dataUrl)。
+ * 这样切换 tab / 关闭文件时不浪费 IPC 带宽,也避免大文件一次性塞进 store。
+ *
+ * mtimeMs 是自动刷新的关键:main 端 fs.watch 检测到文件变化后更新它并广播,
+ * renderer 的 viewer 把 mtimeMs 列入 useEffect 依赖,变化即重新 read。
+ */
+export interface OpenedFile {
+  /** 规范化绝对路径(main 端 normalizePath 处理),也是面板里的去重/active 主键 */
+  path: string;
+  /** basename,供 tab 显示与 tooltip */
+  name: string;
+  /** 渲染类型,决定 FileViewer 用哪个子 viewer */
+  kind: FileKind;
+  /** 字节数,fs.stat 结果(超限文件 read 会被截断) */
+  size: number;
+  /** fs.stat mtimeMs;变化驱动 viewer 重新 read(自动刷新) */
+  mtimeMs: number;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Markdown 面板主题(Typora 式可扩展)
+// ──────────────────────────────────────────────────────────────────
+
+/**
+ * 一个用户自定义的 markdown 面板主题(= userData/markdown-themes/ 下的一个 .css)。
+ *
+ * 「文件即主题」模型,与 Typora 一致:用户/社区把 CSS 文件丢进目录就多一个
+ * 风格,无需改代码、无需打包。main 端 markdown-theme-manager 扫描目录生成
+ * 此列表,fs.watch 自动发现增删。
+ *
+ * - id:稳定标识,`custom:<sanitized-baseName>`,作为 Settings.markdownStyle
+ *   的取值持久化。sanitize 保证 id 安全(小写 + 非 [a-z0-9-] 转 -)且稳定
+ *   (同一文件名始终产出同一 id)。
+ * - name:展示名,直接用 baseName(去 .css 扩展)。
+ * - fileName:磁盘文件名(含 .css),main 端 readCss 用;renderer 不直接碰磁盘。
+ */
+export interface MdTheme {
+  id: string;
+  name: string;
+  fileName: string;
 }

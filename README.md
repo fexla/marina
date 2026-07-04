@@ -7,7 +7,7 @@
 [![Status](https://img.shields.io/badge/status-alpha-orange)](#roadmap)
 [![中文文档](https://img.shields.io/badge/中文文档-README.zh--CN.md-red)](README.zh-CN.md)
 
-A path-centric, AI-agent-friendly terminal manager for Windows. Built for developers who run multiple long-running tasks (including Claude Code, Codex, OpenCode, and other AI coding agents) across many different working directories — and refuse to lose them when the window closes.
+A path-centric, AI-agent-friendly terminal manager for Windows. Built for developers who run multiple long-running tasks (including Claude Code, Codex, OpenCode, and other AI coding agents) across many local or SSH working directories — and refuse to lose them when the window closes.
 
 > **History note**: Marina is the product previously known as EasyTerm during alpha development (CP-1 through Milestone 1). The rename happened at v1.5, and historical documents under `docs/` may still refer to "EasyTerm" — those are intentional snapshots of past decisions.
 
@@ -20,6 +20,7 @@ If you've ever:
 - 🤖 Run 5 AI coding agents in 5 different projects and **forgotten which one was waiting for your input**
 - 💀 Accidentally closed your terminal window and **killed a 2-hour build / a long pytest run / an agent mid-task**
 - 🌀 Spent 10 seconds typing `cd D:\projects\company\some\deeply\nested\path` for the third time today
+- 🔐 Jumped between remote servers and wished SSH sessions were organized by path, not by a pile of terminal tabs
 - 📑 Tried to organize your work in Windows Terminal profiles and given up
 
 ...Marina is for you.
@@ -75,6 +76,8 @@ Marina ships with two title-bar styles (**Windows** controls on the right, **mac
 | Auto cwd tracking (⚠ on drift) | ❌ | ❌ | ✅ | ✅ | ✅ |
 | Multi-window with shared session pool | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Close window without killing sessions | ❌ | ❌ | ✅ | ❌ | ✅ |
+| Remote path bookmarks | ❌ | ❌ | ❌ | ❌ | ✅ |
+| One-click remote tmux launch | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Built specifically for AI agent workflows | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Native Windows-first | ✅ | ✅ | ❌ | ❌ | ✅ |
 | Mouse-first UI (no required shortcuts) | ❌ | ❌ | ❌ | ❌ | ✅ |
@@ -89,6 +92,7 @@ If your workflow looks like this:
 - Another agent in `~/projects/backend` refactoring the auth module
 - A third agent in `~/scripts` running a long migration
 - A fourth in `D:\client-work\report-tool` debugging a flaky test
+- A fifth on `prod:~/repo` attached to a remote tmux session
 - ...and you can't remember which is which
 
 Marina gives you:
@@ -96,6 +100,8 @@ Marina gives you:
 - **A persistent sidebar** showing every agent grouped by its project path
 - **Status indicators** so you can see at a glance which agents are working vs. idle
 - **CWD tracking** — when an agent `cd`s somewhere, the tab shows ⚠ with the real cwd in tooltip
+- **SSH path bookmarks** — save remote profiles and bookmark remote working directories alongside local paths
+- **Remote tmux launch** — start or attach to tmux on a remote host, and return to the remote shell when tmux exits
 - **Templates** for `claude`, `codex`, `opencode` built-in, with full custom template support for your own commands
 - **Session immortality** — close a window by accident and your agent keeps running. Reopen and continue where you left off.
 
@@ -116,6 +122,7 @@ Marina gives you:
 - Or drag a folder from File Explorer directly onto the sidebar (or onto the terminal area)
 - Double-click a bookmarked path to open a terminal there
 - Click `+` in the tab bar to start a Claude Code / Codex / shell session
+- For remote work, add an SSH profile in Settings, bookmark a remote path such as `~/repo`, then connect normally or with tmux from the path view
 
 ### Try the Magic
 
@@ -133,8 +140,10 @@ That's it. That's the product.
 ### V1 (Current — alpha)
 
 - ✅ **Path management**: bookmark, rename, reorder; auto-tracked "active" and "recent"
+- ✅ **Remote paths**: SSH profiles, remote bookmarks, and sidebar labels that show profile + remote path context
 - ✅ **Session lifecycle**: `active / idle / exited`; exited sessions stay visible until you close them manually (no time-based eviction, per ADR-008)
 - ✅ **Launch templates**: built-in (Shell / Claude Code / Codex / OpenCode) + custom
+- ✅ **SSH tmux mode**: per-launch attach-or-create tmux flow, directory-derived tmux session names, and shell fallback after tmux exits
 - ✅ **Multi-window**: any number of equal windows; close-to-tray; cross-window session visibility
 - ✅ **CWD tracking**: OSC 1337 hooks for PowerShell and cmd.exe
 - ✅ **7 themes**: Rose Pine (default), Rose Pine Dawn, Rose Pine Moon, Cutie, Business, Ubuntu, Windows Terminal
@@ -238,7 +247,7 @@ To save you time:
 - ❌ **Not a terminal emulator replacement** — we use xterm.js like everyone else
 - ❌ **Not a tmux competitor** — tmux is a TUI, Marina is a GUI; different audiences
 - ❌ **Not a project management tool** — no kanban, no team features, no workspace concepts
-- ❌ **Not an SSH client** — local sessions only
+- ❌ **Not a full SSH client suite** — Marina supports path-centric SSH sessions, but it is not trying to replace dedicated SSH managers with port forwarding, file transfer, or remote host administration workflows
 - ❌ **Not a file editor** — open `code .` in a session if you need that
 - ❌ **Not a "tile-everything" power-user tool** — if you love vim keybindings in your terminal manager, you'll find Marina's mouse-first approach annoying. That's a feature, not a bug.
 

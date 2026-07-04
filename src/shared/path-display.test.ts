@@ -4,12 +4,13 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { PathNode } from '@shared/types';
-import { disambiguatePathNames } from './path-display';
+import { disambiguatePathNames, formatDisplayPath, toWslUncPath } from './path-display';
 
 function node(id: string, path: string, displayName?: string): PathNode {
   return {
     id,
     path,
+    kind: 'local',
     category: 'bookmarked',
     sessionIds: [],
     ...(displayName !== undefined ? { displayName } : {}),
@@ -110,5 +111,31 @@ describe('disambiguatePathNames (BETA-014)', () => {
   it('单条节点直接返回末段', () => {
     const r = disambiguatePathNames([node('a', 'C:\\onlyOne\\src')]);
     expect(r.get('a')).toBe('src');
+  });
+});
+
+describe('formatDisplayPath', () => {
+  it('WSL home 下路径显示为 ~ 开头', () => {
+    expect(formatDisplayPath('\\\\wsl$\\Rocky8\\home\\me\\repo')).toBe('~/repo');
+    expect(formatDisplayPath('\\\\wsl.localhost\\Ubuntu\\home\\me')).toBe('~');
+  });
+
+  it('WSL 非 home 路径显示为 Linux 绝对路径', () => {
+    expect(formatDisplayPath('\\\\wsl$\\Rocky8\\etc\\nginx')).toBe('/etc/nginx');
+  });
+
+  it('非 WSL 路径保持原样', () => {
+    expect(formatDisplayPath('D:\\projects\\marina')).toBe('D:\\projects\\marina');
+  });
+});
+
+describe('toWslUncPath', () => {
+  it('把 Linux 绝对路径转为 WSL UNC 路径', () => {
+    expect(toWslUncPath('Rocky8', '/home/me/repo')).toBe('\\\\wsl$\\Rocky8\\home\\me\\repo');
+  });
+
+  it('根目录和 home 简写默认打开发行版根目录', () => {
+    expect(toWslUncPath('Ubuntu', '/')).toBe('\\\\wsl$\\Ubuntu\\');
+    expect(toWslUncPath('Ubuntu', '~/repo')).toBe('\\\\wsl$\\Ubuntu\\');
   });
 });

@@ -10,11 +10,93 @@
  * @对应文档章节: 软件定义书.md 12.2;Explorer 右键集成工作记录
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   WindowsAdapter,
+  __getShellCandidatesForTest,
+  __parseWslDistroListOutputForTest,
+  __setListWslDistrosImplForTest,
   __setReadRegistryPathImplForTest,
   __setRunRegImplForTest,
 } from './windows';
+
+describe('WindowsAdapter — WSL shell support', () => {
+  afterEach(() => {
+    __setListWslDistrosImplForTest(null);
+  });
+
+  it('候选 shell 列表包含 wsl.exe 路径', () => {
+    const candidates = __getShellCandidatesForTest();
+    const wsl = candidates.find((s) => s.id === 'wsl');
+    expect(wsl).toBeTruthy();
+    expect(wsl?.displayName).toBe('WSL');
+    expect(wsl?.paths.some((p) => p.toLowerCase().endsWith('\\system32\\wsl.exe'))).toBe(true);
+  });
+
+  it('buildShellLaunchParams(wsl) 无命令时不传参数(走发行版默认 shell)', () => {
+    const adapter = new WindowsAdapter();
+    const result = adapter.buildShellLaunchParams(
+      { id: 'wsl', displayName: 'WSL', executablePath: 'C:\\Windows\\System32\\wsl.exe' },
+      'C:\\ignored\\hook.sh',
+    );
+    expect(result.args).toEqual([]);
+    expect(result.env).toEqual({});
+  });
+
+  it('buildShellLaunchParams(wsl) 有命令时走默认交互 shell加载用户 PATH', () => {
+    const adapter = new WindowsAdapter();
+    const result = adapter.buildShellLaunchParams(
+      { id: 'wsl', displayName: 'WSL', executablePath: 'C:\\Windows\\System32\\wsl.exe' },
+      'C:\\ignored\\hook.sh',
+      { command: 'echo', args: ['hello world'] },
+    );
+    expect(result.args[0]).toBe('--exec');
+    expect(result.args[1]).toBe('sh');
+    expect(result.args[2]).toBe('-lc');
+    expect(result.args[3]).toContain('exec "${SHELL:-/bin/sh}" -i -c');
+    expect(result.args[3]).toMatch(/echo.*hello world/);
+    expect(result.env).toEqual({});
+  });
+
+  it('detectShells: 有多个发行版时,追加 WSL(<distro>) 选项', async () => {
+    __setListWslDistrosImplForTest(async () => ['Ubuntu', 'Debian']);
+    const adapter = new WindowsAdapter();
+    const shells = await adapter.detectShells();
+    const ids = shells.map((s) => s.id);
+    expect(ids).not.toContain('wsl');
+    expect(ids).toContain('wsl:Ubuntu');
+    expect(ids).toContain('wsl:Debian');
+    expect(shells.find((s) => s.id === 'wsl:Ubuntu')?.displayName).toBe('WSL (Ubuntu)');
+  });
+
+  it('buildShellLaunchParams(wsl:<distro>) 带 -d <distro>', () => {
+    const adapter = new WindowsAdapter();
+    const result = adapter.buildShellLaunchParams(
+      {
+        id: 'wsl:Ubuntu',
+        displayName: 'WSL (Ubuntu)',
+        executablePath: 'C:\\Windows\\System32\\wsl.exe',
+      },
+      'C:\\ignored\\hook.sh',
+      { command: 'pwd', args: [] },
+    );
+    expect(result.args[0]).toBe('-d');
+    expect(result.args[1]).toBe('Ubuntu');
+    expect(result.args[2]).toBe('--exec');
+    expect(result.args[3]).toBe('sh');
+    expect(result.args[4]).toBe('-lc');
+    expect(result.args[5]).toContain('exec "${SHELL:-/bin/sh}" -i -c');
+  });
+
+  it('WSL 发行版解析兼容 UTF-16LE 输出,避免中文名乱码', () => {
+    const text = ['Ubuntu', '我', ''].join('\r\n');
+    const buf = Buffer.from(text, 'utf16le');
+    const got = __parseWslDistroListOutputForTest(buf);
+    expect(got).toEqual(['Ubuntu', '我']);
+  });
+});
 
 describe('WindowsAdapter — registerFileManagerIntegration', () => {
   let calls: string[][] = [];
@@ -245,6 +327,43 @@ describe('WindowsAdapter — getRefreshedPath (BETA-001 + BETA-ENV-1)', () => {
       if (origPath === undefined) delete process.env.PATH;
       else process.env.PATH = origPath;
     }
+  });
+});
+
+describe('WindowsAdapter — resolveExecutable', () => {
+  let tempDir: string | null = null;
+
+  afterEach(() => {
+    if (tempDir) {
+      rmSync(tempDir, { recursive: true, force: true });
+      tempDir = null;
+    }
+  });
+
+  it('按 PATH + PATHEXT 解析 ssh → ssh.exe', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'marina-win-exe-'));
+    const sshPath = join(tempDir, 'ssh.exe');
+    writeFileSync(sshPath, '');
+
+    const adapter = new WindowsAdapter();
+    const resolved = adapter.resolveExecutable('ssh', {
+      PATH: tempDir,
+      PATHEXT: '.COM;.EXE;.BAT;.CMD',
+      SystemRoot: 'C:\\DefinitelyMissingWindowsRoot',
+    });
+    expect(resolved).toBeTruthy();
+    expect(resolved!.toLowerCase()).toBe(sshPath.toLowerCase());
+  });
+
+  it('找不到命令时返回 null,由调用方生成明确诊断', () => {
+    const adapter = new WindowsAdapter();
+    expect(
+      adapter.resolveExecutable('definitely-not-a-real-command', {
+        PATH: 'C:\\missing',
+        PATHEXT: '.EXE',
+        SystemRoot: 'C:\\Windows',
+      }),
+    ).toBeNull();
   });
 });
 

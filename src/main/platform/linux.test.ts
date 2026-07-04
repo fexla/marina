@@ -6,10 +6,11 @@
  * @对应工单: BETA-003a
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as NodeFs from 'node:fs';
 
 // 模块级 mock:fs.promises 与 child_process.execFile
 vi.mock('node:fs', async () => {
-  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+  const actual = await vi.importActual<typeof NodeFs>('node:fs');
   return {
     ...actual,
     promises: {

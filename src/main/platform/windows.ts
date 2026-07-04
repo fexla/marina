@@ -21,7 +21,7 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 import { logger } from '../logger';
 import type { DefaultBookmarkSeed, PlatformAdapter, ShellInfo } from './index';
@@ -82,18 +82,31 @@ interface ShellCandidate {
   paths: string[];
 }
 
+interface WslShellIdParts {
+  /** 是否 WSL shell id (wsl 或 wsl:<distro>) */
+  isWsl: boolean;
+  /** 可选发行版名 */
+  distro?: string;
+}
+
 function getShellCandidates(): ShellCandidate[] {
   const env = process.env;
-  const programFiles = env['ProgramFiles'] ?? 'C:\\Program Files';
-  const programFilesX86 = env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)';
+  const programFiles = uniqueStrings([
+    'C:\\Program Files',
+    env['ProgramFiles'],
+  ]);
+  const programFilesX86 = uniqueStrings([
+    'C:\\Program Files (x86)',
+    env['ProgramFiles(x86)'],
+  ]);
   const systemRoot = env['SystemRoot'] ?? env['windir'] ?? 'C:\\Windows';
   return [
     {
       id: 'pwsh',
       displayName: 'PowerShell 7',
       paths: [
-        join(programFiles, 'PowerShell', '7', 'pwsh.exe'),
-        join(programFilesX86, 'PowerShell', '7', 'pwsh.exe'),
+        ...programFiles.map((root) => join(root, 'PowerShell', '7', 'pwsh.exe')),
+        ...programFilesX86.map((root) => join(root, 'PowerShell', '7', 'pwsh.exe')),
         // PATH 兜底:用纯文件名让 spawn 走 PATH 解析。
         // existsSync 对纯文件名总是 false,所以这条只在前面所有绝对路径都
         // 不存在时,才作为 ShellInfo.executablePath 返回 (但下面 detectShells
@@ -117,11 +130,33 @@ function getShellCandidates(): ShellCandidate[] {
       id: 'git-bash',
       displayName: 'Git Bash',
       paths: [
-        join(programFiles, 'Git', 'bin', 'bash.exe'),
-        join(programFilesX86, 'Git', 'bin', 'bash.exe'),
+        ...programFiles.map((root) => join(root, 'Git', 'bin', 'bash.exe')),
+        ...programFilesX86.map((root) => join(root, 'Git', 'bin', 'bash.exe')),
       ],
     },
+    {
+      // WSL 可执行入口。Windows 10/11 默认位于 System32。
+      id: 'wsl',
+      displayName: 'WSL',
+      paths: [join(systemRoot, 'System32', 'wsl.exe')],
+    },
   ];
+}
+
+/**
+ * 仅供测试:读取当前 Windows shell 候选清单。
+ * 生产代码不要依赖此函数。
+ */
+export function __getShellCandidatesForTest(): Array<{
+  id: string;
+  displayName: string;
+  paths: string[];
+}> {
+  return getShellCandidates().map((item) => ({
+    id: item.id,
+    displayName: item.displayName,
+    paths: [...item.paths],
+  }));
 }
 
 export class WindowsAdapter implements PlatformAdapter {
@@ -148,7 +183,79 @@ export class WindowsAdapter implements PlatformAdapter {
         }
       }
     }
+    // WSL:若可执行存在,进一步枚举发行版,让用户在 shell 列表中显式选择目标 distro。
+    // 若枚举到至少 1 个 distro,移除通用 "WSL" 条目,避免 UI 出现重复/歧义入口。
+    // 只有枚举失败或结果为空时才保留通用 "WSL" 作为兜底入口(默认发行版)。
+    const wslBase = result.find((s) => s.id === 'wsl');
+    if (wslBase) {
+      try {
+        const distros = await listWslDistrosImpl();
+        if (distros.length > 0) {
+          const baseIndex = result.findIndex((s) => s.id === 'wsl');
+          if (baseIndex >= 0) result.splice(baseIndex, 1);
+          for (const distro of distros) {
+            result.push({
+              id: `wsl:${distro}`,
+              displayName: `WSL (${distro})`,
+              executablePath: wslBase.executablePath,
+            });
+          }
+        }
+      } catch (err) {
+        logger.warn(
+          'WindowsAdapter',
+          'WSL distro enumeration failed; fallback to default distro only',
+          err,
+        );
+      }
+    }
     return result;
+  }
+
+  /**
+   * 解析 Windows 可执行文件路径。
+   *
+   * 为什么不直接把 "ssh" 交给 node-pty:
+   * - 远程 session 需要直接 spawn ssh.exe,不经过 cmd / PowerShell shell 搜索。
+   * - 用户机器上的 PATH 可能来自 REG_EXPAND_SZ,含 `%SystemRoot%` 占位符;
+   *   Marina 已在 spawn env 里规整,这里复用规整后的 env 做搜索。
+   * - OpenSSH 是 Windows 10/11 的系统组件,标准位置在
+   *   `%SystemRoot%\System32\OpenSSH\ssh.exe`;显式优先检查这个位置能绕开
+   *   node-pty / CreateProcess 对 PATH casing 的差异。
+   */
+  resolveExecutable(commandName: string, env: Record<string, string>): string | null {
+    if (!commandName.trim()) return null;
+    if (isAbsolute(commandName) || /[\\/]/.test(commandName)) {
+      return existsSync(commandName) ? commandName : null;
+    }
+
+    const pathExt = getEnvCaseInsensitive(env, 'PATHEXT') || '.COM;.EXE;.BAT;.CMD';
+    const extensions = pathExt
+      .split(';')
+      .map((part) => part.trim().toLowerCase())
+      .filter(Boolean);
+    const baseNames = /\.[^.\\/]+$/.test(commandName)
+      ? [commandName]
+      : extensions.map((ext) => `${commandName}${ext}`);
+
+    const systemRoot = getEnvCaseInsensitive(env, 'SystemRoot') || 'C:\\Windows';
+    const searchDirs = uniqueStrings([
+      join(systemRoot, 'System32', 'OpenSSH'),
+      join(systemRoot, 'System32'),
+      ...(getEnvCaseInsensitive(env, 'PATH') || '')
+        .split(delimiter)
+        .map((part) => part.trim())
+        .filter(Boolean),
+    ]);
+
+    for (const dir of searchDirs) {
+      for (const base of baseNames) {
+        const candidate = join(dir, base);
+        if (existsSync(candidate)) return candidate;
+      }
+    }
+
+    return null;
   }
 
   /**
@@ -216,9 +323,35 @@ export class WindowsAdapter implements PlatformAdapter {
         return { args: [], env };
       }
       case 'git-bash':
+      case 'wsl':
       default: {
         // bash --rcfile <file> 让 bash 加载我们的 hook;
         // 有命令时先跑命令再 exec bash (postExitAction=keep_shell)。
+        const wsl = parseWslShellId(shell.id);
+        if (wsl.isWsl) {
+          // WSL 模板必须经由用户默认 shell 的交互启动路径。
+          //
+          // 不能直接 `wsl.exe -e sh -lc <cmd>`:sh 是非交互 shell,不会加载
+          // ~/.bashrc / ~/.zshrc / nvm 等用户 PATH 初始化。Claude/Codex/OpenCode
+          // 常装在这些初始化脚本追加的目录里,结果就会误报 command not found。
+          //
+          // 这里让 WSL 先用发行版默认 shell 解析 `exec "$SHELL" -i -c ...`,
+          // 由用户默认交互 shell 加载 rc 文件后再执行模板命令。
+          const distroArgs = wsl.distro ? ['-d', wsl.distro] : [];
+          if (commandToRun) {
+            const cmdLine = [commandToRun.command, ...commandToRun.args]
+              .map(quoteBash)
+              .join(' ');
+            return {
+              args: [...distroArgs, '--exec', 'sh', '-lc', buildWslInteractiveCommand(cmdLine)],
+              env: {},
+            };
+          }
+          return {
+            args: distroArgs,
+            env: {},
+          };
+        }
         if (commandToRun) {
           const cmdLine = [commandToRun.command, ...commandToRun.args]
             .map(quoteBash)
@@ -516,6 +649,16 @@ export class WindowsAdapter implements PlatformAdapter {
       { label: '主目录', path: userProfile },
     ];
   }
+
+  /**
+   * SSH 方案 v2.1 §阶段 3.5:Windows OpenSSH 8.x+ ControlMaster 走 named pipe
+   * (\\.\pipe\openssh-ssh-*),不读 ControlPath 参数 — Marina 传它它就忽略,
+   * 实际复用走 pipe。返回 `~/.ssh/cm-%r@%h:%p` 跟 POSIX 行为对齐,方便用户
+   * 把 Marina 配置导出后在 macOS / Linux 等价运行。
+   */
+  getSshControlPath(): string {
+    return '~/.ssh/cm-%r@%h:%p';
+  }
 }
 
 /**
@@ -541,6 +684,104 @@ function quoteCmd(s: string): string {
 function quoteBash(s: string): string {
   if (!/[\s"'$`\\&|<>()*?#!]/.test(s)) return s;
   return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+function uniqueStrings(values: Array<string | undefined>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (!value) continue;
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
+  }
+  return result;
+}
+
+function getEnvCaseInsensitive(
+  env: Record<string, string>,
+  name: string,
+): string | undefined {
+  const wanted = name.toLowerCase();
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toLowerCase() === wanted && value) return value;
+  }
+  return undefined;
+}
+
+/**
+ * 解析 shell id 是否为 WSL 目标。
+ *
+ * 支持:
+ * - wsl            -> 默认发行版
+ * - wsl:Ubuntu-24.04 -> 指定发行版
+ */
+function parseWslShellId(id: string): WslShellIdParts {
+  if (id === 'wsl') return { isWsl: true };
+  if (id.startsWith('wsl:') && id.length > 4) {
+    return { isWsl: true, distro: id.slice(4) };
+  }
+  return { isWsl: false };
+}
+
+function buildWslInteractiveCommand(cmdLine: string): string {
+  return `exec "\${SHELL:-/bin/sh}" -i -c ${quoteBash(cmdLine)}`;
+}
+
+/**
+ * 列举 WSL 发行版名。
+ *
+ * 来源: `wsl.exe -l -q` 的逐行输出。过滤空行和 docker-desktop 内部发行版。
+ * 保持输出顺序,但做大小写去重。
+ */
+let listWslDistrosImpl: () => Promise<string[]> = defaultListWslDistros;
+
+async function defaultListWslDistros(): Promise<string[]> {
+  const systemRoot = process.env['SystemRoot'] ?? process.env['windir'] ?? 'C:\\Windows';
+  const wslExe = join(systemRoot, 'System32', 'wsl.exe');
+  const { stdout } = await execFileAsync(wslExe, ['-l', '-q'], {
+    windowsHide: true,
+    maxBuffer: 1024 * 1024,
+    encoding: 'buffer',
+  });
+  return parseWslDistroListOutput(stdout);
+}
+
+/**
+ * 解析 `wsl -l -q` 输出为发行版列表。
+ *
+ * WSL 在 Windows 上可能输出 UTF-16LE(常见)或 UTF-8。这里按字节特征自动判定:
+ * - 若包含大量 NUL 字节,按 UTF-16LE 解码
+ * - 否则按 UTF-8 解码
+ */
+function parseWslDistroListOutput(stdout: Buffer): string[] {
+  const text = decodePossiblyUtf16Le(stdout);
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    const name = rawLine.trim();
+    if (!name) continue;
+    const normalized = name.toLowerCase();
+    if (normalized === 'docker-desktop' || normalized === 'docker-desktop-data') continue;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(name);
+  }
+  return result;
+}
+
+function decodePossiblyUtf16Le(input: Buffer): string {
+  // UTF-16LE 文本里偶数字节位置常出现大量 0x00。
+  const sample = input.subarray(0, Math.min(input.length, 2048));
+  let nulCount = 0;
+  for (const b of sample) {
+    if (b === 0) nulCount++;
+  }
+  const looksUtf16Le = sample.length > 0 && nulCount / sample.length > 0.15;
+  const text = looksUtf16Le ? input.toString('utf16le') : input.toString('utf8');
+  // 去除可能的 BOM 与残留 NUL
+  return text.replace(/^\uFEFF/, '').replaceAll('\u0000', '');
 }
 
 /**
@@ -635,4 +876,21 @@ export function __setReadRegistryPathImplForTest(
   impl: ((hive: string) => string | null) | null,
 ): void {
   readRegistryPathImpl = impl ?? defaultReadRegistryPath;
+}
+
+/**
+ * 仅供测试用:注入 WSL 发行版枚举实现。
+ * 传 null 恢复真实 `wsl.exe -l -q` 调用。
+ */
+export function __setListWslDistrosImplForTest(
+  impl: (() => Promise<string[]>) | null,
+): void {
+  listWslDistrosImpl = impl ?? defaultListWslDistros;
+}
+
+/**
+ * 仅供测试用:解析 wsl -l -q 原始输出。
+ */
+export function __parseWslDistroListOutputForTest(stdout: Buffer): string[] {
+  return parseWslDistroListOutput(stdout);
 }

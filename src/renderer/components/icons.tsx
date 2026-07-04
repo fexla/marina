@@ -38,6 +38,7 @@ import {
   Settings,
   Sliders,
   Sparkles,
+  Server,
   SquareTerminal,
   Terminal,
   TerminalSquare,
@@ -72,6 +73,7 @@ export const Icons = {
   bookmark: Bookmark,
   clock: Clock,
   history: History,
+  server: Server,
 
   // 终端右键 / 搜索栏
   copy: Clipboard,

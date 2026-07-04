@@ -21,6 +21,10 @@
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import './styles/global.css';
+// GitHub 风格 markdown 样式(用户在设置选 github-light/dark 时启用)。
+// 全局加载但默认 auto 不消耗其视觉;切风格零延迟。明暗由 MarkdownViewer 的
+// color-scheme 控制,不跟随系统。
+import 'github-markdown-css/github-markdown.css';
 
 const rootEl = document.getElementById('root');
 if (!rootEl) {

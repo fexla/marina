@@ -24,10 +24,14 @@ import { WindowManager } from './window-manager';
 import { TrayManager } from './tray';
 import { SessionManager } from './session-manager';
 import { PathManager } from './path-manager';
+import { SshProfileManager } from './ssh-profile-manager';
+import { KnownHostsManager, type KnownHostsHistoryFile } from './known-hosts-manager';
 import { SettingsManager, DEFAULT_SETTINGS } from './settings-manager';
 import { TemplatesManager } from './templates-manager';
 import { JsonStore } from './persistence';
 import { installIpcLayer } from './ipc';
+import { FilePanelService } from './file-panel-service';
+import { MarkdownThemeManager } from './markdown-theme-manager';
 import { getPlatformAdapter } from './platform';
 import { AIClient } from './ai-client';
 import { WindowsAdapter } from './platform/windows';
@@ -38,6 +42,7 @@ import type {
   BookmarksFile,
   RecentFile,
   Settings,
+  SshProfilesFile,
   TemplatesFile,
 } from '@shared/types';
 
@@ -58,13 +63,10 @@ export function getIsQuitting(): boolean {
  */
 async function scanInvalidPathsAsync(pathManager: PathManager): Promise<void> {
   const tree = pathManager.getTree();
-  const allPaths = [
-    ...tree.bookmarks,
-    ...tree.temporary,
-    ...tree.recent,
-  ];
+  const allPaths = [...tree.bookmarks, ...tree.temporary, ...tree.recent];
   const invalid: string[] = [];
   for (const node of allPaths) {
+    if (node.kind === 'ssh') continue;
     try {
       if (!existsSync(node.path)) {
         invalid.push(node.path);
@@ -162,11 +164,24 @@ function bootstrap(): void {
   const settingsStore = new JsonStore<Settings>(join(dataDir, 'settings.json'));
   const bookmarksStore = new JsonStore<BookmarksFile>(join(dataDir, 'bookmarks.json'));
   const recentStore = new JsonStore<RecentFile>(join(dataDir, 'recent.json'));
+  const sshProfilesStore = new JsonStore<SshProfilesFile>(join(dataDir, 'ssh-profiles.json'));
+  // SSH 方案 §阶段 3.1:known_hosts 指纹历史,跨重启保留。即便用户没用过
+  // SSH 也创建实例(空 history),让 IPC handler 行为一致 — 反正不写盘就不
+  // 产生文件,nil cost。
+  const knownHostsStore = new JsonStore<KnownHostsHistoryFile>(
+    join(dataDir, 'known-hosts-history.json'),
+  );
   const templatesStore = new JsonStore<TemplatesFile>(join(dataDir, 'templates.json'));
 
   const settingsManager = new SettingsManager(settingsStore);
   const pathManager = new PathManager(bookmarksStore, recentStore);
+  const sshProfileManager = new SshProfileManager(sshProfilesStore);
+  const knownHostsManager = new KnownHostsManager(knownHostsStore);
   const templatesManager = new TemplatesManager(templatesStore);
+  // 终端侧边文件面板服务(MARINA_SERVICE):构造无参,start() 在 settings 加载后
+  // 才调(见下方 initialize 之后)。SessionManager 现在就持有引用,供每个新
+  // session 的 createSession 注入 env。详见 file-panel-service.ts 头注。
+  const filePanelService = new FilePanelService();
   const sessionManager = new SessionManager(
     windowManager,
     pathManager,
@@ -176,6 +191,7 @@ function bootstrap(): void {
       // 透传到子 shell 的 TERM_PROGRAM_VERSION,模仿 iTerm2 / WezTerm。
       // 用户在 .bashrc / Profile.ps1 里可以拿这个版本号做条件判断。
       appVersion: app.getVersion(),
+      filePanelService,
     },
   );
   const trayManager = new TrayManager(windowManager, sessionManager, settingsManager);
@@ -324,25 +340,24 @@ function bootstrap(): void {
         "font-src 'self' data: http://127.0.0.1:*; " +
         "img-src 'self' data: http://127.0.0.1:*; " +
         "connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*";
-      electronSession.defaultSession.webRequest.onHeadersReceived(
-        (details, callback) => {
-          callback({
-            responseHeaders: {
-              ...details.responseHeaders,
-              'Content-Security-Policy': [isDev ? cspDev : cspProd],
-            },
-          });
-        },
-      );
+      electronSession.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+        callback({
+          responseHeaders: {
+            ...details.responseHeaders,
+            'Content-Security-Policy': [isDev ? cspDev : cspProd],
+          },
+        });
+      });
 
       // 加载持久化数据,故意串行 (settings 决定后续行为,先加载)
       const settingsSrc = await settingsManager.initialize();
       logger.info('main', `settings loaded from: ${settingsSrc}`);
-      logger.setLevel(
-        settingsManager.get().advanced.logLevel === 'DEBUG' ? 'debug' : 'info',
-      );
+      logger.setLevel(settingsManager.get().advanced.logLevel === 'DEBUG' ? 'debug' : 'info');
       const { bookmarksSource } = await pathManager.initialize();
       logger.info('main', `bookmarks loaded from: ${bookmarksSource}`);
+      const sshProfilesSrc = await sshProfileManager.initialize();
+      logger.info('main', `ssh profiles loaded from: ${sshProfilesSrc}`);
+      await knownHostsManager.initialize();
       const tmplSrc = await templatesManager.initialize();
       logger.info('main', `templates loaded from: ${tmplSrc}`);
 
@@ -351,12 +366,43 @@ function bootstrap(): void {
       const aiClient = new AIClient(() => settingsManager.get());
       sessionManager.setAiClient(aiClient);
 
+      // 终端侧边文件面板:此时 settings 已加载,用真实 enabled/port 起服务,
+      // 并把 session 查询能力注入(破除循环依赖,见 file-panel-service.ts 头注)。
+      // 在 installIpcLayer 之前 —— ipc 的 wireEventBroadcasts 要订阅
+      // filePanelService 事件,事件源先就绪更稳(虽然 on 是同步的,先后都行)。
+      const filePanelSettings = settingsManager.get().filePanel;
+      // file-panel 服务起不来(EACCES / 端口耗尽 / 防火墙拦 127.0.0.1 绑定等)是软失败 ——
+      // 不阻塞应用启动,只是终端程序调不到面板。getUrl() 返回 null → env 不注入 →
+      // renderer 不渲染面板,功能优雅降级。原实现会让 start() 的 throw 冒到 bootstrap
+      // 的 catch 触发 app.exit(1),用户看到的是启动即崩、无任何 UI。
+      try {
+        await filePanelService.start({
+          enabled: filePanelSettings.enabled,
+          port: filePanelSettings.port,
+        });
+      } catch (err) {
+        logger.error('main', 'file-panel service start failed (degraded, app continues)', err);
+      }
+      filePanelService.attachSessionLookup(sessionManager);
+
+      // Typora 式 markdown 主题:扫 userData/markdown-themes/*.css,首次种入
+      // 预置(README + sepia),fs.watch 自动发现增删。在 installIpcLayer 前
+      // ensureFirstRun + startWatch,保证 ipc 的 wireEventBroadcasts 一挂上就
+      // 在监听(虽然 on 是同步的,但 ensureFirstRun 先跑能让首次 list 已含预置)。
+      const markdownThemeManager = new MarkdownThemeManager();
+      await markdownThemeManager.ensureFirstRun();
+      markdownThemeManager.startWatch();
+
       installIpcLayer({
         windowManager,
         pathManager,
         settingsManager,
         sessionManager,
+        sshProfileManager,
+        knownHostsManager,
         templatesManager,
+        filePanelService,
+        markdownThemeManager,
         aiClient,
       });
 
@@ -370,8 +416,7 @@ function bootstrap(): void {
       //
       // BETA-003a:Linux 也走 getPlatformAdapter(),拿到 LinuxAdapter 实例;
       // macOS 仍占位,getPlatformAdapter 会 throw,保留 null 即可。
-      const platformAdapter =
-        process.platform === 'darwin' ? null : getPlatformAdapter();
+      const platformAdapter = process.platform === 'darwin' ? null : getPlatformAdapter();
 
       settingsManager.on('settingsChanged', (e: { changedKeys: string[]; settings: Settings }) => {
         if (e.changedKeys.includes('behavior.autoStart') && platformAdapter) {
@@ -414,23 +459,16 @@ function bootstrap(): void {
       if (platformAdapter instanceof WindowsAdapter) {
         platformAdapter
           .cleanupLegacyExplorerIntegration()
-          .catch((err) =>
-            logger.warn('main', 'cleanupLegacyExplorerIntegration failed', err),
-          );
+          .catch((err) => logger.warn('main', 'cleanupLegacyExplorerIntegration failed', err));
       }
 
       // 启动期同步:如果 HKCU 经典菜单已存在但 exe 路径变了(用户卸载重装、
       // 或从 portable/dev 路径切到 installed 路径),刷新 command 字段。
       // 仅 installed 形态做此动作 —— dev/portable 不应在启动期写注册表。
-      if (
-        platformAdapter instanceof WindowsAdapter &&
-        getBuildType() === 'installed'
-      ) {
+      if (platformAdapter instanceof WindowsAdapter && getBuildType() === 'installed') {
         platformAdapter
           .syncFileManagerIntegrationIfPresent(app.getPath('exe'))
-          .catch((err) =>
-            logger.warn('main', 'syncFileManagerIntegrationIfPresent failed', err),
-          );
+          .catch((err) => logger.warn('main', 'syncFileManagerIntegrationIfPresent failed', err));
       }
 
       // BETA-003b · ADR-013:三平台共享 close 拦截 — 只对 lifecycleModel
@@ -449,9 +487,7 @@ function bootstrap(): void {
             .filter((w) => w.electronWindowId !== win.webContents.id);
           if (others.length > 0) return false;
           // 检查 alive session 数
-          const aliveCount = sessionManager
-            .list()
-            .filter((s) => s.state !== 'exited').length;
+          const aliveCount = sessionManager.list().filter((s) => s.state !== 'exited').length;
           if (aliveCount === 0) return false; // 全 exited,静默关
           // 拦截 + 通知 renderer 弹 modal
           win.webContents.send('evt:ui:show-last-session-confirm', {
@@ -494,11 +530,7 @@ function bootstrap(): void {
       // 就是用户右键的那个目录。我们检测这个信号,当 cwd 不是 / 也不是 home 时
       // 自动把它作为 startupOpenHere。GUI 应用菜单启动时 cwd 通常是 / 或 home,
       // 走默认空窗逻辑。
-      if (
-        process.platform === 'linux' &&
-        startupOpenHere === null &&
-        !startupSimpleMode
-      ) {
+      if (process.platform === 'linux' && startupOpenHere === null && !startupSimpleMode) {
         try {
           const cwd = process.cwd();
           const home = app.getPath('home');
@@ -533,12 +565,8 @@ function bootstrap(): void {
           if (targetWindow) {
             targetWindow.webContents.once('did-finish-load', () => {
               if (targetWindow.isDestroyed()) return;
-              void createSessionInWindow(
-                { sessionManager, templatesManager },
-                win.id,
-                path,
-              ).catch((err) =>
-                logger.error('main', 'cold-start open-here createSession failed', err),
+              void createSessionInWindow({ sessionManager, templatesManager }, win.id, path).catch(
+                (err) => logger.error('main', 'cold-start open-here createSession failed', err),
               );
             });
           }
@@ -561,13 +589,12 @@ function bootstrap(): void {
       const flushAll = Promise.all([
         settingsManager.flush(),
         pathManager.flush(),
+        sshProfileManager.flush(),
+        knownHostsManager.flush(),
         templatesManager.flush(),
         logger.flush(),
       ]);
-      await Promise.race([
-        flushAll,
-        new Promise<void>((resolve) => setTimeout(resolve, 1000)),
-      ]);
+      await Promise.race([flushAll, new Promise<void>((resolve) => setTimeout(resolve, 1000))]);
     } catch (err) {
       logger.warn('main', 'flush during quit failed', err);
     }
@@ -592,10 +619,7 @@ function sanitizeOpenHerePath(raw: string): string {
   }
   try {
     if (!existsSync(p) || !statSync(p).isDirectory()) {
-      logger.warn(
-        'main',
-        `open-here path "${p}" 不存在或不是目录,退回 home`,
-      );
+      logger.warn('main', `open-here path "${p}" 不存在或不是目录,退回 home`);
       return app.getPath('home');
     }
   } catch (err) {
@@ -641,11 +665,7 @@ async function openPathInTerminal(
         .list()
         .find((w) => w.electronWindowId === recent.webContents.id)?.id;
       if (windowId) {
-        await createSessionInWindow(
-          { sessionManager, templatesManager },
-          windowId,
-          pathArg,
-        );
+        await createSessionInWindow({ sessionManager, templatesManager }, windowId, pathArg);
         return;
       }
     }
@@ -659,12 +679,8 @@ async function openPathInTerminal(
   if (!target) return;
   target.webContents.once('did-finish-load', () => {
     if (target.isDestroyed()) return;
-    void createSessionInWindow(
-      { sessionManager, templatesManager },
-      info.id,
-      pathArg,
-    ).catch((err) =>
-      logger.error('main', 'openPathInTerminal createSession failed', err),
+    void createSessionInWindow({ sessionManager, templatesManager }, info.id, pathArg).catch(
+      (err) => logger.error('main', 'openPathInTerminal createSession failed', err),
     );
   });
 }

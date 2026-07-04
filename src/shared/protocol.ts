@@ -15,9 +15,13 @@
 import type {
   AppSnapshot,
   Bookmark,
+  FileKind,
+  MdTheme,
+  OpenedFile,
   PathTree,
   SessionInfo,
   Settings,
+  SshProfile,
   Template,
   WindowInfo,
 } from './types';
@@ -87,6 +91,23 @@ export const COMMAND_CHANNELS = {
   BOOKMARK_PICK_FOLDER: 'cmd:bookmark:pick-folder',
   PATH_REMOVE_FROM_RECENT: 'cmd:path:remove-from-recent',
 
+  // SSH profile / remote path 域
+  SSH_PROFILE_LIST: 'cmd:ssh-profile:list',
+  SSH_PROFILE_ADD: 'cmd:ssh-profile:add',
+  SSH_PROFILE_UPDATE: 'cmd:ssh-profile:update',
+  SSH_PROFILE_DELETE: 'cmd:ssh-profile:delete',
+  SSH_PROFILE_TEST: 'cmd:ssh-profile:test',
+  SSH_PROFILE_PICK_KEY_FILE: 'cmd:ssh-profile:pick-key-file',
+  REMOTE_BOOKMARK_ADD: 'cmd:remote-bookmark:add',
+
+  // SSH 方案 v2.1 阶段 2+3:ssh_config / ssh-agent / known_hosts
+  /** §阶段 2.1:列出 ~/.ssh/config 的 Host 条目(只读,合并到 sidebar 视用户开关) */
+  SSH_CONFIG_LIST: 'cmd:ssh-config:list',
+  /** §阶段 2.2:探测 ssh-agent 状态 + 列出已加载的 key */
+  SSH_AGENT_STATUS: 'cmd:ssh-agent:status',
+  /** §阶段 3.1:列出 ~/.ssh/known_hosts + 与 Marina history 比对的指纹变化 */
+  KNOWN_HOSTS_REFRESH: 'cmd:known-hosts:refresh',
+
   // Settings 域
   SETTINGS_GET: 'cmd:settings:get',
   SETTINGS_UPDATE: 'cmd:settings:update',
@@ -140,6 +161,30 @@ export const COMMAND_CHANNELS = {
    * 不依赖 DevTools 打开。详见 src/shared/ime-probe-ring.ts。
    */
   LOGGER_IME_DUMP: 'cmd:logger:ime-dump',
+
+  // File panel 域 —— 终端侧边文件预览面板(renderer 主动查询 / UI 操作;
+  // REST 侧 open/show/close 由终端内程序经 HTTP 调,不走这些 IPC)
+  /** 拉某 session 当前已打开的文件列表 + active(接管/claim 后初始化面板用) */
+  FILE_PANEL_GET_OPEN_FILES: 'cmd:file-panel:get-open-files',
+  /** UI 侧"打开文件"按钮(选文件对话框)→ 打开并切 active */
+  FILE_PANEL_OPEN: 'cmd:file-panel:open',
+  /** 关闭面板里某个已打开文件 */
+  FILE_PANEL_CLOSE: 'cmd:file-panel:close',
+  /** 仅切换 active(点 tab),不改文件列表 */
+  FILE_PANEL_SHOW: 'cmd:file-panel:show',
+  /** 读已打开文件的内容:text/markdown 返回字符串,image 返回 base64 dataUrl */
+  FILE_PANEL_READ: 'cmd:file-panel:read',
+  /** 读 markdown 里的本地图片为 dataUrl(相对 md 文件目录解析,绕开 CSP 对 file:// 的禁) */
+  FILE_PANEL_READ_IMAGE: 'cmd:file-panel:read-image',
+
+  // Markdown 主题域 —— Typora 式可扩展:用户往 userData/markdown-themes/ 放 .css
+  // 即多一个 markdown 面板风格(见 src/main/markdown-theme-manager.ts)。
+  /** 列出所有自定义 markdown 主题(扫 markdown-themes/*.css) */
+  MD_THEME_LIST: 'cmd:md-theme:list',
+  /** 取某主题的 CSS 文本(renderer 注入 <style>,CSP 合规) */
+  MD_THEME_GET_CSS: 'cmd:md-theme:get-css',
+  /** 在系统文件管理器打开主题目录(便于用户放/编辑 .css) */
+  MD_THEME_OPEN_DIR: 'cmd:md-theme:open-dir',
 } as const;
 
 export type CommandChannel = (typeof COMMAND_CHANNELS)[keyof typeof COMMAND_CHANNELS];
@@ -167,6 +212,7 @@ export const EVENT_CHANNELS = {
   // Path / Bookmark / Settings
   PATH_TREE_UPDATED: 'evt:path:tree-updated',
   BOOKMARKS_UPDATED: 'evt:bookmarks:updated',
+  SSH_PROFILES_UPDATED: 'evt:ssh-profiles:updated',
   SETTINGS_CHANGED: 'evt:settings:changed',
   TEMPLATES_UPDATED: 'evt:templates:updated',
 
@@ -179,6 +225,19 @@ export const EVENT_CHANNELS = {
    * Cmd+Q / App Menu Quit。
    */
   UI_SHOW_LAST_SESSION_CONFIRM: 'evt:ui:show-last-session-confirm',
+
+  /**
+   * 终端侧边文件面板状态变化(REST open/show/close 触发,或 fs.watch 检测到
+   * 文件被外部修改)。ipc.ts 只推给该 session 的 owner 窗口(与 SESSION_OUTPUT
+   * 同策略),renderer 收到后更新 filePanels Map。
+   */
+  FILE_PANEL_UPDATED: 'evt:file-panel:updated',
+
+  /**
+   * 自定义 markdown 主题列表变化(用户往 markdown-themes/ 增删 .css,fs.watch
+   * 触发)。广播给所有窗口,renderer 更新设置页下拉。
+   */
+  MD_THEME_LIST_UPDATED: 'evt:md-theme:list-updated',
 } as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
@@ -284,12 +343,25 @@ export interface CreateSessionPayload {
   /** 终端尺寸初始值 */
   cols: number;
   rows: number;
+  /**
+   * SSH 路径专用:本次连接是否启用远端 tmux。
+   *
+   * 这是一次性启动选项,不持久化到 SSH profile。首页的"连接"按钮传
+   * disabled,旁边的"tmux"按钮传 attach-or-create,避免旧 profile 里的
+   * tmux 字段影响普通 SSH 连接。
+   */
+  sshTmuxMode?: 'disabled' | 'attach-or-create';
 }
 
 export interface CreateSessionResponse {
   session: SessionInfo;
   /** 是否触发了 path 树变化 (临时分类等) */
   pathTreeChanged: boolean;
+  /**
+   * 非阻塞的提示信息。例如保存了 SSH 密码但本机没装 sshpass,无法自动注入。
+   * renderer 收到非空字符串时弹一条 warn toast。
+   */
+  warning?: string;
 }
 
 export interface RenameSessionPayload {
@@ -383,11 +455,7 @@ export interface SendInputPayload {
  */
 export interface SendInputResponse {
   accepted: boolean;
-  reason?:
-    | 'session-not-found'
-    | 'pty-exited'
-    | 'not-owner'
-    | 'pty-write-failed';
+  reason?: 'session-not-found' | 'pty-exited' | 'not-owner' | 'pty-write-failed';
 }
 
 export interface ResizeSessionResponse {
@@ -447,6 +515,77 @@ export interface RemoveFromRecentPayload {
 }
 
 // ──────────────────────────────────────────────────────────────────
+// SSH / Remote Path 域
+// ──────────────────────────────────────────────────────────────────
+
+export interface AddSshProfilePayload {
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  authType: 'agent' | 'keyFile' | 'password';
+  keyFilePath?: string;
+  /**
+   * 可选明文密码。main 收到后用 safeStorage 加密落盘,renderer 永远拿不到。
+   * undefined = 不更新已有保存密码;'' (空字符串) = 清除已保存密码。
+   */
+  password?: string;
+  defaultRemoteCwd?: string;
+  /** SSH 方案 §阶段 2.3:ProxyJump 多跳板(逗号分隔的多 host;每段最多 5 段) */
+  proxyJump?: string[];
+  tmuxMode?: 'disabled' | 'attach-or-create';
+  tmuxSessionName?: string;
+  tmuxSessionPolicy?: 'reuse' | 'new-per-launch';
+  tmuxOnMissing?: 'fallback-shell' | 'fail';
+}
+
+export interface AddSshProfileResponse {
+  profile: SshProfile;
+}
+
+export interface UpdateSshProfilePayload {
+  id: string;
+  partial: Partial<AddSshProfilePayload>;
+}
+
+export interface UpdateSshProfileResponse {
+  profile: SshProfile;
+}
+
+export interface DeleteSshProfilePayload {
+  id: string;
+}
+
+export interface ListSshProfilesResponse {
+  profiles: SshProfile[];
+}
+
+export interface PickSshKeyFilePayload {
+  defaultPath?: string;
+}
+
+export interface PickSshKeyFileResponse {
+  /** 用户取消 → null */
+  path: string | null;
+}
+
+export interface TestSshProfilePayload {
+  id: string;
+}
+
+export interface TestSshProfileResponse {
+  ok: boolean;
+  message: string;
+}
+
+export interface AddRemoteBookmarkPayload {
+  sshProfileId: string;
+  remotePath: string;
+  displayName?: string;
+  defaultTemplateId?: string;
+}
+
+// ──────────────────────────────────────────────────────────────────
 // Settings 域
 // ──────────────────────────────────────────────────────────────────
 
@@ -502,6 +641,65 @@ export interface SetDefaultTemplatePayload {
 }
 
 // ──────────────────────────────────────────────────────────────────
+// SSH 方案 v2.1 阶段 2+3:ssh_config / ssh-agent / known_hosts payload
+// ──────────────────────────────────────────────────────────────────
+
+/**
+ * ~/.ssh/config 的一条 Host 条目(只读;用户改请直接编辑 ssh_config)。
+ *
+ * Marina 在 sidebar / RemotePanel 把这些条目展示为"来源:ssh_config"标签,
+ * 不可删/编辑;连接时按本条同等 SshProfile 拼 ssh args。
+ */
+export interface SshConfigEntryDto {
+  alias: string;
+  hostName: string;
+  user?: string;
+  port: number;
+  identityFiles: string[];
+  proxyJump: string[];
+  /** ssh_config 文件绝对路径(tooltip / 诊断) */
+  sourceFile: string;
+}
+
+export interface SshConfigListResponse {
+  enabled: boolean;
+  entries: SshConfigEntryDto[];
+}
+
+export type SshAgentStatusResponse =
+  | {
+      status: 'agent-running';
+      keys: Array<{
+        bits: number;
+        fingerprint: string;
+        comment: string;
+        keyType: string;
+      }>;
+    }
+  | {
+      status: 'agent-missing';
+      reason: 'no-socket' | 'cli-missing' | 'cli-failed';
+      message: string;
+    };
+
+export interface KnownHostsRefreshResponse {
+  entries: Array<{
+    hosts: string;
+    keyType: string;
+    fingerprint: string;
+    sourceFile: string;
+    isHashed: boolean;
+  }>;
+  /** 与 history 比对后,本次发现指纹变化的 host 列表(potential MITM) */
+  changes: Array<{
+    host: string;
+    previousFingerprint: string;
+    newFingerprint: string;
+    keyType: string;
+  }>;
+}
+
+// ──────────────────────────────────────────────────────────────────
 // Settings export / import
 // ──────────────────────────────────────────────────────────────────
 
@@ -527,7 +725,21 @@ export interface SettingsArchiveV1 {
   exportedFrom: string;
   settings: Settings;
   bookmarks: { paths: Bookmark[] };
-  recent: { paths: Array<{ path: string; lastUsedAt: number; useCount: number }> };
+  /**
+   * v2.1:archive 内 recent 容纳 SSH 项,kind / sshProfileId 可选,导入时由
+   * PathManager.validateRecentArray 严格校验(ssh kind 必须带 sshProfileId)。
+   * 字段缺失视为 local,与启动期 migrateRecentOnLoad 对齐。
+   */
+  recent: {
+    paths: Array<{
+      path: string;
+      lastUsedAt: number;
+      useCount: number;
+      kind?: 'local' | 'ssh';
+      sshProfileId?: string;
+    }>;
+  };
+  sshProfiles?: { profiles: SshProfile[] };
   templates: { defaultTemplateId: string; templates: Template[] };
 }
 
@@ -739,6 +951,10 @@ export interface BookmarksUpdatedPayload {
   bookmarks: Bookmark[];
 }
 
+export interface SshProfilesUpdatedPayload {
+  profiles: SshProfile[];
+}
+
 export interface SettingsChangedPayload {
   settings: Settings;
   /** 变化的字段路径,如 ["appearance.theme"];renderer 可基于此局部更新 */
@@ -780,4 +996,100 @@ export interface ImeProbeDumpPayload {
 
 export interface ImeProbeDumpResponse {
   ok: true;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// File panel 域 (终端侧边文件预览面板 / MARINA_SERVICE 远程调用)
+// ──────────────────────────────────────────────────────────────────
+
+/**
+ * 某个 session 的文件面板当前快照。不含 sessionId(由 payload 外层 /
+ * Map 的 key 携带),也不含文件内容(内容按需 cmd:file-panel:read)。
+ */
+export interface FilePanelSnapshot {
+  files: OpenedFile[];
+  /** 当前展示的文件 path;无文件或无选中时为 null */
+  activePath: string | null;
+}
+
+/** cmd:file-panel:get-open-files payload。 */
+export interface GetOpenFilesPayload {
+  sessionId: string;
+}
+
+/** cmd:file-panel:open / close / show payload。path 可相对 session.currentCwd。 */
+export interface FilePanelActionPayload {
+  sessionId: string;
+  path: string;
+}
+
+/** cmd:file-panel:read payload。path 必须是已打开列表里的规范化绝对路径。 */
+export interface ReadFilePayload {
+  sessionId: string;
+  path: string;
+}
+
+/** cmd:file-panel:read-image payload。src 是 markdown 里 ![alt](src) 的原始值,
+ * main 相对 mdPath 所在目录解析为本地绝对路径后读。网络/data:/blob: 不该走到这
+ * (renderer 直接交给 <img>);传到这里会被拒。sessionId 用于成员校验:mdPath 必须
+ * 是该 session 已打开列表里的 md 文件(与 readFile 同防线),防 renderer 被诱导
+ * 用任意 mdPath 读磁盘任意目录的图片。 */
+export interface ReadImagePayload {
+  sessionId: string;
+  mdPath: string;
+  src: string;
+}
+
+/** cmd:file-panel:read-image 返回。dataUrl 成功;base64 dataUrl 可直接喂 <img src>。
+ * error 时 renderer 降级显示占位(图片缺失/非图片/超限/路径不可达)。 */
+export type ReadImageResponse = { dataUrl: string } | { error: string };
+
+/**
+ * cmd:file-panel:read 返回。按 kind 区分内容载体:
+ * - text/markdown:UTF-8 字符串(超 MAX_READ_TEXT_BYTES 截断,truncated=true)
+ * - image:base64 dataUrl(可直接喂 <img src>),mime 供调试/未来按类型优化
+ * - unknown:文件类型不支持预览(二进制 / 陌生扩展名)
+ */
+export type ReadFileResponse =
+  | { kind: 'text' | 'markdown'; text: string; truncated: boolean }
+  | { kind: 'image'; dataUrl: string; mime: string }
+  | { kind: 'unknown'; message: string };
+
+/** evt:file-panel:updated payload。 */
+export interface FilePanelUpdatedPayload {
+  sessionId: string;
+  files: OpenedFile[];
+  activePath: string | null;
+}
+
+/** ReadFileResponse 的 kind 与 FileKind 的交集(排除 web,本轮不支持)。 */
+export type ReadableFileKind = Exclude<FileKind, 'unknown'>;
+
+// ──────────────────────────────────────────────────────────────────
+// Markdown 主题域 (Typora 式可扩展面板风格)
+// ──────────────────────────────────────────────────────────────────
+
+/** cmd:md-theme:list 返回:当前 userData/markdown-themes/ 下的所有自定义主题。 */
+export interface ListMdThemesResponse {
+  themes: MdTheme[];
+}
+
+/** cmd:md-theme:get-css payload。id 形如 `custom:sepia`。 */
+export interface GetMdThemeCssPayload {
+  id: string;
+}
+
+/**
+ * cmd:md-theme:get-css 返回。
+ * - 找得到 → css = 文件 UTF-8 文本(可能很长,但单主题 CSS 一般 < 几十 KB)
+ * - id 不在列表里(用户刚删) → css = '' ,renderer 据此清空注入的 <style>
+ *   并由 MarkdownViewer fallback 到 auto
+ */
+export interface GetMdThemeCssResponse {
+  css: string;
+}
+
+/** evt:md-theme:list-updated payload。 */
+export interface MdThemeListUpdatedPayload {
+  themes: MdTheme[];
 }

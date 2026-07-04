@@ -14,6 +14,9 @@
   "sidebar.addTemporary.title": "Pick a folder and open a temporary terminal",
   "sidebar.path.invalid": "Path is not accessible",
   "sidebar.dropHint": "Drop to add to bookmarks",
+  "sidebar.segment.label": "Path source",
+  "sidebar.segment.local": "Local",
+  "sidebar.segment.remote": "Remote",
 
   "settings.title": "Settings",
   "settings.close": "Close settings",
@@ -21,6 +24,7 @@
   "settings.category.shell": "Shell & Startup",
   "settings.category.behavior": "Behavior",
   "settings.category.data": "Data",
+  "settings.category.remote": "Remote",
   "settings.category.systemIntegration": "System Integration",
   "settings.category.ai": "AI Assistant",
   "settings.category.advanced": "Advanced",

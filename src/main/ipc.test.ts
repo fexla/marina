@@ -23,6 +23,9 @@ import { COMMAND_CHANNELS } from '@shared/protocol';
 import type { CommandEnvelope, CreateSessionPayload } from '@shared/protocol';
 import type { SessionInfo } from '@shared/types';
 import type * as IpcModule from './ipc';
+import { FilePanelService } from './file-panel-service';
+import { MarkdownThemeManager } from './markdown-theme-manager';
+import { makePathId } from './path-manager';
 
 // ──────────────────────────────────────────────────────────────────
 // electron mock — ipcMain.handle 捕获 handler 到 handlers Map
@@ -63,7 +66,15 @@ const { handlers, mockApp, mockBrowserWindow, mockClipboard, mockDialog, mockShe
       openPath: (): Promise<string> => Promise.resolve(''),
       showItemInFolder: (): void => {},
     };
-    return { handlers, mockApp, mockBrowserWindow, mockClipboard, mockDialog, mockShell, mockIpcMain };
+    return {
+      handlers,
+      mockApp,
+      mockBrowserWindow,
+      mockClipboard,
+      mockDialog,
+      mockShell,
+      mockIpcMain,
+    };
   });
 
 vi.mock('electron', () => ({
@@ -109,6 +120,16 @@ interface CreateSessionCall {
   cols: number;
   rows: number;
   shellIdOverride?: string;
+  sshProfile?: {
+    id: string;
+    name: string;
+    host: string;
+    port: number;
+    username: string;
+    authType: 'agent' | 'keyFile' | 'password';
+    tmuxMode?: 'disabled' | 'attach-or-create';
+    tmuxOnMissing?: 'fallback-shell' | 'fail';
+  };
 }
 
 function makeStubs() {
@@ -186,6 +207,28 @@ function makeStubs() {
     on: vi.fn(),
   };
 
+  const sshProfileFixture = (id: string) =>
+    id === 'ssh-1'
+      ? {
+          id: 'ssh-1',
+          name: 'prod',
+          host: 'example.com',
+          port: 22,
+          username: 'alice',
+          authType: 'agent' as const,
+          tmuxMode: 'attach-or-create' as const,
+          tmuxOnMissing: 'fail' as const,
+          addedAt: 1,
+        }
+      : null;
+
+  const sshProfileManager = {
+    get: vi.fn(sshProfileFixture),
+    getInternal: vi.fn(sshProfileFixture),
+    list: vi.fn(() => []),
+    on: vi.fn(),
+  };
+
   return {
     createCalls,
     deps: {
@@ -194,8 +237,24 @@ function makeStubs() {
       templatesManager: templatesManager as unknown,
       settingsManager: settingsManager as unknown,
       windowManager: windowManager as unknown,
+      sshProfileManager: sshProfileManager as unknown,
+      // 真实 FilePanelService 实例(不 start):ipc 层 wireEventBroadcasts 只用到
+      // 它的 on('filePanelUpdated') / onSessionDestroyed,以及 registerFilePanelHandlers
+      // 注册的 5 个方法。EventEmitter + 这些方法在不 start 时都能正常工作。
+      filePanelService: new FilePanelService(),
+      // 真实 MarkdownThemeManager(不 ensureFirstRun / startWatch):ipc 层
+      // wireEventBroadcasts 只用到它的 on('listUpdated'),以及 registerMdThemeHandlers
+      // 注册的 3 个方法。构造无副作用(懒 getter),EventEmitter 在不 watch 时也正常。
+      markdownThemeManager: new MarkdownThemeManager(),
     },
-    stubs: { sessionManager, pathManager, templatesManager, settingsManager, windowManager },
+    stubs: {
+      sessionManager,
+      pathManager,
+      templatesManager,
+      settingsManager,
+      windowManager,
+      sshProfileManager,
+    },
   };
 }
 
@@ -236,7 +295,10 @@ describe('IPC SESSION_CREATE', () => {
       payload: { pathId: 'C:\\foo', cols: 80, rows: 24 }, // takeOwnership 默认 true
     };
 
-    const result = (await handler!({}, envelope)) as { session: SessionInfo; pathTreeChanged: boolean };
+    const result = (await handler!({}, envelope)) as {
+      session: SessionInfo;
+      pathTreeChanged: boolean;
+    };
     expect(result.session.id).toBe('sess-1');
     expect(createCalls).toHaveLength(1);
     expect(createCalls[0]!.ownerWindowId).toBe('win-aaa');
@@ -306,5 +368,47 @@ describe('IPC SESSION_CREATE', () => {
 
     const result = (await handler!({}, envelope)) as { pathTreeChanged: boolean };
     expect(result.pathTreeChanged).toBe(true);
+  });
+
+  it('SSH 普通连接忽略旧 profile tmux 设置,强制 plain ssh', async () => {
+    const { installIpcLayer } = await freshIpc();
+    const { createCalls, deps } = makeStubs();
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    const pathId = makePathId({ kind: 'ssh', sshProfileId: 'ssh-1', path: '~/repo' });
+    const handler = handlers.get(COMMAND_CHANNELS.SESSION_CREATE);
+    const envelope: CommandEnvelope<CreateSessionPayload> = {
+      windowId: 'win-ssh',
+      requestId: 'req-ssh-1',
+      payload: { pathId, cols: 80, rows: 24, sshTmuxMode: 'disabled' },
+    };
+
+    await handler!({}, envelope);
+    expect(createCalls[0]!.sshProfile).toMatchObject({
+      id: 'ssh-1',
+      tmuxMode: 'disabled',
+      tmuxOnMissing: 'fallback-shell',
+    });
+  });
+
+  it('SSH tmux 入口按本次启动参数启用 tmux,失败时回退 shell', async () => {
+    const { installIpcLayer } = await freshIpc();
+    const { createCalls, deps } = makeStubs();
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    const pathId = makePathId({ kind: 'ssh', sshProfileId: 'ssh-1', path: '~/repo' });
+    const handler = handlers.get(COMMAND_CHANNELS.SESSION_CREATE);
+    const envelope: CommandEnvelope<CreateSessionPayload> = {
+      windowId: 'win-ssh',
+      requestId: 'req-ssh-2',
+      payload: { pathId, cols: 80, rows: 24, sshTmuxMode: 'attach-or-create' },
+    };
+
+    await handler!({}, envelope);
+    expect(createCalls[0]!.sshProfile).toMatchObject({
+      id: 'ssh-1',
+      tmuxMode: 'attach-or-create',
+      tmuxOnMissing: 'fallback-shell',
+    });
   });
 });

@@ -18,6 +18,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { useOverlayRegistration } from '../ui-overlay-stack';
 
 export interface ContextMenuItem {
   /** 显示文本 */
@@ -118,10 +119,17 @@ export function ContextMenuProvider({ children }: { children: ReactNode }): JSX.
     [close],
   );
 
+  // KBD-1:接入 UiOverlayStack — 菜单 mount 时 push,unmount 时 pop。
+  // Esc 仅在我是栈顶时响应,Modal 弹在菜单之上时让 Modal 先吃 Esc。
+  const { isTop } = useOverlayRegistration(!!menu);
+
   // 全局关闭触发器
   useEffect(() => {
     if (!menu) return undefined;
     const onKey = (e: KeyboardEvent): void => {
+      // IME 守卫:中文 IME 选词的 Esc 不应误关菜单
+      if (e.isComposing || e.keyCode === 229) return;
+      if (!isTop()) return; // 我不是栈顶,让上层 overlay 吃 Esc
       if (e.key === 'Escape') close();
     };
     const onMouseDown = (): void => close();
@@ -142,7 +150,7 @@ export function ContextMenuProvider({ children }: { children: ReactNode }): JSX.
       window.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('wheel', onWheel);
     };
-  }, [menu, close]);
+  }, [menu, close, isTop]);
 
   // 视口边缘越界修正:测量实际尺寸后,优先翻转到点击点反向,再做夹紧兜底
   useLayoutEffect(() => {

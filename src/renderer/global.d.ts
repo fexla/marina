@@ -21,4 +21,20 @@ declare global {
   const __MARINA_BUILD_TIME__: string;
 }
 
+/**
+ * KBD-1 / SCROLL-1:React 18 的 HTMLAttributes 没有 `inert` — React 19 才
+ * 把它做成 boolean prop。Electron 31(Chromium 126)原生支持 HTML 的
+ * inert 属性,在 JSX 上以空字符串 / undefined 控制启停:
+ *
+ *   <div inert={shouldBlock ? '' : undefined} />
+ *
+ * 此处 module augmentation 让 TS 接受这个写法。
+ */
+declare module 'react' {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  interface HTMLAttributes<T> {
+    inert?: '' | undefined;
+  }
+}
+
 export {};

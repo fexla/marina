@@ -70,6 +70,7 @@ describe('getPlatformAdapter', () => {
     const fakeAdapter = {
       lifecycleModel: 'no-persistence' as const,
       detectShells: async () => [],
+      resolveExecutable: (commandName: string) => commandName,
       buildShellLaunchParams: () => ({ args: [], env: {} }),
       registerFileManagerIntegration: async () => {},
       unregisterFileManagerIntegration: async () => {},
@@ -91,6 +92,7 @@ describe('getPlatformAdapter', () => {
     const fakeAdapter = {
       lifecycleModel: 'no-persistence' as const,
       detectShells: async () => [],
+      resolveExecutable: (commandName: string) => commandName,
       buildShellLaunchParams: () => ({ args: [], env: {} }),
       registerFileManagerIntegration: async () => {},
       unregisterFileManagerIntegration: async () => {},

@@ -14,6 +14,9 @@
   "sidebar.addTemporary.title": "选择文件夹并新建一个临时终端",
   "sidebar.path.invalid": "路径不可访问",
   "sidebar.dropHint": "松开以加入收藏",
+  "sidebar.segment.label": "路径来源",
+  "sidebar.segment.local": "本地",
+  "sidebar.segment.remote": "远程",
 
   "settings.title": "设置",
   "settings.close": "关闭设置",
@@ -21,6 +24,7 @@
   "settings.category.shell": "Shell 与启动",
   "settings.category.behavior": "行为",
   "settings.category.data": "数据",
+  "settings.category.remote": "远程",
   "settings.category.systemIntegration": "系统集成",
   "settings.category.ai": "AI 助手",
   "settings.category.advanced": "高级",

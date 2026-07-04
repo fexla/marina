@@ -2,6 +2,89 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [0.2.3] — 2026-06-05
+
+issue #4 续 — hideTopTabBar 模式重选当前 path 不进 EmptyPathState 的修复。
+
+### 修复
+
+- **hideTopTabBar=true 时,点已选中的 path 不会回到新建页(issue #4 续)。** 现象:开了文件夹 A 的终端后再点 A 本身,view 不动;必须先点 B 再点回 A 才能看到 EmptyPathState。根因:`view/select-path` reducer 把"清空 selectedSessionId"放在 `action.pathId !== state.selectedPathId` 守卫里,同 path 走 no-op 分支,selectedSessionId 不变 → MainPane 继续渲染 TerminalView。修法:hideTopTabBar=true 时无条件清空 selectedSessionId(同 path / 切 path 都清),恢复 issue #4 设计意图——"点 PathItem 永远进新建页"。配套修正 `Sidebar.handlePickFolderForTemp` 在临时栏 + 新建 session 后显式补一次 `view/select-session`,否则新 reducer 行为会把 `sessions/created` 刚 set 的 selectedSessionId 又抹掉,用户刚显式新建却看到空白页。
+
+## [0.2.2] — 2026-06-03
+
+issue #4 落地 + xterm 6.1 升级对齐 VSCode + CURSOR-2 调研记录归档。
+
+### 新增
+
+- **设置 → 外观 → 隐藏顶部标签栏(issue #4)。** Sidebar 已按路径分组显示所有 session,TabBar 内容重复且占纵向空间。新增 `appearance.hideTopTabBar` 开关(默认关),勾上后 MainPane 不渲染 TabBar;同时改写 `view/select-path` reducer 的拦截语义 —— 点 Sidebar 里的 PathItem 永远进 EmptyPathState 新建页(不再自动选第一个本窗口持有的 session),要切到已有 session 必须从 Sidebar 显式点 SessionItem。与 BETA-027 simpleMode 正交:simpleMode 仍连 Sidebar 一起藏,只是优先级更高。`SettingsManager` deep-merge 保证老 settings.json 缺字段时静默回落 `false`。
+
+### 改进
+
+- **`@xterm/xterm` / `@xterm/headless` 升级到 6.1.0-beta.256 — 对齐 VSCode bundle 版本。** 6.x 破坏性变更:`windowsMode: true` → `windowsPty: { backend: 'conpty' | 'winpty', buildNumber }`,buildNumber 从 preload `os.release()` 同步暴露给 renderer。本升级独立于 CURSOR-2 调研结论,版本对齐本身是基础设施层面的 hygiene(便于未来从 VSCode 反向移植 patch / 比对行为)。
+
+### 文档
+
+- **CURSOR-2 调研记录归档 — `docs/issues/cursor-2-codex-tui-jitter-vs-vscode.md`。** Codex TUI 在 Marina 中光标逐帧跳变(VSCode 无此问题)的三天调研挂起记录:7 条假说排除表 + 6 次实验细节 + 6 条尚未尝试的下一步方向(D1-D6,按 ROI 排序)。下次接手优先级:D1(`cursorBlink: false` 5 分钟)→ D2(读 xterm 6.1 WebGL CursorRenderLayer 源码)→ D3(`onWriteParsed` 探针)。GitHub issue #11 同步建档。
+
+## [0.2.1] — 2026-05-26
+
+0.2.0 后的体验微调 patch — sidebar 形态调整 + Git Bash 警告标志根因修复。
+
+### 改进
+
+- **Sidebar 右侧 resize handle:宽度可拖动 + localStorage 持久化。** 在 sidebar 右边缘加 4px 拖动条,鼠标按下后全局 mousemove 接管,松开落盘到 `marina.sidebar.width`(范围 [180, 600],默认 280)。双击 handle 复位默认宽度。拖动期间 `document.body.cursor = 'ew-resize'` + `userSelect = 'none'`,避免越过边界进入终端区时光标抖 / 误选中文本。hover 时 handle 显出莫紫色半透明高亮线,平时透明不抢视觉。
+- **Sidebar 全顶格 — padding-left 统一压到 8px。** 旧版三层缩进(category 12 / path 28 / session 44)在 280px 窄边栏里把内容推得太靠右,无 chevron 的路径行被"夹在中间不顶格"。改为五处行(`.sidebar-category-header` / `.path-item-row` / `.session-item` / `.sidebar-empty` / `.sidebar-footer`)共享 8px 左 padding,内容左缘共线;session 层不再额外缩进,由 state-dot 圆点形状区分层级。
+- **移除右上角"隐藏侧边栏"按钮 + 整套 sidebarVisible 状态机。** 实际从未被高频使用,删除后 Sidebar 永远显示。`WindowChrome` Windows / macOS 两套标题栏的 toggle 按钮、`toggleSidebar` handler、`PanelLeftClose` / `PanelLeftOpen` import、`useAppDispatch` import 全删;App.tsx 不再按 `state.sidebarVisible` 条件渲染;store 的 `sidebarVisible` 字段、`view/toggle-sidebar` / `view/set-sidebar-visible` 两个 action、reducer case、初始值一并清掉。
+
+### 修复
+
+- **Git Bash 路径误触 cwdDrifted ⚠️ — `normalizeCwd` 加 POSIX 驱动器路径转换。** bash hook 用 `cygpath -w` 把 `/c/Users/foo` 转 Windows 风格再 emit OSC 1337,但首个 prompt 之前 / hook 加载失败 / cygpath 不可用三种边缘情况下,发的仍是 POSIX 风格。Windows 上 `path.resolve('/c/Users/foo')` 会把 `/c` 当当前盘根下的相对路径,解出 `<drive>:\c\Users\foo` 这个不存在的怪路径 → `currentCwd ≠ originalCwd` → Sidebar / Tab / 状态栏 ⚠️ 一直亮。修法:在 `normalizeCwd` 的 PSDrive 剥离 + `~` 展开之后,win32 平台新增一步 POSIX 驱动器路径(`^/[a-zA-Z](/.*)?$`)→ Windows 风格转换;POSIX 平台不动(`/c/foo` 在 Linux 是合法绝对路径)。新增 2 条 `it.skipIf(process.platform !== 'win32')` 测试覆盖 `/c/Users/foo` 与驱动器根 `/c` 归一。
+
+## [0.2.0] — 2026-05-25
+
+**M1 里程碑达成 — Marina SSH 终端模式正式就位。** 本地用户视野与 beta.9 完全一致(UI 层 segmented + filter 守住),SSH 用户能完成"管理远程服务器 + 进 shell 干活 + 用 tmux 保持会话 + 多 session 复用 SSH 连接 + 主动重连"完整工作流。同期合入 KBD-1 键盘交互全面整改 / SCROLL-1 session 切换二次修复 / ISO-1 跨平台构建隔离三层防御 / IME-2 候选框位置锁定 / spec §14 远程 SSH 模式定型 + presentation 三件升 v0.2.0 + 28 份 alpha 历史档案清理。
+
+### 新增
+
+- **SSH 阶段 2+3:ssh_config / ssh-agent / ProxyJump / ControlMaster / known_hosts / 重连按钮 — 一次性推到 M1 里程碑(0.2.0 GA)。** 在阶段 1 的 UI 分离 + 类型强化基础上,把剩下的"基础 SSH 终端"功能全做掉。
+  - **ProxyJump 多级跳板(§阶段 2.3)**:`SshProfile.proxyJump: string[]` 字段,`buildSshLaunchParams` 拼成 `-J host1,host2,host3`。RemotePanel SSH 表单加 ProxyJump 输入(逗号分隔多跳板,支持 `user@host:port` 段)。每段最多 5 跳防滥用,空段静默过滤。3 个新单测覆盖单/多跳板 + 空数组。
+  - **ssh_config 集成(§阶段 2.1)**:新建 `src/main/ssh-config-parser.ts`(258 行 + 13 个单测),解析 `~/.ssh/config` 的 Host 块 + Include 指令(递归深度 16 防循环)+ 通配符 Host 过滤 + Match 块整段跳过(V1 范围外)+ `Key=Value` / 引号 value / `key value` 三种行格式。`advanced.includeSshConfig` 开关默认 false;开后 RemotePanel 显示已发现 Host 列表(只读,改请直接编辑 ssh_config)。
+  - **ssh-agent 检测(§阶段 2.2)**:新建 `src/main/ssh-agent.ts`(140 行 + 9 个单测)。POSIX 看 `SSH_AUTH_SOCK`,Windows 看 OpenSSH Authentication Agent 服务;统一通过 `ssh-add -l` 列已加载 key(bits / SHA256 指纹 / comment / keyType)。RemotePanel 显示 agent 状态 ✅/⚠️ + key 列表 + 刷新按钮。无 agent 时给 actionable 提示(`eval $(ssh-agent)` 等)。
+  - **ControlMaster 性能层(§阶段 3.5)**:`advanced.enableControlMaster` 默认 true。`buildSshLaunchParams` 加 `-o ControlMaster=auto -o ControlPath=~/.ssh/cm-%r@%h:%p -o ControlPersist=10m`,同一 host:port:user 的 5 个 session 只 1 次握手(~3s → <100ms / session)。Windows OpenSSH 8.x+ 走 named pipe,ControlPath 被忽略仍照样复用,失败时 OpenSSH 自动回退到独立连接 — Marina 不需要兜底。2 个新单测验证 args 出现 / 不出现。`PlatformAdapter.getSshControlPath()` 可选接口(POSIX 三平台返回 `~/.ssh/cm-%r@%h:%p`)。
+  - **KnownHostsManager(§阶段 3.1)**:新建 `src/main/known-hosts-manager.ts`(190 行 + 8 个单测),解析 `~/.ssh/known_hosts` 每行(支持 plaintext / hashed `|1|` host / @cert-authority 跳过 / 注释跳过),计算 SHA256 指纹(与 `ssh-keygen -lf` 一致)。新增 `known-hosts-history.json` 持久化指纹时间线 — 同 host 指纹变化时报告 changes(potential MITM),timeline 跨重启保留。RemotePanel 顶部高亮变化条目(红框),下方列当前所有条目(前 10 条)。
+  - **ReconnectBanner(§阶段 3.4)**:TerminalView statusbar 在 SSH session `state === 'exited'` 时显示"重连"按钮(玫紫色 accent),点击 = 同 pathId + 同 templateId + 当前 dims 起新 session,reducer 自动 select 新 session,旧 exited tab 留给用户决定。不做自动重连(留 V2 配 powerMonitor / navigator.onLine 体系)。CSS `.reconnect-button` 配 hover / disabled 态。
+  - **IPC + bootstrap**:新增 3 个通道 `cmd:ssh-config:list` / `cmd:ssh-agent:status` / `cmd:known-hosts:refresh`。`KnownHostsManager` 跟其他 store 一样走 `JsonStore` + `initialize` / `flush` 生命周期,挂进 `installIpcLayer({ ...deps, knownHostsManager })`。
+  - **RemotePanel UI 集成**:新增 4 个 SettingRow — agent 状态卡片 / ssh_config 开关 + 列表 / ControlMaster 开关 / known_hosts 浏览器(含变化高亮)。新 CSS class 8 个(`.ssh-agent-card / .ssh-agent-status-line / .ssh-agent-key-list / .ssh-config-list / .ssh-config-hint / .ssh-known-hosts-list / .ssh-known-hosts-changes / .reconnect-button`)。新 i18n key 0 个(用 tx 双语字面量)。
+  - **测试 + CI Gate**:新增 33 条测试(`ssh-config-parser.test.ts` 13 + `ssh-agent.test.ts` 9 + `known-hosts-manager.test.ts` 8 + `session-manager.test.ts` 新增 ProxyJump×3 + ControlMaster×2 = 5)。全量 501 个测试通过,typecheck + ESLint + stylelint 全过。
+  - **已跳过的 M1 后续工单(放 V1.1 或 V2)**:
+    - **HostKeyPromptModal**(首次连接的 `Are you sure you want to continue connecting?` 拦截 + Marina 自绘 modal)— 需要 PTY 输出实时扫描 + 写 ssh stdin,跨平台行为细节多。当前体验:用户在终端里直接按 yes,known_hosts 由 OpenSSH 自动写入,Marina 下次 refresh 时检测到新条目。
+    - **MFA / TOTP modal**(截获 `Verification code:` prompt → Marina modal)同上原因。
+    - **自动重连 + 网络变化检测**(navigator.onLine + powerMonitor sleep/wake → 倒计时自动重连)— 实现简单但需要时序测试,且重连频率受 ControlPersist 影响较大,V2 跟"会话冻结/解冻"一起做。
+    - **远端 tmux session 列表面板**(只看不操作)— PR #2 已实现 per-launch attach-or-create,列表面板属于增值功能。
+  - **M1 里程碑达成判定**:阶段 0(spec + PR #2 merge)+ 阶段 1(UI 分离 + 类型强化)+ 阶段 2-3 核心(本 PR)= Marina SSH 终端模式正式就位。SSH 用户能完成"管理远程服务器 + 进 shell 干活 + 用 tmux 保持会话 + 多 session 复用连接 + 主动重连"完整工作流。下一步走 0.2.0 GA 发版(beta.10 → beta.11 → 0.2.0)。
+
+- **SSH 阶段 1:UI 分离 + 类型强化 + PR #2 polish。** 落地 `docs/方案-SSH-完整支持-20260524.md` §阶段 1,把 PR #2 的 SSH MVP 收尾成"本地用户视野与 beta.9 100% 一致 + SSH 用户专属入口"。
+  - **PathKind discriminated union(§II.1)**:`Bookmark / RecentEntry / PathNode` 改严格 discriminated union,`kind` 必填,ssh 变体 `sshProfileId` narrow 为必填。所有使用 Path 的函数走 `switch on kind` 自动 exhaustiveness check;新增 `assertNeverPathKind` 兜底,未来加 `'wsl'`/`'docker'` 时编译器强制找出所有需要补 case 的位置。
+  - **磁盘迁移**:beta.9 之前的旧 schema(无 kind 字段)在 PathManager 启动时由 `migrateBookmarkOnLoad`/`migrateRecentOnLoad` 静默 coerce 为 local;损坏条目(kind=ssh 缺 sshProfileId)启动期丢弃不让用户进不来 Marina,导入 archive 走严格校验直接拒。新增 `PersistedBookmark`/`PersistedRecentEntry` 磁盘宽松 schema,与内存严格类型分离。
+  - **Sidebar segmented control(§II.3)**:顶部加 `[本地] [远程]` segmented control,默认本地;`hasSshProfiles || advanced.enableRemote` 时才渲染(本地用户 = sidebar 跟 beta.9 完全一致);切到本地段时 device sections / temporary / recent 都按 `kind !== 'ssh'` 过滤,反之亦然。状态 localStorage 持久化跨重启保留。
+  - **设置页 SSH 条件渲染(§II.6)**:把 SSH UI 从"数据"分类抽出来,做成顶级"远程"分类。`buildVisibleCategories` 纯函数控制 nav 显示:无 SshProfile 且 `advanced.enableRemote=false` 时不出现,设置页永远 8 个分类;有 profile 或勾了 enableRemote 时第 5 位插入"远程"成 9 个。RemotePanel 含 SSH 服务器 CRUD / 远程文件夹收藏 / `enableRemote` 开关。
+  - **`advanced.enableRemote` 设置**:新增字段,默认 false。是"本地视野守护"的唯一显式触发条件;RemotePanel 内可勾掉,关掉后无 profile 则刷新设置后远程分类隐藏。
+  - **PR #2 polish**:RemotePanel 全部 inline style → CSS class(`ssh-profile-form / ssh-profile-grid / ssh-key-picker / ssh-password-field / ssh-profile-actions / ssh-enable-toggle / remote-bookmark-form`)。Sidebar segmented control + 远程分类 i18n 中英全覆盖(`sidebar.segment.* / settings.category.remote`)。SSH profile edit / 密钥文件选择器 / 保存密码 PR #2 已实现,本阶段无需重做。
+  - **CI Gate-1 invariant 测试**:新增 `src/shared/path-invariants.test.ts`(13 条 — 包含 `// @ts-expect-error` 验证 local 分支不能访问 sshProfileId)+ `path-manager.test.ts` 增 4 条迁移不变量。全量 466 个测试通过(原 452 + 新增 14),typecheck + ESLint + stylelint 全过。
+  - **M1 里程碑前进**:阶段 0(spec §14 草案、PR #2 merge)+ 阶段 1(本次)完成。剩 ssh_config / 完整认证矩阵 / ProxyJump(阶段 2)+ known_hosts UX / 重连 / tmux / ControlMaster(阶段 3)。
+
+### 修复 / 改进
+
+- **KBD-1:键盘交互全面整改 — binding table + paste 路径 + overlay 栈 + SCROLL-1 二次修复。** 整合 PR #3(Windows Ctrl+V 不粘贴 / 语音输入失效 / 双倍粘贴)并叠加架构层整改,把 spec / 代码 / 设置页 UI 三处对齐到唯一权威表,从根上消除"键位漂移 / 双倍粘贴 / SIGINT 失效 / Esc 优先级靠注册顺序 / IME 选词被吃 / replay 期 focus 错位"六类历史问题。
+  - **Ctrl+V 不粘贴 + 双倍粘贴**(PR #3):xterm 把 Ctrl+V 当 Unix literal-next 发 `0x16` 给 PTY,且 Ctrl+Shift+V / Shift+Insert 跟 xterm native paste listener 双倍触发;语音输入程序(智模 / 闪电说)依赖"写剪贴板 → 模拟 Ctrl+V"的链路因此整个失效。修法:helper-textarea + container 双层 capture-phase paste listener,`stopImmediatePropagation` 阻 xterm bubble listener,所有粘贴来源(Ctrl+V / Ctrl+Shift+V / Shift+Insert / 语音输入 / 右键 / 浏览器)走同一个 `handlePaste`。Ctrl+V 在键盘 handler `return false` 不发字节,让浏览器 paste 事件由 capture listener 接管。
+  - **SIGINT 失效 bug**(CPB-C3 扩展):Ctrl+Shift+C / Ctrl+Insert 复制后没清选区,残留 selection 让下次 Ctrl+C 走复制分支不发 SIGINT,死循环 / 卡住进程无法中断。修法:三套复制路径(`copy-or-sigint` / `copy-and-clear`)统一清选区。
+  - **数据驱动 binding table**:新建 `src/shared/terminal-keybindings.ts`,8 条 binding 集中,`matchKeybinding` 纯函数扫表;TerminalView 60 行嵌套 if/else 退化为"扫表 + switch dispatch" 50 行。新增 20 个单测覆盖所有键位 + 修饰键守护 + 表结构不变式。
+  - **Modal / ContextMenu IME 守卫**:Modal 全局 keydown 无 `isComposing` 检查,中文 / 日文 / 韩文 IME 选词的 Enter 被误吃,modal 提前关闭。修法:Modal / ContextMenu 全局 keydown 首行 `if (e.isComposing || e.keyCode === 229) return`。
+  - **UiOverlayStack**:Modal / ContextMenu 各自挂 window keydown 拦 Esc,多 overlay 嵌套时 Esc 由"注册顺序的隐式优先级"决定,不可预测。新建 `src/shared/ui-overlay-stack.ts`(命令式核心)+ `src/renderer/ui-overlay-stack.ts`(React hook 包装),overlay mount 时 push、unmount 时 pop;keydown 前问 `isTop()` 决定是否响应。多 overlay 嵌套时 Esc 永远从最上层关起。新增 8 个单测。
+  - **SCROLL-1 二次修复(visibility:hidden + inert)**:一次修复的 fence + scrollToBottom 只锚最终位置,没解决"分片 write + setTimeout(0) yield 之间 xterm RAF 把已处理 chunks 的部分 buffer 画到 canvas"的中间帧暴露。修法:terminal-host 在 `hostRevealed=false` 期间同时 `visibility:hidden` + `inert`,canvas 仍累积像素只跳 compositing,fit 仍能算尺寸;`inert` 阻 focus 落入子树,replay 100-500ms 期间用户按键不会误进 Sidebar 改名框 / Modal 等错位 focus。fence cb + scrollToBottom + 一帧 RAF 后才 reveal,reveal 后 useEffect 主动归还 focus 给 helper-textarea。React 18 不识别 inert 作为 known prop,`src/renderer/global.d.ts` module augmentation 让 TS 接受 `inert={'' | undefined}`(Electron 31 Chromium 126 原生支持)。产品决策:replay 期间不响应按键是有意为之,符合"切换中"直觉,避免 typeahead 误发到错位 focus。
+  - **spec / 文档同步**:`docs/软件定义书.md` §7.1 加"§7.2.2 是唯一权威"不变式,§7.2.2 写完整终端键位清单表(Win/Linux + macOS 等价)+ 6 条实现不变式,§13.2 把"应用内快捷键(除 Ctrl+C/V/F)"扩展为"任何不在 §7.2.2 清单内的键位"。新建 `docs/键盘交互规范.md` 开发者实现锚,工单留档 `docs/issues/kbd-1-shortcut-overhaul-20260524.md`。
+  - **设置页快捷键速查卡片**:设置 → 行为末尾加 `KeybindingsReference`,数据源即 `TERMINAL_KEYBINDINGS` 数组,navigator.platform 判断 mac 显 Cmd 别名。spec / 代码 / UI 三处永不漂移。
+
 ## [0.1.0-beta.9] — 2026-05-19
 
 UI 视觉一致性收尾:把"无边框 / hairline / lucide 矢量图标"语言推进到 ctx-menu 和 sidebar 加号按钮两处遗漏。

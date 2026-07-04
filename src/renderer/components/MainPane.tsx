@@ -20,26 +20,24 @@
  *
  * @对应文档章节: 软件定义书.md 6.3 (右侧标签页)、6.4 (终端区域)
  */
-import {
-  useEffect,
-  useRef,
-  useState,
-  type MouseEvent,
-} from 'react';
+import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import {
   COMMAND_CHANNELS,
   type CreateSessionResponse,
   type ListShellsResponse,
 } from '@shared/protocol';
+import { formatPathDisplayPath } from '@shared/path-display';
 import type { SessionInfo, Template } from '@shared/types';
 import {
   findMyOwnedSessionId,
+  findPathNode,
   getDisplayableSession,
   getSessionsInSelectedPath,
   useAppDispatch,
   useAppState,
 } from '../store';
 import { TerminalView } from './TerminalView';
+import { FilePanel } from './file-panel/FilePanel';
 import { focusTerminalDom } from '../focus';
 import { Icon, type IconName } from './icons';
 import { TemplateIcon } from './TemplateIcon';
@@ -80,6 +78,7 @@ const MIN_ROWS = 5;
  * 落到 templateShell 兜底。
  */
 function shellIcon(id: string): IconName {
+  if (id === 'wsl' || id.startsWith('wsl:')) return 'shell';
   switch (id) {
     case 'pwsh':
       return 'shellPwsh';
@@ -92,6 +91,22 @@ function shellIcon(id: string): IconName {
     default:
       return 'templateShell';
   }
+}
+
+function getWslDistroName(path: string): string | null {
+  const match = path.match(/^\\\\(?:wsl\$|wsl\.localhost)\\([^\\]+)(?:\\|$)/i);
+  return match?.[1] ?? null;
+}
+
+function filterShellsForWslPath(
+  shells: DetectedShell[],
+  distroName: string | null,
+): DetectedShell[] {
+  if (!distroName) return shells;
+  const targetId = `wsl:${distroName}`.toLowerCase();
+  const distroShells = shells.filter((s) => s.id.toLowerCase() === targetId);
+  if (distroShells.length > 0) return distroShells;
+  return shells.filter((s) => s.id.toLowerCase() === 'wsl');
 }
 
 export function MainPane(): JSX.Element {
@@ -159,23 +174,34 @@ export function MainPane(): JSX.Element {
 
   return (
     <main className="main-pane" ref={containerRef}>
-      {/* BETA-027:简易模式下 Tab bar 隐藏(浮动工具栏由 App.tsx 直接渲染) */}
-      {!state.simpleMode && (
+      {/* BETA-027:简易模式下 Tab bar 隐藏(浮动工具栏由 App.tsx 直接渲染)
+          issue #4:appearance.hideTopTabBar=true 时也隐藏 TabBar(Sidebar 仍在) */}
+      {!state.simpleMode && !state.settings.appearance?.hideTopTabBar && (
         <TabBar
           sessions={sessions}
           selectedSessionId={state.selectedSessionId}
           showBlankTab={!displayable}
         />
       )}
-      {displayable ? (
-        <TerminalView
-          // 用 sessionId 作 key,确保切换时彻底重建 xterm 实例
-          key={displayable.id}
-          session={displayable}
-        />
-      ) : (
-        <EmptyPathState pathId={state.selectedPathId} />
-      )}
+      <div className="terminal-area">
+        {displayable ? (
+          <TerminalView
+            // 用 sessionId 作 key,确保切换时彻底重建 xterm 实例
+            key={displayable.id}
+            session={displayable}
+          />
+        ) : (
+          <EmptyPathState pathId={state.selectedPathId} />
+        )}
+        {/*
+          终端侧边文件面板:绑定当前 displayable 终端,切终端时 key 变 → 重挂,
+          内容自动跟着切。条件:有终端 + 非简易模式 + settings.filePanel.enabled。
+          SSH 终端也渲染面板,但远程程序到不了本机 MARINA_SERVICE,实际无文件。
+        */}
+        {displayable && !state.simpleMode && state.settings.filePanel?.enabled && (
+          <FilePanel key={`fp-${displayable.id}`} sessionId={displayable.id} />
+        )}
+      </div>
     </main>
   );
 }
@@ -187,8 +213,7 @@ function WelcomeState(): JSX.Element {
       <h2>Marina</h2>
       <p>
         {tx('从左侧选一个路径开始,或点击', 'Pick a path on the left, or click')}{' '}
-        <strong>{tx('收藏 +', 'Bookmark +')}</strong>{' '}
-        {tx('添加文件夹。', 'to add a folder.')}
+        <strong>{tx('收藏 +', 'Bookmark +')}</strong> {tx('添加文件夹。', 'to add a folder.')}
       </p>
     </div>
   );
@@ -200,18 +225,23 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
   const dispatch = useAppDispatch();
   const toast = useToast();
   const [creating, setCreating] = useState(false);
-  const displayPath = pathId;
+  const node = findPathNode(state.pathTree, pathId);
+  const isSshPath = node?.kind === 'ssh';
+  const wslDistroName = node ? getWslDistroName(node.path) : null;
+  const isWslPath = !!wslDistroName;
+  const displayPath = isSshPath && node ? node.path : node ? formatPathDisplayPath(node) : pathId;
   // 勘误第二轮 #3:启动期拉一次 detectShells,缓存到组件状态。SessionManager
   // 内部已 cache,所以二次以上调用是 O(1)。
   const [shells, setShells] = useState<DetectedShell[] | null>(null);
 
   useEffect(() => {
+    if (isSshPath) {
+      setShells([]);
+      return;
+    }
     let cancelled = false;
     window.api
-      .invoke<unknown, ListShellsResponse>(
-        COMMAND_CHANNELS.SETTINGS_LIST_SHELLS,
-        {},
-      )
+      .invoke<unknown, ListShellsResponse>(COMMAND_CHANNELS.SETTINGS_LIST_SHELLS, {})
       .then((res) => {
         if (!cancelled) setShells(res.shells);
       })
@@ -222,11 +252,12 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isSshPath]);
 
   const handleCreate = async (
     templateId: string,
     shellId?: string,
+    sshTmuxMode?: 'disabled' | 'attach-or-create',
   ): Promise<void> => {
     if (creating) return;
     setCreating(true);
@@ -238,11 +269,15 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
           pathId,
           templateId,
           ...(shellId ? { shellId } : {}),
+          ...(isSshPath ? { sshTmuxMode: sshTmuxMode ?? 'disabled' } : {}),
           cols: dims.cols,
           rows: dims.rows,
         },
       );
       dispatch({ type: 'view/select-session', sessionId: res.session.id });
+      if (res.warning) {
+        toast.push({ kind: 'warn', message: tx(res.warning, res.warning) });
+      }
       // FOC-3:模板按钮点击后焦点漂在 button 上,挂载 TerminalView 后
       // 自动把焦点送回 xterm。A4 的 selectedSessionId effect 也会兜底,
       // 但显式 + rAF 让"立即可打字"语义更清晰。
@@ -251,7 +286,10 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
       console.error('[MainPane] create-session failed', err);
       toast.push({
         kind: 'error',
-        message: tx(`新建终端失败:${err instanceof Error ? err.message : String(err)}`, `Failed to create terminal: ${err instanceof Error ? err.message : String(err)}`),
+        message: tx(
+          `新建终端失败:${err instanceof Error ? err.message : String(err)}`,
+          `Failed to create terminal: ${err instanceof Error ? err.message : String(err)}`,
+        ),
       });
     } finally {
       setCreating(false);
@@ -259,6 +297,8 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
   };
 
   const templates = state.templates;
+  const visibleShells = shells ? filterShellsForWslPath(shells, wslDistroName) : null;
+  const wslShellId = isWslPath ? visibleShells?.[0]?.id : undefined;
 
   return (
     <div className="empty-path-state">
@@ -267,11 +307,43 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
         {tx(' 新建终端', '')}
       </p>
 
-      {shells && shells.length > 0 && (
+      {isSshPath && (
+        <div className="empty-section">
+          <div className="empty-section-title">SSH</div>
+          <div className="empty-button-grid">
+            <button
+              type="button"
+              className="template-button"
+              onClick={() => void handleCreate('shell', undefined, 'disabled')}
+              disabled={creating}
+              title={displayPath}
+            >
+              <span className="template-icon">
+                <Icon name="shell" size={18} />
+              </span>
+              <span className="template-label">{tx('连接', 'Connect')}</span>
+            </button>
+            <button
+              type="button"
+              className="template-button"
+              onClick={() => void handleCreate('shell', undefined, 'attach-or-create')}
+              disabled={creating}
+              title={tx(`通过 tmux 连接 ${displayPath}`, `Connect with tmux to ${displayPath}`)}
+            >
+              <span className="template-icon">
+                <Icon name="templateShell" size={18} />
+              </span>
+              <span className="template-label">tmux</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!isSshPath && visibleShells && visibleShells.length > 0 && (
         <div className="empty-section">
           <div className="empty-section-title">{tx('检测到的 Shell', 'Detected shells')}</div>
           <div className="empty-button-grid">
-            {shells.map((s) => (
+            {visibleShells.map((s) => (
               <button
                 key={s.id}
                 type="button"
@@ -293,14 +365,17 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
       <div className="empty-section">
         <div className="empty-section-title">{tx('启动模板', 'Launch templates')}</div>
         <div className="empty-button-grid">
-          {templates.map((t) => (
-            <TemplateLaunchButton
-              key={t.id}
-              template={t}
-              creating={creating}
-              onLaunch={() => void handleCreate(t.id)}
-            />
-          ))}
+          {(isSshPath || !isWslPath || wslShellId) &&
+            templates.map((t) => (
+              <TemplateLaunchButton
+                key={t.id}
+                template={t}
+                creating={creating}
+                onLaunch={() =>
+                  void handleCreate(t.id, isSshPath ? undefined : wslShellId, 'disabled')
+                }
+              />
+            ))}
         </div>
       </div>
     </div>
@@ -384,7 +459,9 @@ function TabBar({ sessions, selectedSessionId, showBlankTab }: TabBarProps): JSX
           onClick={handleClickBlankTab}
           title={tx('新建终端 — 选择 Shell 或模板', 'New terminal — pick a shell or template')}
         >
-          <span className="tab-blank-icon" aria-hidden="true">+</span>
+          <span className="tab-blank-icon" aria-hidden="true">
+            +
+          </span>
           <span className="tab-name">{tx('新建', 'New')}</span>
         </button>
       </div>
@@ -435,7 +512,10 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
           // 但触发体验各按各侧的惯例)。
           const next = await modal.prompt({
             title: tx('重命名会话', 'Rename session'),
-            message: tx('为此会话指定新的显示名(不影响 sessionId)', 'New display name for this session (sessionId stays the same)'),
+            message: tx(
+              '为此会话指定新的显示名(不影响 sessionId)',
+              'New display name for this session (sessionId stays the same)',
+            ),
             defaultValue: session.displayName,
             confirmLabel: tx('保存', 'Save'),
           });
@@ -488,25 +568,23 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
       });
       dispatch({ type: 'view/select-session', sessionId: session.id });
 
-      window.api
-        .invoke(COMMAND_CHANNELS.SESSION_CLAIM, { sessionId: session.id })
-        .catch((err) => {
-          console.error('[Tab] claim failed, rolling back', err);
-          // 回滚:目标变回 orphan,旧持有变回 myWindow
+      window.api.invoke(COMMAND_CHANNELS.SESSION_CLAIM, { sessionId: session.id }).catch((err) => {
+        console.error('[Tab] claim failed, rolling back', err);
+        // 回滚:目标变回 orphan,旧持有变回 myWindow
+        dispatch({
+          type: 'sessions/owner-changed',
+          sessionId: session.id,
+          ownerWindowId: null,
+        });
+        if (prevOwnedId && prevOwnedId !== session.id) {
           dispatch({
             type: 'sessions/owner-changed',
-            sessionId: session.id,
-            ownerWindowId: null,
+            sessionId: prevOwnedId,
+            ownerWindowId: myWindowId,
           });
-          if (prevOwnedId && prevOwnedId !== session.id) {
-            dispatch({
-              type: 'sessions/owner-changed',
-              sessionId: prevOwnedId,
-              ownerWindowId: myWindowId,
-            });
-          }
-          dispatch({ type: 'view/select-session', sessionId: prevOwnedId });
-        });
+        }
+        dispatch({ type: 'view/select-session', sessionId: prevOwnedId });
+      });
       // FOC-2:乐观接管成功路径也需要送焦点;rAF + 选择器在新 TerminalView
       // 挂上后命中。失败 rollback 后 EmptyPathState 没 xterm,focusTerminalDom
       // 会 no-op,无副作用。
@@ -539,16 +617,25 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
 
   const tooltipParts: string[] = [];
   if (variant === 'other') {
-    tooltipParts.push(tx(`${session.displayName} (在其他窗口)`, `${session.displayName} (owned by another window)`));
+    tooltipParts.push(
+      tx(`${session.displayName} (在其他窗口)`, `${session.displayName} (owned by another window)`),
+    );
   } else {
     tooltipParts.push(session.displayName);
   }
   if (cwdDrifted) {
-    tooltipParts.push(tx(`当前目录 → ${session.currentCwd}`, `Current dir → ${session.currentCwd}`));
+    tooltipParts.push(
+      tx(`当前目录 → ${session.currentCwd}`, `Current dir → ${session.currentCwd}`),
+    );
     tooltipParts.push(tx(`(原: ${session.originalCwd})`, `(orig: ${session.originalCwd})`));
   }
   if (session.state === 'exited') {
-    tooltipParts.push(tx(`已退出 (exitCode=${session.exitCode ?? 0})`, `Exited (exitCode=${session.exitCode ?? 0})`));
+    tooltipParts.push(
+      tx(
+        `已退出 (exitCode=${session.exitCode ?? 0})`,
+        `Exited (exitCode=${session.exitCode ?? 0})`,
+      ),
+    );
   }
 
   return (
@@ -567,17 +654,15 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
     >
       <span className="tab-name">{session.displayName}</span>
       {cwdDrifted && (
-        <span className="tab-cwd-drift" aria-label={tx('当前目录已变', 'Current directory changed')}>
+        <span
+          className="tab-cwd-drift"
+          aria-label={tx('当前目录已变', 'Current directory changed')}
+        >
           <Icon name="alertTriangle" size={11} />
         </span>
       )}
       {variant !== 'other' && (
-        <span
-          className="tab-close"
-          onClick={handleClose}
-          title={tx('关闭', 'Close')}
-          role="button"
-        >
+        <span className="tab-close" onClick={handleClose} title={tx('关闭', 'Close')} role="button">
           ×
         </span>
       )}

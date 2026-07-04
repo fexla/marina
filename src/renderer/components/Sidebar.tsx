@@ -7,10 +7,13 @@
  * @关键设计:
  * - 三栏始终显示,即使空 (软件定义书 6.2.1: 默认全部展开)
  * - 同 path 在三栏不重叠;每个 path 节点可展开看 sessions
- * - sessions 显示状态点 (active 绿 / idle 黄 / tombstoned 灰)、
+ * - sessions 显示状态点 (active 绿 / idle 黄 / exited 灰)、
  *   是否被其他窗口持有 (灰显 + ↗ 图标)
  * - 拖 Explorer 文件夹到 .sidebar-bookmarks-dropzone (CP-2 完成标志):
  *   先校验 file:// path 是否存在且是目录,然后调 cmd:bookmark:add
+ * - SSH 方案 v2.1 §II.3:顶部 [本地] [远程] segmented control(仅在
+ *   hasSshProfiles || advanced.enableRemote 时显示),按 kind 过滤三栏内容。
+ *   本地用户(无 profile 且未启用远程)的 UI 与 beta.9 完全一致。
  * - 设置入口固定在底部 (CP-2 占位,CP-4 接入完整设置)
  *
  * @对应文档章节: 软件定义书.md 6.2 (左侧栏)、7.3 (拖拽规格)
@@ -43,6 +46,7 @@ import {
 } from '../store';
 import { Icon, type IconName } from './icons';
 import { useContextMenuApi, type ContextMenuItem } from './ContextMenu';
+import { useModal } from './Modal';
 import { useToast } from './Toast';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { buildSessionContextMenu } from './sessionContextMenu';
@@ -67,14 +71,222 @@ const STATE_DOT_COLOR: Record<SessionInfo['state'], string> = {
 // 旧版内嵌 provider 已删除,文件因此短了 100+ 行。
 // ──────────────────────────────────────────────────────────────────
 
+/**
+ * SSH 方案 v2.1 §II.3:Sidebar 顶部 segmented control。
+ * 'local' = 本机 + 所有 WSL 发行版,'remote' = 所有 SSH profile。
+ * 持久化到 localStorage,跨重启保留;但 segmented control 本身只在用户已
+ * 加 SSH profile 或勾了 advanced.enableRemote 时才渲染 — 否则 UI 与
+ * beta.9 完全一致(本地视野不变式)。
+ */
+type SidebarSegment = 'local' | 'remote';
+const SIDEBAR_SEGMENT_LS_KEY = 'marina.sidebar.segment';
+
+function readSegmentFromStorage(): SidebarSegment {
+  if (typeof window === 'undefined' || !window.localStorage) return 'local';
+  const v = window.localStorage.getItem(SIDEBAR_SEGMENT_LS_KEY);
+  return v === 'remote' ? 'remote' : 'local';
+}
+
+/**
+ * Sidebar 宽度持久化(localStorage)。右侧 resize handle 拖动调整,松开时落盘。
+ *
+ * 范围 [SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH]:小于 min 路径名挤成省略号,大于
+ * max 抢占终端区视觉权重。中间档默认 280px 与历史 CSS 一致,无 sidebarWidth
+ * 时回落到该值(旧用户首次升级看不出变化)。
+ */
+const SIDEBAR_WIDTH_LS_KEY = 'marina.sidebar.width';
+const SIDEBAR_DEFAULT_WIDTH = 280;
+const SIDEBAR_MIN_WIDTH = 180;
+const SIDEBAR_MAX_WIDTH = 600;
+
+function clampSidebarWidth(n: number): number {
+  if (!Number.isFinite(n)) return SIDEBAR_DEFAULT_WIDTH;
+  return Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, Math.round(n)));
+}
+
+function readSidebarWidthFromStorage(): number {
+  if (typeof window === 'undefined' || !window.localStorage) return SIDEBAR_DEFAULT_WIDTH;
+  const v = window.localStorage.getItem(SIDEBAR_WIDTH_LS_KEY);
+  if (v === null) return SIDEBAR_DEFAULT_WIDTH;
+  const n = Number.parseInt(v, 10);
+  if (Number.isNaN(n)) return SIDEBAR_DEFAULT_WIDTH;
+  return clampSidebarWidth(n);
+}
+
 export function Sidebar(): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
   const toast = useToast();
+  const modal = useModal();
   const { t } = useTranslation();
   const [dragOver, setDragOver] = useState(false);
+  const [collapsedCategoryIds, setCollapsedCategoryIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [segment, setSegmentState] = useState<SidebarSegment>(() =>
+    readSegmentFromStorage(),
+  );
+  const setSegment = (next: SidebarSegment): void => {
+    setSegmentState(next);
+    try {
+      window.localStorage?.setItem(SIDEBAR_SEGMENT_LS_KEY, next);
+    } catch {
+      // localStorage 在 incognito / 严格模式下可能抛 SecurityError,忽略即可
+    }
+  };
 
-  const handlePickFolder = async (): Promise<void> => {
+  // ── Sidebar 宽度可拖动 + 持久化 ──
+  // 拖动期间只 setWidth 不写 localStorage(快速移动会大量触发 setItem),松开
+  // 时才落盘一次。全局 mousemove/mouseup 监听通过 ref 标记 isResizing,避免
+  // 鼠标移出 sidebar 边缘后丢失事件;widthRef 镜像 state 让 onUp 拿到最新值
+  // 而不依赖 setState updater(updater 内 throw 会把异常抛到 commit)。
+  // document.body.style.cursor 临时锁成 ew-resize,防止拖动越过 sidebar 边界
+  // 进入终端区时鼠标光标抖。
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() =>
+    readSidebarWidthFromStorage(),
+  );
+  const widthRef = useRef(sidebarWidth);
+  widthRef.current = sidebarWidth;
+  const isResizingRef = useRef(false);
+
+  const handleResizeMouseDown = (e: MouseEvent<HTMLDivElement>): void => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    isResizingRef.current = true;
+    document.body.style.cursor = 'ew-resize';
+    // 不允许拖动时选中文本
+    document.body.style.userSelect = 'none';
+  };
+
+  useEffect(() => {
+    const onMove = (e: globalThis.MouseEvent): void => {
+      if (!isResizingRef.current) return;
+      // sidebar 左边贴 viewport 左缘(无窗口阴影/边距),clientX 直接当宽度用
+      setSidebarWidth(clampSidebarWidth(e.clientX));
+    };
+    const onUp = (): void => {
+      if (!isResizingRef.current) return;
+      isResizingRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      try {
+        window.localStorage?.setItem(SIDEBAR_WIDTH_LS_KEY, String(widthRef.current));
+      } catch {
+        // localStorage 失败容忍 — 本次会话内拖动仍生效,下次重启回落默认
+      }
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+
+  const handleResizeDoubleClick = (): void => {
+    // 双击 handle 复位默认宽度(类似浏览器 devtools 分隔条惯例)
+    setSidebarWidth(SIDEBAR_DEFAULT_WIDTH);
+    try {
+      window.localStorage?.setItem(SIDEBAR_WIDTH_LS_KEY, String(SIDEBAR_DEFAULT_WIDTH));
+    } catch {
+      // ignore
+    }
+  };
+
+  const enableRemote = state.settings?.advanced?.enableRemote === true;
+  const hasSshProfiles = state.sshProfiles.length > 0;
+  /**
+   * 本地不变式的核心:没 profile 且没勾 enableRemote 时,segmented control
+   * 整体不渲染,segment 强制视为 'local',sidebar 跟 beta.9 完全一致。
+   */
+  const showSegmented = hasSshProfiles || enableRemote;
+  const effectiveSegment: SidebarSegment = showSegmented ? segment : 'local';
+
+  // SSH 方案 v2.1 §II.3:三栏按 segment 过滤(本地 = kind==='local',包含
+  // WSL UNC 路径;远程 = kind==='ssh')。本地用户无 profile + 未启 enableRemote
+  // 时 effectiveSegment 强制 'local',跟 beta.9 一样。
+  const filterNodesBySegment = (nodes: PathNode[]): PathNode[] =>
+    effectiveSegment === 'remote'
+      ? nodes.filter((n) => n.kind === 'ssh')
+      : nodes.filter((n) => n.kind === 'local');
+  const bookmarksFiltered = useMemo(
+    () => filterNodesBySegment(state.pathTree.bookmarks),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state.pathTree.bookmarks, effectiveSegment],
+  );
+  const temporaryFiltered = useMemo(
+    () => filterNodesBySegment(state.pathTree.temporary),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state.pathTree.temporary, effectiveSegment],
+  );
+  const recentFiltered = useMemo(
+    () => filterNodesBySegment(state.pathTree.recent),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state.pathTree.recent, effectiveSegment],
+  );
+
+  const isCategoryCollapsed = (categoryId: string): boolean =>
+    collapsedCategoryIds.has(categoryId);
+
+  const handleToggleCategory = (categoryId: string): void => {
+    setCollapsedCategoryIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(categoryId)) {
+        next.delete(categoryId);
+      } else {
+        next.add(categoryId);
+      }
+      return next;
+    });
+  };
+
+  /**
+   * 收藏栏 "+" 按钮。按当前 segment 走不同流程:
+   *
+   * - 本地段:beta.9 行为 — 系统 folder picker → BOOKMARK_ADD
+   * - 远程段:用首个 SSH profile 弹 prompt 让用户输远端路径。多 profile
+   *   时提示"用 X profile;要别的请去 设置 → 远程"。零 profile 时 toast
+   *   引导用户去设置(showSegmented 已经保证不会出现 0 profile + 不能切
+   *   远程段的状态,但 enableRemote=true 仍可能 0 profile)。
+   */
+  const handleAddBookmark = async (): Promise<void> => {
+    if (effectiveSegment === 'remote') {
+      const profiles = state.sshProfiles;
+      if (profiles.length === 0) {
+        toast.push({
+          kind: 'warn',
+          message: '请先在 设置 → 远程 添加 SSH 服务器',
+        });
+        return;
+      }
+      const profile = profiles[0]!;
+      const remotePath = await modal.prompt({
+        title: `添加远程文件夹 — ${profile.name}`,
+        message:
+          profiles.length > 1
+            ? `用 ${profile.name}(${profile.username}@${profile.host}) 添加。改用其他服务器请去 设置 → 远程`
+            : `输入 ${profile.username}@${profile.host} 上的目录路径。`,
+        placeholder: '~/project',
+        defaultValue: '~',
+        confirmLabel: '加入',
+      });
+      const path = remotePath?.trim();
+      if (!path) return;
+      try {
+        await window.api.invoke<unknown, AddBookmarkResponse>(
+          COMMAND_CHANNELS.REMOTE_BOOKMARK_ADD,
+          { sshProfileId: profile.id, remotePath: path },
+        );
+        toast.push({ kind: 'success', message: `已添加远程文件夹 ${path}` });
+      } catch (err) {
+        toast.push({
+          kind: 'error',
+          message: `添加远程文件夹失败:${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+      return;
+    }
+    // 本地段:beta.9 行为
     try {
       const result = await window.api.invoke<unknown, PickFolderResponse>(
         COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER,
@@ -86,7 +298,10 @@ export function Sidebar(): JSX.Element {
         { path: result.path },
       );
     } catch (err) {
-      console.error('[Sidebar] pick-folder + add-bookmark failed', err);
+      toast.push({
+        kind: 'error',
+        message: `添加文件夹失败:${err instanceof Error ? err.message : String(err)}`,
+      });
     }
   };
 
@@ -114,8 +329,15 @@ export function Sidebar(): JSX.Element {
         },
       );
       // session 创建后:store reducer 自动 select 它(因 ownerWindowId === myWindowId)。
-      // 这里再显式 dispatch 一次 select-path,防御性把视图切到该路径。
+      // 这里再显式 dispatch 一次 select-path,防御性把视图切到该路径;紧随
+      // 其后 select-session 把焦点重新落到新 session 上 —— hideTopTabBar=true
+      // 模式下 view/select-path reducer 会清空 selectedSessionId,不补一次
+      // select-session 会落到 EmptyPathState(用户刚显式新建却看不到终端)。
       dispatch({ type: 'view/select-path', pathId: res.session.pathId });
+      dispatch({ type: 'view/select-session', sessionId: res.session.id });
+      if (res.warning) {
+        toast.push({ kind: 'warn', message: res.warning });
+      }
     } catch (err) {
       toast.push({
         kind: 'error',
@@ -206,6 +428,7 @@ export function Sidebar(): JSX.Element {
     <aside
       className={`sidebar${dragOver ? ' drag-over' : ''}`}
       data-drop-zone="files"
+      style={{ flexBasis: `${sidebarWidth}px` }}
       onClick={(e) => {
         if (e.target === e.currentTarget) {
           dispatch({ type: 'view/select-path', pathId: null });
@@ -222,24 +445,66 @@ export function Sidebar(): JSX.Element {
         <span className="sidebar-drop-hint-icon">📁</span>
         <span className="sidebar-drop-hint-label">{t('sidebar.dropHint')}</span>
       </div>
-      <div className="sidebar-bookmarks-dropzone">
+      {showSegmented && (
+        <div
+          className="sidebar-segmented"
+          role="tablist"
+          aria-label={t('sidebar.segment.label') || '路径来源'}
+          data-testid="sidebar-segmented"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={effectiveSegment === 'local'}
+            className={`sidebar-segmented-item${effectiveSegment === 'local' ? ' active' : ''}`}
+            onClick={() => setSegment('local')}
+            data-testid="sidebar-segment-local"
+          >
+            {t('sidebar.segment.local') || '本地'}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={effectiveSegment === 'remote'}
+            className={`sidebar-segmented-item${effectiveSegment === 'remote' ? ' active' : ''}`}
+            onClick={() => setSegment('remote')}
+            data-testid="sidebar-segment-remote"
+          >
+            {t('sidebar.segment.remote') || '远程'}
+          </button>
+        </div>
+      )}
+      <div className="sidebar-bookmarks-dropzone" data-segment={effectiveSegment}>
         <Category
+          categoryId="bookmark"
           title={t('sidebar.category.bookmark')}
           iconName="bookmark"
-          paths={state.pathTree.bookmarks}
+          paths={bookmarksFiltered}
+          collapsed={isCategoryCollapsed('bookmark')}
+          onToggleCollapsed={handleToggleCategory}
           actionLabel={<Icon name="plus" size={12} />}
           actionTitle={t('sidebar.addBookmark.title')}
-          onAction={() => void handlePickFolder()}
+          onAction={() => void handleAddBookmark()}
         />
         <Category
+          categoryId="temporary"
           title={t('sidebar.category.temporary')}
           iconName="clock"
-          paths={state.pathTree.temporary}
+          paths={temporaryFiltered}
+          collapsed={isCategoryCollapsed('temporary')}
+          onToggleCollapsed={handleToggleCategory}
           actionLabel={<Icon name="plus" size={12} />}
           actionTitle={t('sidebar.addTemporary.title')}
           onAction={() => void handlePickFolderForTemp()}
         />
-        <Category title={t('sidebar.category.recent')} iconName="history" paths={state.pathTree.recent} />
+        <Category
+          categoryId="recent"
+          title={t('sidebar.category.recent')}
+          iconName="history"
+          paths={recentFiltered}
+          collapsed={isCategoryCollapsed('recent')}
+          onToggleCollapsed={handleToggleCategory}
+        />
       </div>
       <div className="sidebar-footer">
         <button
@@ -252,14 +517,30 @@ export function Sidebar(): JSX.Element {
           <span>设置</span>
         </button>
       </div>
+      {/*
+        右侧 resize handle:绝对定位,4px 宽,贴右边。鼠标按下时 setIsResizing,
+        全局 mousemove 计算新宽度。双击复位默认宽度。aria-hidden 因为只是视觉
+        affordance,不进辅助技术导航树(用户操作纯靠鼠标拖)。
+      */}
+      <div
+        className="sidebar-resize-handle"
+        onMouseDown={handleResizeMouseDown}
+        onDoubleClick={handleResizeDoubleClick}
+        title="拖动调整宽度 (双击复位)"
+        aria-hidden="true"
+      />
     </aside>
   );
 }
 
 interface CategoryProps {
+  categoryId: string;
   title: string;
   iconName: IconName;
   paths: PathNode[];
+  emptyLabel?: string;
+  collapsed: boolean;
+  onToggleCollapsed: (categoryId: string) => void;
   /** affordance 内容 — 通常是 lucide icon (<Icon name="plus" .../>) */
   actionLabel?: ReactNode;
   actionTitle?: string;
@@ -267,9 +548,13 @@ interface CategoryProps {
 }
 
 function Category({
+  categoryId,
   title,
   iconName,
   paths,
+  emptyLabel = '空',
+  collapsed,
+  onToggleCollapsed,
   actionLabel,
   actionTitle,
   onAction,
@@ -277,8 +562,17 @@ function Category({
   // BETA-014:同 category 内末级文件夹同名时自动补父目录区分;手动命名的不参与。
   const displayNames = useMemo(() => disambiguatePathNames(paths), [paths]);
   return (
-    <section className="sidebar-category">
-      <header className="sidebar-category-header">
+    <section
+      className={`sidebar-category${collapsed ? ' collapsed' : ''}`}
+    >
+      <header
+        className="sidebar-category-header"
+        onClick={() => onToggleCollapsed(categoryId)}
+        title={collapsed ? '展开分组' : '折叠分组'}
+      >
+        <span className="sidebar-category-chevron" aria-hidden="true">
+          {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+        </span>
         <span className="sidebar-category-title">
           <span className="sidebar-category-icon" aria-hidden="true">
             <Icon name={iconName} size={12} />
@@ -290,19 +584,22 @@ function Category({
           <button
             type="button"
             className="sidebar-category-action"
-            onClick={onAction}
+            onClick={(e) => {
+              e.stopPropagation();
+              onAction?.();
+            }}
             title={actionTitle}
           >
             {actionLabel}
           </button>
         )}
       </header>
-      {paths.length === 0 ? (
-        <p className="sidebar-empty">空</p>
+      {collapsed ? null : paths.length === 0 ? (
+        <p className="sidebar-empty">{emptyLabel}</p>
       ) : (
         <ul className="sidebar-paths">
           {paths.map((p) => {
-            const override = displayNames.get(p.id);
+            const override = p.kind === 'ssh' ? undefined : displayNames.get(p.id);
             return (
               <PathItem
                 key={p.id}
@@ -337,7 +634,9 @@ function PathItem({
   const activeCount = sessions.length;
   // BETA-014:优先用 Category 算好的去重名;退到本节点 displayName / 末段
   const displayName =
-    displayNameOverride ?? node.displayName ?? lastSegmentOf(node.path);
+    displayNameOverride ??
+    node.displayName ??
+    formatPathDisplayName(node);
 
   // M1-C:行内重命名 (仅收藏支持)
   const [renaming, setRenaming] = useState(false);
@@ -359,7 +658,7 @@ function PathItem({
     if (!v || v === displayName) return;
     window.api
       .invoke(COMMAND_CHANNELS.BOOKMARK_RENAME, {
-        pathId: node.path,
+        pathId: node.id,
         newDisplayName: v,
       })
       .catch((err: unknown) => {
@@ -388,9 +687,9 @@ function PathItem({
     try {
       const dims = state.lastTerminalDims;
       const res = await window.api.invoke<unknown, CreateSessionResponse>(
-        COMMAND_CHANNELS.SESSION_CREATE,
+          COMMAND_CHANNELS.SESSION_CREATE,
         {
-          pathId: node.path,
+          pathId: node.id,
           templateId,
           cols: dims.cols,
           rows: dims.rows,
@@ -400,6 +699,9 @@ function PathItem({
       // 再显式 select 新创建的 session。两次 dispatch 在 React 18 自动 batch。
       dispatch({ type: 'view/select-path', pathId: node.id });
       dispatch({ type: 'view/select-session', sessionId: res.session.id });
+      if (res.warning) {
+        toast.push({ kind: 'warn', message: res.warning });
+      }
     } catch (err) {
       // M1-K:不可达路径 / spawn 失败 → toast + (收藏路径) 提供"移除收藏"
       const msg = err instanceof Error ? err.message : String(err);
@@ -426,19 +728,21 @@ function PathItem({
       label: '复制路径',
       onSelect: () => copyToClipboard(node.path, '路径'),
     });
-    items.push({
-      label: '在 Explorer 中显示',
-      onSelect: () => {
-        window.api
-          .invoke(COMMAND_CHANNELS.SYSTEM_SHOW_IN_EXPLORER, { path: node.path })
-          .catch((err: unknown) =>
-            toast.push({
-              kind: 'error',
-              message: `打开 Explorer 失败:${err instanceof Error ? err.message : String(err)}`,
-            }),
-          );
-      },
-    });
+    if (node.kind !== 'ssh') {
+      items.push({
+        label: '在 Explorer 中显示',
+        onSelect: () => {
+          window.api
+            .invoke(COMMAND_CHANNELS.SYSTEM_SHOW_IN_EXPLORER, { path: node.path })
+            .catch((err: unknown) =>
+              toast.push({
+                kind: 'error',
+                message: `打开 Explorer 失败:${err instanceof Error ? err.message : String(err)}`,
+              }),
+            );
+        },
+      });
+    }
 
     if (node.category === 'bookmarked') {
       items.push({ divider: true, label: '' });
@@ -447,9 +751,21 @@ function PathItem({
         label: '移除收藏',
         danger: true,
         onSelect: () => {
-          window.api
-            .invoke(COMMAND_CHANNELS.BOOKMARK_REMOVE, { pathId: node.path })
-            .then(() => toast.push({ kind: 'success', message: `已移除收藏 ${displayName}` }))
+          const removeBookmark = async (): Promise<void> => {
+            await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_REMOVE, { pathId: node.id });
+            // 首页已经不单独展示"收藏"分组。无 session 的收藏被移除后,
+            // PathManager 会按状态机放入 recent;对用户来说这看起来像"没删掉",
+            // 需要再右键"从最近移除"一次。这里把这两个 UI 动作合成一次。
+            if (node.sessionIds.length === 0) {
+              await window.api.invoke(COMMAND_CHANNELS.PATH_REMOVE_FROM_RECENT, {
+                path: node.id,
+              });
+            }
+          };
+          removeBookmark()
+            .then(() =>
+              toast.push({ kind: 'success', message: `已移除收藏 ${displayName}` }),
+            )
             .catch((err: unknown) =>
               toast.push({
                 kind: 'error',
@@ -469,7 +785,7 @@ function PathItem({
           onSelect: () => {
             window.api
               .invoke(COMMAND_CHANNELS.BOOKMARK_SET_DEFAULT_TEMPLATE, {
-                pathId: node.path,
+                pathId: node.id,
                 templateId: t.id,
               })
               .catch((err: unknown) =>
@@ -487,7 +803,18 @@ function PathItem({
         label: '加入收藏',
         onSelect: () => {
           window.api
-            .invoke(COMMAND_CHANNELS.BOOKMARK_ADD, { path: node.path })
+            .invoke(
+              node.kind === 'ssh'
+                ? COMMAND_CHANNELS.REMOTE_BOOKMARK_ADD
+                : COMMAND_CHANNELS.BOOKMARK_ADD,
+              node.kind === 'ssh'
+                ? {
+                    sshProfileId: node.sshProfileId,
+                    remotePath: node.path,
+                    ...(node.displayName ? { displayName: node.displayName } : {}),
+                  }
+                : { path: node.path },
+            )
             .then(() => toast.push({ kind: 'success', message: `已加入收藏 ${displayName}` }))
             .catch((err: unknown) =>
               toast.push({
@@ -503,7 +830,7 @@ function PathItem({
           danger: true,
           onSelect: () => {
             window.api
-              .invoke(COMMAND_CHANNELS.PATH_REMOVE_FROM_RECENT, { path: node.path })
+              .invoke(COMMAND_CHANNELS.PATH_REMOVE_FROM_RECENT, { path: node.id })
               .catch((err: unknown) =>
                 toast.push({
                   kind: 'error',
@@ -840,6 +1167,11 @@ function samePath(a: string, b: string): boolean {
   // Windows 上 C:\Foo 和 c:\foo 指同一目录。SessionManager 已经把卷符大写,
   // 但 OSC 报告的 cwd 卷符大小写可能不一致,这里再松一层。
   return a.toLowerCase() === b.toLowerCase();
+}
+
+function formatPathDisplayName(node: PathNode): string {
+  const leaf = lastSegmentOf(node.path);
+  return leaf;
 }
 
 function lastSegmentOf(path: string): string {

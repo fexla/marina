@@ -126,6 +126,12 @@ export class LinuxAdapter implements PlatformAdapter {
     }
   }
 
+  resolveExecutable(commandName: string, _env: Record<string, string>): string | null {
+    if (!commandName.trim()) return null;
+    if (commandName.startsWith('/')) return commandName;
+    return commandName;
+  }
+
   /**
    * 给定 shell + hook 文件路径,返回 spawn 时的 args 与额外 env。
    *
@@ -349,5 +355,9 @@ export class LinuxAdapter implements PlatformAdapter {
       { label: '桌面', path: join(home, 'Desktop') },
       { label: '主目录', path: home },
     ];
+  }
+
+  getSshControlPath(): string {
+    return '~/.ssh/cm-%r@%h:%p';
   }
 }

@@ -45,6 +45,8 @@ export const DEFAULT_SETTINGS: Settings = {
     uiZoom: 1.0,
     // BETA-023 macOS 红绿灯悬浮符号,默认关(与 CP-4 勘误第二轮决策一致)
     macOSTrafficLightHoverSymbols: false,
+    // issue #4 默认关。TabBar 与 Sidebar 内容重复,用户可勾上更紧凑。
+    hideTopTabBar: false,
   },
   shell: {
     defaultShellId: '',
@@ -63,9 +65,30 @@ export const DEFAULT_SETTINGS: Settings = {
   systemIntegration: {
     explorerOpenIn: 'new-window',
   },
+  // 终端侧边文件面板(MARINA_SERVICE 远程调用)。默认开:这是面向 AI agent 的
+  // 核心能力,且只绑 127.0.0.1 + token,无外部暴露风险。port=0 让系统分配空闲
+  // 端口,避免与用户其它服务冲突。
+  filePanel: {
+    enabled: true,
+    port: 0,
+    // 默认 auto:与 marina 主题配色协调。想看 GitHub 风格的用户在设置页改。
+    markdownStyle: 'auto' as const,
+  },
   advanced: {
     logLevel: 'INFO',
     activeIdleThresholdSeconds: 2,
+    // SSH 方案 v2.1 §阶段 2.1:默认不读 ~/.ssh/config,用户在 RemotePanel
+    // 主动启用才合并显示。避免出现没看过 ssh_config 的用户误以为 Marina
+    // 暴露了他们的远端清单。
+    includeSshConfig: false,
+    // SSH 方案 v2.1 §阶段 3.5:默认开 ControlMaster,同 host 多 session
+    // 性能从 ~3s 握手 / 个降到 <100ms / 个。OpenSSH 8.x+ Windows 支持,
+    // 老版本失败时 OpenSSH 自身会回退到新连接,Marina 不需要兜底逻辑。
+    enableControlMaster: true,
+    // SSH 方案 v2.1 §II.6:本地用户视野守护。默认 false,只有当用户加了
+    // SshProfile 或主动勾此项时,远程相关 UI 才出现。本地用户的 sidebar /
+    // 设置页视野与 beta.9 一致。
+    enableRemote: false,
     // 终端渲染器默认 'auto':Windows/macOS WebGL、Linux DOM(PER-LINUX,
     // BETA-003 修复)。'webgl' / 'dom' 是显式覆盖,通常给调研某些 WebGL
     // 兼容性 bug 用(例如某些 TUI 的光标渲染在 WebGL 下异常)。
@@ -167,9 +190,7 @@ export class SettingsManager extends EventEmitter {
     if (!partial || typeof partial !== 'object' || Array.isArray(partial)) {
       throw new SettingsError(
         'InvalidSettings',
-        `partial 必须是对象,实际: ${typeof partial}${
-          Array.isArray(partial) ? ' (Array)' : ''
-        }`,
+        `partial 必须是对象,实际: ${typeof partial}${Array.isArray(partial) ? ' (Array)' : ''}`,
       );
     }
     const next = deepMerge(this.settings, partial);
@@ -302,11 +323,7 @@ export function stripUnknownLegacyFields<T>(raw: T): T {
   // 路径已删除,老 settings.json 残留 ai.statusRecheckSource='raw' 静默 coerce
   // 到 'headless'(唯一可用)。不 coerce 的话 validateSettings 会因枚举不匹
   // 配抛错。
-  if (
-    obj['ai'] &&
-    typeof obj['ai'] === 'object' &&
-    !Array.isArray(obj['ai'])
-  ) {
+  if (obj['ai'] && typeof obj['ai'] === 'object' && !Array.isArray(obj['ai'])) {
     const ai = obj['ai'] as Record<string, unknown>;
     if (ai['statusRecheckSource'] === 'raw') {
       const cloned = ensureClone();
@@ -321,7 +338,7 @@ export function stripUnknownLegacyFields<T>(raw: T): T {
 export function deepMerge<T>(target: T, partial: DeepPartial<T> | undefined): T {
   if (partial === undefined || partial === null) return target;
   if (typeof target !== 'object' || target === null) {
-    return (partial as unknown) as T;
+    return partial as unknown as T;
   }
   if (Array.isArray(target)) {
     // 数组整体替换 (除非 partial 也是 array,直接用 partial)
@@ -400,12 +417,7 @@ export function validateSettings(s: Settings): void {
   checkRange('appearance.terminalFontSize', s.appearance.terminalFontSize, 8, 24);
   checkRange('appearance.terminalLineHeight', s.appearance.terminalLineHeight, 1.0, 2.0);
   checkRange('appearance.uiZoom', s.appearance.uiZoom, 0.75, 1.5);
-  checkRange(
-    'advanced.activeIdleThresholdSeconds',
-    s.advanced.activeIdleThresholdSeconds,
-    0.1,
-    60,
-  );
+  checkRange('advanced.activeIdleThresholdSeconds', s.advanced.activeIdleThresholdSeconds, 0.1, 60);
   if (!['INFO', 'DEBUG'].includes(s.advanced.logLevel)) {
     throw new SettingsError(
       'InvalidSettings',
@@ -436,12 +448,27 @@ export function validateSettings(s: Settings): void {
       `shell.newTerminalShellPolicy="${s.shell.newTerminalShellPolicy}" 必须是 default 或 last-used`,
     );
   }
-  if (
-    !['new-window', 'recent-window-tab'].includes(s.systemIntegration.explorerOpenIn)
-  ) {
+  if (!['new-window', 'recent-window-tab'].includes(s.systemIntegration.explorerOpenIn)) {
     throw new SettingsError(
       'InvalidSettings',
       `systemIntegration.explorerOpenIn="${s.systemIntegration.explorerOpenIn}" 必须是 new-window 或 recent-window-tab`,
+    );
+  }
+  if (typeof s.filePanel.enabled !== 'boolean') {
+    throw new SettingsError(
+      'InvalidSettings',
+      `filePanel.enabled 必须是布尔,实际: ${typeof s.filePanel.enabled}`,
+    );
+  }
+  checkRange('filePanel.port', s.filePanel.port, 0, 65535);
+  // markdownStyle 放宽为字符串:除内置 auto / github-light / github-dark,还容纳
+  // 'custom:<id>'(用户往 markdown-themes/ 放的 .css 主题)。自定义主题可能被
+  // 用户删除,选中后找不到时由 MarkdownViewer fallback 到 auto,不在此处阻塞
+  // 保存。仅校验"非空字符串",避免运行时 union 无法穷举自定义 id。
+  if (typeof s.filePanel.markdownStyle !== 'string' || s.filePanel.markdownStyle.trim() === '') {
+    throw new SettingsError(
+      'InvalidSettings',
+      `filePanel.markdownStyle 必须是非空字符串,实际: ${JSON.stringify(s.filePanel.markdownStyle)}`,
     );
   }
 }
@@ -451,10 +478,11 @@ function checkRange(field: string, value: unknown, min: number, max: number): vo
     throw new SettingsError('InvalidSettings', `${field} 必须是有限数,实际: ${value}`);
   }
   if (value < min || value > max) {
-    throw new SettingsError(
-      'InvalidSettings',
-      `${field}=${value} 越界,允许 [${min}, ${max}]`,
-      { field, value, min, max },
-    );
+    throw new SettingsError('InvalidSettings', `${field}=${value} 越界,允许 [${min}, ${max}]`, {
+      field,
+      value,
+      min,
+      max,
+    });
   }
 }

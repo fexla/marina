@@ -25,7 +25,12 @@ import {
   type WindowMaxStateChangedPayload,
 } from '@shared/protocol';
 import type { WindowStyle } from '@shared/types';
-import { Minus, Square, Copy as RestoreIcon, X } from 'lucide-react';
+import {
+  Minus,
+  Square,
+  Copy as RestoreIcon,
+  X,
+} from 'lucide-react';
 import { focusTerminalDom } from '../focus';
 import { useAppState } from '../store';
 
@@ -45,6 +50,8 @@ export function WindowChrome({ windowStyle, buildVersion, buildType }: Props): J
   // 避免 useAppState 订阅整个 state 引发的无关重渲。
   const windowNumber = window.api.windowNumber;
   const [maximized, setMaximized] = useState(false);
+  const state = useAppState();
+  const hoverSymbols = state.settings.appearance?.macOSTrafficLightHoverSymbols ?? false;
 
   // 初次拉一次 + 订阅变化
   useEffect(() => {
@@ -112,6 +119,7 @@ export function WindowChrome({ windowStyle, buildVersion, buildType }: Props): J
         callMin={callMin}
         callClose={callClose}
         callToggleMax={callToggleMax}
+        hoverSymbols={hoverSymbols}
         handleDragRegionDblClick={handleDragRegionDblClick}
       />
     );
@@ -184,6 +192,7 @@ function MacosTitlebar({
   callMin,
   callClose,
   callToggleMax,
+  hoverSymbols,
   handleDragRegionDblClick,
 }: {
   buildVersion: string;
@@ -193,10 +202,9 @@ function MacosTitlebar({
   callMin: () => void;
   callClose: () => void;
   callToggleMax: () => void;
+  hoverSymbols: boolean;
   handleDragRegionDblClick: (e: ReactMouseEvent<HTMLDivElement>) => void;
 }): JSX.Element {
-  const state = useAppState();
-  const hoverSymbols = state.settings.appearance?.macOSTrafficLightHoverSymbols ?? false;
   void maximized; // 当前 UI 中 max 按钮不区分图标,标记 used
   return (
     <div

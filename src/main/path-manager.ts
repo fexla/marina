@@ -29,11 +29,13 @@ import { resolve, sep } from 'node:path';
 import type {
   Bookmark,
   BookmarksFile,
+  PathKind,
   PathNode,
   PathTree,
   RecentEntry,
   RecentFile,
 } from '@shared/types';
+import { normalizeRemotePath } from '@shared/remote-path';
 import type { JsonStore } from './persistence';
 import { logger } from './logger';
 
@@ -59,6 +61,51 @@ export function normalizePath(input: string): string {
     n = n.slice(0, -1);
   }
   return n;
+}
+
+export interface PathRef {
+  kind: PathKind;
+  path: string;
+  sshProfileId?: string;
+}
+
+export function makePathId(ref: PathRef): string {
+  if (ref.kind === 'ssh') {
+    if (!ref.sshProfileId) {
+      throw new PathManagerError('InvalidName', 'ssh path 缺少 sshProfileId');
+    }
+    return `ssh:${encodeURIComponent(ref.sshProfileId)}:${encodeURIComponent(normalizeRemotePath(ref.path))}`;
+  }
+  return normalizePath(ref.path);
+}
+
+export function pathRefFromId(idOrPath: string): PathRef {
+  if (idOrPath.startsWith('ssh:')) {
+    const parts = idOrPath.split(':');
+    if (parts.length >= 3 && parts[1]) {
+      return {
+        kind: 'ssh',
+        sshProfileId: decodeURIComponent(parts[1]!),
+        path: normalizeRemotePath(decodeURIComponent(parts.slice(2).join(':'))),
+      };
+    }
+  }
+  return { kind: 'local', path: normalizePath(idOrPath) };
+}
+
+function normalizePathRef(input: string | PathRef): PathRef {
+  if (typeof input === 'string') return pathRefFromId(input);
+  if (input.kind === 'ssh') {
+    if (!input.sshProfileId) {
+      throw new PathManagerError('InvalidName', 'ssh path 缺少 sshProfileId');
+    }
+    return {
+      kind: 'ssh',
+      sshProfileId: input.sshProfileId,
+      path: normalizeRemotePath(input.path),
+    };
+  }
+  return { kind: 'local', path: normalizePath(input.path) };
 }
 
 /**
@@ -141,8 +188,12 @@ export class PathManager extends EventEmitter {
   async initialize(): Promise<{ bookmarksSource: 'main' | 'bak' | 'default' }> {
     const bk = await this.bookmarksStore.load(DEFAULT_BOOKMARKS_FILE);
     const rc = await this.recentStore.load(DEFAULT_RECENT_FILE);
-    this.bookmarks = bk.value.paths.slice();
-    this.recent = rc.value.paths.slice();
+    // v2.1 §II.1:把磁盘上的旧 schema(kind 缺失 / ssh 但 sshProfileId 缺失)
+    // 在内存层 coerce 成新 discriminated union。损坏条目静默丢弃,与旧
+    // validateBookmarksArray "整体拒绝" 不同 —— 启动期不能因为一条坏数据
+    // 让用户进不来 Marina。
+    this.bookmarks = bk.value.paths.flatMap(migrateBookmarkOnLoad);
+    this.recent = rc.value.paths.flatMap(migrateRecentOnLoad);
     this.sortRecent();
     return { bookmarksSource: bk.source };
   }
@@ -166,23 +217,30 @@ export class PathManager extends EventEmitter {
    */
   addBookmark(input: {
     path: string;
+    kind?: PathKind;
+    sshProfileId?: string;
     displayName?: string;
     defaultTemplateId?: string;
   }): Bookmark {
-    const normalized = normalizePath(input.path);
-    if (this.findBookmarkByPath(normalized)) {
-      throw new PathManagerError('BookmarkAlreadyExists', `path="${normalized}" 已收藏`);
+    const ref = normalizePathRef({
+      kind: input.kind ?? 'local',
+      path: input.path,
+      ...(input.sshProfileId ? { sshProfileId: input.sshProfileId } : {}),
+    });
+    const id = makePathId(ref);
+    if (this.findBookmarkByPath(id)) {
+      throw new PathManagerError('BookmarkAlreadyExists', `path="${id}" 已收藏`);
     }
-    const bookmark: Bookmark = {
+    const bookmark = buildBookmark({
       id: randomUUID(),
-      path: normalized,
+      ref,
       ...(input.displayName ? { displayName: input.displayName } : {}),
       ...(input.defaultTemplateId ? { defaultTemplateId: input.defaultTemplateId } : {}),
       addedAt: Date.now(),
-    };
+    });
     this.bookmarks.push(bookmark);
     // 收藏后,该路径自动从 recent 中移出 (避免重复出现)
-    this.removeRecentInternal(normalized);
+    this.removeRecentInternal(id);
     this.persistBookmarks();
     this.persistRecent();
     this.emitChange();
@@ -195,15 +253,16 @@ export class PathManager extends EventEmitter {
    * @throws PathManagerError BookmarkNotFound
    */
   removeBookmark(pathId: string): void {
-    const normalized = normalizePath(pathId);
-    const idx = this.bookmarks.findIndex((b) => b.path === normalized);
+    const id = makePathId(pathRefFromId(pathId));
+    const idx = this.bookmarks.findIndex((b) => bookmarkPathId(b) === id);
     if (idx < 0) {
       throw new PathManagerError('BookmarkNotFound', `pathId="${pathId}" 不在收藏`);
     }
+    const removed = this.bookmarks[idx]!;
     this.bookmarks.splice(idx, 1);
     // 移除收藏后,如果路径没有 session 在跑,要进入最近;有的话进入临时 (自动)
-    if (!this.hasSessionsForPath(normalized)) {
-      this.touchRecent(normalized); // 移到最近
+    if (!this.hasSessionsForPath(id)) {
+      this.touchRecent(pathRefFromBookmark(removed)); // 移到最近
     }
     this.persistBookmarks();
     this.persistRecent();
@@ -224,8 +283,8 @@ export class PathManager extends EventEmitter {
         } len=${newDisplayName?.length}`,
       );
     }
-    const normalized = normalizePath(pathId);
-    const bookmark = this.findBookmarkByPath(normalized);
+    const id = makePathId(pathRefFromId(pathId));
+    const bookmark = this.findBookmarkByPath(id);
     if (!bookmark) {
       throw new PathManagerError('BookmarkNotFound', `pathId="${pathId}"`);
     }
@@ -244,7 +303,7 @@ export class PathManager extends EventEmitter {
    * @throws PathManagerError InvalidOrderList
    */
   reorderBookmarks(orderedPathIds: string[]): void {
-    const normalized = orderedPathIds.map(normalizePath);
+    const normalized = orderedPathIds.map((id) => makePathId(pathRefFromId(id)));
     if (normalized.length !== this.bookmarks.length) {
       throw new PathManagerError(
         'InvalidOrderList',
@@ -278,8 +337,8 @@ export class PathManager extends EventEmitter {
    * @throws PathManagerError BookmarkNotFound
    */
   setDefaultTemplate(pathId: string, templateId: string | null): void {
-    const normalized = normalizePath(pathId);
-    const bookmark = this.findBookmarkByPath(normalized);
+    const id = makePathId(pathRefFromId(pathId));
+    const bookmark = this.findBookmarkByPath(id);
     if (!bookmark) {
       throw new PathManagerError('BookmarkNotFound', `pathId="${pathId}"`);
     }
@@ -302,8 +361,8 @@ export class PathManager extends EventEmitter {
    * @throws PathManagerError PathNotInRecent
    */
   removeFromRecent(input: string): void {
-    const normalized = normalizePath(input);
-    const idx = this.recent.findIndex((r) => normalizePath(r.path) === normalized);
+    const id = makePathId(pathRefFromId(input));
+    const idx = this.recent.findIndex((r) => recentPathId(r) === id);
     if (idx < 0) {
       throw new PathManagerError('PathNotInRecent', `path="${input}" 不在最近列表`);
     }
@@ -326,25 +385,26 @@ export class PathManager extends EventEmitter {
    * 不会触发。
    */
   attachSession(sessionId: string, path: string): void {
-    const normalized = normalizePath(path);
+    const id = makePathId(pathRefFromId(path));
+    const ref = pathRefFromId(id);
     const previousPath = this.sessionToPath.get(sessionId);
-    if (previousPath === normalized) return; // 无变化 (重复调用)
+    if (previousPath === id) return; // 无变化 (重复调用)
     if (previousPath !== undefined) {
       // 防御:理论上 ADR-008 后不会到这。若到了,说明上层有 bug,记一条 warn。
       logger.warn(
         'PathManager',
-        `attachSession 不一致: sessionId="${sessionId}" 旧 path="${previousPath}" 新 path="${normalized}"。` +
+        `attachSession 不一致: sessionId="${sessionId}" 旧 path="${previousPath}" 新 path="${id}"。` +
           `ADR-008 之后 session.pathId 应永久不变,这是 bug。`,
       );
       this.detachSessionInternal(sessionId, /* emit */ false);
     }
-    this.sessionToPath.set(sessionId, normalized);
+    this.sessionToPath.set(sessionId, id);
     // STM-3:不再 removeRecentInternal — 旧写法先删后 unshift 会把已有 entry 的
     // useCount 重置为 1,daily-driver "开终端 → 关终端 → 开终端" 循环下,useCount
     // 永远在 1↔2 之间震荡而不真实累加。新写法:只 touch(存在则 ++,不存在则新建),
     // 让 useCount 真实记录使用次数。getTree() 已经按 sessionPaths 过滤,recent
     // 数组里"暂时归在临时分类"的 entry 不会重复显示,无需先 remove。
-    this.touchRecentTimestamp(normalized);
+    this.touchRecentTimestamp(ref);
     this.persistRecent();
     this.emitChange();
   }
@@ -364,7 +424,7 @@ export class PathManager extends EventEmitter {
 
     // 如果该 path 没有其他 session 且不在收藏,进入最近
     if (!this.hasSessionsForPath(path) && !this.findBookmarkByPath(path)) {
-      this.touchRecent(path);
+      this.touchRecent(pathRefFromId(path));
       this.persistRecent();
     }
     if (emit) this.emitChange();
@@ -380,43 +440,52 @@ export class PathManager extends EventEmitter {
    * BETA-043:invalidPaths 集合里的路径会被标 invalid: true。
    */
   getTree(): PathTree {
-    const bookmarkPaths = new Set(this.bookmarks.map((b) => b.path));
+    const bookmarkPaths = new Set(this.bookmarks.map(bookmarkPathId));
     const sessionPaths = new Set(this.sessionToPath.values());
-    const markInvalid = (p: string): { invalid?: true } =>
-      this.invalidPaths.has(normalizePath(p)) ? { invalid: true } : {};
+    const markInvalid = (id: string): { invalid?: true } =>
+      this.invalidPaths.has(id) ? { invalid: true } : {};
 
-    const bookmarks: PathNode[] = this.bookmarks.map((b) => ({
-      id: b.path,
-      path: b.path,
-      ...(b.displayName ? { displayName: b.displayName } : {}),
-      category: 'bookmarked',
-      sessionIds: this.sessionsForPath(b.path),
-      ...(b.defaultTemplateId ? { defaultTemplateId: b.defaultTemplateId } : {}),
-      ...markInvalid(b.path),
-    }));
+    const bookmarks: PathNode[] = this.bookmarks.map((b) => {
+      const id = bookmarkPathId(b);
+      return buildPathNode({
+        id,
+        ref: pathRefFromBookmark(b),
+        category: 'bookmarked',
+        sessionIds: this.sessionsForPath(id),
+        ...(b.displayName ? { displayName: b.displayName } : {}),
+        ...(b.defaultTemplateId ? { defaultTemplateId: b.defaultTemplateId } : {}),
+        ...markInvalid(id),
+      });
+    });
 
     const temporary: PathNode[] = [...sessionPaths]
       .filter((p) => !bookmarkPaths.has(p))
-      .map((p) => ({
-        id: p,
-        path: p,
-        category: 'temporary' as const,
-        sessionIds: this.sessionsForPath(p),
-        ...markInvalid(p),
-      }));
+      .map((p) => {
+        const ref = pathRefFromId(p);
+        return buildPathNode({
+          id: p,
+          ref,
+          category: 'temporary',
+          sessionIds: this.sessionsForPath(p),
+          ...markInvalid(p),
+        });
+      });
 
     const recent: PathNode[] = this.recent
       .filter((r) => {
-        const n = normalizePath(r.path);
+        const n = recentPathId(r);
         return !bookmarkPaths.has(n) && !sessionPaths.has(n);
       })
-      .map((r) => ({
-        id: normalizePath(r.path),
-        path: normalizePath(r.path),
-        category: 'recent' as const,
-        sessionIds: [],
-        ...markInvalid(r.path),
-      }));
+      .map((r) => {
+        const id = recentPathId(r);
+        return buildPathNode({
+          id,
+          ref: pathRefFromRecent(r),
+          category: 'recent',
+          sessionIds: [],
+          ...markInvalid(id),
+        });
+      });
 
     return { bookmarks, temporary, recent };
   }
@@ -428,7 +497,7 @@ export class PathManager extends EventEmitter {
   setInvalidPaths(normalizedPaths: Iterable<string>): void {
     this.invalidPaths = new Set();
     for (const p of normalizedPaths) {
-      this.invalidPaths.add(normalizePath(p));
+      this.invalidPaths.add(makePathId(pathRefFromId(p)));
     }
     this.emit('pathTreeUpdated', this.getTree());
   }
@@ -447,6 +516,23 @@ export class PathManager extends EventEmitter {
     return this.recent.map((r) => ({ ...r }));
   }
 
+  hasSshProfileReferences(profileId: string): boolean {
+    const isMatch = (kind: PathKind, sshProfileId: string | undefined): boolean =>
+      kind === 'ssh' && sshProfileId === profileId;
+    return (
+      this.bookmarks.some((b) =>
+        b.kind === 'ssh' ? isMatch(b.kind, b.sshProfileId) : false,
+      ) ||
+      this.recent.some((r) =>
+        r.kind === 'ssh' ? isMatch(r.kind, r.sshProfileId) : false,
+      ) ||
+      [...this.sessionToPath.values()].some((id) => {
+        const ref = pathRefFromId(id);
+        return ref.kind === 'ssh' && ref.sshProfileId === profileId;
+      })
+    );
+  }
+
   /**
    * 给 SessionManager 用:某 sessionId 当前在哪个 path。
    */
@@ -459,7 +545,7 @@ export class PathManager extends EventEmitter {
   // ──────────────────────────────────────────────────────────────────
 
   private findBookmarkByPath(normalizedPath: string): Bookmark | undefined {
-    return this.bookmarks.find((b) => b.path === normalizedPath);
+    return this.bookmarks.find((b) => bookmarkPathId(b) === normalizedPath);
   }
 
   private sessionsForPath(normalizedPath: string): string[] {
@@ -480,29 +566,28 @@ export class PathManager extends EventEmitter {
   /**
    * 把路径加入最近 (或更新已有的时间戳)。容量上限 30,按 lastUsedAt 降序。
    */
-  private touchRecent(rawPath: string): void {
-    const normalized = normalizePath(rawPath);
-    this.touchRecentTimestamp(normalized);
+  private touchRecent(rawPath: string | PathRef): void {
+    const ref = normalizePathRef(rawPath);
+    this.touchRecentTimestamp(ref);
     this.sortRecent();
     this.trimRecent();
   }
 
-  private touchRecentTimestamp(normalizedPath: string): void {
-    const existing = this.recent.find((r) => normalizePath(r.path) === normalizedPath);
+  private touchRecentTimestamp(ref: PathRef): void {
+    const id = makePathId(ref);
+    const existing = this.recent.find((r) => recentPathId(r) === id);
     if (existing) {
       existing.lastUsedAt = Date.now();
       existing.useCount++;
     } else {
-      this.recent.unshift({
-        path: normalizedPath,
-        lastUsedAt: Date.now(),
-        useCount: 1,
-      });
+      this.recent.unshift(
+        buildRecentEntry({ ref, lastUsedAt: Date.now(), useCount: 1 }),
+      );
     }
   }
 
   private removeRecentInternal(normalizedPath: string): void {
-    const idx = this.recent.findIndex((r) => normalizePath(r.path) === normalizedPath);
+    const idx = this.recent.findIndex((r) => recentPathId(r) === normalizedPath);
     if (idx >= 0) {
       this.recent.splice(idx, 1);
     }
@@ -549,7 +634,9 @@ export class PathManager extends EventEmitter {
    * @param input.recent 新的最近列表 (按当前数组顺序;内部仍会再 sortRecent)
    * @throws PathManagerError('InvalidName') 任一 entry 形状不合规
    */
-  replaceAll(input: { bookmarks: Bookmark[]; recent: RecentEntry[] }): void {
+  replaceAll(input: { bookmarks: unknown; recent: unknown }): void {
+    // 入参视为外部不可信(导入归档可能跨版本 / kind 缺失 / sshProfileId 缺失);
+    // validateBookmarksArray / validateRecentArray 做严格 narrow + path normalize。
     const bookmarks = validateBookmarksArray(input.bookmarks);
     const recent = validateRecentArray(input.recent);
     this.bookmarks = bookmarks;
@@ -597,15 +684,31 @@ function validateBookmarksArray(input: unknown): Bookmark[] {
     if (r['defaultTemplateId'] !== undefined && typeof r['defaultTemplateId'] !== 'string') {
       throw new PathManagerError('InvalidName', `bookmarks[${i}].defaultTemplateId 非法`);
     }
-    const normalized = normalizePath(r['path']);
-    const entry: Bookmark = {
-      id: r['id'],
-      path: normalized,
-      addedAt: r['addedAt'],
-    };
-    if (typeof r['displayName'] === 'string') entry.displayName = r['displayName'];
-    if (typeof r['defaultTemplateId'] === 'string') entry.defaultTemplateId = r['defaultTemplateId'];
-    out.push(entry);
+    const kind: PathKind = r['kind'] === 'ssh' ? 'ssh' : 'local';
+    const sshProfileId =
+      typeof r['sshProfileId'] === 'string' ? r['sshProfileId'] : undefined;
+    if (kind === 'ssh' && !sshProfileId) {
+      throw new PathManagerError(
+        'InvalidName',
+        `bookmarks[${i}] kind="ssh" 但缺少 sshProfileId`,
+      );
+    }
+    const ref = normalizePathRef({
+      kind,
+      path: r['path'],
+      ...(sshProfileId ? { sshProfileId } : {}),
+    });
+    out.push(
+      buildBookmark({
+        id: r['id'],
+        ref,
+        addedAt: r['addedAt'],
+        ...(typeof r['displayName'] === 'string' ? { displayName: r['displayName'] } : {}),
+        ...(typeof r['defaultTemplateId'] === 'string'
+          ? { defaultTemplateId: r['defaultTemplateId'] }
+          : {}),
+      }),
+    );
   }
   return out;
 }
@@ -635,11 +738,176 @@ function validateRecentArray(input: unknown): RecentEntry[] {
     if (typeof o['useCount'] !== 'number' || !Number.isFinite(o['useCount'])) {
       throw new PathManagerError('InvalidName', `recent[${i}].useCount 非法`);
     }
-    out.push({
-      path: normalizePath(o['path']),
-      lastUsedAt: o['lastUsedAt'],
-      useCount: o['useCount'],
+    const kind: PathKind = o['kind'] === 'ssh' ? 'ssh' : 'local';
+    const sshProfileId =
+      typeof o['sshProfileId'] === 'string' ? o['sshProfileId'] : undefined;
+    if (kind === 'ssh' && !sshProfileId) {
+      throw new PathManagerError(
+        'InvalidName',
+        `recent[${i}] kind="ssh" 但缺少 sshProfileId`,
+      );
+    }
+    const ref = normalizePathRef({
+      kind,
+      path: o['path'],
+      ...(sshProfileId ? { sshProfileId } : {}),
     });
+    out.push(
+      buildRecentEntry({ ref, lastUsedAt: o['lastUsedAt'], useCount: o['useCount'] }),
+    );
   }
   return out;
+}
+
+function bookmarkPathId(bookmark: Bookmark): string {
+  return makePathId(pathRefFromBookmark(bookmark));
+}
+
+function recentPathId(recent: RecentEntry): string {
+  return makePathId(pathRefFromRecent(recent));
+}
+
+function pathRefFromBookmark(bookmark: Bookmark): PathRef {
+  switch (bookmark.kind) {
+    case 'local':
+      return { kind: 'local', path: normalizePath(bookmark.path) };
+    case 'ssh':
+      return {
+        kind: 'ssh',
+        sshProfileId: bookmark.sshProfileId,
+        path: normalizeRemotePath(bookmark.path),
+      };
+  }
+}
+
+function pathRefFromRecent(recent: RecentEntry): PathRef {
+  switch (recent.kind) {
+    case 'local':
+      return { kind: 'local', path: normalizePath(recent.path) };
+    case 'ssh':
+      return {
+        kind: 'ssh',
+        sshProfileId: recent.sshProfileId,
+        path: normalizeRemotePath(recent.path),
+      };
+  }
+}
+
+/**
+ * Bookmark 构造器 — 把 PathRef 当作"权威 kind 来源",discriminated union
+ * 保证 ssh 分支必带 sshProfileId(本地分支必无)。所有 Bookmark 构造点
+ * 统一走这里,避免散落 `...(ref.kind !== 'local' ? { kind } : {})` 模式。
+ */
+function buildBookmark(input: {
+  id: string;
+  ref: PathRef;
+  addedAt: number;
+  displayName?: string;
+  defaultTemplateId?: string;
+}): Bookmark {
+  const common = {
+    id: input.id,
+    path: input.ref.path,
+    addedAt: input.addedAt,
+    ...(input.displayName ? { displayName: input.displayName } : {}),
+    ...(input.defaultTemplateId ? { defaultTemplateId: input.defaultTemplateId } : {}),
+  };
+  switch (input.ref.kind) {
+    case 'local':
+      return { ...common, kind: 'local' };
+    case 'ssh':
+      return { ...common, kind: 'ssh', sshProfileId: input.ref.sshProfileId! };
+  }
+}
+
+function buildRecentEntry(input: {
+  ref: PathRef;
+  lastUsedAt: number;
+  useCount: number;
+}): RecentEntry {
+  const common = {
+    path: input.ref.path,
+    lastUsedAt: input.lastUsedAt,
+    useCount: input.useCount,
+  };
+  switch (input.ref.kind) {
+    case 'local':
+      return { ...common, kind: 'local' };
+    case 'ssh':
+      return { ...common, kind: 'ssh', sshProfileId: input.ref.sshProfileId! };
+  }
+}
+
+function buildPathNode(input: {
+  id: string;
+  ref: PathRef;
+  category: PathNode['category'];
+  sessionIds: string[];
+  displayName?: string;
+  defaultTemplateId?: string;
+  invalid?: true;
+}): PathNode {
+  const common = {
+    id: input.id,
+    path: input.ref.path,
+    category: input.category,
+    sessionIds: input.sessionIds,
+    ...(input.displayName ? { displayName: input.displayName } : {}),
+    ...(input.defaultTemplateId ? { defaultTemplateId: input.defaultTemplateId } : {}),
+    ...(input.invalid ? { invalid: true as const } : {}),
+  };
+  switch (input.ref.kind) {
+    case 'local':
+      return { ...common, kind: 'local' };
+    case 'ssh':
+      return { ...common, kind: 'ssh', sshProfileId: input.ref.sshProfileId! };
+  }
+}
+
+/**
+ * v2.1 §II.1 启动期 migrate:磁盘 Bookmark 缺 kind 时 coerce 'local';
+ * kind === 'ssh' 但缺 sshProfileId 视为损坏数据,丢弃(配合 flatMap)。
+ * 与 validateBookmarksArray 不同的是 — 启动期容错,损坏数据让用户能进
+ * Marina;import 走严格校验。
+ */
+function migrateBookmarkOnLoad(raw: unknown): Bookmark[] {
+  if (typeof raw !== 'object' || raw === null) return [];
+  const r = raw as Record<string, unknown>;
+  if (typeof r['id'] !== 'string' || typeof r['path'] !== 'string') return [];
+  if (typeof r['addedAt'] !== 'number') return [];
+  const rawKind = r['kind'];
+  const kind: PathKind = rawKind === 'ssh' ? 'ssh' : 'local';
+  const sshProfileId =
+    typeof r['sshProfileId'] === 'string' ? r['sshProfileId'] : undefined;
+  if (kind === 'ssh' && !sshProfileId) return [];
+  const base = {
+    id: r['id'],
+    path: r['path'],
+    addedAt: r['addedAt'],
+    ...(typeof r['displayName'] === 'string' ? { displayName: r['displayName'] } : {}),
+    ...(typeof r['defaultTemplateId'] === 'string'
+      ? { defaultTemplateId: r['defaultTemplateId'] }
+      : {}),
+  };
+  if (kind === 'local') return [{ ...base, kind: 'local' }];
+  return [{ ...base, kind: 'ssh', sshProfileId: sshProfileId! }];
+}
+
+function migrateRecentOnLoad(raw: unknown): RecentEntry[] {
+  if (typeof raw !== 'object' || raw === null) return [];
+  const r = raw as Record<string, unknown>;
+  if (typeof r['path'] !== 'string') return [];
+  if (typeof r['lastUsedAt'] !== 'number' || typeof r['useCount'] !== 'number') return [];
+  const rawKind = r['kind'];
+  const kind: PathKind = rawKind === 'ssh' ? 'ssh' : 'local';
+  const sshProfileId =
+    typeof r['sshProfileId'] === 'string' ? r['sshProfileId'] : undefined;
+  if (kind === 'ssh' && !sshProfileId) return [];
+  const base = {
+    path: r['path'],
+    lastUsedAt: r['lastUsedAt'],
+    useCount: r['useCount'],
+  };
+  if (kind === 'local') return [{ ...base, kind: 'local' }];
+  return [{ ...base, kind: 'ssh', sshProfileId: sshProfileId! }];
 }
