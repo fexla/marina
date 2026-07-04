@@ -145,6 +145,11 @@ export type ClientConnectedHandler = (transport: ClientTransport) => void;
 export type ClientMessageHandler = (clientId: string, frame: WsFrame) => void;
 export type ClientDisconnectedHandler = (clientId: string) => void;
 
+/** 握手结果:通过则返回分配/复用的 clientId;失败返回 error(连接被关闭)。 */
+export type AuthResult = { clientId: string } | { error: string };
+/** 认证处理器:接收 client 首帧原始数据,自行解析+校验 token。 */
+export type AuthHandler = (firstMessage: unknown) => AuthResult;
+
 /**
  * daemon 侧的 WS server。事件驱动:上层(daemon 入口)注册三个回调,
  * 把 connected → 注册进 ClientRegistry、message → 走 dispatcher、
@@ -159,6 +164,8 @@ export class WsServer {
   private readonly disconnectedHandlers: ClientDisconnectedHandler[] = [];
   /** clientId → ws,用于定向 send(由 ClientTransport 持有 ws,这里仅记映射供上层查询)。 */
   private readonly wsByClient = new Map<string, WebSocket>();
+  /** 可选认证处理器;设置后新连接必须先握手通过才注册。 */
+  private authHandler?: AuthHandler;
 
   /**
    * 启动 WS server。
@@ -216,11 +223,27 @@ export class WsServer {
     return this.wsByClient.size;
   }
 
+  /**
+   * 设置认证处理器。设置后,新连接必须先通过握手:发首帧 → authHandler 校验 →
+   * 返回 { clientId } 才注册并 emit connected;返回 { error } 关闭连接(4003)。
+   * 未设置时,连接立即分配随机 clientId(1.3 行为,loopback 自测/测试用)。
+   * 首帧 10s 超时未发 → 关闭(4001)。
+   */
+  setAuthHandler(fn: AuthHandler): void {
+    this.authHandler = fn;
+  }
+
   private handleConnection(ws: WebSocket): void {
-    // 阶段1.3 骨架:裸连接,立即分配随机 clientId。
-    // 阶段1.4 替换为:等首帧 Authorization: Bearer <token> → 校验 →
-    // 凭 token 复用 clientId(或分配新的)→ 通过才 emit connected。
-    const clientId = randomUUID();
+    if (this.authHandler) {
+      this.handleAuthenticatingConnection(ws);
+    } else {
+      // 无 authHandler:1.3 行为,立即注册(随机 clientId)。
+      this.registerClient(ws, randomUUID());
+    }
+  }
+
+  /** 已通过认证(或无需认证):注册进 registry + 挂消息/关闭处理 + emit connected。 */
+  private registerClient(ws: WebSocket, clientId: string): void {
     this.wsByClient.set(clientId, ws);
     const transport = createWsClientTransport(ws, clientId);
 
@@ -262,5 +285,45 @@ export class WsServer {
     for (const h of this.connectedHandlers) {
       h(transport);
     }
+  }
+
+  /**
+   * 握手流程:等首帧 → authHandler 校验。
+   *  - 通过 → registerClient(返回的 clientId)
+   *  - 失败 → 关闭(4003 + error)
+   *  - 10s 超时未发首帧 → 关闭(4001)
+   * 握手期间的首帧被消费,不进 messageHandlers;通过后后续消息才走 dispatcher(阶段1.5)。
+   */
+  private handleAuthenticatingConnection(ws: WebSocket): void {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        ws.close(4001, 'auth timeout');
+      } catch {
+        /* 已关闭 */
+      }
+    }, 10000);
+
+    const onFirst = (data: unknown): void => {
+      if (settled) return;
+      const result = this.authHandler!(data);
+      if ('error' in result) {
+        settled = true;
+        clearTimeout(timer);
+        try {
+          ws.close(4003, result.error);
+        } catch {
+          /* 已关闭 */
+        }
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      ws.off('message', onFirst);
+      this.registerClient(ws, result.clientId);
+    };
+    ws.on('message', onFirst);
   }
 }
