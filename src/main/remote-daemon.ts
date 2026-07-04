@@ -27,7 +27,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ClientRegistry, ClientTransport } from './client-registry';
 import type { SessionManager } from './session-manager';
-import { WsServer, type AuthHandler, type AuthResult } from './transport-ws';
+import type { WsServer, AuthHandler, AuthResult } from './transport-ws';
 
 /** 握手首帧的期望 JSON 结构(client → daemon)。 */
 export interface AuthFrame {
