@@ -17,9 +17,8 @@
  *
  * @对应文档章节: 软件定义书.md 8.1、9.2.1;AGENTS.md 检查点 1/2
  */
-import { app, Menu, session as electronSession } from 'electron';
+import { app, Menu, safeStorage, session as electronSession } from 'electron';
 import { existsSync, statSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { WindowManager } from './window-manager';
 import { TrayManager } from './tray';
@@ -33,6 +32,7 @@ import { JsonStore } from './persistence';
 import { installIpcLayer, dispatchCommand } from './ipc';
 import { ClientRegistry } from './client-registry';
 import { RemoteDaemon } from './remote-daemon';
+import { loadOrGenerateDaemonCredentials } from './daemon-credentials';
 import { WsServer } from './transport-ws';
 import { FilePanelService } from './file-panel-service';
 import { MarkdownThemeManager } from './markdown-theme-manager';
@@ -534,13 +534,19 @@ function bootstrap(): void {
       // 配对 UI 留阶段2(软件定义书 §14.9.4)。
       const daemonMode = parseHeadlessDaemon(process.argv);
       if (daemonMode?.daemon) {
+        // token 持久化(safeStorage 加密),daemon 重启不变 → client 配对一次永久有效
+        // (软件定义书 §14.9.4)。首次生成 / 文件损坏 / 重置后 isNew=true,此时打日志
+        // 方便用户首次配对;非首次不打(避免反复泄露到日志)。
+        const creds = await loadOrGenerateDaemonCredentials(
+          app.getPath('userData'),
+          safeStorage,
+        );
         const wsServer = new WsServer();
-        const daemonToken = randomUUID();
         const remoteDaemon = new RemoteDaemon({
           wsServer,
           registry: clientRegistry,
           sessionManager,
-          token: daemonToken,
+          token: creds.token,
           dispatch: dispatchCommand,
           onClientAuthenticated: (cid) =>
             logger.info('remote-daemon', `client authenticated: ${cid}`),
@@ -550,7 +556,16 @@ function bootstrap(): void {
         try {
           const actualPort = await wsServer.start(daemonMode.port);
           logger.info('remote-daemon', `WS server listening on port ${actualPort}`);
-          logger.info('remote-daemon', `auth token (loopback dev): ${daemonToken}`);
+          if (creds.isNew) {
+            // 仅首次生成时打 token(供用户配对);后续启动不打,避免日志反复泄露
+            logger.info('remote-daemon', `auth token (new, for pairing): ${creds.token}`);
+            if (creds.storedPlaintext) {
+              logger.warn(
+                'remote-daemon',
+                'credentials stored PLAINTEXT (safeStorage unavailable on this OS)',
+              );
+            }
+          }
         } catch (err) {
           logger.error('remote-daemon', 'WS server start failed', err);
         }
