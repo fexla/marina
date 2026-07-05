@@ -1712,6 +1712,8 @@ function buildSnapshot(deps: IpcLayerDeps, myWindowId: string): AppSnapshot {
     sessions: deps.sessionManager.list(),
     pathTree: deps.pathManager.getTree(),
     sshProfiles: deps.sshProfileManager?.list() ?? [],
+    remoteBackendProfiles: deps.remoteProfileManager?.list() ?? [],
+    activeRemoteProfileId: deps.remoteProfileManager?.getActiveProfileId() ?? null,
     templates: deps.templatesManager.list(),
     defaultTemplateId: deps.templatesManager.getDefaultTemplateId(),
     settings: deps.settingsManager.get(),

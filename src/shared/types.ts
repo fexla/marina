@@ -697,6 +697,10 @@ export interface AppSnapshot {
   sessions: SessionInfo[];
   pathTree: PathTree;
   sshProfiles: SshProfile[];
+  /** v2.0 远程后端(§14.9):client 端 remote daemon profile 列表(public 副本)。 */
+  remoteBackendProfiles: RemoteDaemonProfile[];
+  /** 当前活跃 remote profile id;null = 本地模式。 */
+  activeRemoteProfileId: string | null;
   templates: Template[];
   defaultTemplateId: string;
   settings: Settings;

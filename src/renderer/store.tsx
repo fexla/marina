@@ -57,6 +57,7 @@ import type {
   SessionInfo,
   Settings,
   SshProfile,
+  RemoteDaemonProfile,
   Template,
   WindowInfo,
 } from '@shared/types';
@@ -71,6 +72,10 @@ export interface AppState {
   sessions: Map<string, SessionInfo>;
   bookmarks: Bookmark[];
   sshProfiles: SshProfile[];
+  /** v2.0 远程后端(§14.9):remote daemon profile 列表(public 副本) */
+  remoteBackendProfiles: RemoteDaemonProfile[];
+  /** 当前活跃 remote profile id;null = 本地模式 */
+  activeRemoteProfileId: string | null;
   windows: WindowInfo[];
   templates: Template[];
   defaultTemplateId: string;
@@ -139,6 +144,8 @@ export type AppAction =
   | { type: 'pathTree/update'; tree: PathTree }
   | { type: 'bookmarks/update'; bookmarks: Bookmark[] }
   | { type: 'sshProfiles/update'; profiles: SshProfile[] }
+  | { type: 'remoteBackendProfiles/update'; profiles: RemoteDaemonProfile[] }
+  | { type: 'activeRemote/update'; activeId: string | null }
   | { type: 'sessions/created'; session: SessionInfo }
   | { type: 'sessions/owner-changed'; sessionId: string; ownerWindowId: string | null }
   | { type: 'sessions/state-changed'; sessionId: string; changes: Partial<SessionInfo> }
@@ -187,6 +194,8 @@ function reducer(state: AppState, action: AppAction): AppState {
         sessions: sessionsMap,
         windows: s.windows,
         sshProfiles: s.sshProfiles,
+        remoteBackendProfiles: s.remoteBackendProfiles,
+        activeRemoteProfileId: s.activeRemoteProfileId,
         templates: s.templates,
         defaultTemplateId: s.defaultTemplateId,
         settings: s.settings,
@@ -222,6 +231,10 @@ function reducer(state: AppState, action: AppAction): AppState {
 
     case 'sshProfiles/update':
       return { ...state, sshProfiles: action.profiles };
+    case 'remoteBackendProfiles/update':
+      return { ...state, remoteBackendProfiles: action.profiles };
+    case 'activeRemote/update':
+      return { ...state, activeRemoteProfileId: action.activeId };
 
     case 'sessions/created': {
       const sessions = new Map(state.sessions);
@@ -461,6 +474,8 @@ export function makeDefaultState(myWindowId: string, myWindowNumber: number): Ap
     sessions: new Map(),
     bookmarks: [],
     sshProfiles: [],
+    remoteBackendProfiles: [],
+    activeRemoteProfileId: null,
     windows: [],
     templates: [],
     defaultTemplateId: 'shell',
@@ -599,6 +614,12 @@ export function useIpcSync(): { ready: boolean; error: string | null } {
           ),
           window.api.on<SshProfilesUpdatedPayload>(EVENT_CHANNELS.SSH_PROFILES_UPDATED, (p) =>
             dispatch({ type: 'sshProfiles/update', profiles: p.profiles }),
+          ),
+          window.api.on<{ profiles: RemoteDaemonProfile[] }>(EVENT_CHANNELS.REMOTE_PROFILES_UPDATED, (p) =>
+            dispatch({ type: 'remoteBackendProfiles/update', profiles: p.profiles }),
+          ),
+          window.api.on<{ activeId: string | null }>(EVENT_CHANNELS.REMOTE_ACTIVE_CHANGED, (p) =>
+            dispatch({ type: 'activeRemote/update', activeId: p.activeId }),
           ),
           window.api.on<SessionCreatedPayload>(EVENT_CHANNELS.SESSION_CREATED, (p) =>
             dispatch({ type: 'sessions/created', session: p.session }),

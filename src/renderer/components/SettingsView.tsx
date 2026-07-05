@@ -81,6 +81,7 @@ type CategoryId =
   | 'behavior'
   | 'data'
   | 'remote'
+  | 'remote-backend'
   | 'system-integration'
   | 'ai'
   | 'advanced'
@@ -101,6 +102,11 @@ const BASE_CATEGORIES: CategoryDef[] = [
   { id: 'shell', iconName: 'shell', titleKey: 'settings.category.shell' },
   { id: 'behavior', iconName: 'behavior', titleKey: 'settings.category.behavior' },
   { id: 'data', iconName: 'data', titleKey: 'settings.category.data' },
+  {
+    id: 'remote-backend',
+    iconName: 'server',
+    titleKey: 'settings.category.remoteBackend',
+  },
   {
     id: 'system-integration',
     iconName: 'systemIntegration',
@@ -243,6 +249,8 @@ function CategoryPanel({ categoryId, setError }: CategoryPanelProps): JSX.Elemen
       return <DataPanel setError={setError} />;
     case 'remote':
       return <RemotePanel setError={setError} />;
+    case 'remote-backend':
+      return <RemoteBackendPanel setError={setError} />;
     case 'system-integration':
       return <SystemIntegrationPanel setError={setError} />;
     case 'ai':
@@ -254,6 +262,224 @@ function CategoryPanel({ categoryId, setError }: CategoryPanelProps): JSX.Elemen
     default:
       return <></>;
   }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// 远程后端分类(ADR-014 / §14.9)—— 连另一台机器上的 Marina daemon
+// ──────────────────────────────────────────────────────────────────
+
+/**
+ * RemoteBackendPanel:管理 client 端 remote daemon profile(CRUD + 连接/断开)。
+ *
+ * profile 列表显示 displayName/host:port/配对状态/活跃标记。
+ * 表单:displayName/host/port/token(配对时填,编辑时不回填)。
+ * "连接" = setActiveProfile(id)(切远程模式);"切回本地" = setActiveProfile(null)。
+ *
+ * @勿重构:本面板与 RemotePanel(SSH)是两个独立功能,勿合并 UI。
+ */
+function RemoteBackendPanel({
+  setError,
+}: {
+  setError: (msg: string | null) => void;
+}): JSX.Element {
+  const { tx } = useTranslation();
+  const state = useAppState();
+  const [displayName, setDisplayName] = useState('');
+  const [host, setHost] = useState('');
+  const [port, setPort] = useState('12580');
+  const [token, setToken] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  const reset = (): void => {
+    setDisplayName('');
+    setHost('');
+    setPort('12580');
+    setToken('');
+    setEditingId(null);
+  };
+
+  const handleEdit = (id: string): void => {
+    const p = state.remoteBackendProfiles.find((x) => x.id === id);
+    if (!p) return;
+    setError(null);
+    setEditingId(id);
+    setDisplayName(p.displayName);
+    setHost(p.host);
+    setPort(String(p.port));
+    // token 不回填(安全;编辑时 token 留空 = 不改)
+    setToken('');
+  };
+
+  const handleSubmit = async (): Promise<void> => {
+    setError(null);
+    try {
+      const portNum = Number.parseInt(port, 10);
+      if (editingId) {
+        const partial: Record<string, unknown> = { displayName, host, port: portNum };
+        if (token) partial.token = token;
+        await window.api.invoke(COMMAND_CHANNELS.REMOTE_PROFILE_UPDATE, {
+          id: editingId,
+          partial,
+        });
+        reset();
+      } else {
+        await window.api.invoke(COMMAND_CHANNELS.REMOTE_PROFILE_ADD, {
+          displayName,
+          host,
+          port: portNum,
+          ...(token ? { token } : {}),
+        });
+        reset();
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleDelete = async (id: string): Promise<void> => {
+    setError(null);
+    try {
+      await window.api.invoke(COMMAND_CHANNELS.REMOTE_PROFILE_DELETE, { id });
+      if (editingId === id) reset();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleSetActive = async (id: string | null): Promise<void> => {
+    setError(null);
+    try {
+      await window.api.invoke(COMMAND_CHANNELS.REMOTE_PROFILE_SET_ACTIVE, { id });
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const activeProfile = state.remoteBackendProfiles.find(
+    (x) => x.id === state.activeRemoteProfileId,
+  );
+
+  return (
+    <section className="settings-panel" data-testid="settings-remote-backend-panel">
+      <h2 className="settings-panel-title">{tx('远程后端', 'Remote Backend')}</h2>
+
+      <SettingRow
+        label={tx('远程 Marina daemon', 'Remote Marina daemons')}
+        hint={tx(
+          '连接另一台机器上的 Marina daemon,在本机 UI 跑它的 shell/Path/设置。需 daemon 端先启动(--headless --daemon)并配对 token。',
+          'Connect to a Marina daemon on another machine and drive its shell/Path/settings from this UI. The daemon must be started (--headless --daemon) and paired via token.',
+        )}
+      >
+        <div className="ssh-profile-form">
+          {state.remoteBackendProfiles.length > 0 && (
+            <ul className="ssh-profile-list">
+              {state.remoteBackendProfiles.map((p) => (
+                <li key={p.id}>
+                  <span className="settings-info-text">
+                    {p.displayName} — {p.host}:{p.port}
+                    {p.hasToken
+                      ? tx(' · 已配对', ' · paired')
+                      : tx(' · 未配对', ' · unpaired')}
+                    {state.activeRemoteProfileId === p.id
+                      ? tx(' · 活跃中', ' · active')
+                      : ''}
+                    {editingId === p.id ? tx(' · 编辑中', ' · editing') : ''}
+                  </span>
+                  {state.activeRemoteProfileId === p.id ? (
+                    <button
+                      type="button"
+                      className="settings-button ssh-profile-button"
+                      onClick={() => void handleSetActive(null)}
+                    >
+                      {tx('切回本地', 'Use Local')}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="settings-button ssh-profile-button"
+                      onClick={() => void handleSetActive(p.id)}
+                      disabled={!p.hasToken}
+                    >
+                      {tx('连接', 'Connect')}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="settings-button ssh-profile-button"
+                    onClick={() => handleEdit(p.id)}
+                  >
+                    {tx('编辑', 'Edit')}
+                  </button>
+                  <button
+                    type="button"
+                    className="settings-button danger ssh-profile-button"
+                    onClick={() => void handleDelete(p.id)}
+                  >
+                    {tx('删除', 'Delete')}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="ssh-profile-fields">
+            <input
+              className="settings-input"
+              placeholder={tx('显示名(如:工作笔记本)', 'Display name')}
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+            />
+            <input
+              className="settings-input"
+              placeholder={tx('host(IP/hostname)', 'host (IP/hostname)')}
+              value={host}
+              onChange={(e) => setHost(e.target.value)}
+            />
+            <input
+              className="settings-input"
+              placeholder="port"
+              value={port}
+              onChange={(e) => setPort(e.target.value)}
+            />
+            <input
+              className="settings-input"
+              placeholder={tx('token(配对时填)', 'token (for pairing)')}
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+            />
+            <button
+              type="button"
+              className="settings-button"
+              onClick={() => void handleSubmit()}
+            >
+              {editingId ? tx('保存', 'Save') : tx('添加', 'Add')}
+            </button>
+            {editingId && (
+              <button type="button" className="settings-button" onClick={reset}>
+                {tx('取消', 'Cancel')}
+              </button>
+            )}
+          </div>
+        </div>
+      </SettingRow>
+
+      <SettingRow
+        label={tx('当前模式', 'Current mode')}
+        hint={tx(
+          '活跃 = 命令发往远程 daemon;本地 = 走本机后端(默认)。切换后窗口会重新初始化连接。',
+          'Active = commands go to the remote daemon; Local = use this machine backend (default). The window re-initializes the connection after switching.',
+        )}
+      >
+        <span className="settings-info-text">
+          {state.activeRemoteProfileId
+            ? tx(
+                `远程:${activeProfile?.displayName ?? '?'}`,
+                `Remote: ${activeProfile?.displayName ?? '?'}`,
+              )
+            : tx('本地', 'Local')}
+        </span>
+      </SettingRow>
+    </section>
+  );
 }
 
 // ──────────────────────────────────────────────────────────────────
