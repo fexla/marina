@@ -3,7 +3,7 @@
  * @purpose argv 解析器单测。
  */
 import { describe, expect, it } from 'vitest';
-import { parseOpenHere } from './argv-utils';
+import { parseOpenHere, parseHeadlessDaemon } from './argv-utils';
 
 describe('parseOpenHere', () => {
   it('找到 --open-here 后取下一个 token', () => {
@@ -77,5 +77,49 @@ describe('parseOpenHere', () => {
     expect(
       parseOpenHere(['exe', '--open-here', 'C:\\Users\\My Name\\Docs']),
     ).toBe('C:\\Users\\My Name\\Docs');
+  });
+});
+
+describe('parseHeadlessDaemon', () => {
+  it('无 daemon 相关 flag → null', () => {
+    expect(parseHeadlessDaemon(['exe', '--open-here', 'C:\\x'])).toBeNull();
+    expect(parseHeadlessDaemon(['exe'])).toBeNull();
+  });
+
+  it('--headless --daemon 完整形式 → daemon:true, headless:true, 默认端口', () => {
+    expect(parseHeadlessDaemon(['exe', '--headless', '--daemon'])).toEqual({
+      daemon: true,
+      headless: true,
+      port: 12580,
+    });
+  });
+
+  it('仅 --headless 也进入 daemon 模式(隐含)', () => {
+    expect(parseHeadlessDaemon(['exe', '--headless'])).toEqual({
+      daemon: true,
+      headless: true,
+      port: 12580,
+    });
+  });
+
+  it('仅 --daemon 但无 --headless → daemon:true, headless:false(可本地同时开窗)', () => {
+    expect(parseHeadlessDaemon(['exe', '--daemon'])).toEqual({
+      daemon: true,
+      headless: false,
+      port: 12580,
+    });
+  });
+
+  it('--port=N 覆盖默认端口', () => {
+    expect(parseHeadlessDaemon(['exe', '--daemon', '--port=9999'])).toEqual({
+      daemon: true,
+      headless: false,
+      port: 9999,
+    });
+  });
+
+  it('--port 非法值(负数/NaN)回退默认端口', () => {
+    expect(parseHeadlessDaemon(['exe', '--daemon', '--port=-1'])!.port).toBe(12580);
+    expect(parseHeadlessDaemon(['exe', '--daemon', '--port=abc'])!.port).toBe(12580);
   });
 });

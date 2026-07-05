@@ -73,3 +73,37 @@ export function parseSimpleMode(argv: readonly string[]): boolean {
   }
   return false;
 }
+
+/**
+ * 解析 v2.0 远程后端 daemon 启动参数(ADR-014 / 软件定义书 §14.9)。
+ *
+ * 触发:argv 出现 `--daemon` 或 `--headless` 任一即进入 daemon 模式
+ * (Marina.exe --headless --daemon 是完整形式;单独 --headless 也隐含 daemon,
+ * 方便记忆)。两者都出现是惯例写法。
+ *
+ * 端口:`--port=<N>` 覆盖默认 12580。
+ *
+ * @returns 非 daemon 启动返回 null;daemon 启动返回 { daemon, headless, port }
+ */
+export interface DaemonMode {
+  /** 是否进入 daemon 模式(--daemon 或 --headless 任一) */
+  daemon: boolean;
+  /** 是否无窗口(--headless;daemon 可选保留窗口用于本地同时使用) */
+  headless: boolean;
+  /** WS server 监听端口 */
+  port: number;
+}
+export function parseHeadlessDaemon(argv: readonly string[]): DaemonMode | null {
+  const daemon = argv.includes('--daemon');
+  const headless = argv.includes('--headless');
+  if (!daemon && !headless) return null;
+  let port = 12580;
+  for (const tok of argv) {
+    if (!tok) continue;
+    if (tok.startsWith('--port=')) {
+      const p = parseInt(tok.slice('--port='.length), 10);
+      if (!Number.isNaN(p) && p > 0 && p < 65536) port = p;
+    }
+  }
+  return { daemon: true, headless, port };
+}

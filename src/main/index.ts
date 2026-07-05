@@ -19,6 +19,7 @@
  */
 import { app, Menu, session as electronSession } from 'electron';
 import { existsSync, statSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { WindowManager } from './window-manager';
 import { TrayManager } from './tray';
@@ -29,14 +30,16 @@ import { KnownHostsManager, type KnownHostsHistoryFile } from './known-hosts-man
 import { SettingsManager, DEFAULT_SETTINGS } from './settings-manager';
 import { TemplatesManager } from './templates-manager';
 import { JsonStore } from './persistence';
-import { installIpcLayer } from './ipc';
+import { installIpcLayer, dispatchCommand } from './ipc';
 import { ClientRegistry } from './client-registry';
+import { RemoteDaemon } from './remote-daemon';
+import { WsServer } from './transport-ws';
 import { FilePanelService } from './file-panel-service';
 import { MarkdownThemeManager } from './markdown-theme-manager';
 import { getPlatformAdapter } from './platform';
 import { AIClient } from './ai-client';
 import { WindowsAdapter } from './platform/windows';
-import { parseOpenHere, parseSimpleMode } from './argv-utils';
+import { parseOpenHere, parseSimpleMode, parseHeadlessDaemon } from './argv-utils';
 import { getBuildType } from './build-type';
 import { logger } from './logger';
 import type {
@@ -524,6 +527,35 @@ function bootstrap(): void {
         });
       }
 
+      // v2.0 远程后端:--headless --daemon 模式启动 WS server(ADR-014 / §14.9)。
+      // daemon 提供完整后端(SessionManager/PathManager/...),只是传输层多一个 WS,
+      // 所以 managers 初始化 + installIpcLayer 照常,这里只是加挂 WS server。
+      // token 阶段1 临时生成 + 打日志(loopback 自测可见);safeStorage 持久化 +
+      // 配对 UI 留阶段2(软件定义书 §14.9.4)。
+      const daemonMode = parseHeadlessDaemon(process.argv);
+      if (daemonMode?.daemon) {
+        const wsServer = new WsServer();
+        const daemonToken = randomUUID();
+        const remoteDaemon = new RemoteDaemon({
+          wsServer,
+          registry: clientRegistry,
+          sessionManager,
+          token: daemonToken,
+          dispatch: dispatchCommand,
+          onClientAuthenticated: (cid) =>
+            logger.info('remote-daemon', `client authenticated: ${cid}`),
+          onClientGone: (cid) => logger.info('remote-daemon', `client gone: ${cid}`),
+        });
+        remoteDaemon.install();
+        try {
+          const actualPort = await wsServer.start(daemonMode.port);
+          logger.info('remote-daemon', `WS server listening on port ${actualPort}`);
+          logger.info('remote-daemon', `auth token (loopback dev): ${daemonToken}`);
+        } catch (err) {
+          logger.error('remote-daemon', 'WS server start failed', err);
+        }
+      }
+
       // 启动行为:--open-here 优先级最高 (Explorer 右键触发的冷启动 — 用户意图明确)。
       // 其次看 settings.behavior.startupBehavior:tray-only 不开窗,其他开窗。
       let startupOpenHere = parseOpenHere(process.argv);
@@ -554,9 +586,10 @@ function bootstrap(): void {
         argv: process.argv,
       });
       const wantWindow =
-        startupOpenHere !== null ||
-        settingsManager.get().behavior.startupBehavior !== 'tray-only' ||
-        smokeInteractive;
+        !daemonMode?.headless &&
+        (startupOpenHere !== null ||
+          settingsManager.get().behavior.startupBehavior !== 'tray-only' ||
+          smokeInteractive);
       if (wantWindow) {
         const win = windowManager.createWindowFromFactory({
           simpleMode: startupSimpleMode,
