@@ -821,10 +821,10 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       if (!remoteProfileManager) {
         throw makeIpcError('RemoteProfileUnavailable', 'remote profile manager 未初始化');
       }
-      const { token, ...rest } = envelope.payload;
+      const { password, ...rest } = envelope.payload;
       const input: Omit<RemoteDaemonProfile, 'id' | 'addedAt'> = { ...rest };
-      if (typeof token === 'string' && token.length > 0) {
-        input.tokenEncrypted = encryptPasswordOrThrow(token);
+      if (typeof password === 'string' && password.length > 0) {
+        input.tokenEncrypted = encryptPasswordOrThrow(password);
       }
       return { profile: remoteProfileManager.add(input) };
     },
@@ -836,11 +836,11 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       if (!remoteProfileManager) {
         throw makeIpcError('RemoteProfileUnavailable', 'remote profile manager 未初始化');
       }
-      const { token, ...partialRest } = envelope.payload.partial;
+      const { password, ...partialRest } = envelope.payload.partial;
       const partial: typeof partialRest & { tokenEncrypted?: string } = { ...partialRest };
-      if (typeof token === 'string') {
-        // '' 清除已配对 token;非空加密落盘(同 SSH password 语义)
-        partial.tokenEncrypted = token.length > 0 ? encryptPasswordOrThrow(token) : '';
+      if (typeof password === 'string') {
+        // '' 清除已配对密码;非空加密落盘(同 SSH password 语义)
+        partial.tokenEncrypted = password.length > 0 ? encryptPasswordOrThrow(password) : '';
       }
       return { profile: remoteProfileManager.update(envelope.payload.id, partial) };
     },
@@ -875,7 +875,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       if (!token) return { connection: null };
       return {
         connection: {
-          url: `ws://${internal.host}:${internal.port}`,
+          host: internal.host,
           token,
           profileId: internal.id,
           displayName: internal.displayName,

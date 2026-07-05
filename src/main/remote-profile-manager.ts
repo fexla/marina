@@ -139,20 +139,13 @@ function toPublic(p: RemoteDaemonProfile): RemoteDaemonProfile {
 function validateProfile(input: RemoteDaemonProfile): RemoteDaemonProfile {
   const displayName = input.displayName.trim();
   const host = input.host.trim();
-  const port = Math.trunc(input.port);
   if (!displayName || displayName.length > 100) {
     throw new RemoteProfileManagerError('InvalidRemoteProfile', 'displayName 必须为 1-100 字符');
   }
   if (!host || host.length > 255 || /[\s]/.test(host)) {
     throw new RemoteProfileManagerError('InvalidRemoteProfile', 'host 非法(不能含空白)');
   }
-  if (!Number.isFinite(port) || port < 1 || port > 65535) {
-    throw new RemoteProfileManagerError('InvalidRemoteProfile', 'port 必须在 1-65535');
-  }
-  return {
-    ...input,
-    displayName,
-    host,
-    port,
-  };
+  // port 已废(client 只需 host,连接时扫描 12580 起一段)。旧持久化数据可能含 port,
+  // 类型层面已删,运行时多余字段无害(下次 normalize 随 spread 带走,不读)。
+  return { ...input, displayName, host };
 }

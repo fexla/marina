@@ -192,7 +192,7 @@ export const COMMAND_CHANNELS = {
   REMOTE_PROFILE_ADD: 'cmd:remote-profile:add',
   REMOTE_PROFILE_UPDATE: 'cmd:remote-profile:update',
   REMOTE_PROFILE_DELETE: 'cmd:remote-profile:delete',
-  /** preload 启动时拉某 profile 的连接信息(url + 解密后 token);null=无此 profile/无 token */
+  /** preload 启动时拉某 profile 的连接信息(host + 解密后密码);null=无此 profile/未配对 */
   REMOTE_PROFILE_GET_CONNECTION: 'cmd:remote-profile:get-connection',
 } as const;
 
@@ -580,9 +580,8 @@ export interface ListSshProfilesResponse {
 export interface AddRemoteProfilePayload {
   displayName: string;
   host: string;
-  port: number;
-  /** 明文 token;main 用 safeStorage 加密落盘(同 SSH password 模式)。 */
-  token?: string;
+  /** 明文配对密码;main 用 safeStorage 加密落盘(同 SSH password 模式)。 */
+  password?: string;
   /** 阶段2b TLS:证书指纹(首次确认后存)。 */
   certFingerprint?: string;
 }
@@ -614,13 +613,13 @@ export interface UpdateRemoteProfileResponse {
 }
 
 /**
- * preload 启动时按 profileId 拉连接信息。null = 无此 profile / 未配对(无 token)。
- * 有值 = preload 据此建 RemoteTransport 连 ws://host:port。
- * token 是 main 解密后的明文(仅在本机内存中传给 preload,不出本机)。
+ * preload 启动时按 profileId 拉连接信息。null = 无此 profile / 未配对(无密码)。
+ * 有值 = preload 据此扫描 host 的端口(12580 起)连 Marina daemon。
+ * token 是 main 解密后的明文配对密码(仅在本机内存中传给 preload,不出本机)。
  */
 export interface GetRemoteConnectionResponse {
   connection: {
-    url: string;
+    host: string;
     token: string;
     profileId: string;
     displayName: string;

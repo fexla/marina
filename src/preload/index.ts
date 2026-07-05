@@ -111,9 +111,42 @@ function ensureTransport(): Promise<void> {
         } as CommandEnvelope<GetRemoteConnectionPayload>,
       )) as GetRemoteConnectionResponse;
       if (res?.connection) {
+        const { host, token } = res.connection;
+        // 端口扫描:从 12580 起,串行尝试 12580-12589。端口关闭 TCP RST 快速失败,
+        // 遇开放的错误端口才等握手超时(1.5s)。找到第一个握手通过的端口。
+        // 设计动机(用户需求):client 只需 IP,不用输端口。daemon 默认 12580,
+        // 扫描一小段兑底 daemon 端口被占改用别的。
+        const PORT_FROM = 12580;
+        const PORT_COUNT = 10;
+        let portFound: number | null = null;
+        for (let i = 0; i < PORT_COUNT; i++) {
+          const port = PORT_FROM + i;
+          const probe = new RemoteTransport({
+            url: `ws://${host}:${port}`,
+            token,
+            wsFactory: browserWs,
+            authTimeoutMs: 1500,
+            autoReconnect: false,
+          });
+          try {
+            await probe.ready;
+            probe.close();
+            portFound = port;
+            break;
+          } catch {
+            probe.close();
+            // 该端口不是本 daemon(关闭/非 Marina/密码错)→ 试下一个
+          }
+        }
+        if (portFound === null) {
+          throw new Error(
+            `[preload] 在 ${host} 的 ${PORT_FROM}-${PORT_FROM + PORT_COUNT - 1} 范围内未找到 Marina daemon(或密码错误)`,
+          );
+        }
+        // 重建带重连回调的 transport 连找到的端口(扫描用的 probe 已 close)
         const t = new RemoteTransport({
-          url: res.connection.url,
-          token: res.connection.token,
+          url: `ws://${host}:${portFound}`,
+          token,
           wsFactory: browserWs,
           // 阶段3 断线重连:成功后 reload 重新拉 snapshot(session owner 在断线时
           // 被 daemon 自动 release,重连后要重建视图)。reload 丢 renderer 状态可接受

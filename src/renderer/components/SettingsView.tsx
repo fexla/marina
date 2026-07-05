@@ -287,15 +287,13 @@ function RemoteBackendPanel({
   const state = useAppState();
   const [displayName, setDisplayName] = useState('');
   const [host, setHost] = useState('');
-  const [port, setPort] = useState('12580');
-  const [token, setToken] = useState('');
+  const [password, setPassword] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const reset = (): void => {
     setDisplayName('');
     setHost('');
-    setPort('12580');
-    setToken('');
+    setPassword('');
     setEditingId(null);
   };
 
@@ -306,18 +304,16 @@ function RemoteBackendPanel({
     setEditingId(id);
     setDisplayName(p.displayName);
     setHost(p.host);
-    setPort(String(p.port));
-    // token 不回填(安全;编辑时 token 留空 = 不改)
-    setToken('');
+    // 密码不回填(安全;编辑时留空 = 不改)
+    setPassword('');
   };
 
   const handleSubmit = async (): Promise<void> => {
     setError(null);
     try {
-      const portNum = Number.parseInt(port, 10);
       if (editingId) {
-        const partial: Record<string, unknown> = { displayName, host, port: portNum };
-        if (token) partial.token = token;
+        const partial: Record<string, unknown> = { displayName, host };
+        if (password) partial.password = password;
         await window.api.invoke(COMMAND_CHANNELS.REMOTE_PROFILE_UPDATE, {
           id: editingId,
           partial,
@@ -327,8 +323,7 @@ function RemoteBackendPanel({
         await window.api.invoke(COMMAND_CHANNELS.REMOTE_PROFILE_ADD, {
           displayName,
           host,
-          port: portNum,
-          ...(token ? { token } : {}),
+          ...(password ? { password } : {}),
         });
         reset();
       }
@@ -365,8 +360,8 @@ function RemoteBackendPanel({
       <SettingRow
         label={tx('远程 Marina daemon', 'Remote Marina daemons')}
         hint={tx(
-          '连接另一台机器上的 Marina daemon,在本机 UI 跑它的 shell/Path/设置。需 daemon 端先启动(--headless --daemon)并配对 token。',
-          'Connect to a Marina daemon on another machine and drive its shell/Path/settings from this UI. The daemon must be started (--headless --daemon) and paired via token.',
+          '连接另一台机器上的 Marina daemon,在本机 UI 跑它的 shell/Path/设置。只需 daemon 的 IP + 配对密码(daemon 端先启动 --headless --daemon,端口默认 12580 自动扫描)。',
+          'Connect to a Marina daemon on another machine and drive its shell/Path/settings from this UI. Only the daemon IP + pairing password needed (daemon starts with --headless --daemon, port 12580 default, auto-scanned).',
         )}
       >
         <div className="ssh-profile-form">
@@ -375,7 +370,7 @@ function RemoteBackendPanel({
               {state.remoteBackendProfiles.map((p) => (
                 <li key={p.id}>
                   <span className="settings-info-text">
-                    {p.displayName} — {p.host}:{p.port}
+                    {p.displayName} — {p.host}
                     {p.hasToken
                       ? tx(' · 已配对', ' · paired')
                       : tx(' · 未配对', ' · unpaired')}
@@ -416,21 +411,15 @@ function RemoteBackendPanel({
             />
             <input
               className="settings-input"
-              placeholder={tx('host(IP/hostname)', 'host (IP/hostname)')}
+              placeholder={tx('host(IP/域名)', 'host (IP/domain)')}
               value={host}
               onChange={(e) => setHost(e.target.value)}
             />
             <input
               className="settings-input"
-              placeholder="port"
-              value={port}
-              onChange={(e) => setPort(e.target.value)}
-            />
-            <input
-              className="settings-input"
-              placeholder={tx('token(配对时填)', 'token (for pairing)')}
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
+              placeholder={tx('密码(配对时填)', 'password (for pairing)')}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
             />
             <button
               type="button"

@@ -566,27 +566,28 @@ function bootstrap(): void {
           onClientGone: (cid) => logger.info('remote-daemon', `client gone: ${cid}`),
         });
         remoteDaemon.install();
-        // 托盘菜单加"复制 daemon 配对 token"项(供 client 端用户拿 token 配对)。
-        // daemon 模式下 token 稳定(持久化),托盘随时可复制。
+        // 托盘菜单加"复制 daemon 配对密码"项(供 client 端用户拿密码配对)。
+        // daemon 模式下密码稳定(持久化),托盘随时可复制。端口也展示(client 连接需知)。
         trayManager.setDaemonToken(creds.token);
-        // BLOCKER 修复(review #2):重置 token 入口。托盘菜单"重置"项调此 handler。
-        // resetDaemonCredentials 生成新 token 落盘 + remoteDaemon.resetToken hot-swap
-        // 运行时校验 + 踢所有已连 client(强制重连用新 token)= 完整吊销。
+        trayManager.setDaemonPort(daemonMode.port);
+        // BLOCKER 修复(review #2):重置密码入口。托盘菜单"重置"项调此 handler。
+        // resetDaemonCredentials 生成新密码落盘 + remoteDaemon.resetToken hot-swap
+        // 运行时校验 + 踢所有已连 client(强制重连用新密码)= 完整吊销。
         trayManager.setResetDaemonTokenHandler(async () => {
           const newCreds = await resetDaemonCredentials(app.getPath('userData'), safeStorage);
           remoteDaemon.resetToken(newCreds.token);
           trayManager.setDaemonToken(newCreds.token);
           logger.warn(
             'remote-daemon',
-            `token reset & applied; all connected clients revoked (must re-pair)`,
+            `password reset & applied; all connected clients revoked (must re-pair)`,
           );
         });
         try {
           const actualPort = await wsServer.start(daemonMode.port);
           logger.info('remote-daemon', `WS server listening on port ${actualPort}`);
           if (creds.isNew) {
-            // 仅首次生成时打 token(供用户配对);后续启动不打,避免日志反复泄露
-            logger.info('remote-daemon', `auth token (new, for pairing): ${creds.token}`);
+            // 仅首次生成时打密码(供用户配对);后续启动不打,避免日志反复泄露
+            logger.info('remote-daemon', `auth password (new, for pairing): ${creds.token}`);
             if (creds.storedPlaintext) {
               logger.warn(
                 'remote-daemon',

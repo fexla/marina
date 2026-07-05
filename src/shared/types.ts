@@ -642,18 +642,16 @@ export interface RemoteDaemonProfile {
   id: string;
   /** 用户起的名字,如 "工作笔记本" */
   displayName: string;
-  /** daemon 地址(IP / hostname / tailnet 名) */
+  /** daemon 地址(IP / hostname / tailnet 名 / 域名)。client 只需这个,端口自动扫描。 */
   host: string;
-  /** daemon WS 端口,默认 12580 */
-  port: number;
-  /** safeStorage 加密的 token(base64);仅 main 内部 */
+  /** safeStorage 加密的配对密码(base64);仅 main 内部 */
   tokenEncrypted?: string;
-  /** renderer 副本:是否已配对(存了 token) */
+  /** renderer 副本:是否已配对(存了密码) */
   hasToken?: boolean;
   /**
    * 阶段2b TLS:daemon 自签证书指纹(SHA256)。
    * 首次连接用户确认后存,后续连接比对,变化强警告(对齐 §14.3 known_hosts)。
-   * 阶段2 纯 token 认证时此字段不填。
+   * 阶段2 纯密码认证时此字段不填。
    */
   certFingerprint?: string;
   /** 上次成功连接时间戳(ms);用于 UI 排序 + 展示 */
