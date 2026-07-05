@@ -1,7 +1,7 @@
 /**
  * @file src/main/remote-profile-manager.test.ts
- * @purpose RemoteProfileManager 单测:CRUD / active 切换 / tokenEncrypted 剥离 /
- *   校验 / 事件触发。用内存 fake JsonStore,不碰磁盘。
+ * @purpose RemoteProfileManager 单测:CRUD / tokenEncrypted 剥离 / 校验 / 持久化 / 事件。
+ *   用内存 fake JsonStore,不碰磁盘。(每窗口后端模型已删全局 active,无 active 测试。)
  */
 import { describe, it, expect, vi } from 'vitest';
 import { RemoteProfileManager, RemoteProfileManagerError } from './remote-profile-manager';
@@ -88,53 +88,17 @@ describe('RemoteProfileManager CRUD', () => {
     expect(() => mgr.update('nope', { displayName: 'x' })).toThrow(/RemoteProfileNotFound/);
   });
 
-  it('delete:移除;若删的是 active,active 清空', async () => {
+  it('delete:移除 profile', async () => {
     const { mgr } = await makeManager();
     const p = mgr.add(baseInput());
-    mgr.setActiveProfile(p.id);
     mgr.delete(p.id);
     expect(mgr.list()).toHaveLength(0);
-    expect(mgr.getActiveProfileId()).toBeUndefined();
+    expect(mgr.get(p.id)).toBeNull();
   });
 
   it('delete 不存在的 id → RemoteProfileNotFound', async () => {
     const { mgr } = await makeManager();
     expect(() => mgr.delete('nope')).toThrow(/RemoteProfileNotFound/);
-  });
-});
-
-describe('RemoteProfileManager active', () => {
-  it('初始 active = undefined(本地模式)', async () => {
-    const { mgr } = await makeManager();
-    expect(mgr.getActiveProfileId()).toBeUndefined();
-  });
-
-  it('setActive 设 id;切回 undefined = 本地模式', async () => {
-    const { mgr } = await makeManager();
-    const p = mgr.add(baseInput());
-    mgr.setActiveProfile(p.id);
-    expect(mgr.getActiveProfileId()).toBe(p.id);
-    mgr.setActiveProfile(undefined);
-    expect(mgr.getActiveProfileId()).toBeUndefined();
-  });
-
-  it('setActive 不存在的 id → RemoteProfileNotFound', async () => {
-    const { mgr } = await makeManager();
-    expect(() => mgr.setActiveProfile('nope')).toThrow(/RemoteProfileNotFound/);
-  });
-
-  it('activeProfileId 从磁盘加载(持久化)', async () => {
-    const store = makeFakeStore({
-      version: 1,
-      activeProfileId: 'persisted-id',
-      profiles: [
-        { id: 'persisted-id', displayName: 'X', host: 'h', port: 1, addedAt: 1 },
-      ],
-    });
-    const mgr = new RemoteProfileManager(store);
-    await mgr.initialize();
-    expect(mgr.getActiveProfileId()).toBe('persisted-id');
-    expect(mgr.list()).toHaveLength(1);
   });
 });
 
@@ -157,15 +121,13 @@ describe('RemoteProfileManager 校验', () => {
 });
 
 describe('RemoteProfileManager 持久化 + 事件', () => {
-  it('add/update/delete/setActive 都触发 persist(set 调用)', async () => {
+  it('add/update/delete 都触发 persist(set 调用)', async () => {
     const { mgr, store } = await makeManager();
     expect(store.captured).toHaveLength(0);
     const p = mgr.add(baseInput());
     mgr.update(p.id, { displayName: 'Y' });
-    mgr.setActiveProfile(p.id);
     mgr.delete(p.id);
-    // add/update/setActive/delete 各一次 set
-    expect(store.captured.length).toBeGreaterThanOrEqual(4);
+    expect(store.captured.length).toBeGreaterThanOrEqual(3);
   });
 
   it('每次操作触发 changed 事件', async () => {
@@ -174,17 +136,29 @@ describe('RemoteProfileManager 持久化 + 事件', () => {
     mgr.on('changed', handler);
     const p = mgr.add(baseInput());
     mgr.update(p.id, { displayName: 'Z' });
-    mgr.setActiveProfile(p.id);
     mgr.delete(p.id);
-    expect(handler).toHaveBeenCalledTimes(4);
+    expect(handler).toHaveBeenCalledTimes(3);
   });
 
-  it('persist 写入的文件含 activeProfileId', async () => {
+  it('persist 写入的文件不含 activeProfileId(已废)', async () => {
     const { mgr, store } = await makeManager();
-    const p = mgr.add(baseInput());
-    mgr.setActiveProfile(p.id);
+    mgr.add(baseInput());
     const last = store.captured[store.captured.length - 1]!;
-    expect(last.activeProfileId).toBe(p.id);
+    expect(last.activeProfileId).toBeUndefined();
     expect(last.version).toBe(1);
+    expect(last.profiles).toHaveLength(1);
+  });
+
+  it('兼容:旧文件含 activeProfileId 时 initialize 忽略它(不报错)', async () => {
+    const store = makeFakeStore({
+      version: 1,
+      activeProfileId: 'legacy-id',
+      profiles: [
+        { id: 'persisted-id', displayName: 'X', host: 'h', port: 1, addedAt: 1 },
+      ],
+    } as unknown as RemoteDaemonProfilesFile);
+    const mgr = new RemoteProfileManager(store);
+    await expect(mgr.initialize()).resolves.toBe('main');
+    expect(mgr.list()).toHaveLength(1);
   });
 });

@@ -170,6 +170,12 @@ export interface WindowInfo {
   number: number;
   /** Electron BrowserWindow 的内部 ID,Main 用它定位 webContents */
   electronWindowId: number;
+  /**
+   * v2.0 远程后端(§14.9,每窗口后端模型):该窗口连的后端 profile id。
+   * null = 本地 main 后端;非空 = 连该 id 的远程 daemon。
+   * 窗口创建时定死,生命周期内不变(切换后端 = 开新窗口)。
+   */
+  backendProfileId: string | null;
 }
 
 /**
@@ -657,8 +663,6 @@ export interface RemoteDaemonProfile {
 
 export interface RemoteDaemonProfilesFile {
   version: 1;
-  /** 当前活跃 profile id(连这个 daemon);undefined = 本地模式 */
-  activeProfileId?: string;
   profiles: RemoteDaemonProfile[];
 }
 
@@ -699,8 +703,6 @@ export interface AppSnapshot {
   sshProfiles: SshProfile[];
   /** v2.0 远程后端(§14.9):client 端 remote daemon profile 列表(public 副本)。 */
   remoteBackendProfiles: RemoteDaemonProfile[];
-  /** 当前活跃 remote profile id;null = 本地模式。 */
-  activeRemoteProfileId: string | null;
   templates: Template[];
   defaultTemplateId: string;
   settings: Settings;

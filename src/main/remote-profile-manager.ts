@@ -7,15 +7,16 @@
  * - token **不在本模块加密**:add/update 接收已加密的 tokenEncrypted(由 ipc 层
  *   用 encryptPasswordOrThrow 加密),本模块只存。读取给 renderer 时剥去 tokenEncrypted,
  *   加 hasToken 标志(对齐 SSH password 模式)。
- * - activeProfileId 存文件顶层(setActive/getActive),表示"当前连哪个 daemon"。
- *   undefined = 本地模式(不连任何远程 daemon,行为 = 今天)。
+ * - **无全局 active**:每窗口独立连后端(WindowInfo.backendProfileId),后端选择
+ *   是窗口属性不是全局状态(软件定义书原则4)。本模块只管 profile 列表 CRUD。
  *
- * @对应文档:软件定义书 §14.9.4 / ADR-014;types.ts RemoteDaemonProfile
+ * @对应文档:软件定义书 §14.9.4 / ADR-014 / 阶段2 架构修正(每窗口后端)
  *
  * @不要在这里做的事:
  * - 不要加密 token(ipc 层做,同 SSH password)
  * - 不要建立 WS 连接(preload/RemoteTransport 做)
  * - 不要管 daemon 端凭据(daemon-credentials.ts)
+ * - 不要管"当前连哪个"(那是 WindowManager 的窗口属性)
  */
 
 import { EventEmitter } from 'node:events';
@@ -42,12 +43,11 @@ export class RemoteProfileManagerError extends Error {
 }
 
 /**
- * 管理 client 端的远程 daemon profile 列表。
- * 事件:'changed'(增删改 active 变化时触发,renderer 刷新)。
+ * 管理 client 端的远程 daemon profile 列表(纯 CRUD)。
+ * 事件:'changed'(增删改时触发,renderer 刷新 profile 列表)。
  */
 export class RemoteProfileManager extends EventEmitter {
   private profiles: RemoteDaemonProfile[] = [];
-  private activeProfileId: string | undefined;
 
   constructor(private readonly store: JsonStore<RemoteDaemonProfilesFile>) {
     super();
@@ -57,7 +57,7 @@ export class RemoteProfileManager extends EventEmitter {
     const loaded = await this.store.load(DEFAULT_FILE);
     const file = loaded.value;
     this.profiles = Array.isArray(file.profiles) ? file.profiles : [];
-    this.activeProfileId = file.activeProfileId;
+    // 兼容:旧版本文件可能含 activeProfileId(全局 active 已废),忽略它。
     return loaded.source;
   }
 
@@ -70,7 +70,7 @@ export class RemoteProfileManager extends EventEmitter {
     return this.profiles.map((p) => toPublic(p));
   }
 
-  /** main 内部用:返回含 tokenEncrypted 的完整 profile。 */
+  /** main 内部用:返回含 tokenEncrypted 的完整 profile(ipc GET_CONNECTION 解密 token 用)。 */
   getInternal(id: string): RemoteDaemonProfile | null {
     const f = this.profiles.find((p) => p.id === id);
     return f ? { ...f } : null;
@@ -117,37 +117,15 @@ export class RemoteProfileManager extends EventEmitter {
       throw new RemoteProfileManagerError('RemoteProfileNotFound', `id="${id}"`);
     }
     this.profiles.splice(idx, 1);
-    if (this.activeProfileId === id) {
-      this.activeProfileId = undefined;
-    }
-    this.persist();
-    this.emit('changed');
-  }
-
-  /** 当前活跃 profile(连这个 daemon);undefined = 本地模式。 */
-  getActiveProfileId(): string | undefined {
-    return this.activeProfileId;
-  }
-
-  /** 设活跃 profile(触发连接);id 必须存在。undefined 切回本地模式。 */
-  setActiveProfile(id: string | undefined): void {
-    if (id !== undefined && !this.profiles.some((p) => p.id === id)) {
-      throw new RemoteProfileManagerError('RemoteProfileNotFound', `id="${id}"`);
-    }
-    this.activeProfileId = id;
     this.persist();
     this.emit('changed');
   }
 
   private persist(): void {
-    const file: RemoteDaemonProfilesFile = {
+    this.store.set({
       version: 1,
       profiles: this.profiles.map((p) => ({ ...p })),
-    };
-    if (this.activeProfileId !== undefined) {
-      file.activeProfileId = this.activeProfileId;
-    }
-    this.store.set(file);
+    });
   }
 }
 

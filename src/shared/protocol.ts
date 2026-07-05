@@ -192,10 +192,8 @@ export const COMMAND_CHANNELS = {
   REMOTE_PROFILE_ADD: 'cmd:remote-profile:add',
   REMOTE_PROFILE_UPDATE: 'cmd:remote-profile:update',
   REMOTE_PROFILE_DELETE: 'cmd:remote-profile:delete',
-  /** 设活跃 profile(切远程/本地模式);payload.id=null 切回本地 */
-  REMOTE_PROFILE_SET_ACTIVE: 'cmd:remote-profile:set-active',
-  /** preload 启动时拉活跃 profile 的连接信息(url + 解密后的 token);null=本地 */
-  REMOTE_PROFILE_GET_ACTIVE_CONNECTION: 'cmd:remote-profile:get-active-connection',
+  /** preload 启动时拉某 profile 的连接信息(url + 解密后 token);null=无此 profile/无 token */
+  REMOTE_PROFILE_GET_CONNECTION: 'cmd:remote-profile:get-connection',
 } as const;
 
 export type CommandChannel = (typeof COMMAND_CHANNELS)[keyof typeof COMMAND_CHANNELS];
@@ -225,8 +223,6 @@ export const EVENT_CHANNELS = {
   BOOKMARKS_UPDATED: 'evt:bookmarks:updated',
   SSH_PROFILES_UPDATED: 'evt:ssh-profiles:updated',
   REMOTE_PROFILES_UPDATED: 'evt:remote-profiles:updated',
-  /** 活跃 profile 变化(切远程/本地)→ 所有窗口重新初始化 transport */
-  REMOTE_ACTIVE_CHANGED: 'evt:remote-active:changed',
   SETTINGS_CHANGED: 'evt:settings:changed',
   TEMPLATES_UPDATED: 'evt:templates:updated',
 
@@ -310,6 +306,11 @@ export interface QuitResponse {
 export interface CreateWindowPayload {
   /** 可选:新窗口启动时聚焦的 sessionId (CP-3 加入,CP-2 忽略) */
   selectSessionId?: string;
+  /**
+   * v2.0 远程后端(每窗口后端):新窗口连的后端 profile id。
+   * undefined/null = 本地 main 后端;非空 = 连该远程 daemon。
+   */
+  backendProfileId?: string;
 }
 
 export interface CreateWindowResponse {
@@ -595,9 +596,9 @@ export interface DeleteRemoteProfilePayload {
   id: string;
 }
 
-/** id=null 切回本地模式;id=某 profileId 切到该远程 daemon。 */
-export interface SetActiveRemoteProfilePayload {
-  id: string | null;
+/** 请求某 profile 的连接信息(preload 建 RemoteTransport 用)。 */
+export interface GetRemoteConnectionPayload {
+  profileId: string;
 }
 
 export interface ListRemoteProfilesResponse {
@@ -613,11 +614,11 @@ export interface UpdateRemoteProfileResponse {
 }
 
 /**
- * preload 启动时拉活跃连接信息。null = 本地模式(走 ipcRenderer);
- * 有值 = 远程模式,preload 据此建 RemoteTransport 连 ws://host:port。
+ * preload 启动时按 profileId 拉连接信息。null = 无此 profile / 未配对(无 token)。
+ * 有值 = preload 据此建 RemoteTransport 连 ws://host:port。
  * token 是 main 解密后的明文(仅在本机内存中传给 preload,不出本机)。
  */
-export interface GetActiveRemoteConnectionResponse {
+export interface GetRemoteConnectionResponse {
   connection: {
     url: string;
     token: string;
