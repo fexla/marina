@@ -563,6 +563,9 @@ function bootstrap(): void {
           onClientGone: (cid) => logger.info('remote-daemon', `client gone: ${cid}`),
         });
         remoteDaemon.install();
+        // 托盘菜单加"复制 daemon 配对 token"项(供 client 端用户拿 token 配对)。
+        // daemon 模式下 token 稳定(持久化),托盘随时可复制。
+        trayManager.setDaemonToken(creds.token);
         try {
           const actualPort = await wsServer.start(daemonMode.port);
           logger.info('remote-daemon', `WS server listening on port ${actualPort}`);

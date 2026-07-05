@@ -25,6 +25,7 @@
  */
 import {
   app,
+  clipboard,
   dialog,
   Menu,
   nativeImage,
@@ -123,12 +124,23 @@ export class TrayManager {
   /** M1-H:状态变化节流,避免高频抖动 */
   private rebuildTimer: NodeJS.Timeout | null = null;
   private currentIconVariant: 'default' | 'active' = 'default';
+  /** v2.0 远程后端(§14.9):daemon 模式下的配对 token,供托盘菜单"复制 daemon token"。null = 非 daemon 模式 / 未设置。 */
+  private daemonToken: string | null = null;
 
   constructor(
     private readonly windowManager: WindowManager,
     private readonly sessionManager?: SessionManager,
     private readonly settingsManager?: SettingsManager,
   ) {}
+
+  /**
+   * 设置 daemon 配对 token(供托盘菜单展示/复制)。
+   * index.ts 在 --headless --daemon 模式启动拿到 token 后调。
+   */
+  setDaemonToken(token: string | null): void {
+    this.daemonToken = token;
+    this.rebuildContextMenu();
+  }
 
   /**
    * 初始化托盘。必须在 app.whenReady() 之后调用。
@@ -290,6 +302,17 @@ export class TrayManager {
       label: '设置…',
       click: () => this.openSettings(),
     });
+
+    // v2.0 远程后端:daemon 模式下展示配对 token(供 client 端用户抄过去配对)
+    if (this.daemonToken) {
+      items.push({
+        label: '复制 daemon 配对 token',
+        click: () => {
+          clipboard.writeText(this.daemonToken ?? '');
+          logger.info('TrayManager', 'daemon pairing token copied to clipboard');
+        },
+      });
+    }
 
     items.push({ type: 'separator' });
 
