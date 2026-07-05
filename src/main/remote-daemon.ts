@@ -141,6 +141,17 @@ export class RemoteDaemon {
 
   private registerAuthenticated(transport: ClientTransport): void {
     this.deps.registry.add(transport);
+    // 告知 client 其 clientId(握手确认 + client 据此判断 session 归属)。
+    // 用特殊 event channel __auth-ok__;client RemoteTransport 等 it 拿到 clientId 后才算连接就绪。
+    this.deps.wsServer.sendFrame(transport.clientId, {
+      type: 'event',
+      channel: '__auth-ok__',
+      envelope: {
+        eventId: 'auth-ok-' + transport.clientId,
+        timestamp: Date.now(),
+        payload: { clientId: transport.clientId },
+      },
+    });
     this.deps.onClientAuthenticated?.(transport.clientId);
   }
 

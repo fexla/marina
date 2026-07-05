@@ -28,7 +28,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     globals: false,
-    include: ['src/main/**/*.{test,spec}.ts', 'src/shared/**/*.{test,spec}.ts'],
+    include: ['src/main/**/*.{test,spec}.ts', 'src/shared/**/*.{test,spec}.ts', 'src/preload/**/*.{test,spec}.ts'],
     exclude: ['node_modules', 'out', 'dist', 'release'],
     coverage: {
       provider: 'v8',
