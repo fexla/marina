@@ -43,6 +43,15 @@ import {
   type AddRemoteBookmarkPayload,
   type AddSshProfilePayload,
   type AddSshProfileResponse,
+  // 远程后端 profile(ADR-014 / §14.9)
+  type AddRemoteProfilePayload,
+  type AddRemoteProfileResponse,
+  type DeleteRemoteProfilePayload,
+  type GetActiveRemoteConnectionResponse,
+  type ListRemoteProfilesResponse,
+  type SetActiveRemoteProfilePayload,
+  type UpdateRemoteProfilePayload,
+  type UpdateRemoteProfileResponse,
   type AppStateChangedPayload,
   type BookmarksUpdatedPayload,
   type ClaimSessionPayload,
@@ -132,13 +141,15 @@ import {
   type ImeProbeDumpPayload,
   type ImeProbeDumpResponse,
 } from '@shared/protocol';
-import type { AppSnapshot, MdTheme, Settings, Template } from '@shared/types';
+import type { AppSnapshot, MdTheme, RemoteDaemonProfile, Settings, Template } from '@shared/types';
 import type { WindowManager } from './window-manager';
 import type { PathManager } from './path-manager';
 import { pathRefFromId } from './path-manager';
 import type { SettingsManager } from './settings-manager';
 import type { SessionManager } from './session-manager';
 import type { SshProfileManager } from './ssh-profile-manager';
+import type { RemoteProfileManager } from './remote-profile-manager';
+import { RemoteProfileManagerError } from './remote-profile-manager';
 import type { TemplatesManager } from './templates-manager';
 import type { AIClient } from './ai-client';
 import type { KnownHostsManager } from './known-hosts-manager';
@@ -153,6 +164,8 @@ export interface IpcLayerDeps {
   settingsManager: SettingsManager;
   sessionManager: SessionManager;
   sshProfileManager?: SshProfileManager;
+  /** v2.0 远程后端(ADR-014 / §14.9):client 端 remote daemon profile 管理。可选。 */
+  remoteProfileManager?: RemoteProfileManager;
   /** SSH 方案 §阶段 3.1:已知主机指纹历史,可选(无 SSH 用户不创建) */
   knownHostsManager?: KnownHostsManager;
   templatesManager: TemplatesManager;
@@ -308,6 +321,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     settingsManager,
     sessionManager,
     sshProfileManager,
+    remoteProfileManager,
     knownHostsManager,
     templatesManager,
   } = deps;
@@ -783,6 +797,102 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
         );
       }
       sshProfileManager.delete(envelope.payload.id);
+    },
+  );
+
+  // ── 远程后端 profile(ADR-014 / §14.9)──
+  // 模式对齐 SSH profile:list 返回 public 副本;add/update 接明文 token,
+  // 这里用 encryptPasswordOrThrow 加密后传 manager(同 SSH password)。
+  registerHandle(
+    COMMAND_CHANNELS.REMOTE_PROFILE_LIST,
+    (_e, _envelope: CommandEnvelope<undefined>): ListRemoteProfilesResponse => ({
+      profiles: remoteProfileManager?.list() ?? [],
+    }),
+  );
+
+  registerHandle(
+    COMMAND_CHANNELS.REMOTE_PROFILE_ADD,
+    (_e, envelope: CommandEnvelope<AddRemoteProfilePayload>): AddRemoteProfileResponse => {
+      if (!remoteProfileManager) {
+        throw makeIpcError('RemoteProfileUnavailable', 'remote profile manager 未初始化');
+      }
+      const { token, ...rest } = envelope.payload;
+      const input: Omit<RemoteDaemonProfile, 'id' | 'addedAt'> = { ...rest };
+      if (typeof token === 'string' && token.length > 0) {
+        input.tokenEncrypted = encryptPasswordOrThrow(token);
+      }
+      return { profile: remoteProfileManager.add(input) };
+    },
+  );
+
+  registerHandle(
+    COMMAND_CHANNELS.REMOTE_PROFILE_UPDATE,
+    (_e, envelope: CommandEnvelope<UpdateRemoteProfilePayload>): UpdateRemoteProfileResponse => {
+      if (!remoteProfileManager) {
+        throw makeIpcError('RemoteProfileUnavailable', 'remote profile manager 未初始化');
+      }
+      const { token, ...partialRest } = envelope.payload.partial;
+      const partial: typeof partialRest & { tokenEncrypted?: string } = { ...partialRest };
+      if (typeof token === 'string') {
+        // '' 清除已配对 token;非空加密落盘(同 SSH password 语义)
+        partial.tokenEncrypted = token.length > 0 ? encryptPasswordOrThrow(token) : '';
+      }
+      return { profile: remoteProfileManager.update(envelope.payload.id, partial) };
+    },
+  );
+
+  registerHandle(
+    COMMAND_CHANNELS.REMOTE_PROFILE_DELETE,
+    (_e, envelope: CommandEnvelope<DeleteRemoteProfilePayload>): void => {
+      if (!remoteProfileManager) {
+        throw makeIpcError('RemoteProfileUnavailable', 'remote profile manager 未初始化');
+      }
+      try {
+        remoteProfileManager.delete(envelope.payload.id);
+      } catch (err) {
+        if (err instanceof RemoteProfileManagerError) {
+          throw makeIpcError('RemoteProfileNotFound', err.message);
+        }
+        throw err;
+      }
+    },
+  );
+
+  registerHandle(
+    COMMAND_CHANNELS.REMOTE_PROFILE_SET_ACTIVE,
+    (
+      _e,
+      envelope: CommandEnvelope<SetActiveRemoteProfilePayload>,
+    ): { activeId: string | null } => {
+      if (!remoteProfileManager) {
+        throw makeIpcError('RemoteProfileUnavailable', 'remote profile manager 未初始化');
+      }
+      // payload.id=null 切回本地模式;manager.setActiveProfile(undefined)
+      remoteProfileManager.setActiveProfile(envelope.payload.id ?? undefined);
+      return { activeId: remoteProfileManager.getActiveProfileId() ?? null };
+    },
+  );
+
+  // preload 启动时拉活跃连接信息(url + 解密 token)。null=本地模式。
+  // token 在 main 解密后明文返给 preload(仅本机内存传递,不出本机)。
+  registerHandle(
+    COMMAND_CHANNELS.REMOTE_PROFILE_GET_ACTIVE_CONNECTION,
+    (_e, _envelope: CommandEnvelope<undefined>): GetActiveRemoteConnectionResponse => {
+      if (!remoteProfileManager) return { connection: null };
+      const id = remoteProfileManager.getActiveProfileId();
+      if (!id) return { connection: null };
+      const internal = remoteProfileManager.getInternal(id);
+      if (!internal || !internal.tokenEncrypted) return { connection: null };
+      const { password: token } = decryptStoredPassword(internal.tokenEncrypted);
+      if (!token) return { connection: null };
+      return {
+        connection: {
+          url: `ws://${internal.host}:${internal.port}`,
+          token,
+          profileId: id,
+          displayName: internal.displayName,
+        },
+      };
     },
   );
 
@@ -1456,6 +1566,7 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     settingsManager,
     sessionManager,
     sshProfileManager,
+    remoteProfileManager,
     templatesManager,
     filePanelService,
     markdownThemeManager,
@@ -1476,6 +1587,17 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
 
   sshProfileManager?.on('sshProfilesUpdated', (e: SshProfilesUpdatedPayload) => {
     broadcastEvent<SshProfilesUpdatedPayload>(EVENT_CHANNELS.SSH_PROFILES_UPDATED, e);
+  });
+
+  // 远程后端:profile 列表或活跃 profile 变化 → 广播给所有窗口。
+  // REMOTE_ACTIVE_CHANGED 让 preload 重新初始化 transport(连远程 / 切回本地)。
+  remoteProfileManager?.on('changed', () => {
+    broadcastEvent(EVENT_CHANNELS.REMOTE_PROFILES_UPDATED, {
+      profiles: remoteProfileManager.list(),
+    });
+    broadcastEvent(EVENT_CHANNELS.REMOTE_ACTIVE_CHANGED, {
+      activeId: remoteProfileManager.getActiveProfileId() ?? null,
+    });
   });
 
   // 设置变化 → 广播 evt:settings:changed

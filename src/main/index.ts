@@ -25,6 +25,7 @@ import { TrayManager } from './tray';
 import { SessionManager } from './session-manager';
 import { PathManager } from './path-manager';
 import { SshProfileManager } from './ssh-profile-manager';
+import { RemoteProfileManager } from './remote-profile-manager';
 import { KnownHostsManager, type KnownHostsHistoryFile } from './known-hosts-manager';
 import { SettingsManager, DEFAULT_SETTINGS } from './settings-manager';
 import { TemplatesManager } from './templates-manager';
@@ -47,6 +48,7 @@ import type {
   RecentFile,
   Settings,
   SshProfilesFile,
+  RemoteDaemonProfilesFile,
   TemplatesFile,
 } from '@shared/types';
 
@@ -169,6 +171,10 @@ function bootstrap(): void {
   const bookmarksStore = new JsonStore<BookmarksFile>(join(dataDir, 'bookmarks.json'));
   const recentStore = new JsonStore<RecentFile>(join(dataDir, 'recent.json'));
   const sshProfilesStore = new JsonStore<SshProfilesFile>(join(dataDir, 'ssh-profiles.json'));
+  // v2.0 远程后端(ADR-014 / §14.9):client 端 remote daemon profile 列表。
+  const remoteProfilesStore = new JsonStore<RemoteDaemonProfilesFile>(
+    join(dataDir, 'remote-daemon-profiles.json'),
+  );
   // SSH 方案 §阶段 3.1:known_hosts 指纹历史,跨重启保留。即便用户没用过
   // SSH 也创建实例(空 history),让 IPC handler 行为一致 — 反正不写盘就不
   // 产生文件,nil cost。
@@ -180,6 +186,7 @@ function bootstrap(): void {
   const settingsManager = new SettingsManager(settingsStore);
   const pathManager = new PathManager(bookmarksStore, recentStore);
   const sshProfileManager = new SshProfileManager(sshProfilesStore);
+  const remoteProfileManager = new RemoteProfileManager(remoteProfilesStore);
   const knownHostsManager = new KnownHostsManager(knownHostsStore);
   const templatesManager = new TemplatesManager(templatesStore);
   // 终端侧边文件面板服务(MARINA_SERVICE):构造无参,start() 在 settings 加载后
@@ -361,6 +368,8 @@ function bootstrap(): void {
       logger.info('main', `bookmarks loaded from: ${bookmarksSource}`);
       const sshProfilesSrc = await sshProfileManager.initialize();
       logger.info('main', `ssh profiles loaded from: ${sshProfilesSrc}`);
+      const remoteProfilesSrc = await remoteProfileManager.initialize();
+      logger.info('main', `remote profiles loaded from: ${remoteProfilesSrc}`);
       await knownHostsManager.initialize();
       const tmplSrc = await templatesManager.initialize();
       logger.info('main', `templates loaded from: ${tmplSrc}`);
@@ -407,6 +416,7 @@ function bootstrap(): void {
         settingsManager,
         sessionManager,
         sshProfileManager,
+        remoteProfileManager,
         knownHostsManager,
         templatesManager,
         filePanelService,
@@ -643,6 +653,7 @@ function bootstrap(): void {
         settingsManager.flush(),
         pathManager.flush(),
         sshProfileManager.flush(),
+        remoteProfileManager.flush(),
         knownHostsManager.flush(),
         templatesManager.flush(),
         logger.flush(),

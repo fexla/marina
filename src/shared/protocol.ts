@@ -19,6 +19,7 @@ import type {
   MdTheme,
   OpenedFile,
   PathTree,
+  RemoteDaemonProfile,
   SessionInfo,
   Settings,
   SshProfile,
@@ -185,6 +186,16 @@ export const COMMAND_CHANNELS = {
   MD_THEME_GET_CSS: 'cmd:md-theme:get-css',
   /** 在系统文件管理器打开主题目录(便于用户放/编辑 .css) */
   MD_THEME_OPEN_DIR: 'cmd:md-theme:open-dir',
+
+  // 远程后端 profile(ADR-014 / §14.9)—— client 端"如何连远程 daemon"
+  REMOTE_PROFILE_LIST: 'cmd:remote-profile:list',
+  REMOTE_PROFILE_ADD: 'cmd:remote-profile:add',
+  REMOTE_PROFILE_UPDATE: 'cmd:remote-profile:update',
+  REMOTE_PROFILE_DELETE: 'cmd:remote-profile:delete',
+  /** 设活跃 profile(切远程/本地模式);payload.id=null 切回本地 */
+  REMOTE_PROFILE_SET_ACTIVE: 'cmd:remote-profile:set-active',
+  /** preload 启动时拉活跃 profile 的连接信息(url + 解密后的 token);null=本地 */
+  REMOTE_PROFILE_GET_ACTIVE_CONNECTION: 'cmd:remote-profile:get-active-connection',
 } as const;
 
 export type CommandChannel = (typeof COMMAND_CHANNELS)[keyof typeof COMMAND_CHANNELS];
@@ -213,6 +224,9 @@ export const EVENT_CHANNELS = {
   PATH_TREE_UPDATED: 'evt:path:tree-updated',
   BOOKMARKS_UPDATED: 'evt:bookmarks:updated',
   SSH_PROFILES_UPDATED: 'evt:ssh-profiles:updated',
+  REMOTE_PROFILES_UPDATED: 'evt:remote-profiles:updated',
+  /** 活跃 profile 变化(切远程/本地)→ 所有窗口重新初始化 transport */
+  REMOTE_ACTIVE_CHANGED: 'evt:remote-active:changed',
   SETTINGS_CHANGED: 'evt:settings:changed',
   TEMPLATES_UPDATED: 'evt:templates:updated',
 
@@ -558,6 +572,58 @@ export interface DeleteSshProfilePayload {
 
 export interface ListSshProfilesResponse {
   profiles: SshProfile[];
+}
+
+// ── 远程后端 profile(ADR-014 / §14.9)──
+
+export interface AddRemoteProfilePayload {
+  displayName: string;
+  host: string;
+  port: number;
+  /** 明文 token;main 用 safeStorage 加密落盘(同 SSH password 模式)。 */
+  token?: string;
+  /** 阶段2b TLS:证书指纹(首次确认后存)。 */
+  certFingerprint?: string;
+}
+
+export interface UpdateRemoteProfilePayload {
+  id: string;
+  partial: Partial<AddRemoteProfilePayload>;
+}
+
+export interface DeleteRemoteProfilePayload {
+  id: string;
+}
+
+/** id=null 切回本地模式;id=某 profileId 切到该远程 daemon。 */
+export interface SetActiveRemoteProfilePayload {
+  id: string | null;
+}
+
+export interface ListRemoteProfilesResponse {
+  profiles: RemoteDaemonProfile[];
+}
+
+export interface AddRemoteProfileResponse {
+  profile: RemoteDaemonProfile;
+}
+
+export interface UpdateRemoteProfileResponse {
+  profile: RemoteDaemonProfile;
+}
+
+/**
+ * preload 启动时拉活跃连接信息。null = 本地模式(走 ipcRenderer);
+ * 有值 = 远程模式,preload 据此建 RemoteTransport 连 ws://host:port。
+ * token 是 main 解密后的明文(仅在本机内存中传给 preload,不出本机)。
+ */
+export interface GetActiveRemoteConnectionResponse {
+  connection: {
+    url: string;
+    token: string;
+    profileId: string;
+    displayName: string;
+  } | null;
 }
 
 export interface PickSshKeyFilePayload {
