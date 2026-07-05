@@ -293,6 +293,11 @@ export class RemoteTransport {
     }
     // 已认证或重连中断 → 清 pending,进入/继续重连循环
     this.rejectPending('连接关闭(将重连)');
+    // autoReconnect=false 时不重连(进终态)。默认 true。
+    if (this.opts.autoReconnect === false) {
+      this.closed = true;
+      return;
+    }
     if (this.reconnecting) {
       // 重连中的 ws 又断了 → 增 attempt 再试
       this.reconnectAttempt += 1;

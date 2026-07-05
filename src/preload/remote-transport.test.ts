@@ -275,4 +275,80 @@ describe('RemoteTransport — 断线重连(阶段3)', () => {
     expect(fakes.length).toBe(1);
     expect(events).toEqual([]);
   });
+
+  it('重连反复失败达 maxReconnectAttempts → onReconnectFail + 终态不再重连', async () => {
+    const fakes: FakeWs[] = [];
+    const wsFactory: WsFactory = () => {
+      const f = makeFakeWs();
+      fakes.push(f);
+      return f;
+    };
+    const events: string[] = [];
+    const transport = new RemoteTransport({
+      url: 'ws://fake',
+      token: 'tok',
+      wsFactory,
+      reconnectBaseMs: 1,
+      maxReconnectAttempts: 3,
+      onReconnectFail: () => events.push('fail'),
+    });
+    // 首次握手成功(拿到 clientId 才会进入重连分支)
+    fakes[0]!.fireOpen();
+    fakes[0]!.fireMessage({
+      type: 'event',
+      channel: '__auth-ok__',
+      envelope: { eventId: 'e', timestamp: 1, payload: { clientId: 'CID' } },
+    });
+    await transport.ready;
+    // 首次断线 → 进入重连(attempt 0,reconnecting=true)
+    fakes[0]!.fireClose();
+    // 推进重连循环:每次 backoff(1ms)后新 fake 出现,对其 fireOpen+fireClose
+    // (模拟连上即断 → handleClose reconnecting 分支 attempt++)。3 次失败后达上限。
+    const opened = new Set<number>();
+    for (let i = 0; i < 12; i++) {
+      await new Promise((r) => setTimeout(r, 3));
+      for (let j = 1; j < fakes.length; j++) {
+        if (!opened.has(j)) {
+          opened.add(j);
+          fakes[j]!.fireOpen();
+          fakes[j]!.fireClose();
+        }
+      }
+    }
+    expect(events).toContain('fail');
+    // 终态:onReconnectFail 后 closed,不再建新 fake
+    const lenAtFail = fakes.length;
+    await new Promise((r) => setTimeout(r, 15));
+    expect(fakes.length).toBe(lenAtFail);
+    transport.close();
+  });
+
+  it('autoReconnect=false → 已认证后断线不重连(进终态 closed)', async () => {
+    const fakes: FakeWs[] = [];
+    const wsFactory: WsFactory = () => {
+      const f = makeFakeWs();
+      fakes.push(f);
+      return f;
+    };
+    const events: string[] = [];
+    const transport = new RemoteTransport({
+      url: 'ws://fake',
+      token: 'tok',
+      wsFactory,
+      autoReconnect: false,
+      onReconnectStart: () => events.push('start'),
+    });
+    fakes[0]!.fireOpen();
+    fakes[0]!.fireMessage({
+      type: 'event',
+      channel: '__auth-ok__',
+      envelope: { eventId: 'e', timestamp: 1, payload: { clientId: 'CID' } },
+    });
+    await transport.ready;
+    fakes[0]!.fireClose();
+    // autoReconnect=false:不重连,不触发 onReconnectStart,不建新 ws
+    await new Promise((r) => setTimeout(r, 20));
+    expect(events).toEqual([]);
+    expect(fakes.length).toBe(1);
+  });
 });
