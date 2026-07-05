@@ -42,6 +42,8 @@ const { MockBrowserWindow } = vi.hoisted(() => {
     public minimized = false;
     public focused = false;
     public destroyed = false;
+    /** 最近一次 loadURL 的 url(createWindow 测试验 ?backend= 注入用)。 */
+    public lastUrl: string | null = null;
 
     constructor(public readonly options: Record<string, unknown>) {
       this.webContents = {
@@ -77,7 +79,8 @@ const { MockBrowserWindow } = vi.hoisted(() => {
       for (const listener of onceList) listener(...args);
     }
 
-    loadURL(_url: string): Promise<void> {
+    loadURL(url: string): Promise<void> {
+      this.lastUrl = url;
       return Promise.resolve();
     }
     loadFile(_path: string, _options?: { search: string }): Promise<void> {
@@ -174,6 +177,24 @@ describe('WindowManager', () => {
       // 创建 20 个,第 21 个应失败
       for (let i = 0; i < 20; i++) mgr.createWindow();
       expect(() => mgr.createWindow()).toThrow(/MaxWindowsReached/);
+    });
+
+    it('每窗口后端:backendProfileId 注入 URL ?backend= + 写入 WindowInfo', () => {
+      MockBrowserWindow.reset();
+      const mgr = new WindowManager();
+      const info = mgr.createWindow({ backendProfileId: 'profile-xyz' });
+      expect(info.backendProfileId).toBe('profile-xyz');
+      const win = MockBrowserWindow.instances[MockBrowserWindow.instances.length - 1]!;
+      expect(win.lastUrl).toContain('backend=profile-xyz');
+    });
+
+    it('每窗口后端:无 backendProfileId 时 URL 不含 backend= + WindowInfo.backendProfileId=null', () => {
+      MockBrowserWindow.reset();
+      const mgr = new WindowManager();
+      const info = mgr.createWindow();
+      expect(info.backendProfileId).toBeNull();
+      const win = MockBrowserWindow.instances[MockBrowserWindow.instances.length - 1]!;
+      expect(win.lastUrl).not.toContain('backend=');
     });
   });
 

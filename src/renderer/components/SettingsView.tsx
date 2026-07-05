@@ -269,11 +269,12 @@ function CategoryPanel({ categoryId, setError }: CategoryPanelProps): JSX.Elemen
 // ──────────────────────────────────────────────────────────────────
 
 /**
- * RemoteBackendPanel:管理 client 端 remote daemon profile(CRUD + 连接/断开)。
+ * RemoteBackendPanel:管理 client 端 remote daemon profile(CRUD)。
  *
- * profile 列表显示 displayName/host:port/配对状态/活跃标记。
+ * profile 列表显示 displayName/host:port/配对状态。
  * 表单:displayName/host/port/token(配对时填,编辑时不回填)。
- * "连接" = setActiveProfile(id)(切远程模式);"切回本地" = setActiveProfile(null)。
+ * "在新窗口打开" = WINDOW_CREATE({backendProfileId})(每窗口后端模型,开新窗口连,
+ *   不影响其他窗口;切回本地 = 关该窗口/开普通新窗口)。
  *
  * @勿重构:本面板与 RemotePanel(SSH)是两个独立功能,勿合并 UI。
  */

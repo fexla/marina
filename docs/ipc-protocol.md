@@ -344,9 +344,10 @@ Renderer 启动
 > 3. client preload 收到 `__auth-ok__` 后 ready;后续命令/事件走 WS JSON 帧(信封同 §2.3/2.4,windowId 填 clientId)
 > 4. handshake 内容(get-protocol-version / get-snapshot)在 WS 上同样适用,只是 transport 换成 WS
 >
-> **token 获取(get-active-connection)**:preload `ensureTransport` 时本地调
-> `cmd:remote-profile:get-active-connection`(本地 IPC,不走 WS)拿活跃 profile 的
-> `{url, token}`。main 解密 token 后明文返 preload(**仅本机内存传递**)。
+> **token 获取(get-connection)**:preload `ensureTransport` 时按本窗口 backend
+> (URL `?backend=<profileId>`)本地调 `cmd:remote-profile:get-connection`(本地 IPC,
+> 不走 WS,payload 带 profileId)拿该 profile 的 `{url, token}`。main 解密 token 后
+> 明文返 preload(**仅本机内存传递**)。backend=null/缺失(本地窗口)不调,直接走 ipcRenderer。
 >
 > **信任模型(已知限制)**:token 经通用 `api.invoke` 通道返回,理论上 renderer 任意代码
 > 也能调该 channel 取 token(与 SSH password "永不出 main" 的强模型相比弱)。缓解:
