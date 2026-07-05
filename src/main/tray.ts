@@ -126,6 +126,8 @@ export class TrayManager {
   private currentIconVariant: 'default' | 'active' = 'default';
   /** v2.0 远程后端(§14.9):daemon 模式下的配对 token,供托盘菜单"复制 daemon token"。null = 非 daemon 模式 / 未设置。 */
   private daemonToken: string | null = null;
+  /** 重置 token 的回调(index.ts 注入:调 resetDaemonCredentials + setDaemonToken)。无 = 未注入。 */
+  private resetDaemonTokenHandler: (() => Promise<void>) | null = null;
 
   constructor(
     private readonly windowManager: WindowManager,
@@ -139,6 +141,15 @@ export class TrayManager {
    */
   setDaemonToken(token: string | null): void {
     this.daemonToken = token;
+    this.rebuildContextMenu();
+  }
+
+  /**
+   * 注入重置 token 的回调(只在 daemon 模式下注入,菜单才显示"重置"项)。
+   * handler 内部:resetDaemonCredentials → setDaemonToken(新) → 日志。
+   */
+  setResetDaemonTokenHandler(handler: () => Promise<void>): void {
+    this.resetDaemonTokenHandler = handler;
     this.rebuildContextMenu();
   }
 
@@ -312,6 +323,31 @@ export class TrayManager {
           logger.info('TrayManager', 'daemon pairing token copied to clipboard');
         },
       });
+      // 重置 token(吊销所有已配对 client)。需确认 —— 重置后已连 client 全部被拒,
+      // 必须重新配对。仅在注入了 handler 时显示。
+      if (this.resetDaemonTokenHandler) {
+        items.push({
+          label: '重置 daemon 配对 token…',
+          click: async () => {
+            const choice = await dialog.showMessageBox({
+              type: 'warning',
+              buttons: ['重置', '取消'],
+              defaultId: 1,
+              cancelId: 1,
+              title: '重置 daemon 配对 token',
+              message: '重置后所有已配对的 client 都会被拒绝(需重新配对)。确定?',
+            });
+            if (choice.response === 0) {
+              try {
+                await this.resetDaemonTokenHandler!();
+                logger.info('TrayManager', 'daemon token reset (all clients revoked)');
+              } catch (err) {
+                logger.error('TrayManager', 'daemon token reset failed', err);
+              }
+            }
+          },
+        });
+      }
     }
 
     items.push({ type: 'separator' });

@@ -618,9 +618,12 @@ export function useIpcSync(): { ready: boolean; error: string | null } {
           window.api.on<{ profiles: RemoteDaemonProfile[] }>(EVENT_CHANNELS.REMOTE_PROFILES_UPDATED, (p) =>
             dispatch({ type: 'remoteBackendProfiles/update', profiles: p.profiles }),
           ),
-          window.api.on<{ activeId: string | null }>(EVENT_CHANNELS.REMOTE_ACTIVE_CHANGED, (p) =>
-            dispatch({ type: 'activeRemote/update', activeId: p.activeId }),
-          ),
+          // BLOCKER 修复(review #1):active profile 变化(切远程↔本地)→ 重建 preload
+          // 重读 active。ensureTransport 一次性,只能靠 reload 重运行。切换数据源是
+          // 重大状态变化,丢 renderer 状态可接受(远程后端 profile 列表本身不 reload)。
+          window.api.on<{ activeId: string | null }>(EVENT_CHANNELS.REMOTE_ACTIVE_CHANGED, () => {
+            window.location.reload();
+          }),
           window.api.on<SessionCreatedPayload>(EVENT_CHANNELS.SESSION_CREATED, (p) =>
             dispatch({ type: 'sessions/created', session: p.session }),
           ),

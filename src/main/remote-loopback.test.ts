@@ -150,4 +150,33 @@ describe('loopback: RemoteTransport ↔ RemoteDaemon(真实 WS)', () => {
     });
     await expect(t.ready).rejects.toThrow();
   });
+
+  it('resetToken:踢已连 client + 旧 token 被拒 + 新 token 能连', async () => {
+    const lb = await startLoopback();
+    const t1 = await connectTransport(lb.port);
+    const cid1 = t1.getClientId()!;
+    expect(lb.registry.has(cid1)).toBe(true);
+    // reset:换新 token + 踢所有已连 client
+    lb.daemon.resetToken('NEW-TOKEN');
+    // 旧 client 被踢(closeAllClients terminate)→ onClientDisconnected → registry 移除
+    await vi.waitFor(() => expect(lb.registry.has(cid1)).toBe(false));
+    // 旧 token 现在被拒(hot-swap 生效)
+    const t2 = new RemoteTransport({
+      url: `ws://127.0.0.1:${lb.port}`,
+      token: TOKEN,
+      wsFactory: nodeWsFactory,
+      authTimeoutMs: 2000,
+    });
+    await expect(t2.ready).rejects.toThrow();
+    // 新 token 能连
+    const t3 = new RemoteTransport({
+      url: `ws://127.0.0.1:${lb.port}`,
+      token: 'NEW-TOKEN',
+      wsFactory: nodeWsFactory,
+      authTimeoutMs: 2000,
+    });
+    await t3.ready;
+    expect(t3.getClientId()).toBeTruthy();
+    t3.close();
+  });
 });

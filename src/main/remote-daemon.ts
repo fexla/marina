@@ -95,9 +95,9 @@ export class RemoteDaemon {
    *  - onClientDisconnected:registry.remove + sessionManager.handleWindowClosed
    */
   install(): void {
-    const { wsServer, registry, sessionManager, token } = this.deps;
+    const { wsServer, registry, sessionManager } = this.deps;
 
-    wsServer.setAuthHandler(this.makeAuthHandler(token));
+    wsServer.setAuthHandler(this.makeAuthHandler());
     wsServer.onClientConnected((transport) => {
       // authHandler 通过 → registerClient 已在 WsServer 内部把 transport 加入?
       // 不:WsServer 的 registerClient 只挂消息/关闭处理 + emit connected,
@@ -124,13 +124,25 @@ export class RemoteDaemon {
     return this.deps.wsServer.clientCount();
   }
 
-  private makeAuthHandler(expectedToken: string): AuthHandler {
+  /**
+   * 重置 daemon token(吊销所有已配对 client)。
+   * - 更新 authHandler 校验用的 token(后续握手读新值)
+   * - 强制断开所有已连 client(它们需用新 token 重新握手)
+   * 已连 client 的 session 走 onClientDisconnected → handleWindowClosed(自动 release)。
+   */
+  resetToken(newToken: string): void {
+    this.deps.token = newToken;
+    this.deps.wsServer.closeAllClients();
+  }
+
+  private makeAuthHandler(): AuthHandler {
+    // 读 this.deps.token(非闭包参数),让 resetToken 能 hot-swap。每次握手读最新值。
     return (firstMessage: unknown): AuthResult => {
       const frame = parseAuthFrame(firstMessage);
       if (!frame) {
         return { error: 'invalid auth frame (expected {type:"auth",token})' };
       }
-      if (frame.token !== expectedToken) {
+      if (frame.token !== this.deps.token) {
         return { error: 'token mismatch' };
       }
       // 阶段1 loopback:每次握手分配新 clientId。

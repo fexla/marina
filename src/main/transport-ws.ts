@@ -189,6 +189,22 @@ export class WsServer {
   }
 
   /** 停止 server,关闭所有连接。幂等。 */
+  /**
+   * 强制断开所有已连 client(不关 server)。
+   * 用于 token 重置:已连 client 被踢,重连时需用新 token 握手(旧 token 会被拒)。
+   */
+  closeAllClients(): void {
+    const wss = this.wss;
+    if (!wss) return;
+    wss.clients.forEach((c) => {
+      try {
+        c.terminate();
+      } catch {
+        /* 忽略单个 terminate 失败 */
+      }
+    });
+  }
+
   stop(): Promise<void> {
     const wss = this.wss;
     if (!wss) return Promise.resolve();

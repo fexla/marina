@@ -33,7 +33,7 @@ import { JsonStore } from './persistence';
 import { installIpcLayer, dispatchCommand } from './ipc';
 import { ClientRegistry } from './client-registry';
 import { RemoteDaemon } from './remote-daemon';
-import { loadOrGenerateDaemonCredentials } from './daemon-credentials';
+import { loadOrGenerateDaemonCredentials, resetDaemonCredentials } from './daemon-credentials';
 import { WsServer } from './transport-ws';
 import { FilePanelService } from './file-panel-service';
 import { MarkdownThemeManager } from './markdown-theme-manager';
@@ -566,6 +566,18 @@ function bootstrap(): void {
         // 托盘菜单加"复制 daemon 配对 token"项(供 client 端用户拿 token 配对)。
         // daemon 模式下 token 稳定(持久化),托盘随时可复制。
         trayManager.setDaemonToken(creds.token);
+        // BLOCKER 修复(review #2):重置 token 入口。托盘菜单"重置"项调此 handler。
+        // resetDaemonCredentials 生成新 token 落盘 + remoteDaemon.resetToken hot-swap
+        // 运行时校验 + 踢所有已连 client(强制重连用新 token)= 完整吊销。
+        trayManager.setResetDaemonTokenHandler(async () => {
+          const newCreds = await resetDaemonCredentials(app.getPath('userData'), safeStorage);
+          remoteDaemon.resetToken(newCreds.token);
+          trayManager.setDaemonToken(newCreds.token);
+          logger.warn(
+            'remote-daemon',
+            `token reset & applied; all connected clients revoked (must re-pair)`,
+          );
+        });
         try {
           const actualPort = await wsServer.start(daemonMode.port);
           logger.info('remote-daemon', `WS server listening on port ${actualPort}`);
