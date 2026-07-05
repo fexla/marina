@@ -26,6 +26,7 @@
   "settings.category.data": "Data",
   "settings.category.remote": "Remote",
   "settings.category.remoteBackend": "Remote Backend",
+  "settings.category.remoteServer": "Remote Server",
   "settings.category.systemIntegration": "System Integration",
   "settings.category.ai": "AI Assistant",
   "settings.category.advanced": "Advanced",

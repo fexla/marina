@@ -45,6 +45,9 @@ import {
   type AddSshProfileResponse,
   // 远程后端 profile(ADR-014 / §14.9)
   type AddRemoteProfilePayload,
+  type RemoteDaemonSetPasswordPayload,
+  type RemoteDaemonSetPortPayload,
+  type RemoteDaemonStatusResponse,
   type AddRemoteProfileResponse,
   type DeleteRemoteProfilePayload,
   type GetRemoteConnectionPayload,
@@ -150,6 +153,7 @@ import type { SessionManager } from './session-manager';
 import type { SshProfileManager } from './ssh-profile-manager';
 import type { RemoteProfileManager } from './remote-profile-manager';
 import { RemoteProfileManagerError } from './remote-profile-manager';
+import type { RemoteDaemonController } from './remote-daemon-controller';
 import type { TemplatesManager } from './templates-manager';
 import type { AIClient } from './ai-client';
 import type { KnownHostsManager } from './known-hosts-manager';
@@ -166,6 +170,8 @@ export interface IpcLayerDeps {
   sshProfileManager?: SshProfileManager;
   /** v2.0 远程后端(ADR-014 / §14.9):client 端 remote daemon profile 管理。可选。 */
   remoteProfileManager?: RemoteProfileManager;
+  /** v2.0 远程服务端控制器(UI 启停 + 配置)。可选(未注入时 daemon IPC 返回错误)。 */
+  remoteDaemonController?: RemoteDaemonController;
   /** SSH 方案 §阶段 3.1:已知主机指纹历史,可选(无 SSH 用户不创建) */
   knownHostsManager?: KnownHostsManager;
   templatesManager: TemplatesManager;
@@ -324,6 +330,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     remoteProfileManager,
     knownHostsManager,
     templatesManager,
+    remoteDaemonController,
   } = deps;
 
   // App
@@ -881,6 +888,75 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
           displayName: internal.displayName,
         },
       };
+    },
+  );
+
+  // v2.0 远程服务端运行时启停 + 配置(UI 按钮触发)
+  registerHandle(
+    COMMAND_CHANNELS.REMOTE_DAEMON_START,
+    async (): Promise<RemoteDaemonStatusResponse> => {
+      if (!remoteDaemonController) {
+        throw makeIpcError('RemoteProfileUnavailable', 'remote daemon controller 未初始化');
+      }
+      const port = settingsManager.get().remoteDaemon.port;
+      await remoteDaemonController.start(port);
+      return { status: remoteDaemonController.getStatus() };
+    },
+  );
+  registerHandle(
+    COMMAND_CHANNELS.REMOTE_DAEMON_STOP,
+    async (): Promise<RemoteDaemonStatusResponse> => {
+      if (!remoteDaemonController) {
+        throw makeIpcError('RemoteProfileUnavailable', 'remote daemon controller 未初始化');
+      }
+      await remoteDaemonController.stop();
+      return { status: remoteDaemonController.getStatus() };
+    },
+  );
+  registerHandle(COMMAND_CHANNELS.REMOTE_DAEMON_GET_STATUS, (): RemoteDaemonStatusResponse => {
+    const status = remoteDaemonController?.getStatus() ?? {
+      running: false,
+      port: null,
+      clientCount: 0,
+      hasPassword: false,
+    };
+    return { status };
+  });
+  registerHandle(
+    COMMAND_CHANNELS.REMOTE_DAEMON_SET_PORT,
+    async (
+      _e,
+      envelope: CommandEnvelope<RemoteDaemonSetPortPayload>,
+    ): Promise<RemoteDaemonStatusResponse> => {
+      const port = envelope.payload.port;
+      settingsManager.update({
+        remoteDaemon: { ...settingsManager.get().remoteDaemon, port },
+      });
+      // 运行中则用新端口重启(踢所有 client 重连);未运行只改配置
+      if (remoteDaemonController) {
+        await remoteDaemonController.restartIfRunning(port);
+      }
+      return {
+        status: remoteDaemonController?.getStatus() ?? {
+          running: false,
+          port,
+          clientCount: 0,
+          hasPassword: false,
+        },
+      };
+    },
+  );
+  registerHandle(
+    COMMAND_CHANNELS.REMOTE_DAEMON_SET_PASSWORD,
+    async (
+      _e,
+      envelope: CommandEnvelope<RemoteDaemonSetPasswordPayload>,
+    ): Promise<RemoteDaemonStatusResponse> => {
+      if (!remoteDaemonController) {
+        throw makeIpcError('RemoteProfileUnavailable', 'remote daemon controller 未初始化');
+      }
+      await remoteDaemonController.setPassword(envelope.payload.password);
+      return { status: remoteDaemonController.getStatus() };
     },
   );
 
@@ -1548,6 +1624,11 @@ function registerMdThemeHandlers(deps: IpcLayerDeps): void {
 }
 
 function wireEventBroadcasts(deps: IpcLayerDeps): void {
+  // v2.0 远程服务端状态变化 → 广播给所有 client(本地窗口 + 远程 WS)
+  if (deps.remoteDaemonController) {
+    deps.remoteDaemonController.onStatusChange = (status) =>
+      broadcastEvent(EVENT_CHANNELS.REMOTE_DAEMON_STATUS_CHANGED, status);
+  }
   const {
     windowManager,
     pathManager,

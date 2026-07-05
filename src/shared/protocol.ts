@@ -194,6 +194,12 @@ export const COMMAND_CHANNELS = {
   REMOTE_PROFILE_DELETE: 'cmd:remote-profile:delete',
   /** preload 启动时拉某 profile 的连接信息(host + 解密后密码);null=无此 profile/未配对 */
   REMOTE_PROFILE_GET_CONNECTION: 'cmd:remote-profile:get-connection',
+  // v2.0 远程服务端运行时启停 + 配置(UI 按钮触发)
+  REMOTE_DAEMON_START: 'cmd:remote-daemon:start',
+  REMOTE_DAEMON_STOP: 'cmd:remote-daemon:stop',
+  REMOTE_DAEMON_GET_STATUS: 'cmd:remote-daemon:get-status',
+  REMOTE_DAEMON_SET_PORT: 'cmd:remote-daemon:set-port',
+  REMOTE_DAEMON_SET_PASSWORD: 'cmd:remote-daemon:set-password',
 } as const;
 
 export type CommandChannel = (typeof COMMAND_CHANNELS)[keyof typeof COMMAND_CHANNELS];
@@ -209,6 +215,8 @@ export const EVENT_CHANNELS = {
   WINDOW_FOCUS_REQUESTED: 'evt:window:focus-requested',
   /** M1-A:本窗口的 maximize / unmaximize 状态变化(供 renderer 切按钮图标 + 圆角) */
   WINDOW_MAX_STATE_CHANGED: 'evt:window:max-state-changed',
+  /** v2.0 远程服务端状态变化(启动/停止/client 连接/断开)→ renderer 更新 UI */
+  REMOTE_DAEMON_STATUS_CHANGED: 'evt:remote-daemon:status-changed',
 
   // Session
   SESSION_CREATED: 'evt:session:created',
@@ -624,6 +632,27 @@ export interface GetRemoteConnectionResponse {
     profileId: string;
     displayName: string;
   } | null;
+}
+
+// ── v2.0 远程服务端(UI 启停 + 配置)──
+
+export interface RemoteDaemonStatusPayload {
+  running: boolean;
+  port: number | null;
+  clientCount: number;
+  hasPassword: boolean;
+}
+
+export interface RemoteDaemonStatusResponse {
+  status: RemoteDaemonStatusPayload;
+}
+
+export interface RemoteDaemonSetPortPayload {
+  port: number;
+}
+
+export interface RemoteDaemonSetPasswordPayload {
+  password: string;
 }
 
 export interface PickSshKeyFilePayload {

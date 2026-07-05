@@ -32,9 +32,12 @@ import { TemplatesManager } from './templates-manager';
 import { JsonStore } from './persistence';
 import { installIpcLayer, dispatchCommand } from './ipc';
 import { ClientRegistry } from './client-registry';
-import { RemoteDaemon } from './remote-daemon';
-import { loadOrGenerateDaemonCredentials, resetDaemonCredentials } from './daemon-credentials';
-import { WsServer } from './transport-ws';
+import { RemoteDaemonController } from './remote-daemon-controller';
+import {
+  loadOrGenerateDaemonCredentials,
+  resetDaemonCredentials,
+  setDaemonPassword,
+} from './daemon-credentials';
 import { FilePanelService } from './file-panel-service';
 import { MarkdownThemeManager } from './markdown-theme-manager';
 import { getPlatformAdapter } from './platform';
@@ -409,6 +412,34 @@ function bootstrap(): void {
       // v2.0 dispatcher 基座:本地窗口 + 远程 WS client 都注册于此。
       // 在 installIpcLayer 前创建,远程后端模式下与 daemon 协调器(remote-daemon.ts)共享。
       const clientRegistry = new ClientRegistry();
+
+      // v2.0 远程服务端:加载/生成配对密码(safeStorage 加密持久化)。提前到此处
+      // 因为 controller 创建需要 getCredentialsToken。daemon 重启密码不变(client
+      // 配对一次永久有效,§14.9.4)。currentDaemonToken 是内存缓存,设密码/重置时更新。
+      const daemonCreds = await loadOrGenerateDaemonCredentials(
+        app.getPath('userData'),
+        safeStorage,
+      );
+      let currentDaemonToken: string = daemonCreds.token;
+      if (daemonCreds.isNew) {
+        logger.info('remote-daemon', `auth password (new, for pairing): ${daemonCreds.token}`);
+        if (daemonCreds.storedPlaintext) {
+          logger.warn('remote-daemon', 'credentials stored PLAINTEXT (safeStorage unavailable)');
+        }
+      }
+
+      // controller:运行时启停 WS server(UI 按钮触发)。--daemon/autoStart 时自动 start。
+      const remoteDaemonController = new RemoteDaemonController({
+        registry: clientRegistry,
+        sessionManager,
+        dispatch: dispatchCommand,
+        getCredentialsToken: () => currentDaemonToken,
+        persistPassword: async (plaintext) => {
+          await setDaemonPassword(app.getPath('userData'), safeStorage, plaintext);
+          currentDaemonToken = plaintext;
+        },
+      });
+
       installIpcLayer({
         clientRegistry,
         windowManager,
@@ -422,6 +453,7 @@ function bootstrap(): void {
         filePanelService,
         markdownThemeManager,
         aiClient,
+        remoteDaemonController,
       });
 
       // ── 设置副作用 wiring ─────────────────────────────
@@ -545,59 +577,33 @@ function bootstrap(): void {
       // 所以 managers 初始化 + installIpcLayer 照常,这里只是加挂 WS server。
       // token 阶段1 临时生成 + 打日志(loopback 自测可见);safeStorage 持久化 +
       // 配对 UI 留阶段2(软件定义书 §14.9.4)。
+      // v2.0 远程服务端:密码已加载(daemonCreds)。托盘菜单展示密码/端口 + 重置入口
+      // (所有模式都有,不只 --daemon)。--daemon 命令行 / settings.autoStart → 自动启动。
+      trayManager.setDaemonToken(currentDaemonToken);
+      trayManager.setResetDaemonTokenHandler(async () => {
+        // 重置 = 随机新密码(resetDaemonCredentials)+ controller 热换 + 更新缓存
+        const newCreds = await resetDaemonCredentials(app.getPath('userData'), safeStorage);
+        currentDaemonToken = newCreds.token;
+        remoteDaemonController.onPasswordChanged(newCreds.token);
+        trayManager.setDaemonToken(newCreds.token);
+        logger.warn('remote-daemon', `password reset; all clients revoked (must re-pair)`);
+      });
+
       const daemonMode = parseHeadlessDaemon(process.argv);
-      if (daemonMode?.daemon) {
-        // token 持久化(safeStorage 加密),daemon 重启不变 → client 配对一次永久有效
-        // (软件定义书 §14.9.4)。首次生成 / 文件损坏 / 重置后 isNew=true,此时打日志
-        // 方便用户首次配对;非首次不打(避免反复泄露到日志)。
-        const creds = await loadOrGenerateDaemonCredentials(
-          app.getPath('userData'),
-          safeStorage,
-        );
-        const wsServer = new WsServer();
-        const remoteDaemon = new RemoteDaemon({
-          wsServer,
-          registry: clientRegistry,
-          sessionManager,
-          token: creds.token,
-          dispatch: dispatchCommand,
-          onClientAuthenticated: (cid) =>
-            logger.info('remote-daemon', `client authenticated: ${cid}`),
-          onClientGone: (cid) => logger.info('remote-daemon', `client gone: ${cid}`),
-        });
-        remoteDaemon.install();
-        // 托盘菜单加"复制 daemon 配对密码"项(供 client 端用户拿密码配对)。
-        // daemon 模式下密码稳定(持久化),托盘随时可复制。端口也展示(client 连接需知)。
-        trayManager.setDaemonToken(creds.token);
-        trayManager.setDaemonPort(daemonMode.port);
-        // BLOCKER 修复(review #2):重置密码入口。托盘菜单"重置"项调此 handler。
-        // resetDaemonCredentials 生成新密码落盘 + remoteDaemon.resetToken hot-swap
-        // 运行时校验 + 踢所有已连 client(强制重连用新密码)= 完整吊销。
-        trayManager.setResetDaemonTokenHandler(async () => {
-          const newCreds = await resetDaemonCredentials(app.getPath('userData'), safeStorage);
-          remoteDaemon.resetToken(newCreds.token);
-          trayManager.setDaemonToken(newCreds.token);
-          logger.warn(
-            'remote-daemon',
-            `password reset & applied; all connected clients revoked (must re-pair)`,
-          );
-        });
+      const shouldAutoStart =
+        daemonMode?.daemon || settingsManager.get().remoteDaemon.autoStart;
+      if (shouldAutoStart) {
+        const port = daemonMode?.port ?? settingsManager.get().remoteDaemon.port;
         try {
-          const actualPort = await wsServer.start(daemonMode.port);
+          const { port: actualPort } = await remoteDaemonController.start(port);
+          trayManager.setDaemonPort(actualPort);
           logger.info('remote-daemon', `WS server listening on port ${actualPort}`);
-          if (creds.isNew) {
-            // 仅首次生成时打密码(供用户配对);后续启动不打,避免日志反复泄露
-            logger.info('remote-daemon', `auth password (new, for pairing): ${creds.token}`);
-            if (creds.storedPlaintext) {
-              logger.warn(
-                'remote-daemon',
-                'credentials stored PLAINTEXT (safeStorage unavailable on this OS)',
-              );
-            }
-          }
         } catch (err) {
           logger.error('remote-daemon', 'WS server start failed', err);
         }
+      } else {
+        // 未自动启动:端口用 settings 默认展示(运行时 UI 启动后 status event 更新)
+        trayManager.setDaemonPort(settingsManager.get().remoteDaemon.port);
       }
 
       // 启动行为:--open-here 优先级最高 (Explorer 右键触发的冷启动 — 用户意图明确)。

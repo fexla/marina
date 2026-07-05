@@ -90,7 +90,7 @@ describe('parseHeadlessDaemon', () => {
     expect(parseHeadlessDaemon(['exe', '--headless', '--daemon'])).toEqual({
       daemon: true,
       headless: true,
-      port: 12580,
+      port: 32780,
     });
   });
 
@@ -98,7 +98,7 @@ describe('parseHeadlessDaemon', () => {
     expect(parseHeadlessDaemon(['exe', '--headless'])).toEqual({
       daemon: true,
       headless: true,
-      port: 12580,
+      port: 32780,
     });
   });
 
@@ -106,7 +106,7 @@ describe('parseHeadlessDaemon', () => {
     expect(parseHeadlessDaemon(['exe', '--daemon'])).toEqual({
       daemon: true,
       headless: false,
-      port: 12580,
+      port: 32780,
     });
   });
 
@@ -119,7 +119,7 @@ describe('parseHeadlessDaemon', () => {
   });
 
   it('--port 非法值(负数/NaN)回退默认端口', () => {
-    expect(parseHeadlessDaemon(['exe', '--daemon', '--port=-1'])!.port).toBe(12580);
-    expect(parseHeadlessDaemon(['exe', '--daemon', '--port=abc'])!.port).toBe(12580);
+    expect(parseHeadlessDaemon(['exe', '--daemon', '--port=-1'])!.port).toBe(32780);
+    expect(parseHeadlessDaemon(['exe', '--daemon', '--port=abc'])!.port).toBe(32780);
   });
 });

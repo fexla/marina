@@ -26,6 +26,7 @@
   "settings.category.data": "数据",
   "settings.category.remote": "远程",
   "settings.category.remoteBackend": "远程后端",
+  "settings.category.remoteServer": "远程服务端",
   "settings.category.systemIntegration": "系统集成",
   "settings.category.ai": "AI 助手",
   "settings.category.advanced": "高级",

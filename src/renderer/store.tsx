@@ -44,6 +44,7 @@ import {
   type SessionStateChangedPayload,
   type SettingsChangedPayload,
   type SshProfilesUpdatedPayload,
+  type RemoteDaemonStatusPayload,
   type TemplateListUpdatedPayload,
   type WindowFocusRequestedPayload,
   type WindowListUpdatedPayload,
@@ -74,6 +75,8 @@ export interface AppState {
   sshProfiles: SshProfile[];
   /** v2.0 远程后端(§14.9):remote daemon profile 列表(public 副本) */
   remoteBackendProfiles: RemoteDaemonProfile[];
+  /** v2.0 远程服务端运行状态(本窗口所连 daemon 的 server 状态) */
+  remoteDaemonStatus: RemoteDaemonStatusPayload | null;
   windows: WindowInfo[];
   templates: Template[];
   defaultTemplateId: string;
@@ -143,6 +146,7 @@ export type AppAction =
   | { type: 'bookmarks/update'; bookmarks: Bookmark[] }
   | { type: 'sshProfiles/update'; profiles: SshProfile[] }
   | { type: 'remoteBackendProfiles/update'; profiles: RemoteDaemonProfile[] }
+  | { type: 'remoteDaemonStatus/update'; status: RemoteDaemonStatusPayload | null }
   | { type: 'sessions/created'; session: SessionInfo }
   | { type: 'sessions/owner-changed'; sessionId: string; ownerWindowId: string | null }
   | { type: 'sessions/state-changed'; sessionId: string; changes: Partial<SessionInfo> }
@@ -229,6 +233,8 @@ function reducer(state: AppState, action: AppAction): AppState {
       return { ...state, sshProfiles: action.profiles };
     case 'remoteBackendProfiles/update':
       return { ...state, remoteBackendProfiles: action.profiles };
+    case 'remoteDaemonStatus/update':
+      return { ...state, remoteDaemonStatus: action.status };
 
     case 'sessions/created': {
       const sessions = new Map(state.sessions);
@@ -469,6 +475,7 @@ export function makeDefaultState(myWindowId: string, myWindowNumber: number): Ap
     bookmarks: [],
     sshProfiles: [],
     remoteBackendProfiles: [],
+    remoteDaemonStatus: null,
     windows: [],
     templates: [],
     defaultTemplateId: 'shell',
@@ -611,6 +618,21 @@ export function useIpcSync(): { ready: boolean; error: string | null } {
           window.api.on<{ profiles: RemoteDaemonProfile[] }>(EVENT_CHANNELS.REMOTE_PROFILES_UPDATED, (p) =>
             dispatch({ type: 'remoteBackendProfiles/update', profiles: p.profiles }),
           ),
+          window.api.on<RemoteDaemonStatusPayload>(EVENT_CHANNELS.REMOTE_DAEMON_STATUS_CHANGED, (s) =>
+            dispatch({ type: 'remoteDaemonStatus/update', status: s }),
+          ),
+          // 启动时主动拉一次 daemon 服务端状态(订阅只覆盖后续变化)。
+          // 包成 IIFE 返回 cleanup,cleanups.push 要求每个参数是 () => void。
+          (() => {
+            void window.api
+              .invoke<unknown, { status: RemoteDaemonStatusPayload }>(
+                COMMAND_CHANNELS.REMOTE_DAEMON_GET_STATUS,
+                {},
+              )
+              .then((r) => dispatch({ type: 'remoteDaemonStatus/update', status: r.status }))
+              .catch(() => { /* 远程不可达 / 未初始化时静默 */ });
+            return () => {};
+          })(),
           window.api.on<SessionCreatedPayload>(EVENT_CHANNELS.SESSION_CREATED, (p) =>
             dispatch({ type: 'sessions/created', session: p.session }),
           ),

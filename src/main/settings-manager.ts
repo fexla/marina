@@ -74,6 +74,11 @@ export const DEFAULT_SETTINGS: Settings = {
     // 默认 auto:与 marina 主题配色协调。想看 GitHub 风格的用户在设置页改。
     markdownStyle: 'auto' as const,
   },
+  // v2.0 远程服务端:默认不起(显式 UI 启动),端口 32780。
+  remoteDaemon: {
+    port: 32780,
+    autoStart: false,
+  },
   advanced: {
     logLevel: 'INFO',
     activeIdleThresholdSeconds: 2,
@@ -461,6 +466,11 @@ export function validateSettings(s: Settings): void {
     );
   }
   checkRange('filePanel.port', s.filePanel.port, 0, 65535);
+  // v2.0 远程服务端配置校验
+  checkRange('remoteDaemon.port', s.remoteDaemon.port, 1, 65535);
+  if (typeof s.remoteDaemon.autoStart !== 'boolean') {
+    throw new SettingsError('InvalidSettings', `remoteDaemon.autoStart 必须是布尔,实际: ${typeof s.remoteDaemon.autoStart}`);
+  }
   // markdownStyle 放宽为字符串:除内置 auto / github-light / github-dark,还容纳
   // 'custom:<id>'(用户往 markdown-themes/ 放的 .css 主题)。自定义主题可能被
   // 用户删除,选中后找不到时由 MarkdownViewer fallback 到 auto,不在此处阻塞

@@ -199,6 +199,7 @@ function makeStubSettingsManager(overrides: Partial<Settings['advanced']> = {}):
     },
     systemIntegration: { explorerOpenIn: 'new-window' },
     filePanel: { enabled: true, port: 0, markdownStyle: 'auto' },
+    remoteDaemon: { port: 32780, autoStart: false },
     advanced: {
       logLevel: 'INFO',
       activeIdleThresholdSeconds: 2,

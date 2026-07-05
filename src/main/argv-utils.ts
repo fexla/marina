@@ -81,7 +81,7 @@ export function parseSimpleMode(argv: readonly string[]): boolean {
  * (Marina.exe --headless --daemon 是完整形式;单独 --headless 也隐含 daemon,
  * 方便记忆)。两者都出现是惯例写法。
  *
- * 端口:`--port=<N>` 覆盖默认 12580。
+ * 端口:`--port=<N>` 覆盖默认 32780。
  *
  * @returns 非 daemon 启动返回 null;daemon 启动返回 { daemon, headless, port }
  */
@@ -97,7 +97,7 @@ export function parseHeadlessDaemon(argv: readonly string[]): DaemonMode | null 
   const daemon = argv.includes('--daemon');
   const headless = argv.includes('--headless');
   if (!daemon && !headless) return null;
-  let port = 12580;
+  let port = 32780;
   for (const tok of argv) {
     if (!tok) continue;
     if (tok.startsWith('--port=')) {

@@ -497,6 +497,18 @@ export interface Settings {
      */
     markdownStyle: string;
   };
+
+  /**
+   * v2.0 远程后端服务端配置(本机作为 daemon 被远程 client 连)。
+   * 启停由 UI 按钮(运行时)控制,这里存配置。端口/密码改了重启服务端生效。
+   * 密码不存这里(用 daemon-credentials.ts 的 safeStorage 加密文件,独立于 settings)。
+   */
+  remoteDaemon: {
+    /** WS server 监听端口,默认 32780。改了要重启服务端。 */
+    port: number;
+    /** true = Marina 启动时自动起服务端(等价于启动后点“启动”按钮)。默认 false(显式启动)。 */
+    autoStart: boolean;
+  };
 }
 
 /**

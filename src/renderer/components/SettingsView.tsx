@@ -82,6 +82,7 @@ type CategoryId =
   | 'data'
   | 'remote'
   | 'remote-backend'
+  | 'remote-server'
   | 'system-integration'
   | 'ai'
   | 'advanced'
@@ -106,6 +107,11 @@ const BASE_CATEGORIES: CategoryDef[] = [
     id: 'remote-backend',
     iconName: 'server',
     titleKey: 'settings.category.remoteBackend',
+  },
+  {
+    id: 'remote-server',
+    iconName: 'server',
+    titleKey: 'settings.category.remoteServer',
   },
   {
     id: 'system-integration',
@@ -251,6 +257,8 @@ function CategoryPanel({ categoryId, setError }: CategoryPanelProps): JSX.Elemen
       return <RemotePanel setError={setError} />;
     case 'remote-backend':
       return <RemoteBackendPanel setError={setError} />;
+    case 'remote-server':
+      return <RemoteDaemonServerPanel setError={setError} />;
     case 'system-integration':
       return <SystemIntegrationPanel setError={setError} />;
     case 'ai':
@@ -278,6 +286,155 @@ function CategoryPanel({ categoryId, setError }: CategoryPanelProps): JSX.Elemen
  *
  * @勿重构:本面板与 RemotePanel(SSH)是两个独立功能,勿合并 UI。
  */
+/**
+ * v2.0 远程服务端面板:启动/停止 WS server + 端口/密码配置 + 运行状态显示。
+ * 用户点“启动服务端”→ controller.start(port)。端口/密码可配置(改了重启/热换)。
+ * 与 RemoteBackendPanel(client 角色配置)是两个独立功能,勿合并。
+ */
+function RemoteDaemonServerPanel({
+  setError,
+}: {
+  setError: (msg: string | null) => void;
+}): JSX.Element {
+  const { tx } = useTranslation();
+  const state = useAppState();
+  const [port, setPort] = useState(String(state.settings.remoteDaemon?.port ?? 32780));
+  const [password, setPassword] = useState('');
+
+  const status = state.remoteDaemonStatus;
+  const running = status?.running ?? false;
+
+  const handleStart = async (): Promise<void> => {
+    setError(null);
+    try {
+      await window.api.invoke(COMMAND_CHANNELS.REMOTE_DAEMON_START, {});
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+  const handleStop = async (): Promise<void> => {
+    setError(null);
+    try {
+      await window.api.invoke(COMMAND_CHANNELS.REMOTE_DAEMON_STOP, {});
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+  const handleApplyPort = async (): Promise<void> => {
+    setError(null);
+    const p = Number.parseInt(port, 10);
+    if (!Number.isFinite(p) || p < 1 || p > 65535) {
+      setError(tx('端口必须为 1-65535', 'Port must be 1-65535'));
+      return;
+    }
+    try {
+      await window.api.invoke(COMMAND_CHANNELS.REMOTE_DAEMON_SET_PORT, { port: p });
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+  const handleApplyPassword = async (): Promise<void> => {
+    setError(null);
+    if (!password) {
+      setError(tx('密码不能为空', 'Password cannot be empty'));
+      return;
+    }
+    try {
+      await window.api.invoke(COMMAND_CHANNELS.REMOTE_DAEMON_SET_PASSWORD, { password });
+      setPassword('');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const statusText = running
+    ? tx(
+        `运行中 · 端口 ${status?.port ?? '?'} · ${status?.clientCount ?? 0} 个 client`,
+        `Running · port ${status?.port ?? '?'} · ${status?.clientCount ?? 0} client(s)`,
+      )
+    : tx('已停止', 'Stopped');
+
+  return (
+    <section className="settings-panel" data-testid="settings-remote-server-panel">
+      <h2 className="settings-panel-title">{tx('远程服务端', 'Remote Server')}</h2>
+
+      <SettingRow
+        label={tx('服务端状态', 'Server status')}
+        hint={tx(
+          '启动后,其他机器的 Marina 可通过你的 IP + 密码连接本机。停止则断开所有 client。',
+          'Once started, other Marina instances can connect via your IP + password. Stop disconnects all clients.',
+        )}
+      >
+        <div className="ssh-profile-fields">
+          <span className="settings-info-text">{statusText}</span>
+          {running ? (
+            <button
+              type="button"
+              className="settings-button danger"
+              onClick={() => void handleStop()}
+            >
+              {tx('停止服务端', 'Stop Server')}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="settings-button"
+              onClick={() => void handleStart()}
+              disabled={!status?.hasPassword}
+            >
+              {tx('启动服务端', 'Start Server')}
+            </button>
+          )}
+        </div>
+      </SettingRow>
+
+      <SettingRow
+        label={tx('端口', 'Port')}
+        hint={tx(
+          '默认 32780。改了点“应用”会重启服务端(若有 client 连接会断开重连)。client 端会自动扫描 32780-32789 找到本机。',
+          'Default 32780. Applying restarts the server (connected clients reconnect). Clients auto-scan 32780-32789 to find you.',
+        )}
+      >
+        <div className="ssh-profile-fields">
+          <input
+            className="settings-input"
+            value={port}
+            onChange={(e) => setPort(e.target.value)}
+          />
+          <button type="button" className="settings-button" onClick={() => void handleApplyPort()}>
+            {tx('应用', 'Apply')}
+          </button>
+        </div>
+      </SettingRow>
+
+      <SettingRow
+        label={tx('配对密码', 'Pairing password')}
+        hint={tx(
+          '首次自动生成(UUID)。可在此自定义。填新密码点“应用”即生效,已连 client 会被踢需重连(用新密码)。留空不点则不变。',
+          'Auto-generated (UUID) on first launch. Customize here. Applying a new password kicks connected clients (they must reconnect with the new password).',
+        )}
+      >
+        <div className="ssh-profile-fields">
+          <input
+            className="settings-input"
+            type="password"
+            placeholder={tx('新密码(留空不填则不变)', 'New password (blank to keep)')}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          <button
+            type="button"
+            className="settings-button"
+            onClick={() => void handleApplyPassword()}
+          >
+            {tx('应用密码', 'Apply Password')}
+          </button>
+        </div>
+      </SettingRow>
+    </section>
+  );
+}
+
 function RemoteBackendPanel({
   setError,
 }: {

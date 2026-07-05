@@ -112,11 +112,11 @@ function ensureTransport(): Promise<void> {
       )) as GetRemoteConnectionResponse;
       if (res?.connection) {
         const { host, token } = res.connection;
-        // 端口扫描:从 12580 起,串行尝试 12580-12589。端口关闭 TCP RST 快速失败,
+        // 端口扫描:从 32780 起,串行尝试 32780-32789。端口关闭 TCP RST 快速失败,
         // 遇开放的错误端口才等握手超时(1.5s)。找到第一个握手通过的端口。
-        // 设计动机(用户需求):client 只需 IP,不用输端口。daemon 默认 12580,
+        // 设计动机(用户需求):client 只需 IP,不用输端口。daemon 默认 32780,
         // 扫描一小段兑底 daemon 端口被占改用别的。
-        const PORT_FROM = 12580;
+        const PORT_FROM = 32780;
         const PORT_COUNT = 10;
         let portFound: number | null = null;
         for (let i = 0; i < PORT_COUNT; i++) {
