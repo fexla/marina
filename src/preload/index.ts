@@ -115,6 +115,19 @@ function ensureTransport(): Promise<void> {
           url: res.connection.url,
           token: res.connection.token,
           wsFactory: browserWs,
+          // 阶段3 断线重连:成功后 reload 重新拉 snapshot(session owner 在断线时
+          // 被 daemon 自动 release,重连后要重建视图)。reload 丢 renderer 状态可接受
+          // (断线是异常,用户重新介入合理)。
+          onReconnectSuccess: () => {
+            console.warn('[preload] remote reconnected — reload to refresh snapshot');
+            window.location.reload();
+          },
+          onReconnectStart: () => {
+            console.warn('[preload] remote connection lost — reconnecting...');
+          },
+          onReconnectFail: (reason) => {
+            console.error('[preload] remote reconnect failed (terminal):', reason);
+          },
         });
         await t.ready;
         remoteTransport = t;

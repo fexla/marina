@@ -85,6 +85,13 @@ export interface RemoteDaemonDeps {
  * (command 走 dispatcher,阶段1.5) → WS 断开 → registry.remove + 自动 release。
  */
 export class RemoteDaemon {
+  /**
+   * 当前 token 绑定的 clientId(阶段3 重连复用)。V1 单 client:首次握手分配并存,
+   * 重连时 client 带 resumeClientId === boundClientId → 复用,身份连续。
+   * resetToken 后 daemon 重建,这里不显式清(重建即新建实例)。
+   */
+  private boundClientId: string | null = null;
+
   constructor(private readonly deps: RemoteDaemonDeps) {}
 
   /**
@@ -140,14 +147,21 @@ export class RemoteDaemon {
     return (firstMessage: unknown): AuthResult => {
       const frame = parseAuthFrame(firstMessage);
       if (!frame) {
-        return { error: 'invalid auth frame (expected {type:"auth",token})' };
+        return { error: 'invalid auth frame (expected {type:"auth",token[,resumeClientId]})' };
       }
       if (frame.token !== this.deps.token) {
         return { error: 'token mismatch' };
       }
-      // 阶段1 loopback:每次握手分配新 clientId。
-      // 阶段2:frame.resumeClientId + token→clientId 映射,断线重连复用。
-      return { clientId: randomUUID() };
+      // 阶段3 断线重连(ADR-014):client 带 resumeClientId 复用身份。
+      // V1 单 client + 单 token:daemon 记 boundClientId,重连时校验 resume === bound → 复用。
+      // 首次握手(resume 缺/不匹配)→ 分配新 clientId 并绑定。token 变(resetToken 重建 daemon)
+      // 后 boundClientId 是新实例的 null,自然分配新的。
+      if (frame.resumeClientId && frame.resumeClientId === this.boundClientId) {
+        return { clientId: this.boundClientId };
+      }
+      const newId = randomUUID();
+      this.boundClientId = newId;
+      return { clientId: newId };
     };
   }
 

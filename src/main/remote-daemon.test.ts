@@ -139,6 +139,41 @@ describe('RemoteDaemon — 握手', () => {
   });
 });
 
+describe('RemoteDaemon — 断线重连复用 clientId(阶段3)', () => {
+  it('首次握手分配 clientId;重连带 resumeClientId → 复用同一 clientId', async () => {
+    const authed = vi.fn();
+    const h = await setup({ onAuthenticated: authed });
+    // 首次握手
+    const ws1 = await connect(h.port);
+    ws1.send(JSON.stringify({ type: 'auth', token: TOKEN }));
+    await vi.waitFor(() => expect(authed).toHaveBeenCalledTimes(1));
+    const cid1 = authed.mock.calls[0]![0] as string;
+    ws1.close();
+    // 等 daemon 感知断开(onClientDisconnected → registry.remove)
+    await vi.waitFor(() => expect(h.registry.count()).toBe(0));
+    // 重连:带 resumeClientId。daemon 记 boundClientId → 校验匹配 → 复用。
+    const ws2 = await connect(h.port);
+    ws2.send(JSON.stringify({ type: 'auth', token: TOKEN, resumeClientId: cid1 }));
+    await vi.waitFor(() => expect(authed).toHaveBeenCalledTimes(2));
+    const cid2 = authed.mock.calls[1]![0] as string;
+    expect(cid2).toBe(cid1); // 复用同一 clientId(身份连续)
+    ws2.close();
+  });
+
+  it('重连带错误 resumeClientId → 当作新连接(分配新 clientId)', async () => {
+    const authed = vi.fn();
+    const h = await setup({ onAuthenticated: authed });
+    const ws = await connect(h.port);
+    // resumeClientId 不匹配 daemon 记录的 boundClientId(从未分配过)→ 分配新
+    ws.send(JSON.stringify({ type: 'auth', token: TOKEN, resumeClientId: 'never-issued' }));
+    await vi.waitFor(() => expect(authed).toHaveBeenCalledTimes(1));
+    const cid = authed.mock.calls[0]![0] as string;
+    expect(cid).not.toBe('never-issued');
+    expect(typeof cid).toBe('string');
+    ws.close();
+  });
+});
+
 describe('RemoteDaemon — 自动 release', () => {
   it('client 断开 → registry.remove + sessionManager.handleWindowClosed 调用,clientId 正确', async () => {
     const authed = vi.fn();

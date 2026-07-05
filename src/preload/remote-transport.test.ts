@@ -191,3 +191,88 @@ describe('RemoteTransport — close', () => {
     await expect(p).rejects.toThrow(/关闭/);
   });
 });
+
+describe('RemoteTransport — 断线重连(阶段3)', () => {
+  type FakeWs = ReturnType<typeof makeFakeWs>;
+  function setupReconnect(opts?: { reconnectBaseMs?: number; maxReconnectAttempts?: number }) {
+    const fakes: FakeWs[] = [];
+    const wsFactory: WsFactory = () => {
+      const f = makeFakeWs();
+      fakes.push(f);
+      return f;
+    };
+    const events: string[] = [];
+    const transport = new RemoteTransport({
+      url: 'ws://fake',
+      token: 'tok',
+      wsFactory,
+      reconnectBaseMs: opts?.reconnectBaseMs ?? 10,
+      ...(opts?.maxReconnectAttempts !== undefined
+        ? { maxReconnectAttempts: opts.maxReconnectAttempts }
+        : {}),
+      onReconnectStart: () => events.push('start'),
+      onReconnectSuccess: () => events.push('success'),
+      onReconnectFail: (r) => events.push('fail:' + r),
+    });
+    return { fakes, transport, events };
+  }
+
+  async function authOk(fake: FakeWs, clientId: string): Promise<void> {
+    fake.fireOpen();
+    fake.fireMessage({
+      type: 'event',
+      channel: '__auth-ok__',
+      envelope: { eventId: 'e', timestamp: 1, payload: { clientId } },
+    });
+  }
+
+  it('握手成功后断线 → backoff 重连 → auth 带 resumeClientId → 复用 clientId + onReconnectSuccess', async () => {
+    const { fakes, transport, events } = setupReconnect({ reconnectBaseMs: 10 });
+    await authOk(fakes[0]!, 'CID-7');
+    expect(transport.getClientId()).toBe('CID-7');
+    // 模拟网络断开
+    fakes[0]!.fireClose();
+    expect(events).toEqual(['start']);
+    // 重连期间 invoke 应被拒
+    await expect(transport.invoke('cmd:x', null)).rejects.toThrow(/重连中/);
+    // 等 backoff 过 → wsFactory 已被再次调用(fakes[1] 存在)
+    await new Promise((r) => setTimeout(r, 30));
+    expect(fakes.length).toBe(2);
+    // 新连接 open → 应发 auth 帧(带 resumeClientId=原 clientId)
+    fakes[1]!.fireOpen();
+    expect(JSON.parse(fakes[1]!.sent[0]!)).toEqual({
+      type: 'auth',
+      token: 'tok',
+      resumeClientId: 'CID-7',
+    });
+    // daemon 复用同 clientId 回 auth-ok
+    fakes[1]!.fireMessage({
+      type: 'event',
+      channel: '__auth-ok__',
+      envelope: { eventId: 'e2', timestamp: 2, payload: { clientId: 'CID-7' } },
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(events).toContain('success');
+    expect(transport.getClientId()).toBe('CID-7');
+    transport.close();
+  });
+
+  it('重连期间 invoke reject("重连中")', async () => {
+    const { fakes, transport } = setupReconnect({ reconnectBaseMs: 50 });
+    await authOk(fakes[0]!, 'CID');
+    fakes[0]!.fireClose();
+    // 此时处于 backoff,reconnecting=true
+    await expect(transport.invoke('cmd:y', null)).rejects.toThrow(/重连中/);
+    transport.close();
+  });
+
+  it('主动 close → 不触发重连(manuallyClosed 终态)', async () => {
+    const { fakes, transport, events } = setupReconnect();
+    await authOk(fakes[0]!, 'CID');
+    transport.close();
+    // 等一个 backoff 周期,确认没建新 ws、没 start
+    await new Promise((r) => setTimeout(r, 30));
+    expect(fakes.length).toBe(1);
+    expect(events).toEqual([]);
+  });
+});
