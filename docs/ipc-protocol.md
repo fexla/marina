@@ -210,6 +210,7 @@ function sendTo<P>(windowId: string, channel: string, payload: P) {
 
 **Transport-Ws 细节**:
 - 协议:`wss://`(TLS 必选,自签证书,首次连接指纹确认,对齐 §14.3 known_hosts 体验)
+  - **v2.0 阶段2 实现**:纯 token 认证 + `ws://`(非 wss)。决策(ADR-015):V1 场景为 WireGuard 内网(WG 已提供传输加密),TLS 自签证书生成需新依赖(node 无原生 X509 证书生成 API,forge/selfsigned 违反 AGENTS.md 边界2)。token 认证防网内误连。TLS 延后至跨网络场景(V2)。阶段2 的 ipc-protocol 描述以本脚注为准。
 - 认证:握手首帧带 `Authorization: Bearer <token>`(token 由 daemon 持久化生成,详见软件定义书 §14.9.4)
 - 帧格式:命令/事件各一种 JSON 帧,字段对齐 §2.3/2.4 信封
 - PTY 字节流(`evt:session:output`):走 WS binary frame(对齐 §8 性能)
@@ -337,11 +338,22 @@ Renderer 启动
 ```
 
 > **v2.0 远程后端模式下的 WS 握手**(Transport-Ws,详见 §2.6):远程 client 不走 Electron
-> IPC,而是先建立 `wss://` 连接,握手序列为:
-> 1. TLS 握手 → client 展示 daemon 证书指纹给用户确认(对齐 known_hosts 体验)
-> 2. 首帧 `Authorization: Bearer <token>` → daemon 校验 token,通过则**分配/复用 clientId**(凭 token 认主,断线重连复用同一 clientId)
-> 3. 后续命令/事件走 WS JSON 帧(信封同 §2.3/2.4,clientId 已确定)
+> IPC,而是先建立 `ws://` 连接(阶段2 纯 token,非 TLS,见 ADR-015),握手序列为:
+> 1. client 连上 WS,发首帧 `{"type":"auth","token":"<token>"}`
+> 2. daemon authHandler 校验 token,通过则**分配 clientId** + 发 `__auth-ok__` event(含 clientId);失败关闭(4003)
+> 3. client preload 收到 `__auth-ok__` 后 ready;后续命令/事件走 WS JSON 帧(信封同 §2.3/2.4,windowId 填 clientId)
 > 4. handshake 内容(get-protocol-version / get-snapshot)在 WS 上同样适用,只是 transport 换成 WS
+>
+> **token 获取(get-active-connection)**:preload `ensureTransport` 时本地调
+> `cmd:remote-profile:get-active-connection`(本地 IPC,不走 WS)拿活跃 profile 的
+> `{url, token}`。main 解密 token 后明文返 preload(**仅本机内存传递**)。
+>
+> **信任模型(已知限制)**:token 经通用 `api.invoke` 通道返回,理论上 renderer 任意代码
+> 也能调该 channel 取 token(与 SSH password "永不出 main" 的强模型相比弱)。缓解:
+> (1) contextIsolation 下 RemoteTransport.opts.token 不直接暴露给 renderer 代码;
+> (2) token 是 client 主动配对 daemon 的凭证(非第三方凭据),暴露面边缘;
+> (3) renderer XSS 本身已是更高威胁面(可调任意 command)。阶段3+ 评估是否改
+> preload 专用方法进一步收敛。
 
 ### 4.2 cmd:app:get-protocol-version
 
