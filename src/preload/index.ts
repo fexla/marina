@@ -25,7 +25,9 @@ import {
   type ClipboardWriteTextPayload,
   type ClipboardWriteTextResponse,
   type CommandEnvelope,
+  type GetActiveRemoteConnectionResponse,
 } from '@shared/protocol';
+import { RemoteTransport, type WSLike } from './remote-transport';
 
 /**
  * 解析当前 OS 的 Windows build 号(如 22621),非 Windows 或解析失败返回 null。
@@ -59,10 +61,73 @@ function readWindowParams(): { windowId: string; windowNumber: number } {
 
 const { windowId, windowNumber } = readWindowParams();
 
+// 浏览器原生 WebSocket 适配成 WSLike(RemoteTransport 期望的接口)。
+// preload 上下文有原生 WebSocket;这里桥接 on*/send/close + readyState。
+function browserWs(url: string): WSLike {
+  const ws = new WebSocket(url);
+  const adapter: WSLike = {
+    get readyState() {
+      return ws.readyState;
+    },
+    OPEN: WebSocket.OPEN,
+    send: (d: string) => ws.send(d),
+    close: () => ws.close(),
+    onopen: null,
+    onmessage: null,
+    onclose: null,
+    onerror: null,
+  };
+  ws.onopen = () => adapter.onopen?.();
+  ws.onmessage = (ev: MessageEvent) => adapter.onmessage?.({ data: ev.data });
+  ws.onclose = () => adapter.onclose?.();
+  ws.onerror = (e) => adapter.onerror?.(e);
+  return adapter;
+}
+
+// ── v2.0 远程后端 transport gate(ADR-014 / §14.9)──
+// 本地模式(无 active remote profile):invoke/on 走 ipcRenderer,**零回归**。
+// 远程模式:首次 invoke 时拉 active connection(get-active-connection),
+// 建 RemoteTransport 连 ws://daemon,后续 invoke/on 走 WS。
+// on 本地路径立即注册(零回归);远程路径 transport ready 后注册到 remote。
+let remoteTransport: RemoteTransport | null = null;
+let transportInit: Promise<void> | null = null;
+function ensureTransport(): Promise<void> {
+  if (transportInit) return transportInit;
+  transportInit = (async () => {
+    try {
+      const res = (await ipcRenderer.invoke(
+        COMMAND_CHANNELS.REMOTE_PROFILE_GET_ACTIVE_CONNECTION,
+        {
+          windowId,
+          requestId: crypto.randomUUID(),
+          payload: undefined,
+        } as CommandEnvelope<undefined>,
+      )) as GetActiveRemoteConnectionResponse;
+      if (res?.connection) {
+        const t = new RemoteTransport({
+          url: res.connection.url,
+          token: res.connection.token,
+          wsFactory: browserWs,
+        });
+        await t.ready;
+        remoteTransport = t;
+      }
+    } catch (err) {
+      // 远程初始化失败 → 回退本地(本地模式仍可用)。renderer 会发现远程功能不可达。
+      console.error('[preload] remote transport init failed, fallback to local', err);
+    }
+  })();
+  return transportInit;
+}
+
 /**
- * 包装 ipcRenderer.invoke,自动附加 windowId / requestId / payload 信封。
+ * 包装 invoke:远程模式走 WS transport,本地走 ipcRenderer(自动加 windowId/requestId/payload 信封)。
  */
 async function invoke<P, R>(channel: string, payload: P): Promise<R> {
+  await ensureTransport();
+  if (remoteTransport) {
+    return remoteTransport.invoke<R>(channel, payload);
+  }
   const envelope: CommandEnvelope<P> = {
     windowId,
     requestId: crypto.randomUUID(),
@@ -81,8 +146,18 @@ function on<P>(channel: string, handler: (payload: P) => void): () => void {
       handler(envelope.payload);
     }
   };
+  // 本地路径立即注册(零回归);远程路径 transport ready 后额外注册。
   ipcRenderer.on(channel, wrapped);
-  return () => ipcRenderer.off(channel, wrapped);
+  let unsubRemote = (): void => {};
+  ensureTransport().then(() => {
+    if (remoteTransport) {
+      unsubRemote = remoteTransport.on(channel, handler as (payload: unknown) => void);
+    }
+  });
+  return () => {
+    ipcRenderer.off(channel, wrapped);
+    unsubRemote();
+  };
 }
 
 /**
