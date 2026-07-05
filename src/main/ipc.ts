@@ -47,9 +47,9 @@ import {
   type AddRemoteProfilePayload,
   type AddRemoteProfileResponse,
   type DeleteRemoteProfilePayload,
-  type GetActiveRemoteConnectionResponse,
+  type GetRemoteConnectionPayload,
+  type GetRemoteConnectionResponse,
   type ListRemoteProfilesResponse,
-  type SetActiveRemoteProfilePayload,
   type UpdateRemoteProfilePayload,
   type UpdateRemoteProfileResponse,
   type AppStateChangedPayload,
@@ -356,8 +356,13 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   // Window
   registerHandle(
     COMMAND_CHANNELS.WINDOW_CREATE,
-    (_e, _envelope: CommandEnvelope<CreateWindowPayload>): CreateWindowResponse => {
-      const info = windowManager.createWindowFromFactory();
+    (_e, envelope: CommandEnvelope<CreateWindowPayload>): CreateWindowResponse => {
+      // v2.0 每窗口后端:透传 backendProfileId(renderer "在新窗口打开"远程 profile 时传)
+      const info = windowManager.createWindowFromFactory(
+        envelope.payload.backendProfileId
+          ? { backendProfileId: envelope.payload.backendProfileId }
+          : {},
+      );
       return { windowId: info.id, windowNumber: info.number };
     },
   );
@@ -858,30 +863,13 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     },
   );
 
+  // preload 启动时按 profileId 拉连接信息(url + 解密 token)。null=无此 profile/未配对。
+  // 每窗口后端:窗口创建时定 backend,preload 据此 profileId 决定连哪个 daemon。
   registerHandle(
-    COMMAND_CHANNELS.REMOTE_PROFILE_SET_ACTIVE,
-    (
-      _e,
-      envelope: CommandEnvelope<SetActiveRemoteProfilePayload>,
-    ): { activeId: string | null } => {
-      if (!remoteProfileManager) {
-        throw makeIpcError('RemoteProfileUnavailable', 'remote profile manager 未初始化');
-      }
-      // payload.id=null 切回本地模式;manager.setActiveProfile(undefined)
-      remoteProfileManager.setActiveProfile(envelope.payload.id ?? undefined);
-      return { activeId: remoteProfileManager.getActiveProfileId() ?? null };
-    },
-  );
-
-  // preload 启动时拉活跃连接信息(url + 解密 token)。null=本地模式。
-  // token 在 main 解密后明文返给 preload(仅本机内存传递,不出本机)。
-  registerHandle(
-    COMMAND_CHANNELS.REMOTE_PROFILE_GET_ACTIVE_CONNECTION,
-    (_e, _envelope: CommandEnvelope<undefined>): GetActiveRemoteConnectionResponse => {
+    COMMAND_CHANNELS.REMOTE_PROFILE_GET_CONNECTION,
+    (_e, envelope: CommandEnvelope<GetRemoteConnectionPayload>): GetRemoteConnectionResponse => {
       if (!remoteProfileManager) return { connection: null };
-      const id = remoteProfileManager.getActiveProfileId();
-      if (!id) return { connection: null };
-      const internal = remoteProfileManager.getInternal(id);
+      const internal = remoteProfileManager.getInternal(envelope.payload.profileId);
       if (!internal || !internal.tokenEncrypted) return { connection: null };
       const { password: token } = decryptStoredPassword(internal.tokenEncrypted);
       if (!token) return { connection: null };
@@ -889,7 +877,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
         connection: {
           url: `ws://${internal.host}:${internal.port}`,
           token,
-          profileId: id,
+          profileId: internal.id,
           displayName: internal.displayName,
         },
       };
@@ -1589,14 +1577,11 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     broadcastEvent<SshProfilesUpdatedPayload>(EVENT_CHANNELS.SSH_PROFILES_UPDATED, e);
   });
 
-  // 远程后端:profile 列表或活跃 profile 变化 → 广播给所有窗口。
-  // REMOTE_ACTIVE_CHANGED 让 preload 重新初始化 transport(连远程 / 切回本地)。
+  // 远程后端:profile 列表变化 → 广播给所有窗口(刷 UI)。
+  // 不再有"全局 active 变化"(每窗口后端模型,active 已废,切换后端=开新窗口)。
   remoteProfileManager?.on('changed', () => {
     broadcastEvent(EVENT_CHANNELS.REMOTE_PROFILES_UPDATED, {
       profiles: remoteProfileManager.list(),
-    });
-    broadcastEvent(EVENT_CHANNELS.REMOTE_ACTIVE_CHANGED, {
-      activeId: remoteProfileManager.getActiveProfileId() ?? null,
     });
   });
 
@@ -1713,7 +1698,6 @@ function buildSnapshot(deps: IpcLayerDeps, myWindowId: string): AppSnapshot {
     pathTree: deps.pathManager.getTree(),
     sshProfiles: deps.sshProfileManager?.list() ?? [],
     remoteBackendProfiles: deps.remoteProfileManager?.list() ?? [],
-    activeRemoteProfileId: deps.remoteProfileManager?.getActiveProfileId() ?? null,
     templates: deps.templatesManager.list(),
     defaultTemplateId: deps.templatesManager.getDefaultTemplateId(),
     settings: deps.settingsManager.get(),

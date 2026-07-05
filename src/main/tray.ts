@@ -36,7 +36,7 @@ import {
 import { EVENT_CHANNELS } from '@shared/protocol';
 import { randomUUID } from 'node:crypto';
 import type { WindowManager } from './window-manager';
-import type { SessionInfo } from '@shared/types';
+import type { RemoteDaemonProfile, SessionInfo } from '@shared/types';
 import type { SessionManager } from './session-manager';
 import type { SettingsManager } from './settings-manager';
 import { logger } from './logger';
@@ -128,6 +128,8 @@ export class TrayManager {
   private daemonToken: string | null = null;
   /** 重置 token 的回调(index.ts 注入:调 resetDaemonCredentials + setDaemonToken)。无 = 未注入。 */
   private resetDaemonTokenHandler: (() => Promise<void>) | null = null;
+  /** v2.0 远程后端(每窗口):远程 profile 列表 provider,供托盘"连接到远程…"子菜单。无 = 未注入。 */
+  private remoteProfilesProvider: (() => RemoteDaemonProfile[]) | null = null;
 
   constructor(
     private readonly windowManager: WindowManager,
@@ -151,6 +153,20 @@ export class TrayManager {
   setResetDaemonTokenHandler(handler: () => Promise<void>): void {
     this.resetDaemonTokenHandler = handler;
     this.rebuildContextMenu();
+  }
+
+  /**
+   * 注入远程 profile 列表 provider(供托盘"连接到远程…"子菜单)。
+   * profile CRUD 后调以刷菜单。index.ts 注入:= () => remoteProfileManager.list()。
+   */
+  setRemoteProfilesProvider(provider: () => RemoteDaemonProfile[]): void {
+    this.remoteProfilesProvider = provider;
+    this.rebuildContextMenu();
+  }
+
+  /** profile 列表变化时外部调,刷托盘菜单(连接到远程子菜单)。 */
+  refreshRemoteProfilesMenu(): void {
+    if (this.remoteProfilesProvider) this.rebuildContextMenu();
   }
 
   /**
@@ -307,6 +323,25 @@ export class TrayManager {
         submenu,
       });
       items.push({ type: 'separator' });
+    }
+
+    // v2.0 远程后端(每窗口):连接到远程 daemon(开新窗口连)。列已配对 profile。
+    const remoteProfiles = this.remoteProfilesProvider?.() ?? [];
+    if (remoteProfiles.length > 0) {
+      items.push({
+        label: '连接到远程…',
+        submenu: remoteProfiles.map((p) => ({
+          label: `${p.displayName} (${p.host}:${p.port})${p.hasToken ? '' : ' · 未配对'}`,
+          enabled: p.hasToken !== false,
+          click: () => {
+            try {
+              this.windowManager.createWindowFromFactory({ backendProfileId: p.id });
+            } catch (err) {
+              logger.error('TrayManager', 'open remote window failed', err);
+            }
+          },
+        })),
+      });
     }
 
     items.push({

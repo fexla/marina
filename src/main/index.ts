@@ -520,6 +520,9 @@ function bootstrap(): void {
       // BETA-003a:Linux 不做托盘,跳过 trayManager.init()
       if (process.platform === 'win32') {
         trayManager.init();
+        // v2.0 远程后端(每窗口):托盘"连接到远程…"子菜单数据源 + profile 变化时刷新
+        trayManager.setRemoteProfilesProvider(() => remoteProfileManager.list());
+        remoteProfileManager.on('changed', () => trayManager.refreshRemoteProfilesMenu());
       }
 
       // 交互级冒烟测试 harness。仅在 MARINA_SMOKE_INTERACTIVE=1 时装载。

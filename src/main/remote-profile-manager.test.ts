@@ -144,7 +144,8 @@ describe('RemoteProfileManager 持久化 + 事件', () => {
     const { mgr, store } = await makeManager();
     mgr.add(baseInput());
     const last = store.captured[store.captured.length - 1]!;
-    expect(last.activeProfileId).toBeUndefined();
+    // 每窗口后端模型:文件只含 version + profiles,无 activeProfileId(已废)
+    expect(Object.keys(last).sort()).toEqual(['profiles', 'version']);
     expect(last.version).toBe(1);
     expect(last.profiles).toHaveLength(1);
   });

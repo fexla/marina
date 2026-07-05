@@ -78,6 +78,11 @@ export interface CreateWindowOptions {
    * 把 hint 透传到 renderer 启动阶段。
    */
   selectSessionId?: string;
+  /**
+   * v2.0 远程后端(每窗口后端):新窗口连的后端 profile id。
+   * undefined/null = 本地 main 后端;非空 = 连该远程 daemon。窗口生命周期内不变。
+   */
+  backendProfileId?: string;
 }
 
 export interface IWindowManager {
@@ -201,6 +206,7 @@ export class WindowManager implements IWindowManager {
       id: windowId,
       number: windowNumber,
       electronWindowId: win.webContents.id,
+      backendProfileId: options.backendProfileId ?? null,
     };
 
     const managed: ManagedWindow = {
@@ -301,7 +307,12 @@ export class WindowManager implements IWindowManager {
     const selectFlag = options.selectSessionId
       ? `&selectSessionId=${encodeURIComponent(options.selectSessionId)}`
       : '';
-    const queryString = `?windowId=${encodeURIComponent(windowId)}&windowNumber=${windowNumber}${simpleFlag}${selectFlag}`;
+    // v2.0 远程后端(每窗口后端):backendProfileId 注入 query,preload 据此选 transport。
+    // 无 backend/local = 本地模式(走 ipcRenderer);有 id = 远程(走 RemoteTransport)。
+    const backendFlag = options.backendProfileId
+      ? `&backend=${encodeURIComponent(options.backendProfileId)}`
+      : '';
+    const queryString = `?windowId=${encodeURIComponent(windowId)}&windowNumber=${windowNumber}${simpleFlag}${selectFlag}${backendFlag}`;
     if (isDev && process.env.ELECTRON_RENDERER_URL) {
       void win.loadURL(process.env.ELECTRON_RENDERER_URL + queryString);
     } else {

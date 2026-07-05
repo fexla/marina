@@ -25,7 +25,8 @@ import {
   type ClipboardWriteTextPayload,
   type ClipboardWriteTextResponse,
   type CommandEnvelope,
-  type GetActiveRemoteConnectionResponse,
+  type GetRemoteConnectionPayload,
+  type GetRemoteConnectionResponse,
 } from '@shared/protocol';
 import { RemoteTransport, type WSLike } from './remote-transport';
 
@@ -48,18 +49,22 @@ const windowsBuild = ((): number | null => {
  * 从 URL query string 提取窗口元数据。
  * Main 创建 BrowserWindow 时附加 ?windowId=...&windowNumber=...
  */
-function readWindowParams(): { windowId: string; windowNumber: number } {
+function readWindowParams(): { windowId: string; windowNumber: number; backend: string | null } {
   const params = new URLSearchParams(window.location.search);
   const id = params.get('windowId') ?? 'bootstrap';
   const numStr = params.get('windowNumber');
   const num = numStr ? Number.parseInt(numStr, 10) : 0;
+  // v2.0 每窗口后端:?backend=<profileId> = 远程窗口;缺失/'local' = 本地窗口
+  const backendRaw = params.get('backend');
+  const backend = backendRaw && backendRaw !== 'local' ? backendRaw : null;
   return {
     windowId: id,
     windowNumber: Number.isFinite(num) && num > 0 ? num : 0,
+    backend,
   };
 }
 
-const { windowId, windowNumber } = readWindowParams();
+const { windowId, windowNumber, backend } = readWindowParams();
 
 // 浏览器原生 WebSocket 适配成 WSLike(RemoteTransport 期望的接口)。
 // preload 上下文有原生 WebSocket;这里桥接 on*/send/close + readyState。
@@ -84,25 +89,27 @@ function browserWs(url: string): WSLike {
   return adapter;
 }
 
-// ── v2.0 远程后端 transport gate(ADR-014 / §14.9)──
-// 本地模式(无 active remote profile):invoke/on 走 ipcRenderer,**零回归**。
-// 远程模式:首次 invoke 时拉 active connection(get-active-connection),
+// ── v2.0 远程后端 transport gate(ADR-014 / §14.9,每窗口后端)──
+// backend=null(本地窗口):invoke/on 走 ipcRenderer,**零回归**。
+// backend=profileId(远程窗口):首次 invoke 时拉该 profile 的 connection,
 // 建 RemoteTransport 连 ws://daemon,后续 invoke/on 走 WS。
-// on 本地路径立即注册(零回归);远程路径 transport ready 后注册到 remote。
+// on 本地路径立即注册(零回归);远程路径 transport ready 后注册。
 let remoteTransport: RemoteTransport | null = null;
 let transportInit: Promise<void> | null = null;
 function ensureTransport(): Promise<void> {
   if (transportInit) return transportInit;
   transportInit = (async () => {
+    // 每窗口后端:窗口创建时定死 backend(URL ?backend=),生命周期内不变。
+    if (!backend) return; // 本地窗口
     try {
       const res = (await ipcRenderer.invoke(
-        COMMAND_CHANNELS.REMOTE_PROFILE_GET_ACTIVE_CONNECTION,
+        COMMAND_CHANNELS.REMOTE_PROFILE_GET_CONNECTION,
         {
           windowId,
           requestId: crypto.randomUUID(),
-          payload: undefined,
-        } as CommandEnvelope<undefined>,
-      )) as GetActiveRemoteConnectionResponse;
+          payload: { profileId: backend },
+        } as CommandEnvelope<GetRemoteConnectionPayload>,
+      )) as GetRemoteConnectionResponse;
       if (res?.connection) {
         const t = new RemoteTransport({
           url: res.connection.url,
@@ -113,7 +120,7 @@ function ensureTransport(): Promise<void> {
         remoteTransport = t;
       }
     } catch (err) {
-      // 远程初始化失败 → 回退本地(本地模式仍可用)。renderer 会发现远程功能不可达。
+      // 远程初始化失败 → 回退本地(本地路径仍可用)。renderer 会发现远程不可达。
       console.error('[preload] remote transport init failed, fallback to local', err);
     }
   })();

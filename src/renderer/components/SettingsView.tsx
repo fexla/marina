@@ -346,18 +346,16 @@ function RemoteBackendPanel({
     }
   };
 
-  const handleSetActive = async (id: string | null): Promise<void> => {
+  const handleOpenInWindow = async (profileId: string): Promise<void> => {
     setError(null);
     try {
-      await window.api.invoke(COMMAND_CHANNELS.REMOTE_PROFILE_SET_ACTIVE, { id });
+      // 每窗口后端:开新窗口连该远程 daemon(不是全局切换,不影响其他窗口)。
+      // 要切回本地 → 关该窗口 / 开普通新窗口。符合原则 4(窗口零成本开关)。
+      await window.api.invoke(COMMAND_CHANNELS.WINDOW_CREATE, { backendProfileId: profileId });
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
-
-  const activeProfile = state.remoteBackendProfiles.find(
-    (x) => x.id === state.activeRemoteProfileId,
-  );
 
   return (
     <section className="settings-panel" data-testid="settings-remote-backend-panel">
@@ -380,29 +378,16 @@ function RemoteBackendPanel({
                     {p.hasToken
                       ? tx(' · 已配对', ' · paired')
                       : tx(' · 未配对', ' · unpaired')}
-                    {state.activeRemoteProfileId === p.id
-                      ? tx(' · 活跃中', ' · active')
-                      : ''}
                     {editingId === p.id ? tx(' · 编辑中', ' · editing') : ''}
                   </span>
-                  {state.activeRemoteProfileId === p.id ? (
-                    <button
-                      type="button"
-                      className="settings-button ssh-profile-button"
-                      onClick={() => void handleSetActive(null)}
-                    >
-                      {tx('切回本地', 'Use Local')}
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="settings-button ssh-profile-button"
-                      onClick={() => void handleSetActive(p.id)}
-                      disabled={!p.hasToken}
-                    >
-                      {tx('连接', 'Connect')}
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    className="settings-button ssh-profile-button"
+                    onClick={() => void handleOpenInWindow(p.id)}
+                    disabled={!p.hasToken}
+                  >
+                    {tx('在新窗口打开', 'Open in New Window')}
+                  </button>
                   <button
                     type="button"
                     className="settings-button ssh-profile-button"
@@ -460,23 +445,6 @@ function RemoteBackendPanel({
             )}
           </div>
         </div>
-      </SettingRow>
-
-      <SettingRow
-        label={tx('当前模式', 'Current mode')}
-        hint={tx(
-          '活跃 = 命令发往远程 daemon;本地 = 走本机后端(默认)。切换后窗口会重新初始化连接。',
-          'Active = commands go to the remote daemon; Local = use this machine backend (default). The window re-initializes the connection after switching.',
-        )}
-      >
-        <span className="settings-info-text">
-          {state.activeRemoteProfileId
-            ? tx(
-                `远程:${activeProfile?.displayName ?? '?'}`,
-                `Remote: ${activeProfile?.displayName ?? '?'}`,
-              )
-            : tx('本地', 'Local')}
-        </span>
       </SettingRow>
     </section>
   );
