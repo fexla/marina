@@ -625,6 +625,44 @@ export interface SshProfilesFile {
 }
 
 /**
+ * 远程后端 daemon 连接 profile(ADR-014 / §14.9)。
+ *
+ * client 端存储:记录如何连到某个远程 daemon(host/port/token)。
+ * token 走 safeStorage 加密(同 SSH password 模式):
+ * - tokenEncrypted 仅 main 内部保留(safeStorage.encryptString 的 base64)
+ * - 送给 renderer 的副本剥去 tokenEncrypted,加 hasToken 标志
+ */
+export interface RemoteDaemonProfile {
+  id: string;
+  /** 用户起的名字,如 "工作笔记本" */
+  displayName: string;
+  /** daemon 地址(IP / hostname / tailnet 名) */
+  host: string;
+  /** daemon WS 端口,默认 12580 */
+  port: number;
+  /** safeStorage 加密的 token(base64);仅 main 内部 */
+  tokenEncrypted?: string;
+  /** renderer 副本:是否已配对(存了 token) */
+  hasToken?: boolean;
+  /**
+   * 阶段2b TLS:daemon 自签证书指纹(SHA256)。
+   * 首次连接用户确认后存,后续连接比对,变化强警告(对齐 §14.3 known_hosts)。
+   * 阶段2 纯 token 认证时此字段不填。
+   */
+  certFingerprint?: string;
+  /** 上次成功连接时间戳(ms);用于 UI 排序 + 展示 */
+  lastConnectedAt?: number;
+  addedAt: number;
+}
+
+export interface RemoteDaemonProfilesFile {
+  version: 1;
+  /** 当前活跃 profile id(连这个 daemon);undefined = 本地模式 */
+  activeProfileId?: string;
+  profiles: RemoteDaemonProfile[];
+}
+
+/**
  * templates.json (CP-3 完整化,CP-2 不持久化模板)
  */
 export interface TemplatesFile {
