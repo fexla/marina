@@ -199,6 +199,12 @@ function reducer(state: AppState, action: AppAction): AppState {
         templates: s.templates,
         defaultTemplateId: s.defaultTemplateId,
         settings: s.settings,
+        // 远程后端窗口的真实 owner id 不是本地 BrowserWindow 的 windowId,而是
+        // daemon 在 WS auth 后分配的 clientId。SessionManager.createSession 也会用
+        // 这个 clientId 写 session.ownerWindowId。若这里继续保留 preload URL 里的
+        // 本地 windowId,新建远程 session 会被 getDisplayableSession 误判为“别人持有”,
+        // TerminalView 不挂载,用户看到的现象就是“连接成功但打不开终端”。
+        myWindowId: s.myWindowId,
         // bookmarks 不从 pathTree 派生 — 完整列表由 evt:bookmarks:updated
         // 单独同步,snapshot 期先置空,等首个 bookmarks/update 来填。
         bookmarks: [],
@@ -448,6 +454,12 @@ function reducer(state: AppState, action: AppAction): AppState {
       return state;
   }
 }
+
+/**
+ * 仅供单元测试验证 reducer 的远程 owner 语义。生产代码仍通过 AppStateProvider
+ * 使用 useReducer(reducer, ...),不要在组件里直接调用。
+ */
+export const __appReducerForTest = reducer;
 
 /**
  * 在三栏(bookmarks / temporary / recent)里找指定 pathId 的 PathNode。
