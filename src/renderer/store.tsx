@@ -571,24 +571,31 @@ export function useAppStateRef(): MutableRefObject<AppState> {
  * 在挂载时拉 snapshot + 订阅所有事件;卸载时取消订阅。
  * 必须在 AppStateProvider 内使用一次 (通常在 App 组件)。
  */
-export function useIpcSync(): { ready: boolean; error: string | null } {
+export function useIpcSync(): {
+  ready: boolean;
+  error: string | null;
+  /** 远程连接失败的错误码(preload ConnectError.code,如 AUTH_REJECTED/TCP_UNREACHABLE)。null=非远程连接错误/未出错。 */
+  errorCode: string | null;
+} {
   const dispatch = useAppDispatch();
   const myWindowId = useAppState().myWindowId;
   const [status, setStatus] = useReducer(
     (
-      _: { ready: boolean; error: string | null },
-      action: { type: 'ready' } | { type: 'error'; message: string },
+      _: { ready: boolean; error: string | null; errorCode: string | null },
+      action:
+        | { type: 'ready' }
+        | { type: 'error'; message: string; errorCode?: string | null },
     ) => {
       switch (action.type) {
         case 'ready':
-          return { ready: true, error: null };
+          return { ready: true, error: null, errorCode: null };
         case 'error':
-          return { ready: false, error: action.message };
+          return { ready: false, error: action.message, errorCode: action.errorCode ?? null };
         default:
-          return { ready: false, error: null };
+          return { ready: false, error: null, errorCode: null };
       }
     },
-    { ready: false, error: null },
+    { ready: false, error: null, errorCode: null },
   );
 
   useEffect(() => {
@@ -708,9 +715,16 @@ export function useIpcSync(): { ready: boolean; error: string | null } {
         setStatus({ type: 'ready' });
       } catch (err) {
         if (!cancelled) {
+          // err 可能是 preload 抛的 ConnectError(带 code,如 AUTH_REJECTED/TCP_UNREACHABLE)
+          // 或普通 Error。提取 code 供错误页给针对性诊断。
+          const errorCode =
+            err !== null && typeof err === 'object' && 'code' in err && typeof (err as { code?: unknown }).code === 'string'
+              ? ((err as { code: string }).code)
+              : null;
           setStatus({
             type: 'error',
             message: err instanceof Error ? err.message : String(err),
+            errorCode,
           });
         }
       }

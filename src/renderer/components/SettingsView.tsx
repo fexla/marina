@@ -480,6 +480,15 @@ function RemoteConnectionPanel({
           </div>
         </SettingRow>
 
+        {running && status?.listenCheck && !status.listenCheck.ok && (
+          <div className="remote-listen-warn">
+            {tx(
+              `⚠ 本机自检发现端口 ${status.port ?? '?'} 可能未真正监听成功:${status.listenCheck.reason ?? '原因未知'}。别人可能连不上,请尝试停止后重新开启,或换一个端口。`,
+              `⚠ Self-check suggests port ${status.port ?? '?'} may not be listening properly: ${status.listenCheck.reason ?? 'unknown reason'}. Peers may be unable to connect. Try stopping and re-enabling, or use a different port.`,
+            )}
+          </div>
+        )}
+
         <SettingRow
           label={tx('端口', 'Port')}
           hint={tx(

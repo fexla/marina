@@ -240,37 +240,19 @@ function ConnectedShell({
   }, []);
 
   if (sync.error) {
-    // 远程窗口加载失败 = 远程连接失败(preload ensureTransport 抛错)。绝不静默回退本地。
-    // 显示专门的远程连接错误页 + 排查清单 + 重试/关窗。本地窗口加载失败走原分支。
+    // 远程窗口加载失败 = 远程连接失败(preload ensureTransport 抛 ConnectError)。
+    // 绝不静默回退本地。显示带窗口标题栏 + 针对性诊断的错误页(可复制/重试/关窗)。
     const backendId =
       typeof window !== 'undefined'
         ? new URLSearchParams(window.location.search).get('backend')
         : null;
     if (backendId) {
       return (
-        <FullPagePlaceholder
-          title="无法连接到远程电脑"
-          subtitle="这个窗口是远程窗口,但连不上对方电脑上的 Marina。"
-          body={sync.error}
-          variant="error"
-          actions={
-            <>
-              <button
-                type="button"
-                className="settings-button"
-                onClick={() => window.location.reload()}
-              >
-                重试连接
-              </button>
-              <button
-                type="button"
-                className="settings-button danger"
-                onClick={() => window.close()}
-              >
-                关闭窗口
-              </button>
-            </>
-          }
+        <RemoteConnectionErrorScreen
+          errorMessage={sync.error}
+          errorCode={sync.errorCode}
+          buildVersion={buildVersion}
+          buildType={buildType}
         />
       );
     }
@@ -325,6 +307,141 @@ function ConnectedShell({
         </ModalProvider>
       </ToastProvider>
     </LanguageProvider>
+  );
+}
+
+/**
+ * 远程连接错误码 → 针对性诊断(标题 + 排查清单)。preload ConnectError.code 驱动。
+ * 避免用户面对笼统“连不上”,按失败阶段给具体原因和排查方向。
+ */
+function getRemoteErrorDiagnosis(errorCode: string | null): {
+  title: string;
+  checklist: string[];
+} {
+  switch (errorCode) {
+    case 'AUTH_REJECTED':
+      return {
+        title: '连接密码错误',
+        checklist: [
+          '对方电脑的“连接密码”改过,或你填的是旧密码。',
+          '去对方 Marina → 远程连接 → 允许远程连接 → 复制最新的连接密码。',
+          '回到这台电脑 → 远程连接 → 连接到其他电脑 → 编辑该电脑,填入新密码。',
+        ],
+      };
+    case 'TCP_UNREACHABLE':
+      return {
+        title: '无法连接到对方电脑',
+        checklist: [
+          '对方 Marina 是否已点“允许远程连接”→ 开启(状态应显示“运行中 · 端口 32780”)。',
+          '对方防火墙是否放行 32780(三个 profile:域/专用/公用都要)。',
+          '你填的 IP 是否正确,且能 ping 通(WireGuard/VPN 是否已连接)。',
+          '对方 server 可能绑在了别的网卡 —— 检查对方是否有多个网络接口。',
+        ],
+      };
+    case 'WS_HANDSHAKE':
+      return {
+        title: '目标端口不是 Marina',
+        checklist: [
+          '你连的 IP+端口上跑的是别的程序,不是 Marina daemon。',
+          '确认对方 Marina 监听的端口(默认 32780),不要填到别的服务端口。',
+        ],
+      };
+    case 'AUTH_TIMEOUT':
+      return {
+        title: '对方 daemon 没有响应',
+        checklist: [
+          '对方 Marina 可能卡住或异常,尝试在对方机器重启 Marina。',
+          '两边 Marina 版本可能不兼容(本机版本与对方差异过大)。',
+        ],
+      };
+    case 'PROFILE_INCOMPLETE':
+      return {
+        title: '这台远程电脑配置不完整',
+        checklist: [
+          '去 设置 → 远程连接 → 连接到其他电脑,把 IP 和连接密码都填上。',
+        ],
+      };
+    default:
+      return {
+        title: '无法连接到远程电脑',
+        checklist: [
+          '确认对方 Marina 已开启“允许远程连接”。',
+          '确认密码正确、IP 可达、防火墙放行 32780。',
+          '看下方详细错误获取更多线索。',
+        ],
+      };
+  }
+}
+
+/**
+ * 远程窗口连接失败时的全屏错误页。与普通 FullPagePlaceholder 的区别:
+ * - 带窗口标题栏(WindowChrome),用户能最小化/最大化/关闭。
+ * - 按 error.code 给针对性诊断(标题 + 排查清单),不是笼统一句。
+ * - 错误详情可选中 + 一键复制(便于把错误发给排查者)。
+ * - 重试(reload 重新走 ensureTransport)+ 关闭窗口 按钮。
+ */
+function RemoteConnectionErrorScreen({
+  errorMessage,
+  errorCode,
+  buildVersion,
+  buildType,
+}: {
+  errorMessage: string;
+  errorCode: string | null;
+  buildVersion: string;
+  buildType: 'dev' | 'portable' | 'installed';
+}): JSX.Element {
+  const diagnosis = getRemoteErrorDiagnosis(errorCode);
+  const handleRetry = (): void => {
+    window.location.reload();
+  };
+  const handleClose = (): void => {
+    window.close();
+  };
+  const handleCopy = async (): Promise<void> => {
+    const detail = `[Marina 远程连接失败]\n错误码:${errorCode ?? 'unknown'}\n信息:${errorMessage}`;
+    try {
+      await navigator.clipboard.writeText(detail);
+    } catch {
+      // clipboard API 不可用时,退而让用户手动选中下面的 pre
+    }
+  };
+
+  return (
+    <div className="app-root with-shell" data-window-style="windows">
+      <WindowChrome windowStyle="windows" buildVersion={buildVersion} buildType={buildType} />
+      <div className="remote-error-screen">
+        <div className="remote-error-card">
+          <h1 className="remote-error-title">{diagnosis.title}</h1>
+          <p className="remote-error-subtitle">
+            这个窗口是远程窗口,但连不上对方电脑上的 Marina。
+          </p>
+
+          <ol className="remote-error-checklist">
+            {diagnosis.checklist.map((item, i) => (
+              <li key={i}>{item}</li>
+            ))}
+          </ol>
+
+          <details className="remote-error-detail">
+            <summary>详细错误(可选中复制)</summary>
+            <pre className="remote-error-pre">{errorMessage}</pre>
+            <button type="button" className="settings-button remote-error-copy" onClick={() => void handleCopy()}>
+              复制错误信息
+            </button>
+          </details>
+
+          <div className="remote-error-actions">
+            <button type="button" className="settings-button" onClick={handleRetry}>
+              重试连接
+            </button>
+            <button type="button" className="settings-button danger" onClick={handleClose}>
+              关闭窗口
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 

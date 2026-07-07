@@ -25,6 +25,7 @@ import { WsServer } from './transport-ws';
 import { RemoteDaemon, type DispatchFn } from './remote-daemon';
 import type { ClientRegistry } from './client-registry';
 import type { SessionManager } from './session-manager';
+import * as nodeNet from 'node:net';
 
 /** controller 依赖(由 index.ts 注入)。 */
 export interface RemoteDaemonControllerDeps {
@@ -47,6 +48,13 @@ export interface DaemonStatus {
   clientCount: number;
   /** 是否已设密码(没设不能启动)。 */
   hasPassword: boolean;
+  /**
+   * 端口监听自检:start 后主动 connect 127.0.0.1:port 验证监听真的生效。
+   * undefined = 未启动 / 未自检;{ ok:false, reason } = 监听异常(极罕见:
+   * ws.start 成功但实际接不了,比如被虚拟网卡/防火墙阻在本机)。
+   * 用户看到“已开启但自检失败” → 快速定位“服务开了但连不上”。
+   */
+  listenCheck?: { ok: boolean; reason?: string };
 }
 
 /**
@@ -56,6 +64,7 @@ export class RemoteDaemonController {
   private wsServer: WsServer | null = null;
   private remoteDaemon: RemoteDaemon | null = null;
   private currentPort: number | null = null;
+  private listenCheck: { ok: boolean; reason?: string } | undefined = undefined;
   /**
    * 状态广播器(index.ts 在 installIpcLayer 后赋值:接 ipc 的 broadcastEvent)。
    * 用 public 字段而非构造参数,避免 controller↔ipc 循环依赖。
@@ -94,8 +103,49 @@ export class RemoteDaemonController {
     this.wsServer = wsServer;
     this.remoteDaemon = remoteDaemon;
     this.currentPort = actualPort;
+    this.listenCheck = undefined; // 重置;自检后填
     this.emitStatus();
+    // 异步自检:不等 start 返回(避免阻塞 UI)。自检完再 emit 一次带 listenCheck。
+    void this.selfCheckListen(actualPort);
     return { port: actualPort };
+  }
+
+  /**
+   * 端口监听自检:start 后主动 connect 127.0.0.1:port 验证 ws.start 成功 ≠ 真能接。
+   * 极罕见场景:ws.start 未抛错但实际接不了(虚拟网卡/防火墙阻本机回环)。
+   * 检测到异常 → listenCheck.ok=false,UI 显示警告 + renderer 错误页能据 LISTEN_FAILED 诊断。
+   */
+  private selfCheckListen(port: number): Promise<void> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (ok: boolean, reason?: string): void => {
+        if (settled) return;
+        settled = true;
+        // 只在仍是当前会话(未被 stop/restart)时记录
+        if (this.currentPort === port) {
+          this.listenCheck = reason ? { ok, reason } : { ok };
+          this.emitStatus();
+        }
+        resolve();
+      };
+      try {
+        const socket = nodeNet.connect({ host: '127.0.0.1', port, timeout: 1500 });
+        socket.once('connect', () => {
+          socket.destroy();
+          done(true);
+        });
+        socket.once('timeout', () => {
+          socket.destroy();
+          done(false, '本机回环连接超时(监听可能未真正生效)');
+        });
+        socket.once('error', (err) => {
+          socket.destroy();
+          done(false, `本机回环连接失败:${err.message}`);
+        });
+      } catch (err) {
+        done(false, err instanceof Error ? err.message : String(err));
+      }
+    });
   }
 
   /** 停止服务端:terminate 所有 client + close server。幂等(未运行时 no-op)。 */
@@ -105,6 +155,7 @@ export class RemoteDaemonController {
     this.wsServer = null;
     this.remoteDaemon = null;
     this.currentPort = null;
+    this.listenCheck = undefined;
     this.emitStatus();
   }
 
@@ -143,12 +194,16 @@ export class RemoteDaemonController {
   }
 
   getStatus(): DaemonStatus {
-    return {
+    const status: DaemonStatus = {
       running: this.wsServer !== null,
       port: this.currentPort,
       clientCount: this.remoteDaemon?.authenticatedCount() ?? 0,
       hasPassword: this.deps.getCredentialsToken() !== null,
     };
+    if (this.listenCheck !== undefined) {
+      status.listenCheck = this.listenCheck;
+    }
+    return status;
   }
 
   private emitStatus(): void {

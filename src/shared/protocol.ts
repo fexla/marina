@@ -641,6 +641,54 @@ export interface RemoteDaemonStatusPayload {
   port: number | null;
   clientCount: number;
   hasPassword: boolean;
+  /**
+   * 端口监听自检结果(controller.start 后主动 connect 127.0.0.1:port 验证)。
+   * undefined = 尚未启动 / 未自检;{ ok: false, reason } = listen 失败(端口被占 / 绑定异常)。
+   * 用户看到“已开启但自检失败” → 能快速定位“服务开了但连不上”是监听问题。
+   */
+  listenCheck?: { ok: boolean; reason?: string };
+}
+
+/**
+ * v2.0 远程连接错误自动分析:把连接失败的**阶段**和**原因**细分,
+ * renderer 据此给针对性诊断(而不是笼统的“连不上”)。
+ *
+ * 错误点全链路:
+ *   client ──TCP connect──→ daemon [监听?] ──WS upgrade──→ ──auth(token)──→ [token 对?]
+ *
+ * 对应错误码:
+ *   LISTEN_FAILED    — daemon 端自检:端口起不来(占用/绑定)。仅 daemon 状态里用。
+ *   PROFILE_INCOMPLETE — client profile 缺 host/token(本地数据问题)。
+ *   TCP_REFUSED      — TCP 连接被拒(server 没起 / 端口没开 / 绑定到别的接口)。
+ *   TCP_TIMEOUT      — TCP 连接超时(防火墙 drop / WG 路由 / 网络不通)。与 REFUSED 的区别:REFUSED 是对方明确拒(RST),TIMEOUT 是包丢了。
+ *   TCP_UNREACHABLE  — 浏览器 WebSocket 无法区分 REFUSED/TIMEOUT(底层都报 close 1006)。
+ *                      统一归此类,错误页排查清单同时列两类可能。
+ *   WS_HANDSHAKE     — TCP 通但 WS 升级失败(目标不是 Marina daemon / 协议不对)。
+ *   AUTH_REJECTED    — daemon 明确拒认证(token 不匹配,close code 4001)。
+ *   AUTH_TIMEOUT     — WS 连上但 daemon 不回 auth-ok(daemon 异常 / 卡住 / 版本不兼容)。
+ *   NO_PORT_FOUND    — 扫描范围内所有端口都失败(用最有价值的子错误原因描述)。
+ */
+export type RemoteConnectErrorCode =
+  | 'LISTEN_FAILED'
+  | 'PROFILE_INCOMPLETE'
+  | 'TCP_UNREACHABLE'
+  | 'TCP_REFUSED'
+  | 'TCP_TIMEOUT'
+  | 'WS_HANDSHAKE'
+  | 'AUTH_REJECTED'
+  | 'AUTH_TIMEOUT'
+  | 'NO_PORT_FOUND';
+
+/** client 端连接失败时报告给 renderer 的结构化错误。 */
+export interface RemoteConnectError {
+  code: RemoteConnectErrorCode;
+  /** 人类可读的具体描述(含 host/port 等上下文)。renderer 错误页可直接展示。 */
+  message: string;
+  host: string;
+  /** 尝试的端口(扫描场景为最后一个试的端口)。 */
+  port?: number;
+  /** NO_PORT_FOUND 时,聚合各端口尝试的错误码(供 renderer 选最有价值诊断)。 */
+  triedErrors?: RemoteConnectErrorCode[];
 }
 
 export interface RemoteDaemonStatusResponse {

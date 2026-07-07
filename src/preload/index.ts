@@ -28,7 +28,7 @@ import {
   type GetRemoteConnectionPayload,
   type GetRemoteConnectionResponse,
 } from '@shared/protocol';
-import { RemoteTransport, type WSLike } from './remote-transport';
+import { RemoteTransport, ConnectError, ConnectErrorCode, type WSLike } from './remote-transport';
 
 /**
  * 解析当前 OS 的 Windows build 号(如 22621),非 Windows 或解析失败返回 null。
@@ -84,7 +84,9 @@ function browserWs(url: string): WSLike {
   };
   ws.onopen = () => adapter.onopen?.();
   ws.onmessage = (ev: MessageEvent) => adapter.onmessage?.({ data: ev.data });
-  ws.onclose = () => adapter.onclose?.();
+  // 透传 close code/reason(daemon 认证失败用 4003/4001,client 端错误分析依赖它)。
+  ws.onclose = (ev: CloseEvent) =>
+    adapter.onclose?.({ code: ev.code, reason: ev.reason });
   ws.onerror = (e) => adapter.onerror?.(e);
   return adapter;
 }
@@ -112,6 +114,13 @@ function ensureTransport(): Promise<void> {
       )) as GetRemoteConnectionResponse;
       if (res?.connection) {
         const { host, token } = res.connection;
+        // profile 数据不全 → 明确报 PROFILE_INCOMPLETE(本地数据问题,非网络)。
+        if (!host || !token) {
+          throw new ConnectError(
+            ConnectErrorCode.PROFILE_INCOMPLETE,
+            `[preload] 该远程电脑配置不完整(缺 ${!host ? 'IP' : '密码'}),请在设置里补全。`,
+          );
+        }
         // 端口扫描:从 32780 起,串行尝试 32780-32789。端口关闭 TCP RST 快速失败,
         // 遇开放的错误端口才等握手超时(1.5s)。找到第一个握手通过的端口。
         // 设计动机(用户需求):client 只需 IP,不用输端口。daemon 默认 32780,
@@ -119,6 +128,8 @@ function ensureTransport(): Promise<void> {
         const PORT_FROM = 32780;
         const PORT_COUNT = 10;
         let portFound: number | null = null;
+        // 收集各端口尝试的错误码,全失败时选最有价值的报告给用户。
+        const tried: Array<{ port: number; code: string; message: string }> = [];
         for (let i = 0; i < PORT_COUNT; i++) {
           const port = PORT_FROM + i;
           const probe = new RemoteTransport({
@@ -133,14 +144,36 @@ function ensureTransport(): Promise<void> {
             probe.close();
             portFound = port;
             break;
-          } catch {
+          } catch (err) {
             probe.close();
-            // 该端口不是本 daemon(关闭/非 Marina/密码错)→ 试下一个
+            const code = err instanceof ConnectError ? err.code : 'UNKNOWN';
+            const message = err instanceof Error ? err.message : String(err);
+            tried.push({ port, code, message });
           }
         }
         if (portFound === null) {
-          throw new Error(
-            `[preload] 在 ${host} 的 ${PORT_FROM}-${PORT_FROM + PORT_COUNT - 1} 范围内未找到 Marina daemon(或密码错误)`,
+          // 选最有价值的错误码(优先级:AUTH_REJECTED > WS_HANDSHAKE > AUTH_TIMEOUT > TCP_UNREACHABLE)。
+          // AUTH_REJECTED 最有价值 —— 说明某个端口是 Marina daemon 但密码错(用户改密码即可)。
+          // 全部 TCP_UNREACHABLE → server 根本没起 / 网络不通(最常见)。
+          const priority: Record<string, number> = {
+            AUTH_REJECTED: 0,
+            WS_HANDSHAKE: 1,
+            AUTH_TIMEOUT: 2,
+            TCP_UNREACHABLE: 3,
+            UNKNOWN: 4,
+          };
+          const best = [...tried].sort(
+            (a, b) => (priority[a.code] ?? 9) - (priority[b.code] ?? 9),
+          )[0];
+          const bestCode = best?.code ?? 'TCP_UNREACHABLE';
+          const triedCodes = tried.map((t) => t.code);
+          // 构造给 renderer 的诊断信息(含 host/端口范围/最有价值原因)。
+          throw new ConnectError(
+            bestCode as ConnectErrorCode,
+            `[preload] 连接 ${host}:${PORT_FROM}-${PORT_FROM + PORT_COUNT - 1} 全部失败。` +
+              `最有价值原因:${best?.message ?? '无响应'}。` +
+              `尝试详情:${tried.map((t) => `${t.port}=${t.code}`).join(', ')}。` +
+              `triedCodes=${triedCodes.join(',')}`,
           );
         }
         // 重建带重连回调的 transport 连找到的端口(扫描用的 probe 已 close)
@@ -168,10 +201,15 @@ function ensureTransport(): Promise<void> {
     } catch (err) {
       // 远程连接失败:绝不静默回退本地!每窗口后端模型下,用户明确要开远程窗口,
       // 失败必须报错 —— 否则窗口偷偷变本地,用户看到本地数据会以为“打开错了/还是本地窗口”。
-      // 把错误抛出,renderer 据此显示远程连接错误页(排查清单 + 重试 + 关窗)。
+      // 保留 ConnectError 的 code(preload 端口扫描/profile 检查会抛),renderer 错误页
+      // 据 code 给针对性诊断。非 ConnectError(如 IPC 拉取 connection 失败)包成通用错误。
+      if (err instanceof ConnectError) {
+        throw err;
+      }
       const reason = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `无法连接到远程电脑: ${reason}。请检查:① 对方 Marina 是否已点“允许远程连接”启动服务;② 密码是否正确;③ 对方 IP 是否可达(同一局域网/VPN)。`,
+      throw new ConnectError(
+        ConnectErrorCode.NO_PORT_FOUND,
+        `[preload] 拉取远程连接信息失败:${reason}`,
       );
     }
   })();

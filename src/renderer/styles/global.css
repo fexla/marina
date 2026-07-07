@@ -3770,6 +3770,100 @@ select.settings-input option {
   margin-top: 20px;
 }
 
+/* v2.0 远程连接错误页(带窗口标题栏 + 针对性诊断 + 可复制错误)。 */
+.remote-error-screen {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px 24px;
+}
+
+.remote-error-card {
+  max-width: 640px;
+  width: 100%;
+  background-color: var(--color-bg-secondary, #1f1d2e);
+  border: 1px solid var(--color-bg-elevated, #26233a);
+  border-radius: 10px;
+  padding: 28px 32px;
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.35);
+}
+
+.remote-error-title {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-danger, #eb6f92);
+}
+
+.remote-error-subtitle {
+  margin: 0 0 18px;
+  color: var(--color-text-secondary, #908caa);
+  font-size: 13px;
+}
+
+.remote-error-checklist {
+  margin: 0 0 18px;
+  padding-left: 20px;
+  color: var(--color-text-primary, #e0def4);
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+.remote-error-checklist li {
+  margin-bottom: 4px;
+}
+
+.remote-error-detail {
+  margin-bottom: 18px;
+  border-top: 1px solid var(--color-bg-elevated, #26233a);
+  padding-top: 14px;
+}
+
+.remote-error-detail summary {
+  cursor: pointer;
+  color: var(--color-text-secondary, #908caa);
+  font-size: 12px;
+  user-select: none;
+}
+
+.remote-error-pre {
+  margin: 10px 0;
+  padding: 10px 12px;
+  background-color: var(--color-bg-elevated, #26233a);
+  border-radius: 4px;
+  font-family: var(--terminal-font-family, monospace);
+  font-size: 11px;
+  color: var(--color-text-secondary, #908caa);
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.remote-error-copy {
+  font-size: 12px;
+}
+
+.remote-error-actions {
+  display: flex;
+  gap: 10px;
+}
+
+/* daemon 端口自检失败警告(设置页远程连接区块)。 */
+.remote-listen-warn {
+  margin: 4px 0 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background-color: var(--color-bg-elevated, #26233a);
+  border-left: 3px solid var(--color-danger, #eb6f92);
+  color: var(--color-danger, #eb6f92);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 /* ──────────────────────────────────────────────────────────────────
  * Phase B 一致化兜底层 — a11y / 浮层 / 浅色主题
  * ──────────────────────────────────────────────────────────────── */
