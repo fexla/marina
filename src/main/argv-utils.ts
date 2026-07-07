@@ -75,6 +75,29 @@ export function parseSimpleMode(argv: readonly string[]): boolean {
 }
 
 /**
+ * 解析实例名:`--instance=<name>`。
+ *
+ * 用途:本地开多个 Marina 实例调试(如一个当 daemon、一个当 client,
+ * localhost 测远程连接,不必跨机器)。Electron 单实例锁按 app name(userData
+ * 目录)区分,name 决定 app.setName('Marina (<name>)') → 独立 userData +
+ * 独立锁 + 独立日志目录,多实例互不干扰、与 dev/portable/installed 也不冲突。
+ *
+ * 约定:name 仅 [A-Za-z0-9-_],非法字符过滤(防止路径注入)。空 / 缺失 → null
+ * (走默认 dev/portable/installed 命名)。
+ */
+export function parseInstanceName(argv: readonly string[]): string | null {
+  for (const tok of argv) {
+    if (!tok) continue;
+    if (tok.startsWith('--instance=')) {
+      const raw = tok.slice('--instance='.length);
+      const cleaned = raw.replace(/[^A-Za-z0-9_-]/g, '');
+      return cleaned || null;
+    }
+  }
+  return null;
+}
+
+/**
  * 解析 v2.0 远程后端 daemon 启动参数(ADR-014 / 软件定义书 §14.9)。
  *
  * 触发:argv 出现 `--daemon` 或 `--headless` 任一即进入 daemon 模式

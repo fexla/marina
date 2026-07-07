@@ -3,7 +3,7 @@
  * @purpose argv 解析器单测。
  */
 import { describe, expect, it } from 'vitest';
-import { parseOpenHere, parseHeadlessDaemon } from './argv-utils';
+import { parseOpenHere, parseHeadlessDaemon, parseInstanceName } from './argv-utils';
 
 describe('parseOpenHere', () => {
   it('找到 --open-here 后取下一个 token', () => {
@@ -121,5 +121,26 @@ describe('parseHeadlessDaemon', () => {
   it('--port 非法值(负数/NaN)回退默认端口', () => {
     expect(parseHeadlessDaemon(['exe', '--daemon', '--port=-1'])!.port).toBe(32780);
     expect(parseHeadlessDaemon(['exe', '--daemon', '--port=abc'])!.port).toBe(32780);
+  });
+});
+
+describe('parseInstanceName', () => {
+  it('无 --instance → null', () => {
+    expect(parseInstanceName(['exe'])).toBeNull();
+    expect(parseInstanceName(['exe', '--daemon'])).toBeNull();
+  });
+
+  it('--instance=<name> → name', () => {
+    expect(parseInstanceName(['exe', '--instance=daemon'])).toBe('daemon');
+    expect(parseInstanceName(['exe', '--instance=client-1'])).toBe('client-1');
+  });
+
+  it('非法字符过滤(防路径注入)', () => {
+    expect(parseInstanceName(['exe', '--instance=..\\evil'])).toBe('evil');
+    expect(parseInstanceName(['exe', '--instance=a/b'])).toBe('ab');
+  });
+
+  it('过滤后为空 → null(走默认命名)', () => {
+    expect(parseInstanceName(['exe', '--instance=...'])).toBeNull();
   });
 });

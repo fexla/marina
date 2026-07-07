@@ -43,7 +43,7 @@ import { MarkdownThemeManager } from './markdown-theme-manager';
 import { getPlatformAdapter } from './platform';
 import { AIClient } from './ai-client';
 import { WindowsAdapter } from './platform/windows';
-import { parseOpenHere, parseSimpleMode, parseHeadlessDaemon } from './argv-utils';
+import { parseOpenHere, parseSimpleMode, parseHeadlessDaemon, parseInstanceName } from './argv-utils';
 import { getBuildType } from './build-type';
 import { logger } from './logger';
 import type {
@@ -105,7 +105,13 @@ function bootstrap(): void {
   //
   // 同样的 portable 形态也独立一份,避免运行中的 portable 与已安装版互踩
   // settings.json / 单实例锁。仅 installed 形态使用 "Marina" 原名。
-  if (!app.isPackaged) {
+  // --instance=<name> 覆盖以上:强制 app.name = 'Marina (<name>)',
+  // 用于本地开多实例调试(如 daemon+client 同机 localhost 测远程)。
+  // 必须在 requestSingleInstanceLock 之前(Electron 一旦解析 userData 会缓存)。
+  const instanceName = parseInstanceName(process.argv);
+  if (instanceName) {
+    app.setName(`Marina (${instanceName})`);
+  } else if (!app.isPackaged) {
     app.setName('Marina (dev)');
   } else if (process.env['PORTABLE_EXECUTABLE_DIR']) {
     app.setName('Marina (portable)');
