@@ -350,16 +350,25 @@ function bootstrap(): void {
       // CSP via headers (兜底 + 消除 Electron unsafe-eval / 缺失 CSP 警告)。
       // dev 模式 Vite 的 React Refresh 用 new Function/eval,需要 'unsafe-eval';
       // 生产 (file://) 不需要。
+      //
+      // 远程后端(ADR-015):renderer 需连用户配置的任意 daemon host 的 ws://
+      // (127.0.0.1 / localhost / WireGuard IP / 局域网 IP / 域名)。
+      // V1 纯 ws:// (TLS 延期),V2 切 wss://。connect-src 必须放行 ws: / wss:,
+      // 否则 renderer 的 WebSocket 在出发前就被 CSP 拦死 —— daemon 一切正常
+      // 但 client 卡在握手超时(踩过坑,见 0.2.4 修复 + scripts/csp 集成测试)。
+      // 安全权衡:Marina 是桌面应用,renderer 只加载 'self' 本地资源,
+      // connect-src 放行 ws: 仅影响「主动连出到任意 WS」—— 对终端应用可接受
+      // (用户明确要连远程 daemon)。其余指令(script/font/img-src)保持严格。
       const cspProd =
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-        "font-src 'self' data:; img-src 'self' data:; connect-src 'self'";
+        "font-src 'self' data:; img-src 'self' data:; connect-src 'self' ws: wss:";
       const cspDev =
         "default-src 'self' http://127.0.0.1:* ws://127.0.0.1:*; " +
         "script-src 'self' 'unsafe-eval' 'unsafe-inline' http://127.0.0.1:*; " +
         "style-src 'self' 'unsafe-inline' http://127.0.0.1:*; " +
         "font-src 'self' data: http://127.0.0.1:*; " +
         "img-src 'self' data: http://127.0.0.1:*; " +
-        "connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*";
+        "connect-src 'self' http://127.0.0.1:* ws: wss:";
       electronSession.defaultSession.webRequest.onHeadersReceived((details, callback) => {
         callback({
           responseHeaders: {
