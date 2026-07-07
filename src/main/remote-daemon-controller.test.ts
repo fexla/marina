@@ -49,6 +49,52 @@ afterEach(async () => {
   }
 });
 
+describe('RemoteDaemonController — addStatusListener 不覆盖 onStatusChange', () => {
+  // 回归(cp3 勘误 / 用户报告 start 后 UI 永远显示“未启动”):
+  // 历史上 index.ts 用 controller.onStatusChange = 赋值覆盖了 ipc.ts 设的
+  // broadcast 回调 → start 后 status 不 broadcast → UI 不更新。修复:
+  // 加 addStatusListener(多监听器),emitStatus 同时调 onStatusChange 和
+  // 所有 listener。这条测试锁住“两者都被调,互不覆盖”。
+  it('emitStatus 同时调 onStatusChange(broadcast)和 addStatusListener 加的监听器', async () => {
+    const { controller } = makeController();
+    const broadcastCalls: unknown[] = [];
+    const listenerCalls: unknown[] = [];
+    // 模拟 ipc.ts 设的 broadcast 回调(wireEventBroadcasts 里设)
+    controller.onStatusChange = (s) => broadcastCalls.push(s);
+    // 模拟 index.ts 加的 tray 同步监听器
+    const unsub = controller.addStatusListener((s) => listenerCalls.push(s));
+    // setPassword 会触发 emitStatus(每调一次状态可能变)
+    await controller.setPassword('new-pass-1');
+    expect(broadcastCalls.length).toBeGreaterThanOrEqual(1);
+    expect(listenerCalls.length).toBeGreaterThanOrEqual(1);
+    // 关键:加了 listener 后,broadcast 回调依然被调(没被覆盖)
+    expect(broadcastCalls[broadcastCalls.length - 1]).toEqual(
+      listenerCalls[listenerCalls.length - 1],
+    );
+    // 取消订阅后不再调
+    const broadcastBefore = broadcastCalls.length;
+    const listenerBefore = listenerCalls.length;
+    unsub();
+    await controller.setPassword('new-pass-2');
+    expect(listenerCalls.length).toBe(listenerBefore); // listener 不再调
+    expect(broadcastCalls.length).toBeGreaterThan(broadcastBefore); // broadcast 仍调
+  });
+
+  it('单个 listener throw 不影响 broadcast 和其他 listener', async () => {
+    const { controller } = makeController();
+    let broadcastCount = 0;
+    let goodListenerCount = 0;
+    controller.onStatusChange = () => { broadcastCount += 1; };
+    controller.addStatusListener(() => {
+      throw new Error('listener boom');
+    });
+    controller.addStatusListener(() => { goodListenerCount += 1; });
+    await controller.setPassword('pass-x');
+    expect(broadcastCount).toBeGreaterThanOrEqual(1);
+    expect(goodListenerCount).toBeGreaterThanOrEqual(1); // 坏 listener 不影响好的
+  });
+});
+
 describe('RemoteDaemonController — 端口监听自检', () => {
   it('start 后 listenCheck 最终变 ok(自检 connect 127.0.0.1:port 成功)', async () => {
     const { controller } = makeController();

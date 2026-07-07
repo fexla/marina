@@ -27,7 +27,7 @@ type HandshakeState =
   | { status: 'pending' }
   | { status: 'ok'; buildVersion: string; buildType: 'dev' | 'portable' | 'installed' }
   | { status: 'mismatch'; mainVersion: number; rendererVersion: number }
-  | { status: 'error'; message: string };
+  | { status: 'error'; message: string; errorCode: string | null };
 
 export function App(): JSX.Element {
   const [handshake, setHandshake] = useState<HandshakeState>({ status: 'pending' });
@@ -86,6 +86,7 @@ export function App(): JSX.Element {
       setHandshake({
         status: 'error',
         message: 'window.api 不存在 — preload 脚本未正确加载。',
+        errorCode: null,
       });
       return;
     }
@@ -103,9 +104,16 @@ export function App(): JSX.Element {
         setHandshake({ status: 'ok', buildVersion, buildType });
       })
       .catch((err: unknown) => {
+        // 远程窗口连不上 daemon 时,getProtocolVersion()→invoke()→ensureTransport()
+        // 会 throw ConnectError(带 code)。提取 code 供错误页给针对性诊断。
+        const errorCode =
+          err !== null && typeof err === 'object' && 'code' in err && typeof (err as { code?: unknown }).code === 'string'
+            ? (err as { code: string }).code
+            : null;
         setHandshake({
           status: 'error',
           message: err instanceof Error ? err.message : String(err),
+          errorCode,
         });
       });
   }, []);
@@ -126,6 +134,36 @@ export function App(): JSX.Element {
   }
 
   if (handshake.status === 'error') {
+    // 远程窗口连不上 daemon 时,getProtocolVersion 走 invoke→ensureTransport 会 throw,
+    // 提前在这里失败(到不了 ConnectedShell 的 sync.error)。所以这里也要判断远程窗口,
+    // 显示带标题栏 + 可复制的 RemoteConnectionErrorScreen,而不是无标题栏的 FullPagePlaceholder。
+    const backendId =
+      typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search).get('backend')
+        : null;
+    if (backendId) {
+      // 必须包 AppStateProvider:RemoteConnectionErrorScreen 内部调 useAppState()
+      // (取 settings.appearance.theme),它渲染的 WindowChrome 和 LanguageProvider
+      // 也各自调 useAppState()。而 useAppState 在无 Provider 时会 throw
+      // ('[store] useAppState 必须在 AppStateProvider 内使用'),没有 ErrorBoundary
+      // 兜底 → 整棵树崩溃白屏 = 用户看到“标题栏还是没有”
+      // (前两次修复无效的真正原因)。这里挂一个 Provider:snapshot 不会被拉
+      // (不调 useIpcSync),settings 保持空默认值 → theme fallback 'rose-pine',
+      // WindowChrome / LanguageProvider 读默认 context 正常渲染,不崩溃。
+      return (
+        <AppStateProvider
+          myWindowId={window.api.windowId}
+          myWindowNumber={window.api.windowNumber}
+        >
+          <RemoteConnectionErrorScreen
+            errorMessage={handshake.message}
+            errorCode={handshake.errorCode}
+            buildVersion="unknown"
+            buildType="portable"
+          />
+        </AppStateProvider>
+      );
+    }
     return (
       <FullPagePlaceholder
         title="Marina"

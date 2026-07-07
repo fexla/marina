@@ -1,0 +1,37 @@
+{
+  "runId": "8ca0d293",
+  "agent": "reviewer",
+  "task": "审查 Marina 远程连接错误处理的最新修复(commit 409e619 + 当前未提交改动),重点验证三个用户报告的问题是否真的修复了。用户反馈前两次修复完全无效(header 依旧没有、错误无法复制、start 状态不更新),所以这次必须确认修复会真正生效。\n\n## 三个要验证的问题\n\n**问题 1(最重要):远程窗口连接失败时,错误页没有窗口标题栏(header,含最小化/最大化/关闭按钮),错误信息无法复制。**\n\n已知根因(我刚发现,需要你验证):`getProtocolVersion` 内部调 `invoke()`,而 `invoke` 会 `await ensureTransport()`。远程窗口连不上 daemon 时,ensureTransport 在 **handshake 阶段**就 throw → handshake `.catch` → 走 `App.tsx` 的 handshake error 分支(`FullPagePlaceholder`,没 header)→ **永远到不了** `ConnectedShell` 里的 `RemoteConnectionErrorScreen`(那个才有 header 和复制按钮)。\n\n我刚做的修复:`App.tsx` handshake error 分支也判断 backendId(远程窗口),显示 `RemoteConnectionErrorScreen`。\n\n请验证:\n1. 这个根因分析对不对?handshake 是不是真的会因为 ensureTransport throw 而失败?(看 `src/preload/index.ts` 的 `getProtocolVersion` + `invoke` + `ensureTransport`)\n2. 修复(handshake error 分支走 RemoteConnectionErrorScreen)是否能让错误页显示 header + 复制?追踪完整渲染路径。\n3. `RemoteConnectionErrorScreen` 本身能否正常渲染 WindowChrome?它现在包了 LanguageProvider + data-theme,但它在 handshake error 时被渲染,此时**还没有 AppStateProvider**(handshake error 在 App 组件,AppStateProvider 在 handshake OK 之后才挂)。而 RemoteConnectionErrorScreen 调用了 `useAppState()`。这是个问题吗?会不会崩溃?(关键:检查 RemoteConnectionErrorScreen 在没有 AppStateProvider 时 useAppState() 会怎样)\n\n**问题 2:start 服务端后 UI 显示\"未启动\",但再点报\"已在运行\"。**\n\n根因:`index.ts` 用 `controller.onStatusChange =` 赋值覆盖了 `ipc.ts` 设的 broadcast 回调。修复:controller 加 `addStatusListener`(多监听器),index 改用它。\n\n请验证:`src/main/remote-daemon-controller.ts` 的 addStatusListener + emitStatus 逻辑,以及 `src/main/index.ts` 改用 addStatusListener 后,onStatusChange(broadcast)不再被覆盖,start 后 status 能推到 UI。\n\n**问题 3:AUTH_TIMEOUT 诊断。** 我加了 daemon auth 日志 + probe 超时 1500→3000。这个次要,简单确认日志加对位置即可。\n\n## 关键文件\n- src/renderer/App.tsx(handshake error 分支、RemoteConnectionErrorScreen、ConnectedShell sync.error 分支)\n- src/preload/index.ts(getProtocolVersion、invoke、ensureTransport)\n- src/main/remote-daemon-controller.ts(addStatusListener、emitStatus)\n- src/main/index.ts(addStatusListener 调用)\n- src/renderer/store.tsx(useIpcSync、useAppState)\n\n## 输出要求\n对每个问题给出:① 根因分析是否正确 ② 修复是否真的生效(追踪渲染/执行路径)③ 还有什么遗漏会导致修复无效。特别关注问题 1 的 useAppState 在无 AppStateProvider 时是否会崩溃 —— 如果会,这是必须修的 BLOCKER。要严苛,用户已经因为前两次无效修复很不满了。",
+  "exitCode": 0,
+  "usage": {
+    "input": 132136,
+    "output": 15374,
+    "cacheRead": 2091136,
+    "cacheWrite": 0,
+    "cost": 0,
+    "turns": 46
+  },
+  "model": "zhipu/GLM-5.2:high",
+  "attemptedModels": [
+    "zhipu/GLM-5.2:high"
+  ],
+  "modelAttempts": [
+    {
+      "model": "zhipu/GLM-5.2:high",
+      "success": true,
+      "exitCode": 0,
+      "usage": {
+        "input": 132136,
+        "output": 15374,
+        "cacheRead": 2091136,
+        "cacheWrite": 0,
+        "cost": 0,
+        "turns": 46
+      }
+    }
+  ],
+  "durationMs": 689347,
+  "toolCount": 45,
+  "transcriptPath": "D:\\data\\projects\\agent\\marina\\.pi-subagents\\artifacts\\8ca0d293_reviewer_0_transcript.jsonl",
+  "timestamp": 1783394638975
+}

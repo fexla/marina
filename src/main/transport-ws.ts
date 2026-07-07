@@ -32,6 +32,7 @@ import { WebSocketServer } from 'ws';
 import type { WebSocket } from 'ws';
 import type { ClientTransport } from './client-registry';
 import type { CommandEnvelope, EventEnvelope } from '../shared/protocol';
+import { logger } from './logger';
 
 // ──────────────────────────────────────────────────────────────────
 // 帧格式(WS 上跑的 JSON 帧)
@@ -323,11 +324,14 @@ export class WsServer {
    */
   private handleAuthenticatingConnection(ws: WebSocket): void {
     let settled = false;
-    console.info('[transport-ws] new client connection, waiting for auth frame');
+    // 用结构化 logger 落 main.log(不是 console.info):错误页 AUTH_TIMEOUT 诊断
+    // 明确要求用户“搜 main.log transport-ws”,console 输出不会进 main.log
+    // (打包 / 独立 daemon 模式下进程无可见 stdout),用 logger 才能真正写到磁盘。
+    logger.info('transport-ws', 'new client connection, waiting for auth frame');
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      console.warn('[transport-ws] auth timeout (no first frame in 10s), closing 4001');
+      logger.warn('transport-ws', 'auth timeout (no first frame in 10s), closing 4001');
       try {
         ws.close(4001, 'auth timeout');
       } catch {
@@ -337,12 +341,12 @@ export class WsServer {
 
     const onFirst = (data: unknown): void => {
       if (settled) return;
-      console.info('[transport-ws] received first frame, running auth handler');
+      logger.info('transport-ws', 'received first frame, running auth handler');
       const result = this.authHandler!(data);
       if ('error' in result) {
         settled = true;
         clearTimeout(timer);
-        console.warn(`[transport-ws] auth rejected: ${result.error}, closing 4003`);
+        logger.warn('transport-ws', `auth rejected: ${result.error}, closing 4003`);
         try {
           ws.close(4003, result.error);
         } catch {
@@ -353,7 +357,7 @@ export class WsServer {
       settled = true;
       clearTimeout(timer);
       ws.off('message', onFirst);
-      console.info(`[transport-ws] auth ok, clientId=${result.clientId}`);
+      logger.info('transport-ws', `auth ok, clientId=${result.clientId}`);
       this.registerClient(ws, result.clientId);
     };
     ws.on('message', onFirst);
