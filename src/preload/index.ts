@@ -112,8 +112,13 @@ function ensureTransport(): Promise<void> {
           payload: { profileId: backend },
         } as CommandEnvelope<GetRemoteConnectionPayload>,
       )) as GetRemoteConnectionResponse;
-      if (res?.connection) {
-        const { host, token } = res.connection;
+      if (!res?.connection) {
+        throw new ConnectError(
+          ConnectErrorCode.PROFILE_INCOMPLETE,
+          '[preload] 该远程电脑配置不完整或连接密码无法解密,请在设置里重新保存连接密码。',
+        );
+      }
+      const { host, token } = res.connection;
         // profile 数据不全 → 明确报 PROFILE_INCOMPLETE(本地数据问题,非网络)。
         if (!host || !token) {
           throw new ConnectError(
@@ -197,7 +202,6 @@ function ensureTransport(): Promise<void> {
         });
         await t.ready;
         remoteTransport = t;
-      }
     } catch (err) {
       // 远程连接失败:绝不静默回退本地!每窗口后端模型下,用户明确要开远程窗口,
       // 失败必须报错 —— 否则窗口偷偷变本地,用户看到本地数据会以为“打开错了/还是本地窗口”。
@@ -242,16 +246,30 @@ function on<P>(channel: string, handler: (payload: P) => void): () => void {
       handler(envelope.payload);
     }
   };
-  // 本地路径立即注册(零回归);远程路径 transport ready 后额外注册。
-  ipcRenderer.on(channel, wrapped);
+
+  // 本地窗口:立即注册 ipcRenderer 事件,保持既有零回归路径。
+  if (!backend) {
+    ipcRenderer.on(channel, wrapped);
+    return () => ipcRenderer.off(channel, wrapped);
+  }
+
+  // 远程窗口:绝不能先订阅本地 ipcRenderer。否则远程连接失败 / 密码无法解密时,
+  // 事件流会混入创建该 BrowserWindow 的本地后端,形成“命令已报错但 UI 仍被本地事件污染”
+  // 的隐蔽状态。远程事件只在 transport ready 后从 WS 订阅。
+  let disposed = false;
   let unsubRemote = (): void => {};
-  ensureTransport().then(() => {
-    if (remoteTransport) {
-      unsubRemote = remoteTransport.on(channel, handler as (payload: unknown) => void);
-    }
-  });
+  void ensureTransport()
+    .then(() => {
+      if (disposed) return;
+      if (remoteTransport) {
+        unsubRemote = remoteTransport.on(channel, handler as (payload: unknown) => void);
+      }
+    })
+    .catch((err) => {
+      console.error('[preload] remote event subscription failed:', err);
+    });
   return () => {
-    ipcRenderer.off(channel, wrapped);
+    disposed = true;
     unsubRemote();
   };
 }
