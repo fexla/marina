@@ -2675,6 +2675,162 @@ textarea.settings-input::-webkit-scrollbar-corner {
   color: var(--color-accent-special, #f0f);
 }
 
+/* v2.0 远程连接面板:子区块 + 卡片列表 + 表单。用户化文案配套布局。 */
+.settings-panel-desc {
+  margin: -12px 0 20px;
+  color: var(--color-text-secondary, #f0f);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.settings-subsection {
+  padding: 4px 0;
+}
+
+.settings-subsection-title {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-text-primary, #f0f);
+}
+
+.settings-subsection-desc {
+  margin: 0 0 16px;
+  color: var(--color-text-secondary, #f0f);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.settings-subsection-divider {
+  height: 1px;
+  margin: 24px 0;
+  background-color: var(--color-bg-elevated, #f0f);
+}
+
+/* 区块 A:服务端状态行 */
+.remote-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.remote-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: var(--color-text-muted, #908caa);
+  flex-shrink: 0;
+}
+
+.remote-status-dot.on {
+  background-color: var(--color-success, #4caf50);
+  box-shadow: 0 0 6px var(--color-success, #4caf50);
+}
+
+.remote-port-input {
+  width: 90px;
+}
+
+/* 区块 B:远程电脑卡片列表 */
+.remote-computer-list {
+  list-style: none;
+  margin: 0 0 20px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.remote-computer-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-bg-elevated, #f0f);
+  border-radius: 8px;
+  background-color: var(--color-bg-secondary, #f0f);
+  flex-wrap: wrap;
+}
+
+.remote-computer-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.remote-computer-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--color-text-primary, #f0f);
+}
+
+.remote-computer-meta {
+  font-size: 12px;
+  color: var(--color-text-secondary, #f0f);
+}
+
+.remote-computer-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.remote-empty-hint {
+  margin: 0 0 20px;
+  padding: 16px;
+  text-align: center;
+  color: var(--color-text-secondary, #f0f);
+  font-size: 13px;
+  border: 1px dashed var(--color-bg-elevated, #f0f);
+  border-radius: 8px;
+}
+
+/* 区块 B:添加/编辑表单(垂直分组,不挤一行) */
+.remote-add-form {
+  padding: 16px;
+  border: 1px solid var(--color-bg-elevated, #f0f);
+  border-radius: 8px;
+  background-color: var(--color-bg-secondary, #f0f);
+}
+
+.remote-add-form.editing {
+  border-color: var(--color-accent-special, #f0f);
+}
+
+.remote-add-form-title {
+  margin-bottom: 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary, #f0f);
+}
+
+.remote-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.remote-field-label {
+  font-size: 12px;
+  color: var(--color-text-secondary, #f0f);
+}
+
+.remote-field-hint {
+  font-style: normal;
+  color: var(--color-text-muted, #908caa);
+  margin-left: 4px;
+}
+
+.remote-add-form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 .settings-row {
   display: flex;
   gap: 24px;
@@ -3605,6 +3761,13 @@ select.settings-input option {
   white-space: pre-wrap;
   margin: 0;
   color: var(--color-danger, #f0f);
+}
+
+.bootstrap-placeholder .bootstrap-actions {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 20px;
 }
 
 /* ──────────────────────────────────────────────────────────────────

@@ -166,8 +166,13 @@ function ensureTransport(): Promise<void> {
         remoteTransport = t;
       }
     } catch (err) {
-      // 远程初始化失败 → 回退本地(本地路径仍可用)。renderer 会发现远程不可达。
-      console.error('[preload] remote transport init failed, fallback to local', err);
+      // 远程连接失败:绝不静默回退本地!每窗口后端模型下,用户明确要开远程窗口,
+      // 失败必须报错 —— 否则窗口偷偷变本地,用户看到本地数据会以为“打开错了/还是本地窗口”。
+      // 把错误抛出,renderer 据此显示远程连接错误页(排查清单 + 重试 + 关窗)。
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `无法连接到远程电脑: ${reason}。请检查:① 对方 Marina 是否已点“允许远程连接”启动服务;② 密码是否正确;③ 对方 IP 是否可达(同一局域网/VPN)。`,
+      );
     }
   })();
   return transportInit;

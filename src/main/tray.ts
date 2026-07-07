@@ -333,13 +333,13 @@ export class TrayManager {
       items.push({ type: 'separator' });
     }
 
-    // v2.0 远程后端(每窗口):连接到远程 daemon(开新窗口连)。列已配对 profile。
+    // v2.0 远程连接(客户端角色):开新窗口连保存的远程电脑。列已设密码的 profile。
     const remoteProfiles = this.remoteProfilesProvider?.() ?? [];
     if (remoteProfiles.length > 0) {
       items.push({
-        label: '连接到远程…',
+        label: '连接到其他电脑…',
         submenu: remoteProfiles.map((p) => ({
-          label: `${p.displayName} (${p.host})${p.hasToken ? '' : ' · 未配对'}`,
+          label: `${p.displayName} (${p.host})${p.hasToken ? '' : ' · 未设密码'}`,
           enabled: p.hasToken !== false,
           click: () => {
             try {
@@ -357,39 +357,39 @@ export class TrayManager {
       click: () => this.openSettings(),
     });
 
-    // v2.0 远程后端:daemon 模式下展示配对密码 + 端口(供 client 端用户抄过去配对)
+    // v2.0 远程连接(服务端角色):展示服务端口 + 复制连接密码 + 重置密码快捷入口
+    // (密码加载后就有,不只运行中。设置页“允许远程连接”是主控,托盘是便捷复制/查看)。
     if (this.daemonToken) {
-      // daemon 信息:端口(client 连接需知道,默认 12580)。只读展示项(enabled:false)。
+      // 服务端口(只读展示,设置页可改)。未启动时展示配置里的端口。
       if (this.daemonPort !== null) {
-        items.push({ label: `daemon 端口: ${this.daemonPort}`, enabled: false });
+        items.push({ label: `服务端口: ${this.daemonPort}`, enabled: false });
       }
       items.push({
-        label: '复制 daemon 配对密码',
+        label: '复制连接密码',
         click: () => {
           clipboard.writeText(this.daemonToken ?? '');
-          logger.info('TrayManager', 'daemon pairing password copied to clipboard');
+          logger.info('TrayManager', 'connection password copied to clipboard');
         },
       });
-      // 重置密码(吊销所有已配对 client)。需确认 —— 重置后已连 client 全部被拒,
-      // 必须重新配对。仅在注入了 handler 时显示。
+      // 重置密码(吊销所有已连电脑)。需确认 —— 重置后已连的都要用新密码重连。
       if (this.resetDaemonTokenHandler) {
         items.push({
-          label: '重置 daemon 配对密码…',
+          label: '重置连接密码…',
           click: async () => {
             const choice = await dialog.showMessageBox({
               type: 'warning',
               buttons: ['重置', '取消'],
               defaultId: 1,
               cancelId: 1,
-              title: '重置 daemon 配对密码',
-              message: '重置后所有已配对的 client 都会被拒绝(需重新配对)。确定?',
+              title: '重置连接密码',
+              message: '重置后所有已连接的电脑都会被断开,需用新密码重新连接。确定?',
             });
             if (choice.response === 0) {
               try {
                 await this.resetDaemonTokenHandler!();
-                logger.info('TrayManager', 'daemon password reset (all clients revoked)');
+                logger.info('TrayManager', 'connection password reset (all clients revoked)');
               } catch (err) {
-                logger.error('TrayManager', 'daemon password reset failed', err);
+                logger.error('TrayManager', 'connection password reset failed', err);
               }
             }
           },

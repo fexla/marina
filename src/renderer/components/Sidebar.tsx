@@ -122,12 +122,12 @@ export function Sidebar(): JSX.Element {
   const { t } = useTranslation();
   const [dragOver, setDragOver] = useState(false);
 
-  // 远程后端入口(footer 按钮):点击展开 profiles 菜单,选中开新窗口连该 daemon。
-  // 0 profile 引导去设置;未配对(hasToken=false)灰显。
+  // 远程连接入口(footer 按钮):点击展开已保存的远程电脑菜单,选中开新窗口连过去。
+  // 0 台引导去设置;未设密码(hasToken=false)灰显。
   const handleRemoteEntry = (e: React.MouseEvent<HTMLButtonElement>): void => {
     const profiles = state.remoteBackendProfiles;
     if (profiles.length === 0) {
-      toast.push({ kind: 'info', message: '请先在 设置 → 远程后端 添加 daemon' });
+      toast.push({ kind: 'info', message: '请先在 设置 → 远程连接 添加一台电脑' });
       return;
     }
     const rect = e.currentTarget.getBoundingClientRect();
@@ -137,7 +137,7 @@ export function Sidebar(): JSX.Element {
       items: profiles.map((p) => ({
         label: `${p.displayName} (${p.host})`,
         disabled: !p.hasToken,
-        ...(p.hasToken ? {} : { hint: '未配对(去设置填密码)' }),
+        ...(p.hasToken ? {} : { hint: '未设密码(去设置填写)' }),
         onSelect: async () => {
           try {
             await window.api.invoke(COMMAND_CHANNELS.WINDOW_CREATE, {
@@ -544,7 +544,7 @@ export function Sidebar(): JSX.Element {
           type="button"
           className="settings-entry"
           onClick={handleRemoteEntry}
-          title="连接到远程 daemon"
+          title="连接到其他电脑"
         >
           <Icon name="server" size={14} />
           <span>远程</span>

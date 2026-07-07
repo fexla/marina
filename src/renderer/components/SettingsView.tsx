@@ -81,8 +81,7 @@ type CategoryId =
   | 'behavior'
   | 'data'
   | 'remote'
-  | 'remote-backend'
-  | 'remote-server'
+  | 'remote-connection'
   | 'system-integration'
   | 'ai'
   | 'advanced'
@@ -104,14 +103,9 @@ const BASE_CATEGORIES: CategoryDef[] = [
   { id: 'behavior', iconName: 'behavior', titleKey: 'settings.category.behavior' },
   { id: 'data', iconName: 'data', titleKey: 'settings.category.data' },
   {
-    id: 'remote-backend',
+    id: 'remote-connection',
     iconName: 'server',
-    titleKey: 'settings.category.remoteBackend',
-  },
-  {
-    id: 'remote-server',
-    iconName: 'server',
-    titleKey: 'settings.category.remoteServer',
+    titleKey: 'settings.category.remoteConnection',
   },
   {
     id: 'system-integration',
@@ -255,10 +249,8 @@ function CategoryPanel({ categoryId, setError }: CategoryPanelProps): JSX.Elemen
       return <DataPanel setError={setError} />;
     case 'remote':
       return <RemotePanel setError={setError} />;
-    case 'remote-backend':
-      return <RemoteBackendPanel setError={setError} />;
-    case 'remote-server':
-      return <RemoteDaemonServerPanel setError={setError} />;
+    case 'remote-connection':
+      return <RemoteConnectionPanel setError={setError} />;
     case 'system-integration':
       return <SystemIntegrationPanel setError={setError} />;
     case 'ai':
@@ -277,30 +269,28 @@ function CategoryPanel({ categoryId, setError }: CategoryPanelProps): JSX.Elemen
 // ──────────────────────────────────────────────────────────────────
 
 /**
- * RemoteBackendPanel:管理 client 端 remote daemon profile(CRUD)。
+ * v2.0 远程连接面板:Marina 远程功能的统一入口,按用户视角分两个角色区块。
  *
- * profile 列表显示 displayName/host:port/配对状态。
- * 表单:displayName/host/port/token(配对时填,编辑时不回填)。
- * "在新窗口打开" = WINDOW_CREATE({backendProfileId})(每窗口后端模型,开新窗口连,
- *   不影响其他窗口;切回本地 = 关该窗口/开普通新窗口)。
+ * 区块 A「允许远程连接」(本机做服务端):启动/停止 + 端口 + 连接密码。
+ *   开启后其他电脑的 Marina 能通过本机 IP + 密码连进来操作本机。
  *
- * @勿重构:本面板与 RemotePanel(SSH)是两个独立功能,勿合并 UI。
+ * 区块 B「连接到其他电脑」(本机做客户端):保存的远程电脑列表 + 添加表单。
+ *   点「打开」开新窗口连过去(每窗口后端模型,不影响其他窗口)。
+ *
+ * 设计动机:用户不需要懂 daemon/client/backend/server/profile 这些技术词,
+ * 只需要理解"让别人连这台"和"连去别的电脑"两件事。文案全部用户化。
  */
-/**
- * v2.0 远程服务端面板:启动/停止 WS server + 端口/密码配置 + 运行状态显示。
- * 用户点“启动服务端”→ controller.start(port)。端口/密码可配置(改了重启/热换)。
- * 与 RemoteBackendPanel(client 角色配置)是两个独立功能,勿合并。
- */
-function RemoteDaemonServerPanel({
+function RemoteConnectionPanel({
   setError,
 }: {
   setError: (msg: string | null) => void;
 }): JSX.Element {
   const { tx } = useTranslation();
   const state = useAppState();
-  const [port, setPort] = useState(String(state.settings.remoteDaemon?.port ?? 32780));
-  const [password, setPassword] = useState('');
 
+  // ── 区块 A:允许远程连接(服务端角色)──────────────────────────────
+  const [port, setPort] = useState(String(state.settings.remoteDaemon?.port ?? 32780));
+  const [serverPassword, setServerPassword] = useState('');
   const status = state.remoteDaemonStatus;
   const running = status?.running ?? false;
 
@@ -333,121 +323,29 @@ function RemoteDaemonServerPanel({
       setError(err instanceof Error ? err.message : String(err));
     }
   };
-  const handleApplyPassword = async (): Promise<void> => {
+  const handleApplyServerPassword = async (): Promise<void> => {
     setError(null);
-    if (!password) {
+    if (!serverPassword) {
       setError(tx('密码不能为空', 'Password cannot be empty'));
       return;
     }
     try {
-      await window.api.invoke(COMMAND_CHANNELS.REMOTE_DAEMON_SET_PASSWORD, { password });
-      setPassword('');
+      await window.api.invoke(COMMAND_CHANNELS.REMOTE_DAEMON_SET_PASSWORD, {
+        password: serverPassword,
+      });
+      setServerPassword('');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
 
-  const statusText = running
-    ? tx(
-        `运行中 · 端口 ${status?.port ?? '?'} · ${status?.clientCount ?? 0} 个 client`,
-        `Running · port ${status?.port ?? '?'} · ${status?.clientCount ?? 0} client(s)`,
-      )
-    : tx('已停止', 'Stopped');
-
-  return (
-    <section className="settings-panel" data-testid="settings-remote-server-panel">
-      <h2 className="settings-panel-title">{tx('远程服务端', 'Remote Server')}</h2>
-
-      <SettingRow
-        label={tx('服务端状态', 'Server status')}
-        hint={tx(
-          '启动后,其他机器的 Marina 可通过你的 IP + 密码连接本机。停止则断开所有 client。',
-          'Once started, other Marina instances can connect via your IP + password. Stop disconnects all clients.',
-        )}
-      >
-        <div className="ssh-profile-fields">
-          <span className="settings-info-text">{statusText}</span>
-          {running ? (
-            <button
-              type="button"
-              className="settings-button danger"
-              onClick={() => void handleStop()}
-            >
-              {tx('停止服务端', 'Stop Server')}
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="settings-button"
-              onClick={() => void handleStart()}
-              disabled={!status?.hasPassword}
-            >
-              {tx('启动服务端', 'Start Server')}
-            </button>
-          )}
-        </div>
-      </SettingRow>
-
-      <SettingRow
-        label={tx('端口', 'Port')}
-        hint={tx(
-          '默认 32780。改了点“应用”会重启服务端(若有 client 连接会断开重连)。client 端会自动扫描 32780-32789 找到本机。',
-          'Default 32780. Applying restarts the server (connected clients reconnect). Clients auto-scan 32780-32789 to find you.',
-        )}
-      >
-        <div className="ssh-profile-fields">
-          <input
-            className="settings-input"
-            value={port}
-            onChange={(e) => setPort(e.target.value)}
-          />
-          <button type="button" className="settings-button" onClick={() => void handleApplyPort()}>
-            {tx('应用', 'Apply')}
-          </button>
-        </div>
-      </SettingRow>
-
-      <SettingRow
-        label={tx('配对密码', 'Pairing password')}
-        hint={tx(
-          '首次自动生成(UUID)。可在此自定义。填新密码点“应用”即生效,已连 client 会被踢需重连(用新密码)。留空不点则不变。',
-          'Auto-generated (UUID) on first launch. Customize here. Applying a new password kicks connected clients (they must reconnect with the new password).',
-        )}
-      >
-        <div className="ssh-profile-fields">
-          <input
-            className="settings-input"
-            type="password"
-            placeholder={tx('新密码(留空不填则不变)', 'New password (blank to keep)')}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-          <button
-            type="button"
-            className="settings-button"
-            onClick={() => void handleApplyPassword()}
-          >
-            {tx('应用密码', 'Apply Password')}
-          </button>
-        </div>
-      </SettingRow>
-    </section>
-  );
-}
-
-function RemoteBackendPanel({
-  setError,
-}: {
-  setError: (msg: string | null) => void;
-}): JSX.Element {
-  const { tx } = useTranslation();
-  const state = useAppState();
+  // ── 区块 B:连接到其他电脑(客户端角色)───────────────────────────
   const [displayName, setDisplayName] = useState('');
   const [host, setHost] = useState('');
   const [password, setPassword] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  const reset = (): void => {
+  const resetForm = (): void => {
     setDisplayName('');
     setHost('');
     setPassword('');
@@ -467,6 +365,10 @@ function RemoteBackendPanel({
 
   const handleSubmit = async (): Promise<void> => {
     setError(null);
+    if (!displayName.trim() || !host.trim()) {
+      setError(tx('显示名和 IP 不能为空', 'Display name and IP are required'));
+      return;
+    }
     try {
       if (editingId) {
         const partial: Record<string, unknown> = { displayName, host };
@@ -475,14 +377,14 @@ function RemoteBackendPanel({
           id: editingId,
           partial,
         });
-        reset();
+        resetForm();
       } else {
         await window.api.invoke(COMMAND_CHANNELS.REMOTE_PROFILE_ADD, {
           displayName,
           host,
           ...(password ? { password } : {}),
         });
-        reset();
+        resetForm();
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -493,16 +395,16 @@ function RemoteBackendPanel({
     setError(null);
     try {
       await window.api.invoke(COMMAND_CHANNELS.REMOTE_PROFILE_DELETE, { id });
-      if (editingId === id) reset();
+      if (editingId === id) resetForm();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
 
-  const handleOpenInWindow = async (profileId: string): Promise<void> => {
+  const handleOpen = async (profileId: string): Promise<void> => {
     setError(null);
     try {
-      // 每窗口后端:开新窗口连该远程 daemon(不是全局切换,不影响其他窗口)。
+      // 每窗口后端:开新窗口连该远程电脑(不是全局切换,不影响其他窗口)。
       // 要切回本地 → 关该窗口 / 开普通新窗口。符合原则 4(窗口零成本开关)。
       await window.api.invoke(COMMAND_CHANNELS.WINDOW_CREATE, { backendProfileId: profileId });
     } catch (err: unknown) {
@@ -510,74 +412,227 @@ function RemoteBackendPanel({
     }
   };
 
-  return (
-    <section className="settings-panel" data-testid="settings-remote-backend-panel">
-      <h2 className="settings-panel-title">{tx('远程后端', 'Remote Backend')}</h2>
+  const statusText = running
+    ? tx(
+        `运行中 · 端口 ${status?.port ?? '?'} · ${status?.clientCount ?? 0} 台已连接`,
+        `Running · port ${status?.port ?? '?'} · ${status?.clientCount ?? 0} connected`,
+      )
+    : tx('未启动', 'Not running');
 
-      <SettingRow
-        label={tx('远程 Marina daemon', 'Remote Marina daemons')}
-        hint={tx(
-          '连接另一台机器上的 Marina daemon,在本机 UI 跑它的 shell/Path/设置。只需 daemon 的 IP + 配对密码(daemon 端先启动 --headless --daemon,端口默认 12580 自动扫描)。',
-          'Connect to a Marina daemon on another machine and drive its shell/Path/settings from this UI. Only the daemon IP + pairing password needed (daemon starts with --headless --daemon, port 12580 default, auto-scanned).',
+  return (
+    <section className="settings-panel" data-testid="settings-remote-connection-panel">
+      <h2 className="settings-panel-title">{tx('远程连接', 'Remote Connection')}</h2>
+      <p className="settings-panel-desc">
+        {tx(
+          '用一台电脑的 Marina 操作另一台。两件事:① 允许别人连这台电脑;② 从这台连去别的电脑。',
+          'Use one computer\u2019s Marina to drive another. Two things: \u2460 let others connect to this computer; \u2461 connect from this computer to another.',
         )}
-      >
-        <div className="ssh-profile-form">
-          {state.remoteBackendProfiles.length > 0 && (
-            <ul className="ssh-profile-list">
-              {state.remoteBackendProfiles.map((p) => (
-                <li key={p.id}>
-                  <span className="settings-info-text">
-                    {p.displayName} — {p.host}
+      </p>
+
+      {/* ── 区块 A:允许远程连接 ── */}
+      <div className="settings-subsection">
+        <h3 className="settings-subsection-title">
+          {tx('允许远程连接', 'Allow Remote Connections')}
+        </h3>
+        <p className="settings-subsection-desc">
+          {tx(
+            '开启后,其他电脑的 Marina 能通过本机 IP + 连接密码连进来,操作本机的终端和文件。',
+            'Once enabled, other Marina instances can connect to this computer via its IP + connection password, and drive its terminals and files.',
+          )}
+        </p>
+
+        <SettingRow
+          label={tx('运行状态', 'Status')}
+          hint={tx(
+            '开启 = 别人能连进来;关闭 = 断开所有已连的电脑。',
+            'On = others can connect; Off = disconnects everyone currently connected.',
+          )}
+        >
+          <div className="remote-status-row">
+            <span
+              className={`remote-status-dot${running ? ' on' : ''}`}
+              title={running ? tx('运行中', 'Running') : tx('未启动', 'Not running')}
+            />
+            <span className="settings-info-text">{statusText}</span>
+            {running ? (
+              <button
+                type="button"
+                className="settings-button danger"
+                onClick={() => void handleStop()}
+              >
+                {tx('停止', 'Stop')}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="settings-button"
+                onClick={() => void handleStart()}
+                disabled={!status?.hasPassword}
+                title={
+                  status?.hasPassword
+                    ? ''
+                    : tx('密码尚未就绪,请稍候', 'Password not ready, please wait')
+                }
+              >
+                {tx('开启', 'Enable')}
+              </button>
+            )}
+          </div>
+        </SettingRow>
+
+        <SettingRow
+          label={tx('端口', 'Port')}
+          hint={tx(
+            '默认 32780。改了点“应用”会重启服务(已连的电脑会断开自动重连)。对方连接时会自动扫描 32780-32789 找到本机,无需告知端口。',
+            'Default 32780. Applying restarts the service (connected peers auto-reconnect). Peers auto-scan 32780-32789 to find you, no need to tell them the port.',
+          )}
+        >
+          <div className="ssh-profile-fields">
+            <input
+              className="settings-input remote-port-input"
+              value={port}
+              onChange={(e) => setPort(e.target.value)}
+            />
+            <button
+              type="button"
+              className="settings-button"
+              onClick={() => void handleApplyPort()}
+            >
+              {tx('应用', 'Apply')}
+            </button>
+          </div>
+        </SettingRow>
+
+        <SettingRow
+          label={tx('连接密码', 'Connection password')}
+          hint={tx(
+            '首次已自动生成。可在此改成自己好记的。填新密码点“应用”立即生效,已连的电脑会被断开、需用新密码重新连接。',
+            'Auto-generated on first launch. Customize here. Applying a new password takes effect immediately and kicks connected peers (they must reconnect with the new password).',
+          )}
+        >
+          <div className="ssh-profile-fields">
+            <input
+              className="settings-input"
+              type="password"
+              placeholder={tx('新密码(留空表示不改)', 'New password (blank to keep)')}
+              value={serverPassword}
+              onChange={(e) => setServerPassword(e.target.value)}
+            />
+            <button
+              type="button"
+              className="settings-button"
+              onClick={() => void handleApplyServerPassword()}
+            >
+              {tx('应用', 'Apply')}
+            </button>
+          </div>
+        </SettingRow>
+      </div>
+
+      <div className="settings-subsection-divider" />
+
+      {/* ── 区块 B:连接到其他电脑 ── */}
+      <div className="settings-subsection">
+        <h3 className="settings-subsection-title">
+          {tx('连接到其他电脑', 'Connect to Another Computer')}
+        </h3>
+        <p className="settings-subsection-desc">
+          {tx(
+            '保存要远程操作的电脑。点“打开”会在新窗口连过去(本窗口不受影响)。对方需先在它的 Marina 里“允许远程连接”。',
+            'Save computers you want to drive remotely. Clicking \u201cOpen\u201d connects in a new window (this window is unaffected). The other side must have \u201cAllow Remote Connections\u201d enabled first.',
+          )}
+        </p>
+
+        {state.remoteBackendProfiles.length > 0 ? (
+          <ul className="remote-computer-list">
+            {state.remoteBackendProfiles.map((p) => (
+              <li key={p.id} className="remote-computer-card">
+                <div className="remote-computer-info">
+                  <span className="remote-computer-name">{p.displayName}</span>
+                  <span className="remote-computer-meta">
+                    {p.host}
                     {p.hasToken
-                      ? tx(' · 已配对', ' · paired')
-                      : tx(' · 未配对', ' · unpaired')}
-                    {editingId === p.id ? tx(' · 编辑中', ' · editing') : ''}
+                      ? tx(' · 已设密码', ' \u00b7 password set')
+                      : tx(' · 未设密码', ' \u00b7 no password')}
+                    {editingId === p.id ? tx(' · 编辑中', ' \u00b7 editing') : ''}
                   </span>
+                </div>
+                <div className="remote-computer-actions">
                   <button
                     type="button"
-                    className="settings-button ssh-profile-button"
-                    onClick={() => void handleOpenInWindow(p.id)}
+                    className="settings-button"
+                    onClick={() => void handleOpen(p.id)}
                     disabled={!p.hasToken}
                   >
-                    {tx('在新窗口打开', 'Open in New Window')}
+                    {tx('打开', 'Open')}
                   </button>
                   <button
                     type="button"
-                    className="settings-button ssh-profile-button"
+                    className="settings-button"
                     onClick={() => handleEdit(p.id)}
                   >
                     {tx('编辑', 'Edit')}
                   </button>
                   <button
                     type="button"
-                    className="settings-button danger ssh-profile-button"
+                    className="settings-button danger"
                     onClick={() => void handleDelete(p.id)}
                   >
                     {tx('删除', 'Delete')}
                   </button>
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="ssh-profile-fields">
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="remote-empty-hint">
+            {tx(
+              '还没有保存的电脑。在下面添加(只需显示名、IP、连接密码)。',
+              'No saved computers yet. Add one below (just a display name, IP, and connection password).',
+            )}
+          </p>
+        )}
+
+        <div className={`remote-add-form${editingId ? ' editing' : ''}`}>
+          <div className="remote-add-form-title">
+            {editingId ? tx('编辑这台电脑', 'Edit this computer') : tx('添加一台电脑', 'Add a computer')}
+          </div>
+          <label className="remote-field">
+            <span className="remote-field-label">{tx('显示名', 'Display name')}</span>
             <input
               className="settings-input"
-              placeholder={tx('显示名(如:工作笔记本)', 'Display name')}
+              placeholder={tx('例如:工作笔记本', 'e.g. Work Laptop')}
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
             />
+          </label>
+          <label className="remote-field">
+            <span className="remote-field-label">{tx('IP 地址', 'IP address')}</span>
             <input
               className="settings-input"
-              placeholder={tx('host(IP/域名)', 'host (IP/domain)')}
+              placeholder={tx('例如:192.168.1.5', 'e.g. 192.168.1.5')}
               value={host}
               onChange={(e) => setHost(e.target.value)}
             />
+          </label>
+          <label className="remote-field">
+            <span className="remote-field-label">
+              {tx('连接密码', 'Connection password')}
+              {editingId && (
+                <em className="remote-field-hint">
+                  {tx('(留空表示不改)', '(blank to keep)')}
+                </em>
+              )}
+            </span>
             <input
               className="settings-input"
-              placeholder={tx('密码(配对时填)', 'password (for pairing)')}
+              type="password"
+              placeholder={tx('对方“连接密码”处显示的密码', "The other side's connection password")}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
             />
+          </label>
+          <div className="remote-add-form-actions">
             <button
               type="button"
               className="settings-button"
@@ -586,16 +641,18 @@ function RemoteBackendPanel({
               {editingId ? tx('保存', 'Save') : tx('添加', 'Add')}
             </button>
             {editingId && (
-              <button type="button" className="settings-button" onClick={reset}>
+              <button type="button" className="settings-button" onClick={resetForm}>
                 {tx('取消', 'Cancel')}
               </button>
             )}
           </div>
         </div>
-      </SettingRow>
+      </div>
     </section>
   );
 }
+
+
 
 // ──────────────────────────────────────────────────────────────────
 // 外观分类

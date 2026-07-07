@@ -240,6 +240,40 @@ function ConnectedShell({
   }, []);
 
   if (sync.error) {
+    // 远程窗口加载失败 = 远程连接失败(preload ensureTransport 抛错)。绝不静默回退本地。
+    // 显示专门的远程连接错误页 + 排查清单 + 重试/关窗。本地窗口加载失败走原分支。
+    const backendId =
+      typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search).get('backend')
+        : null;
+    if (backendId) {
+      return (
+        <FullPagePlaceholder
+          title="无法连接到远程电脑"
+          subtitle="这个窗口是远程窗口,但连不上对方电脑上的 Marina。"
+          body={sync.error}
+          variant="error"
+          actions={
+            <>
+              <button
+                type="button"
+                className="settings-button"
+                onClick={() => window.location.reload()}
+              >
+                重试连接
+              </button>
+              <button
+                type="button"
+                className="settings-button danger"
+                onClick={() => window.close()}
+              >
+                关闭窗口
+              </button>
+            </>
+          }
+        />
+      );
+    }
     return (
       <FullPagePlaceholder
         title="Marina"
@@ -299,11 +333,13 @@ function FullPagePlaceholder({
   subtitle,
   body,
   variant,
+  actions,
 }: {
   title: string;
   subtitle: string;
   body?: string;
   variant?: 'error';
+  actions?: JSX.Element;
 }): JSX.Element {
   return (
     <div className="app-root">
@@ -311,6 +347,7 @@ function FullPagePlaceholder({
         <h1>{title}</h1>
         <p className="subtitle">{subtitle}</p>
         {body && <pre className="error-pre">{body}</pre>}
+        {actions && <div className="bootstrap-actions">{actions}</div>}
       </div>
     </div>
   );
