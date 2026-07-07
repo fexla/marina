@@ -3821,11 +3821,10 @@ select.settings-input option {
   padding-top: 14px;
 }
 
-.remote-error-detail summary {
-  cursor: pointer;
+.remote-error-detail-label {
   color: var(--color-text-secondary, #908caa);
   font-size: 12px;
-  user-select: none;
+  margin-bottom: 8px;
 }
 
 .remote-error-pre {

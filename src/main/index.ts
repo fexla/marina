@@ -578,10 +578,12 @@ function bootstrap(): void {
       // token 阶段1 临时生成 + 打日志(loopback 自测可见);safeStorage 持久化 +
       // 配对 UI 留阶段2(软件定义书 §14.9.4)。
       // 运行时 UI 启停服务会变端口/状态(controller.start/stop/setPort)。
-      // 订阅 controller 状态变化,同步托盘展示的端口(密码由 setDaemonToken 单独管)。
-      remoteDaemonController.onStatusChange = (s) => {
+      // 用 addStatusListener(不覆盖 ipc 的 broadcast 回调)同步托盘展示的端口。
+      // 历史教训:曾用 controller.onStatusChange = 赋值,覆盖了 ipc 设的 broadcast,
+      // 导致 start 后 UI 永远显示“未启动”(但 server 实际在跑)。
+      remoteDaemonController.addStatusListener((s) => {
         trayManager.setDaemonPort(s.running ? s.port : settingsManager.get().remoteDaemon.port);
-      };
+      });
       // v2.0 远程服务端:密码已加载(daemonCreds)。托盘菜单展示密码/端口 + 重置入口
       // (所有模式都有,不只 --daemon)。--daemon 命令行 / settings.autoStart → 自动启动。
       trayManager.setDaemonToken(currentDaemonToken);

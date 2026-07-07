@@ -66,10 +66,29 @@ export class RemoteDaemonController {
   private currentPort: number | null = null;
   private listenCheck: { ok: boolean; reason?: string } | undefined = undefined;
   /**
+   * 额外的状态监听器(index.ts 注入 tray 更新等)。onStatusChange 字段(ipc broadcast)
+   * 也会调,两者并存不覆盖 —— 历史教训:曾因 index 赋值 onStatusChange 覆盖了 ipc 的
+   * broadcast,导致 start 后 UI 永远不更新。
+   */
+  private statusListeners: Array<(status: DaemonStatus) => void> = [];
+  /**
    * 状态广播器(index.ts 在 installIpcLayer 后赋值:接 ipc 的 broadcastEvent)。
    * 用 public 字段而非构造参数,避免 controller↔ipc 循环依赖。
+   * 注意:不要在外部再赋值覆盖它(会吞掉 broadcast);额外副作用用 addStatusListener。
    */
   onStatusChange: ((status: DaemonStatus) => void) | null = null;
+
+  /**
+   * 加一个状态监听器(不覆盖 onStatusChange)。index.ts 用它接 tray 端口同步等副作用。
+   * 返回取消订阅函数。
+   */
+  addStatusListener(fn: (status: DaemonStatus) => void): () => void {
+    this.statusListeners.push(fn);
+    return () => {
+      const i = this.statusListeners.indexOf(fn);
+      if (i >= 0) this.statusListeners.splice(i, 1);
+    };
+  }
 
   constructor(private readonly deps: RemoteDaemonControllerDeps) {}
 
@@ -207,6 +226,14 @@ export class RemoteDaemonController {
   }
 
   private emitStatus(): void {
-    this.onStatusChange?.(this.getStatus());
+    const status = this.getStatus();
+    this.onStatusChange?.(status);
+    for (const fn of this.statusListeners) {
+      try {
+        fn(status);
+      } catch {
+        /* 单个监听器出错不影响其他 */
+      }
+    }
   }
 }

@@ -350,8 +350,9 @@ function getRemoteErrorDiagnosis(errorCode: string | null): {
       return {
         title: '对方 daemon 没有响应',
         checklist: [
-          '对方 Marina 可能卡住或异常,尝试在对方机器重启 Marina。',
+          'WS 连上了但对方没在超时内回认证确认。可能对方 daemon 卡住或异常,尝试在对方机器重启 Marina。',
           '两边 Marina 版本可能不兼容(本机版本与对方差异过大)。',
+          '请对方查看日志:%APPDATA%\\Marina\\logs\\main.log,搜 “transport-ws”,看 client 连接和认证过程是否到达(若没有 connection 日志 = 连接没到对方;有 auth rejected = 密码不对)。',
         ],
       };
     case 'PROFILE_INCOMPLETE':
@@ -392,6 +393,10 @@ function RemoteConnectionErrorScreen({
   buildType: 'dev' | 'portable' | 'installed';
 }): JSX.Element {
   const diagnosis = getRemoteErrorDiagnosis(errorCode);
+  const state = useAppState();
+  // snapshot 没加载时 settings 是空对象,fallback 默认主题。data-theme 必须设,
+  // 否则 CSS 变量(--color-bg-primary 等)未定义,整个页面(含标题栏)会变成 fallback 品红。
+  const currentTheme = state.settings.appearance?.theme ?? 'rose-pine';
   const handleRetry = (): void => {
     window.location.reload();
   };
@@ -400,48 +405,74 @@ function RemoteConnectionErrorScreen({
   };
   const handleCopy = async (): Promise<void> => {
     const detail = `[Marina 远程连接失败]\n错误码:${errorCode ?? 'unknown'}\n信息:${errorMessage}`;
+    // 优先 navigator.clipboard(安全上下文);不可用时 fallback 到隐藏 textarea + execCommand。
     try {
       await navigator.clipboard.writeText(detail);
+      return;
     } catch {
-      // clipboard API 不可用时,退而让用户手动选中下面的 pre
+      /* 落到 fallback */
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = detail;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch {
+      /* 都不行就让用户手动选中下面的 pre */
     }
   };
 
+  // 包完整 Provider 树(与主界面一致),确保 WindowChrome / CSS 变量 / portal 容器正常。
   return (
-    <div className="app-root with-shell" data-window-style="windows">
-      <WindowChrome windowStyle="windows" buildVersion={buildVersion} buildType={buildType} />
-      <div className="remote-error-screen">
-        <div className="remote-error-card">
-          <h1 className="remote-error-title">{diagnosis.title}</h1>
-          <p className="remote-error-subtitle">
-            这个窗口是远程窗口,但连不上对方电脑上的 Marina。
-          </p>
+    <LanguageProvider>
+      <div
+        className="app-root with-shell"
+        data-theme={currentTheme}
+        data-window-style="windows"
+      >
+        <WindowChrome windowStyle="windows" buildVersion={buildVersion} buildType={buildType} />
+        <div className="remote-error-screen">
+          <div className="remote-error-card">
+            <h1 className="remote-error-title">{diagnosis.title}</h1>
+            <p className="remote-error-subtitle">
+              这个窗口是远程窗口,但连不上对方电脑上的 Marina。
+            </p>
 
-          <ol className="remote-error-checklist">
-            {diagnosis.checklist.map((item, i) => (
-              <li key={i}>{item}</li>
-            ))}
-          </ol>
+            <ol className="remote-error-checklist">
+              {diagnosis.checklist.map((item, i) => (
+                <li key={i}>{item}</li>
+              ))}
+            </ol>
 
-          <details className="remote-error-detail">
-            <summary>详细错误(可选中复制)</summary>
-            <pre className="remote-error-pre">{errorMessage}</pre>
-            <button type="button" className="settings-button remote-error-copy" onClick={() => void handleCopy()}>
-              复制错误信息
-            </button>
-          </details>
+            {/* 详细错误默认展开(不用 details 折叠),确保始终可见 + 可选中复制 */}
+            <div className="remote-error-detail">
+              <div className="remote-error-detail-label">详细错误(可选中,或点按钮复制)</div>
+              <pre className="remote-error-pre" ref={(el) => { /* 允许直接选中 */ void el; }}>{errorMessage}</pre>
+              <button
+                type="button"
+                className="settings-button remote-error-copy"
+                onClick={() => void handleCopy()}
+              >
+                复制错误信息
+              </button>
+            </div>
 
-          <div className="remote-error-actions">
-            <button type="button" className="settings-button" onClick={handleRetry}>
-              重试连接
-            </button>
-            <button type="button" className="settings-button danger" onClick={handleClose}>
-              关闭窗口
-            </button>
+            <div className="remote-error-actions">
+              <button type="button" className="settings-button" onClick={handleRetry}>
+                重试连接
+              </button>
+              <button type="button" className="settings-button danger" onClick={handleClose}>
+                关闭窗口
+              </button>
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    </LanguageProvider>
   );
 }
 

@@ -323,9 +323,11 @@ export class WsServer {
    */
   private handleAuthenticatingConnection(ws: WebSocket): void {
     let settled = false;
+    console.info('[transport-ws] new client connection, waiting for auth frame');
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      console.warn('[transport-ws] auth timeout (no first frame in 10s), closing 4001');
       try {
         ws.close(4001, 'auth timeout');
       } catch {
@@ -335,10 +337,12 @@ export class WsServer {
 
     const onFirst = (data: unknown): void => {
       if (settled) return;
+      console.info('[transport-ws] received first frame, running auth handler');
       const result = this.authHandler!(data);
       if ('error' in result) {
         settled = true;
         clearTimeout(timer);
+        console.warn(`[transport-ws] auth rejected: ${result.error}, closing 4003`);
         try {
           ws.close(4003, result.error);
         } catch {
@@ -349,6 +353,7 @@ export class WsServer {
       settled = true;
       clearTimeout(timer);
       ws.off('message', onFirst);
+      console.info(`[transport-ws] auth ok, clientId=${result.clientId}`);
       this.registerClient(ws, result.clientId);
     };
     ws.on('message', onFirst);

@@ -136,7 +136,7 @@ function ensureTransport(): Promise<void> {
             url: `ws://${host}:${port}`,
             token,
             wsFactory: browserWs,
-            authTimeoutMs: 1500,
+            authTimeoutMs: 3000,
             autoReconnect: false,
           });
           try {
