@@ -21,6 +21,7 @@ import { contextBridge, ipcRenderer, webFrame } from 'electron';
 import { platform, release } from 'os';
 import {
   COMMAND_CHANNELS,
+  EVENT_CHANNELS,
   type ClipboardReadTextResponse,
   type ClipboardWriteTextPayload,
   type ClipboardWriteTextResponse,
@@ -65,6 +66,34 @@ function readWindowParams(): { windowId: string; windowNumber: number; backend: 
 }
 
 const { windowId, windowNumber, backend } = readWindowParams();
+
+/**
+ * 客户端本地控制面命令。
+ *
+ * 远程窗口只把“后端业务数据”发给 daemon；BrowserWindow 生命周期始终属于
+ * 当前客户端 Electron 进程。如果把 WINDOW_* 也发到远端,daemon 收到的
+ * envelope.windowId 是 WS clientId,它不可能在服务端 WindowManager 里找到
+ * 客户端 BrowserWindow,于是最小化 / 最大化 / 关闭全部静默失效。
+ */
+const LOCAL_CONTROL_COMMANDS = new Set<string>([
+  COMMAND_CHANNELS.APP_QUIT,
+  COMMAND_CHANNELS.WINDOW_CREATE,
+  COMMAND_CHANNELS.WINDOW_CLOSE_SELF,
+  COMMAND_CHANNELS.WINDOW_CLOSE_ALL,
+  COMMAND_CHANNELS.WINDOW_FOCUS,
+  COMMAND_CHANNELS.WINDOW_MINIMIZE,
+  COMMAND_CHANNELS.WINDOW_TOGGLE_MAXIMIZE,
+  COMMAND_CHANNELS.WINDOW_GET_MAX_STATE,
+  // 远程 profile 是“本客户端如何连接别的电脑”的本地凭据,不能发给当前 daemon。
+  COMMAND_CHANNELS.REMOTE_PROFILE_LIST,
+  COMMAND_CHANNELS.REMOTE_PROFILE_ADD,
+  COMMAND_CHANNELS.REMOTE_PROFILE_UPDATE,
+  COMMAND_CHANNELS.REMOTE_PROFILE_DELETE,
+  COMMAND_CHANNELS.REMOTE_PROFILE_GET_CONNECTION,
+]);
+
+/** 当前 BrowserWindow 自身状态事件只能来自客户端本地 Electron main。 */
+const LOCAL_CONTROL_EVENTS = new Set<string>([EVENT_CHANNELS.WINDOW_MAX_STATE_CHANGED]);
 
 // 浏览器原生 WebSocket 适配成 WSLike(RemoteTransport 期望的接口)。
 // preload 上下文有原生 WebSocket;这里桥接 on*/send/close + readyState。
@@ -220,20 +249,75 @@ function ensureTransport(): Promise<void> {
   return transportInit;
 }
 
-/**
- * 包装 invoke:远程模式走 WS transport,本地走 ipcRenderer(自动加 windowId/requestId/payload 信封)。
- */
-async function invoke<P, R>(channel: string, payload: P): Promise<R> {
-  await ensureTransport();
-  if (remoteTransport) {
-    return remoteTransport.invoke<R>(channel, payload);
-  }
+/** 向客户端本地 Electron main 发命令,永不经过远程 transport。 */
+function invokeLocal<P, R>(channel: string, payload: P): Promise<R> {
   const envelope: CommandEnvelope<P> = {
     windowId,
     requestId: crypto.randomUUID(),
     payload,
   };
-  return ipcRenderer.invoke(channel, envelope);
+  return ipcRenderer.invoke(channel, envelope) as Promise<R>;
+}
+
+/**
+ * 包装 invoke:本地控制面命令始终走 ipcRenderer；远程窗口的后端业务命令走 WS。
+ */
+async function invoke<P, R>(channel: string, payload: P): Promise<R> {
+  // “在新窗口中打开 session”横跨两个控制域,不能整体发给 daemon:
+  // 1) daemon 数据面:旧 owner release session;
+  // 2) 客户端控制面:本地创建继承同一 backend 的 BrowserWindow;
+  // 3) 新窗口连上 daemon 后从 ?selectSessionId 自动 claim orphan session。
+  if (backend && channel === COMMAND_CHANNELS.SESSION_OPEN_IN_NEW_WINDOW) {
+    await ensureTransport();
+    if (!remoteTransport) {
+      throw new Error('[preload] remote transport 未初始化,无法移动 session 到新窗口');
+    }
+    const request = payload as { sessionId: string; simpleMode?: boolean };
+    try {
+      await remoteTransport.invoke(COMMAND_CHANNELS.SESSION_RELEASE, {
+        sessionId: request.sessionId,
+      });
+    } catch (err) {
+      // orphan session 本来就没有 owner,release 会报 NotOwner。只在 snapshot 再次
+      // 确认仍是 orphan 时允许继续；若已被其他 client 抢占则保留原错误。
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? String((err as { code?: unknown }).code)
+          : '';
+      if (code !== 'NotOwner') throw err;
+      const snapshot = await remoteTransport.invoke<{ sessions?: Array<{ id: string; ownerWindowId: string | null }> }>(
+        COMMAND_CHANNELS.APP_GET_SNAPSHOT,
+        { myWindowId: windowId },
+      );
+      const current = snapshot.sessions?.find((s) => s.id === request.sessionId);
+      if (!current || current.ownerWindowId !== null) throw err;
+    }
+    return invokeLocal<Record<string, unknown>, R>(COMMAND_CHANNELS.WINDOW_CREATE, {
+      backendProfileId: backend,
+      selectSessionId: request.sessionId,
+      ...(request.simpleMode ? { simpleMode: true } : {}),
+    });
+  }
+
+  if (LOCAL_CONTROL_COMMANDS.has(channel)) {
+    // 远程窗口里普通“新建窗口”必须继承当前 backend。否则本地 main 会创建
+    // backend=null 的窗口,新窗口自然拿不到远程 path/session,表现为左侧空白。
+    // 设置页显式传 backendProfileId(打开另一台电脑)时尊重显式值。
+    if (channel === COMMAND_CHANNELS.WINDOW_CREATE && backend) {
+      const requested =
+        payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
+      return invokeLocal<Record<string, unknown>, R>(channel, {
+        backendProfileId: backend,
+        ...requested,
+      });
+    }
+    return invokeLocal<P, R>(channel, payload);
+  }
+  await ensureTransport();
+  if (remoteTransport) {
+    return remoteTransport.invoke<R>(channel, payload);
+  }
+  return invokeLocal<P, R>(channel, payload);
 }
 
 /**
@@ -247,8 +331,9 @@ function on<P>(channel: string, handler: (payload: P) => void): () => void {
     }
   };
 
-  // 本地窗口:立即注册 ipcRenderer 事件,保持既有零回归路径。
-  if (!backend) {
+  // 本地窗口全部走 ipcRenderer；远程窗口的 BrowserWindow 自身状态事件也必须
+  // 留在本地控制面,不能订阅 daemon 上不属于本窗口的 maximize 状态。
+  if (!backend || LOCAL_CONTROL_EVENTS.has(channel)) {
     ipcRenderer.on(channel, wrapped);
     return () => ipcRenderer.off(channel, wrapped);
   }
@@ -262,7 +347,17 @@ function on<P>(channel: string, handler: (payload: P) => void): () => void {
     .then(() => {
       if (disposed) return;
       if (remoteTransport) {
-        unsubRemote = remoteTransport.on(channel, handler as (payload: unknown) => void);
+        unsubRemote = remoteTransport.on(channel, (payload: unknown) => {
+          // daemon 的 SESSION_FOCUS_OWNER 对远程 owner 只能发定向事件,无法直接
+          // 控制客户端 BrowserWindow。收到该事件时先走本地控制面聚焦当前窗口,
+          // 再交给 renderer 选中目标 session。WINDOW_FOCUS 绝不能回发 daemon。
+          if (channel === EVENT_CHANNELS.WINDOW_FOCUS_REQUESTED) {
+            void invokeLocal(COMMAND_CHANNELS.WINDOW_FOCUS, { windowId }).catch((err) => {
+              console.error('[preload] failed to focus local remote window:', err);
+            });
+          }
+          (handler as (value: unknown) => void)(payload);
+        });
       }
     })
     .catch((err) => {

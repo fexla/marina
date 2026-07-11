@@ -10,7 +10,7 @@
  *   ipc-protocol.md 第 4 章 handshake
  */
 import { useEffect, useState } from 'react';
-import { PROTOCOL_VERSION } from '@shared/protocol';
+import { COMMAND_CHANNELS, PROTOCOL_VERSION } from '@shared/protocol';
 import { AppStateProvider, useAppDispatch, useAppState, useIpcSync } from './store';
 import { Sidebar } from './components/Sidebar';
 import { MainPane } from './components/MainPane';
@@ -210,22 +210,46 @@ function ConnectedShell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 右键 Tab → "在新窗口中打开":?selectSessionId=X。等 snapshot 加载完(此时
-  // sessions 已包含新 owner 信息)再 dispatch 选中,避免选到不存在的 session。
+  // 右键 Tab → “在新窗口中打开”:?selectSessionId=X。等 snapshot 加载完再处理。
+  // 本地 backend 的旧流程在创建窗口前已把 owner claim 给新 windowId,这里只选中。
+  // 远程 backend 无法提前知道新 WS clientId,所以旧窗口先 release 成 orphan,
+  // 新窗口在这里用自己的 daemon clientId claim,再挂载 TerminalView。
   useEffect(() => {
     if (typeof window === 'undefined') return;
     if (!sync.ready) return;
     const params = new URLSearchParams(window.location.search);
     const initialSessionId = params.get('selectSessionId');
     if (!initialSessionId) return;
-    dispatch({
-      type: 'view/focus-requested',
-      selectSessionId: initialSessionId,
-    });
-    // 一次性,清掉 query 防止刷新 / DevTools 重载时重新触发
+
+    // 一次性,先清 query,避免 React 重渲 / DevTools reload 重复 claim。
     const url = new URL(window.location.href);
     url.searchParams.delete('selectSessionId');
     window.history.replaceState({}, '', url.toString());
+
+    const target = state.sessions.get(initialSessionId);
+    if (!target) return;
+    const selectTarget = (): void => {
+      dispatch({ type: 'view/focus-requested', selectSessionId: initialSessionId });
+    };
+
+    if (target.ownerWindowId === null) {
+      void window.api
+        .invoke(COMMAND_CHANNELS.SESSION_CLAIM, { sessionId: initialSessionId })
+        .then(() => {
+          // owner-changed 广播通常先到；本地补一次同值更新保证即使事件延迟,
+          // getDisplayableSession 也能立即让 TerminalView 挂载。
+          dispatch({
+            type: 'sessions/owner-changed',
+            sessionId: initialSessionId,
+            ownerWindowId: state.myWindowId,
+          });
+          selectTarget();
+        })
+        .catch((err) => console.error('[App] claim moved remote session failed', err));
+      return;
+    }
+
+    selectTarget();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sync.ready]);
 

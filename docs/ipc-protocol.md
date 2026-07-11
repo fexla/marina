@@ -229,9 +229,9 @@ v2.0 引入 `clientId` 后,两个字段名容易混淆,明确边界:
 |---|---|---|---|
 | 命令/事件的传输端点标识 | `clientId` | 信封(§2.3/§2.4) | 本地 in-process client = 其 windowId;远程 WS client = 握手分配的稳定 id |
 | session 的 owner 引用 | `ownerClientId` | session payload 字段、`claim`/`release` 语义 | v2.0 起替代 `ownerWindowId`;`null` = 无 owner |
-| 窗口实体引用(聚焦、窗口列表) | `windowId` | `cmd:window:*` payload、`focus-owner` 的 ownerWindowId 等 | 仍是"哪个窗口"的物理标识,仅本地 in-process client 有意义 |
+| 窗口实体引用(聚焦、窗口列表) | `windowId` | `cmd:window:*` payload | 仍是“当前客户端机器上的哪个 BrowserWindow”;只对创建该窗口的本地 Electron main 有意义 |
 
-**原则**:**envelope 走 clientId;session ownership 走 ownerClientId;窗口实体操作才走 windowId**。远程 WS client 没有 windowId 概念(它不在 daemon 机器上开窗口),其 clientId 即其身份。
+**原则**:**envelope 走 clientId;session ownership 走 ownerClientId;窗口实体操作只走客户端本地控制面**。远程 WS client 在 daemon 上没有 BrowserWindow,daemon 不能拿 clientId 调自己的 WindowManager。远程窗口的最小化/最大化/关闭/创建/聚焦必须由 preload 路由到客户端本地 IPC;session/path 等数据面命令才走 WS。
 
 ---
 
@@ -666,26 +666,25 @@ interface ReleaseSessionPayload {
 ---
 
 #### `cmd:session:focus-owner`
-要求 Main 聚焦某 session 的 owner 窗口。
+请求 session 的 owner client 聚焦其观察窗口并选中该 session。
 
 ```typescript
 // Payload
 interface FocusSessionOwnerPayload {
   sessionId: string;
 }
-// Response
-interface FocusSessionOwnerResponse {
-  ownerWindowId: string | null;  // 若为 null,session 当前无 owner
-  focused: boolean;              // 是否成功聚焦了
-}
+// Response: void
 ```
 
 **Errors**:
 - `SessionNotFound`
 
 **Side Effects**:
-- 若 session 有 owner → 等价于 `cmd:window:focus`
-- 若无 owner → 不做事,response 中 focused=false(Renderer 自行决定是否 claim)
+- owner 是 daemon 本地 BrowserWindow:daemon 直接 `WindowManager.focus(windowId)`,并定向发送 `evt:window:focus-requested`
+- owner 是远程 WS client:daemon 只按 ownerClientId 定向发送 `evt:window:focus-requested`;远程 preload 收到后通过客户端本地 IPC 聚焦自己的 BrowserWindow,renderer 选中 session
+- session 无 owner:不做事(Renderer 自行决定是否 claim)
+
+> 不能把远程 ownerClientId 当作 daemon 机器上的 windowId。两者属于不同身份域。
 
 ---
 

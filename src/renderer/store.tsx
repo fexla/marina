@@ -590,7 +590,6 @@ export function useIpcSync(): {
   errorCode: string | null;
 } {
   const dispatch = useAppDispatch();
-  const myWindowId = useAppState().myWindowId;
   const [status, setStatus] = useReducer(
     (
       _: { ready: boolean; error: string | null; errorCode: string | null },
@@ -616,14 +615,11 @@ export function useIpcSync(): {
 
     void (async () => {
       try {
-        const snapshot = await window.api.invoke<{ myWindowId: string }, GetSnapshotResponse>(
-          COMMAND_CHANNELS.APP_GET_SNAPSHOT,
-          { myWindowId },
-        );
-        if (cancelled) return;
-        dispatch({ type: 'snapshot/load', snapshot });
-
-        // 订阅事件
+        // 必须先订阅、后拉 snapshot。两者共用同一 IPC/WS 有序传输:
+        // - snapshot 处理前发生的事件会包含在 snapshot 里;
+        // - snapshot 响应后发生的事件会被已安装的 listener 接住。
+        // 旧顺序“snapshot → 逐个订阅”在中间有空档,远程 create session 时可能
+        // 丢 PATH_TREE_UPDATED / SESSION_CREATED,表现为服务端或其他窗口左侧缺项。
         cleanups.push(
           window.api.on<PathTreeUpdatedPayload>(EVENT_CHANNELS.PATH_TREE_UPDATED, (p) =>
             dispatch({ type: 'pathTree/update', tree: p.tree }),
@@ -712,6 +708,13 @@ export function useIpcSync(): {
           ),
         );
 
+        const snapshot = await window.api.invoke<{ myWindowId: string }, GetSnapshotResponse>(
+          COMMAND_CHANNELS.APP_GET_SNAPSHOT,
+          { myWindowId: window.api.windowId },
+        );
+        if (cancelled) return;
+        dispatch({ type: 'snapshot/load', snapshot });
+
         // 自定义 markdown 主题列表:启动拉一次(订阅已覆盖后续增删广播)。
         // 失败不阻塞主流程 —— 设置页下拉只是少自定义项,内置主题仍可用。
         try {
@@ -746,7 +749,7 @@ export function useIpcSync(): {
       cancelled = true;
       for (const c of cleanups) c();
     };
-  }, [dispatch, myWindowId]);
+  }, [dispatch]);
 
   return status;
 }

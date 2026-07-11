@@ -77,9 +77,10 @@ export const COMMAND_CHANNELS = {
    */
   SESSION_CLEAR_MANUAL_RENAME: 'cmd:session:clear-manual-rename',
   /**
-   * 右键 Tab → "在新窗口中打开"。原子地把 session 从调用方窗口释放,
-   * 创建新窗口并把所有权直接转给新窗口,新窗口启动时从 URL ?selectSessionId
-   * 读到目标后 dispatch select-session 自动切到该 session。
+   * 右键 Tab → “在新窗口中打开”。
+   * - 本地 backend:main 原子 release → 创建窗口 → claim 给新 windowId。
+   * - 远程 backend:preload 拆成 daemon release + 客户端本地 WINDOW_CREATE;
+   *   新窗口连接后用新 WS clientId claim。
    */
   SESSION_OPEN_IN_NEW_WINDOW: 'cmd:session:open-in-new-window',
 
@@ -312,8 +313,10 @@ export interface QuitResponse {
 // ──────────────────────────────────────────────────────────────────
 
 export interface CreateWindowPayload {
-  /** 可选:新窗口启动时聚焦的 sessionId (CP-3 加入,CP-2 忽略) */
+  /** 可选:新窗口启动时聚焦 / 接管的 sessionId。 */
   selectSessionId?: string;
+  /** true → 新窗口以简易模式启动(隐藏 Sidebar/Tab bar)。 */
+  simpleMode?: boolean;
   /**
    * v2.0 远程后端(每窗口后端):新窗口连的后端 profile id。
    * undefined/null = 本地 main 后端;非空 = 连该远程 daemon。

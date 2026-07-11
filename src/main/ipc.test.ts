@@ -19,7 +19,7 @@
  * ipc.ts 是薄编排层,只测那些"编排本身就能错"的命令。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { COMMAND_CHANNELS } from '@shared/protocol';
+import { COMMAND_CHANNELS, EVENT_CHANNELS } from '@shared/protocol';
 import type { CommandEnvelope, CreateSessionPayload } from '@shared/protocol';
 import type { SessionInfo } from '@shared/types';
 import type * as IpcModule from './ipc';
@@ -164,6 +164,7 @@ function makeStubs() {
       throw new Error('IPC-1 regression: releaseOwner should NOT be called');
     }),
     list: vi.fn(() => []),
+    get: vi.fn((_sessionId: string) => null as SessionInfo | null),
     handleWindowClosed: vi.fn(),
     on: vi.fn(),
   };
@@ -200,9 +201,11 @@ function makeStubs() {
   };
 
   const windowManager = {
+    createWindowFromFactory: vi.fn(() => ({ id: 'new-window', number: 2 })),
     list: vi.fn(() => []),
     count: vi.fn(() => 0),
     getById: vi.fn(() => null),
+    focus: vi.fn((_windowId: string) => false),
     onWindowCreated: vi.fn(),
     onWindowClosed: vi.fn(),
     on: vi.fn(),
@@ -412,5 +415,74 @@ describe('IPC SESSION_CREATE', () => {
       tmuxMode: 'attach-or-create',
       tmuxOnMissing: 'fallback-shell',
     });
+  });
+});
+
+describe('IPC WINDOW_CREATE', () => {
+  it('透传 backendProfileId/selectSessionId/simpleMode 给客户端本地 WindowManager', async () => {
+    const { installIpcLayer } = await freshIpc();
+    const { deps, stubs } = makeStubs();
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    const handler = handlers.get(COMMAND_CHANNELS.WINDOW_CREATE);
+    const result = await handler!({}, {
+      windowId: 'old-local-window',
+      requestId: 'new-window-1',
+      payload: {
+        backendProfileId: 'remote-profile-1',
+        selectSessionId: 'remote-session-1',
+        simpleMode: true,
+      },
+    });
+
+    expect(stubs.windowManager.createWindowFromFactory).toHaveBeenCalledWith({
+      backendProfileId: 'remote-profile-1',
+      selectSessionId: 'remote-session-1',
+      simpleMode: true,
+    });
+    expect(result).toEqual({ windowId: 'new-window', windowNumber: 2 });
+  });
+});
+
+describe('IPC SESSION_FOCUS_OWNER', () => {
+  it('owner 是远程 clientId 时即使 WindowManager 无法聚焦,仍定向发送 focus 事件', async () => {
+    const { installIpcLayer } = await freshIpc();
+    const { deps, stubs } = makeStubs();
+    const remoteOwnerId = 'remote-client-owner';
+    const session = {
+      id: 'remote-session',
+      pathId: 'C:\\remote',
+      templateId: 'shell',
+      originalCwd: 'C:\\remote',
+      currentCwd: 'C:\\remote',
+      cols: 80,
+      rows: 24,
+      pid: 123,
+      displayName: 'PowerShell',
+      ownerWindowId: remoteOwnerId,
+      state: 'active',
+      createdAt: Date.now(),
+    } satisfies SessionInfo;
+    stubs.sessionManager.get.mockReturnValue(session);
+
+    const send = vi.fn();
+    deps.clientRegistry.add({ clientId: remoteOwnerId, send });
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    const handler = handlers.get(COMMAND_CHANNELS.SESSION_FOCUS_OWNER);
+    expect(handler).toBeTruthy();
+    await handler!({}, {
+      windowId: 'daemon-local-window',
+      requestId: 'focus-1',
+      payload: { sessionId: session.id },
+    });
+
+    expect(stubs.windowManager.focus).toHaveBeenCalledWith(remoteOwnerId);
+    expect(send).toHaveBeenCalledWith(
+      EVENT_CHANNELS.WINDOW_FOCUS_REQUESTED,
+      expect.objectContaining({
+        payload: { reason: 'session-click', selectSessionId: session.id },
+      }),
+    );
   });
 });

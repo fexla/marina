@@ -364,12 +364,18 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   registerHandle(
     COMMAND_CHANNELS.WINDOW_CREATE,
     (_e, envelope: CommandEnvelope<CreateWindowPayload>): CreateWindowResponse => {
-      // v2.0 每窗口后端:透传 backendProfileId(renderer "在新窗口打开"远程 profile 时传)
-      const info = windowManager.createWindowFromFactory(
-        envelope.payload.backendProfileId
+      // 客户端本地控制面创建窗口。远程窗口通过 preload 调此本地 handler 时,
+      // 会带 backendProfileId + 可选 selectSessionId/simpleMode,新窗口因此继续
+      // 连接同一 daemon,而不是错误回到本地 backend。
+      const info = windowManager.createWindowFromFactory({
+        ...(envelope.payload.backendProfileId
           ? { backendProfileId: envelope.payload.backendProfileId }
-          : {},
-      );
+          : {}),
+        ...(envelope.payload.selectSessionId
+          ? { selectSessionId: envelope.payload.selectSessionId }
+          : {}),
+        ...(envelope.payload.simpleMode ? { simpleMode: true } : {}),
+      });
       return { windowId: info.id, windowNumber: info.number };
     },
   );
@@ -624,8 +630,13 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
         throw makeIpcError('SessionNotFound', `sessionId="${envelope.payload.sessionId}"`);
       }
       if (!session.ownerWindowId) return; // 无主无可聚焦
-      const ok = windowManager.focus(session.ownerWindowId);
-      if (!ok) return; // owner 窗口已不存在,静默
+
+      // owner 可能是两种 client:
+      // 1) daemon 本进程 BrowserWindow id → WindowManager 可直接聚焦;
+      // 2) 远程 WS clientId → daemon 没有那个客户端的 BrowserWindow,不能拿
+      //    clientId 调本地 WindowManager。此时只定向发 focus-requested,由远程
+      //    preload 在客户端本机聚焦其 BrowserWindow,renderer 再选中 session。
+      windowManager.focus(session.ownerWindowId);
       sendEventTo<WindowFocusRequestedPayload>(
         session.ownerWindowId,
         EVENT_CHANNELS.WINDOW_FOCUS_REQUESTED,
