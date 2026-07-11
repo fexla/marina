@@ -11,12 +11,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { WebSocket } from 'ws';
 import type { ClientTransport } from './client-registry';
-import {
-  WsServer,
-  parseFrame,
-  serializeFrame,
-  type WsFrame,
-} from './transport-ws';
+import { WsServer, parseFrame, serializeFrame, type WsFrame } from './transport-ws';
 
 const servers: WsServer[] = [];
 async function startServer(): Promise<{ server: WsServer; port: number }> {
@@ -44,10 +39,7 @@ function connect(port: number): Promise<WebSocket> {
 /** 等收一条 message(解析为 WsFrame)。超时 fail。 */
 function waitForFrame(ws: WebSocket, timeoutMs = 1000): Promise<WsFrame> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error('waitForFrame 超时')),
-      timeoutMs,
-    );
+    const timer = setTimeout(() => reject(new Error('waitForFrame 超时')), timeoutMs);
     ws.on('message', (data) => {
       const f = parseFrame(data);
       if (f) {
@@ -135,9 +127,7 @@ describe('WsServer — 连接生命周期', () => {
   it('clientCount 随连接/断开增减', async () => {
     const { server, port } = await startServer();
     expect(server.clientCount()).toBe(0);
-    const connected = new Promise<void>((resolve) =>
-      server.onClientConnected(() => resolve()),
-    );
+    const connected = new Promise<void>((resolve) => server.onClientConnected(() => resolve()));
     const ws = await connect(port);
     await connected;
     expect(server.clientCount()).toBe(1);
@@ -223,9 +213,7 @@ describe('WsServer — 事件帧 server → client', () => {
     ws.close();
     await closed;
     // ws 已 CLOSED,send 应静默返回(不抛)
-    expect(() =>
-      t.send('evt:x', { eventId: 'e', timestamp: 0, payload: {} }),
-    ).not.toThrow();
+    expect(() => t.send('evt:x', { eventId: 'e', timestamp: 0, payload: {} })).not.toThrow();
   });
 });
 
@@ -285,23 +273,18 @@ describe('WsServer — 重连竞态', () => {
 
     const ws1 = connectWithAuth();
     // 等首次连接握手完成
-    const firstConnected = new Promise<void>((r) =>
-      server.onClientConnected(() => r()),
-    );
+    const firstConnected = new Promise<void>((r) => server.onClientConnected(() => r()));
     await firstConnected;
     expect(server.clientCount()).toBe(1);
 
-    // 重连:新 ws 复用同一 clientId
+    // 重连:新 ws 复用同一 clientId。server 注册新连接后应主动终止旧 ws，
+    // 避免两个 socket 同时以 recon-1 发 command；旧 close 又不能删新映射。
+    const ws1Closed = new Promise<void>((r) => ws1.on('close', () => r()));
     const ws2 = connectWithAuth();
     await connectedAll;
-    expect(server.clientCount()).toBe(1);
-
-    // 现在关掉旧 ws1。旧 close 事件触发,但 registry 里已是 ws2。
-    // 修复前:close 会错误删除条目 → clientCount 变 0,新连接丢失。
-    const ws1Closed = new Promise<void>((r) => ws1.on('close', () => r()));
-    ws1.close();
     await ws1Closed;
-    await new Promise((r) => setTimeout(r, 200));
+    expect(server.clientCount()).toBe(1);
+    await new Promise((r) => setTimeout(r, 50));
 
     // 新 ws2 应该仍在 registry
     expect(server.clientCount()).toBe(1);

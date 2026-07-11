@@ -25,12 +25,7 @@ import {
   type WindowMaxStateChangedPayload,
 } from '@shared/protocol';
 import type { RemoteDaemonProfile, WindowStyle } from '@shared/types';
-import {
-  Minus,
-  Square,
-  Copy as RestoreIcon,
-  X,
-} from 'lucide-react';
+import { Minus, Square, Copy as RestoreIcon, X } from 'lucide-react';
 import { focusTerminalDom } from '../focus';
 import { useAppState } from '../store';
 
@@ -107,7 +102,11 @@ export function WindowChrome({ windowStyle, buildVersion, buildType }: Props): J
 
   // DEV-COEXIST:'Marina (dev) — Window 1' / 'Marina (portable) — ...' / 'Marina — ...'
   const appLabel =
-    buildType === 'dev' ? 'Marina (dev)' : buildType === 'portable' ? 'Marina (portable)' : 'Marina';
+    buildType === 'dev'
+      ? 'Marina (dev)'
+      : buildType === 'portable'
+        ? 'Marina (portable)'
+        : 'Marina';
 
   // 远程后端标识(每窗口后端 §14.9):本窗口若连了远程 daemon,在标题栏显示
   // 窗口编号后追加上游电脑名字。远程窗口跟本地窗口长得一样会让用户混淆
@@ -152,6 +151,14 @@ export function WindowChrome({ windowStyle, buildVersion, buildType }: Props): J
     };
   }, [backendProfileId]);
 
+  // 已连接页面会通过本地 REMOTE_PROFILES_UPDATED 更新 store；profile 改名/改 host
+  // 时同步刷新标题。连接错误页没有 useIpcSync，仍由上面的本地拉取提供初始名称。
+  useEffect(() => {
+    if (!backendProfileId) return;
+    const profile = state.remoteBackendProfiles.find((p) => p.id === backendProfileId);
+    if (profile) setBackendLabel(`${profile.displayName} (${profile.host})`);
+  }, [backendProfileId, state.remoteBackendProfiles]);
+
   if (windowStyle === 'macos') {
     return (
       <MacosTitlebar
@@ -171,16 +178,15 @@ export function WindowChrome({ windowStyle, buildVersion, buildType }: Props): J
 
   // Windows 风格(默认):标题在左,控制按钮在右
   return (
-    <div
-      className="app-titlebar app-titlebar-windows"
-      onDoubleClick={handleDragRegionDblClick}
-    >
+    <div className="app-titlebar app-titlebar-windows" onDoubleClick={handleDragRegionDblClick}>
       <div className="titlebar-title titlebar-drag">
         <span className="titlebar-app-name">{appLabel}</span>
         <span className="titlebar-window-badge">Window {windowNumber || '?'}</span>
         {backendLabel && (
           <span className="titlebar-backend-badge" title={`连接到: ${backendLabel}`}>
-            <span className="titlebar-backend-arrow" aria-hidden="true">→</span>
+            <span className="titlebar-backend-arrow" aria-hidden="true">
+              →
+            </span>
             <span className="titlebar-backend-name">{backendLabel}</span>
           </span>
         )}
@@ -204,7 +210,11 @@ export function WindowChrome({ windowStyle, buildVersion, buildType }: Props): J
           title={maximized ? '还原' : '最大化'}
           aria-label={maximized ? '还原窗口' : '最大化窗口'}
         >
-          {maximized ? <RestoreIcon size={13} strokeWidth={1.6} /> : <Square size={13} strokeWidth={1.6} />}
+          {maximized ? (
+            <RestoreIcon size={13} strokeWidth={1.6} />
+          ) : (
+            <Square size={13} strokeWidth={1.6} />
+          )}
         </button>
         <button
           type="button"
@@ -310,7 +320,9 @@ function MacosTitlebar({
         <span className="titlebar-window-badge">Window {windowNumber || '?'}</span>
         {backendLabel && (
           <span className="titlebar-backend-badge" title={`连接到: ${backendLabel}`}>
-            <span className="titlebar-backend-arrow" aria-hidden="true">→</span>
+            <span className="titlebar-backend-arrow" aria-hidden="true">
+              →
+            </span>
             <span className="titlebar-backend-name">{backendLabel}</span>
           </span>
         )}

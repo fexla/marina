@@ -593,9 +593,7 @@ export function useIpcSync(): {
   const [status, setStatus] = useReducer(
     (
       _: { ready: boolean; error: string | null; errorCode: string | null },
-      action:
-        | { type: 'ready' }
-        | { type: 'error'; message: string; errorCode?: string | null },
+      action: { type: 'ready' } | { type: 'error'; message: string; errorCode?: string | null },
     ) => {
       switch (action.type) {
         case 'ready':
@@ -630,11 +628,13 @@ export function useIpcSync(): {
           window.api.on<SshProfilesUpdatedPayload>(EVENT_CHANNELS.SSH_PROFILES_UPDATED, (p) =>
             dispatch({ type: 'sshProfiles/update', profiles: p.profiles }),
           ),
-          window.api.on<{ profiles: RemoteDaemonProfile[] }>(EVENT_CHANNELS.REMOTE_PROFILES_UPDATED, (p) =>
-            dispatch({ type: 'remoteBackendProfiles/update', profiles: p.profiles }),
+          window.api.on<{ profiles: RemoteDaemonProfile[] }>(
+            EVENT_CHANNELS.REMOTE_PROFILES_UPDATED,
+            (p) => dispatch({ type: 'remoteBackendProfiles/update', profiles: p.profiles }),
           ),
-          window.api.on<RemoteDaemonStatusPayload>(EVENT_CHANNELS.REMOTE_DAEMON_STATUS_CHANGED, (s) =>
-            dispatch({ type: 'remoteDaemonStatus/update', status: s }),
+          window.api.on<RemoteDaemonStatusPayload>(
+            EVENT_CHANNELS.REMOTE_DAEMON_STATUS_CHANGED,
+            (s) => dispatch({ type: 'remoteDaemonStatus/update', status: s }),
           ),
           // 启动时主动拉一次 daemon 服务端状态(订阅只覆盖后续变化)。
           // 包成 IIFE 返回 cleanup,cleanups.push 要求每个参数是 () => void。
@@ -645,7 +645,9 @@ export function useIpcSync(): {
                 {},
               )
               .then((r) => dispatch({ type: 'remoteDaemonStatus/update', status: r.status }))
-              .catch(() => { /* 远程不可达 / 未初始化时静默 */ });
+              .catch(() => {
+                /* 远程不可达 / 未初始化时静默 */
+              });
             return () => {};
           })(),
           window.api.on<SessionCreatedPayload>(EVENT_CHANNELS.SESSION_CREATED, (p) =>
@@ -712,8 +714,29 @@ export function useIpcSync(): {
           COMMAND_CHANNELS.APP_GET_SNAPSHOT,
           { myWindowId: window.api.windowId },
         );
+
+        // remoteBackendProfiles 是“本客户端如何连接其他电脑”的本地控制面数据，
+        // 不能信任远程 snapshot 里的同名字段:远程窗口的 snapshot 来自 daemon，
+        // 那里保存的是 daemon 自己的 profile 列表。REMOTE_PROFILE_LIST 被声明为
+        // local-control，远程窗口调用时也会走客户端本地 IPC。订阅已在上面先装好，
+        // 因此后续新增/改名/删除由本地 REMOTE_PROFILES_UPDATED 持续同步。
+        let localRemoteProfiles = snapshot.remoteBackendProfiles;
+        try {
+          const result = await window.api.invoke<undefined, { profiles: RemoteDaemonProfile[] }>(
+            COMMAND_CHANNELS.REMOTE_PROFILE_LIST,
+            undefined,
+          );
+          localRemoteProfiles = result.profiles;
+        } catch {
+          // 本地 main 尚未注册该命令(协议不匹配)时保留 snapshot 值；握手版本检查
+          // 通常会更早拦截，此处只做向后兼容兜底，不能让整个 UI 因 profile 列表失败。
+        }
+
         if (cancelled) return;
-        dispatch({ type: 'snapshot/load', snapshot });
+        dispatch({
+          type: 'snapshot/load',
+          snapshot: { ...snapshot, remoteBackendProfiles: localRemoteProfiles },
+        });
 
         // 自定义 markdown 主题列表:启动拉一次(订阅已覆盖后续增删广播)。
         // 失败不阻塞主流程 —— 设置页下拉只是少自定义项,内置主题仍可用。
@@ -733,8 +756,11 @@ export function useIpcSync(): {
           // err 可能是 preload 抛的 ConnectError(带 code,如 AUTH_REJECTED/TCP_UNREACHABLE)
           // 或普通 Error。提取 code 供错误页给针对性诊断。
           const errorCode =
-            err !== null && typeof err === 'object' && 'code' in err && typeof (err as { code?: unknown }).code === 'string'
-              ? ((err as { code: string }).code)
+            err !== null &&
+            typeof err === 'object' &&
+            'code' in err &&
+            typeof (err as { code?: unknown }).code === 'string'
+              ? (err as { code: string }).code
               : null;
           setStatus({
             type: 'error',

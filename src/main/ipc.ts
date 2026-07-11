@@ -273,10 +273,7 @@ function sendEventTo<P>(clientId: string, channel: string, payload: P): void {
 // 远程 client 无 BrowserWindow,handler 里用 _e.sender 的命令(dialog 类文件
 // 选择)在 WS 下 sender=undefined 会失败 —— 这些命令远程不支持(loopback 核心
 // 是 session/shell;远程后端本就不该 daemon 弹本地对话框)。
-type RawHandler = (
-  e: Electron.IpcMainInvokeEvent,
-  envelope: CommandEnvelope,
-) => unknown;
+type RawHandler = (e: Electron.IpcMainInvokeEvent, envelope: CommandEnvelope) => unknown;
 const rawHandlers = new Map<string, RawHandler>();
 
 function registerHandle<P = unknown>(
@@ -297,7 +294,9 @@ function registerHandle<P = unknown>(
 export async function dispatchCommand(
   channel: string,
   envelope: CommandEnvelope,
-): Promise<{ ok: true; result: unknown } | { ok: false; error: { code: string; message: string } }> {
+): Promise<
+  { ok: true; result: unknown } | { ok: false; error: { code: string; message: string } }
+> {
   const handler = rawHandlers.get(channel);
   if (!handler) {
     return {
@@ -332,6 +331,21 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     templatesManager,
     remoteDaemonController,
   } = deps;
+
+  // REMOTE_DAEMON_* 是客户端本地控制面。controller 停止时内部 currentPort=null，
+  // 但设置页仍需显示本机“下次启动会用”的配置端口；统一用 settings 补齐。
+  const getLocalDaemonStatus = (): RemoteDaemonStatusResponse['status'] => {
+    const status = remoteDaemonController?.getStatus() ?? {
+      running: false,
+      port: null,
+      clientCount: 0,
+      hasPassword: false,
+    };
+    return {
+      ...status,
+      port: status.port ?? settingsManager.get().remoteDaemon.port,
+    };
+  };
 
   // App
   registerHandle(
@@ -873,7 +887,16 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
         // '' 清除已配对密码;非空加密落盘(同 SSH password 语义)
         partial.tokenEncrypted = password.length > 0 ? encryptPasswordOrThrow(password) : '';
       }
-      return { profile: remoteProfileManager.update(envelope.payload.id, partial) };
+      const profile = remoteProfileManager.update(envelope.payload.id, partial);
+      // profile 改名/改 host 后同步 OS 层 title(任务栏 / Alt+Tab)。renderer 的
+      // WindowChrome 通过本地 REMOTE_PROFILES_UPDATED 同步自绘标题栏。
+      for (const info of windowManager.list()) {
+        if (info.backendProfileId !== profile.id) continue;
+        windowManager
+          .getById(info.id)
+          ?.setTitle(`Marina — Window ${info.number} → ${profile.displayName} (${profile.host})`);
+      }
+      return { profile };
     },
   );
 
@@ -933,7 +956,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       }
       const port = settingsManager.get().remoteDaemon.port;
       await remoteDaemonController.start(port);
-      return { status: remoteDaemonController.getStatus() };
+      return { status: getLocalDaemonStatus() };
     },
   );
   registerHandle(
@@ -943,18 +966,15 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
         throw makeIpcError('RemoteProfileUnavailable', 'remote daemon controller 未初始化');
       }
       await remoteDaemonController.stop();
-      return { status: remoteDaemonController.getStatus() };
+      return { status: getLocalDaemonStatus() };
     },
   );
-  registerHandle(COMMAND_CHANNELS.REMOTE_DAEMON_GET_STATUS, (): RemoteDaemonStatusResponse => {
-    const status = remoteDaemonController?.getStatus() ?? {
-      running: false,
-      port: null,
-      clientCount: 0,
-      hasPassword: false,
-    };
-    return { status };
-  });
+  registerHandle(
+    COMMAND_CHANNELS.REMOTE_DAEMON_GET_STATUS,
+    (): RemoteDaemonStatusResponse => ({
+      status: getLocalDaemonStatus(),
+    }),
+  );
   registerHandle(
     COMMAND_CHANNELS.REMOTE_DAEMON_SET_PORT,
     async (
@@ -969,14 +989,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       if (remoteDaemonController) {
         await remoteDaemonController.restartIfRunning(port);
       }
-      return {
-        status: remoteDaemonController?.getStatus() ?? {
-          running: false,
-          port,
-          clientCount: 0,
-          hasPassword: false,
-        },
-      };
+      return { status: getLocalDaemonStatus() };
     },
   );
   registerHandle(
@@ -989,7 +1002,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
         throw makeIpcError('RemoteProfileUnavailable', 'remote daemon controller 未初始化');
       }
       await remoteDaemonController.setPassword(envelope.payload.password);
-      return { status: remoteDaemonController.getStatus() };
+      return { status: getLocalDaemonStatus() };
     },
   );
 
@@ -1660,7 +1673,11 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   // v2.0 远程服务端状态变化 → 广播给所有 client(本地窗口 + 远程 WS)
   if (deps.remoteDaemonController) {
     deps.remoteDaemonController.onStatusChange = (status) =>
-      broadcastEvent(EVENT_CHANNELS.REMOTE_DAEMON_STATUS_CHANGED, status);
+      broadcastEvent(EVENT_CHANNELS.REMOTE_DAEMON_STATUS_CHANGED, {
+        ...status,
+        // controller 停止时 currentPort=null；本地设置页仍需显示配置端口。
+        port: status.port ?? deps.settingsManager.get().remoteDaemon.port,
+      });
   }
   const {
     windowManager,

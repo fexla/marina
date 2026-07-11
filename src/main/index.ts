@@ -43,7 +43,12 @@ import { MarkdownThemeManager } from './markdown-theme-manager';
 import { getPlatformAdapter } from './platform';
 import { AIClient } from './ai-client';
 import { WindowsAdapter } from './platform/windows';
-import { parseOpenHere, parseSimpleMode, parseHeadlessDaemon, parseInstanceName } from './argv-utils';
+import {
+  parseOpenHere,
+  parseSimpleMode,
+  parseHeadlessDaemon,
+  parseInstanceName,
+} from './argv-utils';
 import { getBuildType } from './build-type';
 import { logger } from './logger';
 import type {
@@ -437,7 +442,12 @@ function bootstrap(): void {
       );
       let currentDaemonToken: string = daemonCreds.token;
       if (daemonCreds.isNew) {
-        logger.info('remote-daemon', `auth password (new, for pairing): ${daemonCreds.token}`);
+        // 配对密码绝不能写进持久日志:日志经常被用户打包发给开发者诊断。
+        // 首次密码只通过本机设置页 / 托盘“复制连接密码”显式读取。
+        logger.info(
+          'remote-daemon',
+          'new pairing password generated; reveal/copy it from local Settings or tray',
+        );
         if (daemonCreds.storedPlaintext) {
           logger.warn('remote-daemon', 'credentials stored PLAINTEXT (safeStorage unavailable)');
         }
@@ -612,8 +622,7 @@ function bootstrap(): void {
       });
 
       const daemonMode = parseHeadlessDaemon(process.argv);
-      const shouldAutoStart =
-        daemonMode?.daemon || settingsManager.get().remoteDaemon.autoStart;
+      const shouldAutoStart = daemonMode?.daemon || settingsManager.get().remoteDaemon.autoStart;
       if (shouldAutoStart) {
         const port = daemonMode?.port ?? settingsManager.get().remoteDaemon.port;
         try {

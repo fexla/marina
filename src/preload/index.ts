@@ -22,6 +22,8 @@ import { platform, release } from 'os';
 import {
   COMMAND_CHANNELS,
   EVENT_CHANNELS,
+  REMOTE_DAEMON_PORT_MAX,
+  REMOTE_DAEMON_PORT_MIN,
   getCommandRouting,
   type ClipboardReadTextResponse,
   type ClipboardWriteTextPayload,
@@ -73,8 +75,19 @@ const { windowId, windowNumber, backend } = readWindowParams();
 // LOCAL_CONTROL_COMMANDS_SET 里声明,不需要在这里再维护一份 Set ——
 // 这避免了“新增命令忘记加到 preload”的隐式契约 bug。
 
-/** 当前 BrowserWindow 自身状态事件只能来自客户端本地 Electron main。 */
-const LOCAL_CONTROL_EVENTS = new Set<string>([EVENT_CHANNELS.WINDOW_MAX_STATE_CHANGED]);
+/**
+ * 客户端本地控制面事件。
+ *
+ * REMOTE_PROFILES_UPDATED 描述“本客户端如何连接其他电脑”的本地凭据变化，
+ * REMOTE_DAEMON_STATUS_CHANGED 描述“本客户端是否允许其他电脑连接”的服务状态；
+ * 二者与各自命令同属客户端控制面。远程窗口若从 WS daemon 订阅，会收到
+ * daemon 那台机器的 profile/服务状态，导致设置页展示错误的数据域。
+ */
+const LOCAL_CONTROL_EVENTS = new Set<string>([
+  EVENT_CHANNELS.WINDOW_MAX_STATE_CHANGED,
+  EVENT_CHANNELS.REMOTE_PROFILES_UPDATED,
+  EVENT_CHANNELS.REMOTE_DAEMON_STATUS_CHANGED,
+]);
 
 // 浏览器原生 WebSocket 适配成 WSLike(RemoteTransport 期望的接口)。
 // preload 上下文有原生 WebSocket;这里桥接 on*/send/close + readyState。
@@ -136,8 +149,8 @@ function ensureTransport(): Promise<void> {
       // 遇开放的错误端口才等握手超时(1.5s)。找到第一个握手通过的端口。
       // 设计动机(用户需求):client 只需 IP,不用输端口。daemon 默认 32780,
       // 扫描一小段兑底 daemon 端口被占改用别的。
-      const PORT_FROM = 32780;
-      const PORT_COUNT = 10;
+      const PORT_FROM = REMOTE_DAEMON_PORT_MIN;
+      const PORT_COUNT = REMOTE_DAEMON_PORT_MAX - REMOTE_DAEMON_PORT_MIN + 1;
       let portFound: number | null = null;
       // 收集各端口尝试的错误码,全失败时选最有价值的报告给用户。
       const tried: Array<{ port: number; code: string; message: string }> = [];

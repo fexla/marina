@@ -168,23 +168,63 @@ describe('preload remote backend guard', () => {
         },
       }),
     );
-    expect(remoteInvokes.some((x) => x.channel === COMMAND_CHANNELS.SESSION_OPEN_IN_NEW_WINDOW)).toBe(
-      false,
-    );
+    expect(
+      remoteInvokes.some((x) => x.channel === COMMAND_CHANNELS.SESSION_OPEN_IN_NEW_WINDOW),
+    ).toBe(false);
   });
 
-  it('远程窗口剪贴板读写必须走客户端本地 IPC,不能发给 daemon', async () => {
+  it('远程窗口剪贴板/外部链接必须走客户端本地 IPC,不能发给 daemon', async () => {
     await import('./index');
 
     await exposedApi.invoke(COMMAND_CHANNELS.SYSTEM_CLIPBOARD_READ_TEXT, undefined);
     await exposedApi.invoke(COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT, { text: 'hi' });
+    await exposedApi.invoke(COMMAND_CHANNELS.SYSTEM_OPEN_EXTERNAL, { url: 'https://example.com' });
 
-    // 两次都应走本地 ipcRenderer(不能走 remoteTransport,否则操作的是 daemon 剪贴板)
     const channels = invokeMock.mock.calls.map((c: unknown[]) => c[0] as string);
-    expect(channels).toContain(COMMAND_CHANNELS.SYSTEM_CLIPBOARD_READ_TEXT);
-    expect(channels).toContain(COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT);
-    expect(remoteInvokes.some((x) => x.channel === COMMAND_CHANNELS.SYSTEM_CLIPBOARD_READ_TEXT)).toBe(false);
-    expect(remoteInvokes.some((x) => x.channel === COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT)).toBe(false);
+    for (const channel of [
+      COMMAND_CHANNELS.SYSTEM_CLIPBOARD_READ_TEXT,
+      COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT,
+      COMMAND_CHANNELS.SYSTEM_OPEN_EXTERNAL,
+    ]) {
+      expect(channels).toContain(channel);
+      expect(remoteInvokes.some((x) => x.channel === channel)).toBe(false);
+    }
+  });
+
+  it('远程窗口的 daemon 服务管理必须操作客户端本机,不能关闭当前远端 daemon', async () => {
+    await import('./index');
+
+    await exposedApi.invoke(COMMAND_CHANNELS.REMOTE_DAEMON_GET_STATUS, {});
+    await exposedApi.invoke(COMMAND_CHANNELS.REMOTE_DAEMON_STOP, {});
+
+    const channels = invokeMock.mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(channels).toContain(COMMAND_CHANNELS.REMOTE_DAEMON_GET_STATUS);
+    expect(channels).toContain(COMMAND_CHANNELS.REMOTE_DAEMON_STOP);
+    expect(remoteInvokes.some((x) => x.channel === COMMAND_CHANNELS.REMOTE_DAEMON_GET_STATUS)).toBe(
+      false,
+    );
+    expect(remoteInvokes.some((x) => x.channel === COMMAND_CHANNELS.REMOTE_DAEMON_STOP)).toBe(
+      false,
+    );
+  });
+
+  it('暴露本窗口 backendProfileId,renderer 不依赖 daemon 的空 windows snapshot', async () => {
+    await import('./index');
+    expect(exposedApi.backendProfileId).toBe('remote-profile-1');
+  });
+
+  it('远程 profile/本机 daemon 状态事件必须订阅客户端本地 IPC', async () => {
+    await import('./index');
+
+    for (const channel of [
+      EVENT_CHANNELS.REMOTE_PROFILES_UPDATED,
+      EVENT_CHANNELS.REMOTE_DAEMON_STATUS_CHANGED,
+    ]) {
+      const off = exposedApi.on(channel, vi.fn());
+      expect(onMock).toHaveBeenCalledWith(channel, expect.any(Function));
+      off();
+      expect(removeListenerMock).toHaveBeenCalledWith(channel, expect.any(Function));
+    }
   });
 
   it('远程窗口 maximize 状态事件必须订阅客户端本地 IPC', async () => {

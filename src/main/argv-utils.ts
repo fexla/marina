@@ -4,6 +4,11 @@
  *   (import main/index.ts 会触发 bootstrap → 调用 electron.app,
  *    在测试环境无法运行)。
  */
+import {
+  REMOTE_DAEMON_DEFAULT_PORT,
+  REMOTE_DAEMON_PORT_MAX,
+  REMOTE_DAEMON_PORT_MIN,
+} from '@shared/protocol';
 
 /**
  * 解析 argv,提取 `--open-here <path>` 后第一个非 flag token 作为目录路径。
@@ -104,7 +109,8 @@ export function parseInstanceName(argv: readonly string[]): string | null {
  * (Marina.exe --headless --daemon 是完整形式;单独 --headless 也隐含 daemon,
  * 方便记忆)。两者都出现是惯例写法。
  *
- * 端口:`--port=<N>` 覆盖默认 32780。
+ * 端口:`--port=<N>` 覆盖默认 32780，但必须位于 host-only 自动发现范围
+ * 32780-32789；否则正常客户端永远扫描不到。
  *
  * @returns 非 daemon 启动返回 null;daemon 启动返回 { daemon, headless, port }
  */
@@ -120,12 +126,14 @@ export function parseHeadlessDaemon(argv: readonly string[]): DaemonMode | null 
   const daemon = argv.includes('--daemon');
   const headless = argv.includes('--headless');
   if (!daemon && !headless) return null;
-  let port = 32780;
+  let port: number = REMOTE_DAEMON_DEFAULT_PORT;
   for (const tok of argv) {
     if (!tok) continue;
     if (tok.startsWith('--port=')) {
       const p = parseInt(tok.slice('--port='.length), 10);
-      if (!Number.isNaN(p) && p > 0 && p < 65536) port = p;
+      if (!Number.isNaN(p) && p >= REMOTE_DAEMON_PORT_MIN && p <= REMOTE_DAEMON_PORT_MAX) {
+        port = p;
+      }
     }
   }
   return { daemon: true, headless, port };

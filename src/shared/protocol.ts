@@ -32,7 +32,14 @@ import type { DeepPartial } from './types-helpers';
  * 协议版本号。Main 与 Renderer 不匹配时拒绝 handshake。
  * Bump 规则:破坏性变更 +1;新增 channel 或扩展 payload 不需要 bump。
  */
-export const PROTOCOL_VERSION = 1 as const;
+// v2 引入每窗口远程后端、WS clientId owner 语义和控制面/数据面路由，
+// 与只理解本地 WindowInfo owner 的 v1 不兼容，必须在握手阶段明确拒绝混用。
+export const PROTOCOL_VERSION = 2 as const;
+
+/** host-only 连接发现协议固定扫描的 daemon 端口范围(含首尾)。 */
+export const REMOTE_DAEMON_PORT_MIN = 32780 as const;
+export const REMOTE_DAEMON_PORT_MAX = 32789 as const;
+export const REMOTE_DAEMON_DEFAULT_PORT = REMOTE_DAEMON_PORT_MIN;
 
 /**
  * 所有命令通道的命名常量。集中管理避免硬编码字符串散落各处。
@@ -228,7 +235,8 @@ export type CommandRoutingDomain = 'local-control' | 'backend-data';
  * 显式声明为本地控制面的命令集合。未列出的命令默认走 backend-data。
  *
  * 维护规则:新增的命令如果操作“当前客户端机器的本地资源”
- * (BrowserWindow、本机剪贴板、本客户端的远程 profile 凭据),必须加到这里。
+ * (BrowserWindow、本机剪贴板/外部链接、本客户端的远程 profile 凭据、
+ * 本客户端是否对外提供 daemon 服务),必须加到这里。
  * 加这里之后不需要在 preload/index.ts 再做任何事 —— preload 读这个声明自动路由。
  */
 const LOCAL_CONTROL_COMMANDS_SET: ReadonlySet<string> = new Set<CommandChannel>([
@@ -245,8 +253,17 @@ const LOCAL_CONTROL_COMMANDS_SET: ReadonlySet<string> = new Set<CommandChannel>(
   COMMAND_CHANNELS.REMOTE_PROFILE_UPDATE,
   COMMAND_CHANNELS.REMOTE_PROFILE_DELETE,
   COMMAND_CHANNELS.REMOTE_PROFILE_GET_CONNECTION,
+  // “允许其他电脑连接本机”是当前客户端机器的服务端配置。远程窗口里也不能
+  // 把启停/改密码发给当前连接的 daemon，否则客户端可远程关闭服务或轮换密码。
+  COMMAND_CHANNELS.REMOTE_DAEMON_START,
+  COMMAND_CHANNELS.REMOTE_DAEMON_STOP,
+  COMMAND_CHANNELS.REMOTE_DAEMON_GET_STATUS,
+  COMMAND_CHANNELS.REMOTE_DAEMON_SET_PORT,
+  COMMAND_CHANNELS.REMOTE_DAEMON_SET_PASSWORD,
   COMMAND_CHANNELS.SYSTEM_CLIPBOARD_READ_TEXT,
   COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT,
+  // 用户点击链接时应在当前桌面打开浏览器，不能在 headless daemon 主机打开。
+  COMMAND_CHANNELS.SYSTEM_OPEN_EXTERNAL,
 ]);
 
 /** 查询某 channel 的路由域。preload 用这个决定走本地 IPC 还是 WS。 */

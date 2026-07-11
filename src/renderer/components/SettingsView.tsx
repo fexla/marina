@@ -31,6 +31,9 @@ import {
 } from 'react';
 import {
   COMMAND_CHANNELS,
+  REMOTE_DAEMON_DEFAULT_PORT,
+  REMOTE_DAEMON_PORT_MAX,
+  REMOTE_DAEMON_PORT_MIN,
   type AddTemplatePayload,
   type AddSshProfileResponse,
   type AddTemplateResponse,
@@ -292,7 +295,10 @@ function RemoteConnectionPanel({
   // port 输入框在 mount 时从 settings 初始化;跨窗口同步时若另一个窗口改了端口,
   // store 里的值会变,需要同步到输入框。但用户可能正在编辑,不能覆盖正在输入的值。
   // 策略:用 key 跟踪“是否被用户改过”,仅在未被改过 且 store 值与本地不同时同步。
-  const storePort = String(state.settings.remoteDaemon?.port ?? 32780);
+  // REMOTE_DAEMON_GET_STATUS / STATUS_CHANGED 都是 local-control，port 已由 main
+  // 补成“运行端口或本机配置端口”。不能读远程 snapshot.settings.remoteDaemon，
+  // 那是 daemon 主机的配置，不是当前客户端“允许其他电脑连接”的设置。
+  const storePort = String(state.remoteDaemonStatus?.port ?? REMOTE_DAEMON_DEFAULT_PORT);
   const [port, setPort] = useState(storePort);
   const [portTouched, setPortTouched] = useState(false);
   useEffect(() => {
@@ -321,8 +327,13 @@ function RemoteConnectionPanel({
   const handleApplyPort = async (): Promise<void> => {
     setError(null);
     const p = Number.parseInt(port, 10);
-    if (!Number.isFinite(p) || p < 1 || p > 65535) {
-      setError(tx('端口必须为 1-65535', 'Port must be 1-65535'));
+    if (!Number.isFinite(p) || p < REMOTE_DAEMON_PORT_MIN || p > REMOTE_DAEMON_PORT_MAX) {
+      setError(
+        tx(
+          `端口必须为 ${REMOTE_DAEMON_PORT_MIN}-${REMOTE_DAEMON_PORT_MAX}`,
+          `Port must be ${REMOTE_DAEMON_PORT_MIN}-${REMOTE_DAEMON_PORT_MAX}`,
+        ),
+      );
       return;
     }
     try {
@@ -509,7 +520,10 @@ function RemoteConnectionPanel({
             <input
               className="settings-input remote-port-input"
               value={port}
-              onChange={(e) => { setPort(e.target.value); setPortTouched(true); }}
+              onChange={(e) => {
+                setPort(e.target.value);
+                setPortTouched(true);
+              }}
             />
             <button
               type="button"
@@ -613,7 +627,9 @@ function RemoteConnectionPanel({
 
         <div className={`remote-add-form${editingId ? ' editing' : ''}`}>
           <div className="remote-add-form-title">
-            {editingId ? tx('编辑这台电脑', 'Edit this computer') : tx('添加一台电脑', 'Add a computer')}
+            {editingId
+              ? tx('编辑这台电脑', 'Edit this computer')
+              : tx('添加一台电脑', 'Add a computer')}
           </div>
           <label className="remote-field">
             <span className="remote-field-label">{tx('显示名', 'Display name')}</span>
@@ -637,9 +653,7 @@ function RemoteConnectionPanel({
             <span className="remote-field-label">
               {tx('连接密码', 'Connection password')}
               {editingId && (
-                <em className="remote-field-hint">
-                  {tx('(留空表示不改)', '(blank to keep)')}
-                </em>
+                <em className="remote-field-hint">{tx('(留空表示不改)', '(blank to keep)')}</em>
               )}
             </span>
             <input
@@ -651,11 +665,7 @@ function RemoteConnectionPanel({
             />
           </label>
           <div className="remote-add-form-actions">
-            <button
-              type="button"
-              className="settings-button"
-              onClick={() => void handleSubmit()}
-            >
+            <button type="button" className="settings-button" onClick={() => void handleSubmit()}>
               {editingId ? tx('保存', 'Save') : tx('添加', 'Add')}
             </button>
             {editingId && (
@@ -669,8 +679,6 @@ function RemoteConnectionPanel({
     </section>
   );
 }
-
-
 
 // ──────────────────────────────────────────────────────────────────
 // 外观分类

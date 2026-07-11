@@ -504,7 +504,7 @@ export interface Settings {
    * 密码不存这里(用 daemon-credentials.ts 的 safeStorage 加密文件,独立于 settings)。
    */
   remoteDaemon: {
-    /** WS server 监听端口,默认 32780。改了要重启服务端。 */
+    /** WS server 监听端口,host-only 自动发现固定为 32780-32789,默认 32780。 */
     port: number;
     /** true = Marina 启动时自动起服务端(等价于启动后点“启动”按钮)。默认 false(显式启动)。 */
     autoStart: boolean;
@@ -711,7 +711,11 @@ export interface AppSnapshot {
   sessions: SessionInfo[];
   pathTree: PathTree;
   sshProfiles: SshProfile[];
-  /** v2.0 远程后端(§14.9):client 端 remote daemon profile 列表(public 副本)。 */
+  /**
+   * v2.0 远程后端 profile 列表(public 副本)。本地 snapshot 为客户端列表；
+   * 远程 snapshot 中该字段属于 daemon 自己，renderer 必须用 local-control
+   * REMOTE_PROFILE_LIST 替换，不能把两台机器的连接凭据域混在一起。
+   */
   remoteBackendProfiles: RemoteDaemonProfile[];
   templates: Template[];
   defaultTemplateId: string;

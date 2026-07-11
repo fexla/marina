@@ -21,14 +21,16 @@
  * @对应文档:ipc-protocol.md §2.6 Transport-Ws + §4 Handshake;软件定义书 §14.9
  *
  * @不要在这里做的事:
- * - 不要做 command 分发(阶段1.5 dispatcher)
+ * - 不要实现具体 command handler(统一委托 ipc.ts dispatcher)
+ * - 不要把 local-control 命令转发给 dispatcher:窗口/剪贴板/客户端连接凭据
+ *   属于客户端本机，且 REMOTE_PROFILE_GET_CONNECTION 会返回解密后的密码
  * - 不要做 TLS/配对 UI(阶段2)
  */
 import { randomUUID } from 'node:crypto';
 import type { ClientRegistry, ClientTransport } from './client-registry';
 import type { SessionManager } from './session-manager';
 import type { WsServer, AuthHandler, AuthResult, WsCommandFrame } from './transport-ws';
-import type { CommandEnvelope } from '../shared/protocol';
+import { getCommandRouting, type CommandEnvelope } from '../shared/protocol';
 
 /** 握手首帧的期望 JSON 结构(client → daemon)。 */
 export interface AuthFrame {
@@ -61,7 +63,9 @@ export function parseAuthFrame(data: unknown): AuthFrame | null {
 export type DispatchFn = (
   channel: string,
   envelope: CommandEnvelope,
-) => Promise<{ ok: true; result: unknown } | { ok: false; error: { code: string; message: string } }>;
+) => Promise<
+  { ok: true; result: unknown } | { ok: false; error: { code: string; message: string } }
+>;
 
 export interface RemoteDaemonDeps {
   wsServer: WsServer;
@@ -75,6 +79,11 @@ export interface RemoteDaemonDeps {
   onClientAuthenticated?: (clientId: string) => void;
   /** 可选:断开回调,daemon UI 更新 + 日志。 */
   onClientGone?: (clientId: string) => void;
+  /**
+   * 断线后保留 client 身份/Session owner 的重连宽限期。生产默认 10 秒；
+   * 测试可传较小值。宽限期内同 clientId 重连会取消 release。
+   */
+  reconnectGraceMs?: number;
 }
 
 /**
@@ -82,24 +91,27 @@ export interface RemoteDaemonDeps {
  *
  * 生命周期:daemon 启动 → RemoteDaemon.install() 挂回调 → WsServer.start(port)。
  * 每个 WS client:连接 → 握手(authHandler) → 通过则 registry.add →
- * (command 走 dispatcher,阶段1.5) → WS 断开 → registry.remove + 自动 release。
+ * command 走 dispatcher → WS 断开后进入短暂重连宽限期 → 超时才 release owner。
  */
 export class RemoteDaemon {
-  /**
-   * 当前 token 绑定的 clientId(阶段3 重连复用)。V1 单 client:首次握手分配并存,
-   * 重连时 client 带 resumeClientId === boundClientId → 复用,身份连续。
-   * resetToken 后 daemon 重建,这里不显式清(重建即新建实例)。
-   */
-  private boundClientId: string | null = null;
+  /** daemon 已签发且仍可 resume 的 client 身份。每个远程窗口各有一个。 */
+  private readonly issuedClientIds = new Set<string>();
 
-  constructor(private readonly deps: RemoteDaemonDeps) {}
+  /** 断线宽限期计时器；同 id 重连时取消，超时才把 Session 转为无主。 */
+  private readonly releaseTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  private readonly reconnectGraceMs: number;
+
+  constructor(private readonly deps: RemoteDaemonDeps) {
+    this.reconnectGraceMs = deps.reconnectGraceMs ?? 10_000;
+  }
 
   /**
    * 挂载握手/连接/断开回调到 WsServer。应在 WsServer.start 前调用。
    * 内部:
    *  - setAuthHandler:解析 auth 帧 + 校验 token + 分配 clientId
    *  - onClientConnected:已由 authHandler 路径注册(此处仅触发 onClientAuthenticated)
-   *  - onClientDisconnected:registry.remove + sessionManager.handleWindowClosed
+   *  - onClientDisconnected:registry.remove + 延迟 handleWindowClosed(允许短线 resume)
    */
   install(): void {
     const { wsServer, registry, sessionManager } = this.deps;
@@ -113,10 +125,22 @@ export class RemoteDaemon {
     });
     wsServer.onClientDisconnected((clientId) => {
       registry.remove(clientId);
-      // 自动 release:client 消失 → 其持有的 session 全部 release。
-      // handleWindowClosed 语义 = "该 client 的 session 转无主",WS 断开完全适用。
-      sessionManager.handleWindowClosed(clientId);
       this.deps.onClientGone?.(clientId);
+
+      // 网络闪断不能立即清 owner:client 会带 resumeClientId 重连；若此处立刻
+      // handleWindowClosed，即使重用了同一 id，owner 也已经被擦掉。宽限期内
+      // Session 仍归该 id，输出继续进 scrollback；重连后 reload 会补拉。
+      if (!this.issuedClientIds.has(clientId)) return;
+      const oldTimer = this.releaseTimers.get(clientId);
+      if (oldTimer) clearTimeout(oldTimer);
+      const timer = setTimeout(() => {
+        this.releaseTimers.delete(clientId);
+        if (!this.issuedClientIds.delete(clientId)) return;
+        sessionManager.handleWindowClosed(clientId);
+      }, this.reconnectGraceMs);
+      // 宽限计时器不应单独阻止 headless daemon / test process 退出。
+      timer.unref?.();
+      this.releaseTimers.set(clientId, timer);
     });
     // command 帧 → dispatcher → response 帧发回。其他类型(response/event 从
     // client 发来)忽略:client 只该发 command。
@@ -126,7 +150,7 @@ export class RemoteDaemon {
     });
   }
 
-  /** 当前已认证连接数(供上限检查:V1 最多 1 个远程 client)。 */
+  /** 当前已认证连接数(多个远程窗口各自是独立 client)。 */
   authenticatedCount(): number {
     return this.deps.wsServer.clientCount();
   }
@@ -139,6 +163,15 @@ export class RemoteDaemon {
    */
   resetToken(newToken: string): void {
     this.deps.token = newToken;
+
+    // 密码重置是显式吊销，不等重连宽限期。先让所有已签发身份的 Session
+    // 立即转无主，再清身份；随后 socket close 回调看到 id 已失效，不会重复 release。
+    for (const timer of this.releaseTimers.values()) clearTimeout(timer);
+    this.releaseTimers.clear();
+    for (const clientId of this.issuedClientIds) {
+      this.deps.sessionManager.handleWindowClosed(clientId);
+    }
+    this.issuedClientIds.clear();
     this.deps.wsServer.closeAllClients();
   }
 
@@ -152,20 +185,30 @@ export class RemoteDaemon {
       if (frame.token !== this.deps.token) {
         return { error: 'token mismatch' };
       }
-      // 阶段3 断线重连(ADR-014):client 带 resumeClientId 复用身份。
-      // V1 单 client + 单 token:daemon 记 boundClientId,重连时校验 resume === bound → 复用。
-      // 首次握手(resume 缺/不匹配)→ 分配新 clientId 并绑定。token 变(resetToken 重建 daemon)
-      // 后 boundClientId 是新实例的 null,自然分配新的。
-      if (frame.resumeClientId && frame.resumeClientId === this.boundClientId) {
-        return { clientId: this.boundClientId };
+      // 每个远程窗口各自持有 clientId。只要 id 仍在宽限期/活跃集合里，
+      // 任意窗口都可独立 resume；不能用单一 boundClientId，否则第二个窗口或
+      // 端口 probe 会覆盖第一个窗口的身份，导致其后续重连拿到新 id。
+      if (frame.resumeClientId && this.issuedClientIds.has(frame.resumeClientId)) {
+        return { clientId: frame.resumeClientId };
       }
       const newId = randomUUID();
-      this.boundClientId = newId;
+      this.issuedClientIds.add(newId);
       return { clientId: newId };
     };
   }
 
   private registerAuthenticated(transport: ClientTransport): void {
+    const pendingRelease = this.releaseTimers.get(transport.clientId);
+    if (pendingRelease) {
+      clearTimeout(pendingRelease);
+      this.releaseTimers.delete(transport.clientId);
+    }
+    // 新 socket 可能在旧 socket close 事件到达前完成 resume。WsServer 已终止
+    // 旧 socket并以实例 guard 防止旧 close 删除新映射；ClientRegistry 也必须
+    // 先替换旧 transport，否则 add 会因重复 clientId 抛错。
+    if (this.deps.registry.has(transport.clientId)) {
+      this.deps.registry.remove(transport.clientId);
+    }
     this.deps.registry.add(transport);
     // 告知 client 其 clientId(握手确认 + client 据此判断 session 归属)。
     // 用特殊 event channel __auth-ok__;client RemoteTransport 等 it 拿到 clientId 后才算连接就绪。
@@ -188,6 +231,25 @@ export class RemoteDaemon {
    */
   private async handleCommand(clientId: string, frame: WsCommandFrame): Promise<void> {
     const requestId = frame.envelope.requestId;
+
+    // preload 的本地路由只是正常客户端的 UX 约束，不是安全边界。知道 daemon
+    // 密码的自定义 WS client 可以绕过 preload 直接发任意 channel；若这里不拦，
+    // 它可调用 APP_QUIT 让 daemon 退出，或调用 REMOTE_PROFILE_GET_CONNECTION
+    // 读取 daemon 本机保存的其他远程 profile 明文密码。daemon 只接受明确属于
+    // backend-data 的命令，local-control 必须在客户端 Electron main 内执行。
+    if (getCommandRouting(frame.channel) === 'local-control') {
+      this.deps.wsServer.sendFrame(clientId, {
+        type: 'response',
+        requestId,
+        ok: false,
+        error: {
+          code: 'RemoteCommandNotAllowed',
+          message: `Command "${frame.channel}" is client-local and cannot run on a remote daemon.`,
+        },
+      });
+      return;
+    }
+
     const envelope: CommandEnvelope = { ...frame.envelope, windowId: clientId };
     const result = await this.deps.dispatch(frame.channel, envelope);
     this.deps.wsServer.sendFrame(clientId, {

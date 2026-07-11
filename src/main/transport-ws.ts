@@ -125,10 +125,7 @@ export function serializeFrame(frame: WsFrame): string {
  * readyState 非 OPEN 时静默丢弃(连接正在关闭,registry.safeSend 会兜底吞错,
  * 但这里提前 guard 避免 ws.send 抛 InvalidStateError)。
  */
-export function createWsClientTransport(
-  ws: WebSocket,
-  clientId: string,
-): ClientTransport {
+export function createWsClientTransport(ws: WebSocket, clientId: string): ClientTransport {
   return {
     clientId,
     send(channel, envelope) {
@@ -272,10 +269,16 @@ export class WsServer {
 
   /** 已通过认证(或无需认证):注册进 registry + 挂消息/关闭处理 + emit connected。 */
   private registerClient(ws: WebSocket, clientId: string): void {
+    const previous = this.wsByClient.get(clientId);
     this.wsByClient.set(clientId, ws);
+    // resume 可能在旧 socket 的 close 事件到达前完成。映射覆盖后立即终止旧连接，
+    // 避免两个 socket 暂时共用同一 clientId；旧 close 因实例检查不会删掉新映射。
+    if (previous && previous !== ws) previous.terminate();
     const transport = createWsClientTransport(ws, clientId);
 
     ws.on('message', (data) => {
+      // 被新连接替换的旧 socket 即使还有已排队 message，也不能再以同一身份发命令。
+      if (this.wsByClient.get(clientId) !== ws) return;
       const frame = parseFrame(data);
       if (!frame) return; // 非法帧静默丢弃
       for (const h of this.messageHandlers) {
@@ -283,10 +286,7 @@ export class WsServer {
           h(clientId, frame);
         } catch (err) {
           // 单个 handler 抛错不影响其他 handler / 其他 client。
-          console.warn(
-            `[transport-ws] message handler 抛错 clientId="${clientId}"(已忽略):`,
-            err,
-          );
+          console.warn(`[transport-ws] message handler 抛错 clientId="${clientId}"(已忽略):`, err);
         }
       }
     });

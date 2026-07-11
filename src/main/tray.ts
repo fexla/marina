@@ -87,7 +87,13 @@ function generateTrayIcon(variant: 'default' | 'active'): NativeImage {
 
   // 画 ">" 提示符 (在 (4-9, 5-11) 区域用 IRIS 色)
   const promptPixels: ReadonlyArray<readonly [number, number]> = [
-    [4, 5], [5, 6], [6, 7], [7, 8], [6, 9], [5, 10], [4, 11],
+    [4, 5],
+    [5, 6],
+    [6, 7],
+    [7, 8],
+    [6, 9],
+    [5, 10],
+    [4, 11],
   ];
   for (const [px, py] of promptPixels) {
     const i = (py * size + px) * 4;
@@ -343,7 +349,12 @@ export class TrayManager {
           enabled: p.hasToken !== false,
           click: () => {
             try {
-              this.windowManager.createWindowFromFactory({ backendProfileId: p.id });
+              const info = this.windowManager.createWindowFromFactory({ backendProfileId: p.id });
+              // 托盘绕过 ipc WINDOW_CREATE handler，需同步设置 OS 层标题，
+              // 否则自绘标题栏有远程名但任务栏 / Alt+Tab 仍只显示普通 Window N。
+              this.windowManager
+                .getById(info.id)
+                ?.setTitle(`Marina — Window ${info.number} → ${p.displayName} (${p.host})`);
             } catch (err) {
               logger.error('TrayManager', 'open remote window failed', err);
             }
@@ -496,7 +507,7 @@ export class TrayManager {
 
     if (confirmOnQuit && liveCount > 0) {
       const owner = this.windowManager.getMostRecentlyActive();
-      const result = await dialog.showMessageBox(owner ?? undefined as never, {
+      const result = await dialog.showMessageBox(owner ?? (undefined as never), {
         type: 'warning',
         title: '完全退出 Marina?',
         message: `还有 ${liveCount} 个终端在运行,完全退出会关掉它们。`,

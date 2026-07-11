@@ -21,6 +21,11 @@
 import { EventEmitter } from 'node:events';
 import type { Settings, ThemeId } from '@shared/types';
 import type { DeepPartial } from '@shared/types-helpers';
+import {
+  REMOTE_DAEMON_DEFAULT_PORT,
+  REMOTE_DAEMON_PORT_MAX,
+  REMOTE_DAEMON_PORT_MIN,
+} from '@shared/protocol';
 import type { JsonStore } from './persistence';
 
 export type { DeepPartial };
@@ -76,7 +81,7 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   // v2.0 远程服务端:默认不起(显式 UI 启动),端口 32780。
   remoteDaemon: {
-    port: 32780,
+    port: REMOTE_DAEMON_DEFAULT_PORT,
     autoStart: false,
   },
   advanced: {
@@ -324,6 +329,25 @@ export function stripUnknownLegacyFields<T>(raw: T): T {
     }
   }
 
+  // 远程后端 host-only 发现固定扫描 32780-32789。早期 test build 曾允许
+  // 1-65535，导致用户能保存一个客户端永远扫描不到的端口。加载旧配置时将
+  // 范围外值静默迁回默认端口，避免升级后整个 settings.json 被判损坏。
+  if (
+    obj['remoteDaemon'] &&
+    typeof obj['remoteDaemon'] === 'object' &&
+    !Array.isArray(obj['remoteDaemon'])
+  ) {
+    const remoteDaemon = obj['remoteDaemon'] as Record<string, unknown>;
+    const port = remoteDaemon['port'];
+    if (
+      typeof port === 'number' &&
+      (port < REMOTE_DAEMON_PORT_MIN || port > REMOTE_DAEMON_PORT_MAX)
+    ) {
+      const cloned = ensureClone();
+      cloned['remoteDaemon'] = { ...remoteDaemon, port: REMOTE_DAEMON_DEFAULT_PORT };
+    }
+  }
+
   // CURSOR-1(2026-05-17):BETA-006 v2 输入源 'raw'(裸字节 scrollback 末尾)
   // 路径已删除,老 settings.json 残留 ai.statusRecheckSource='raw' 静默 coerce
   // 到 'headless'(唯一可用)。不 coerce 的话 validateSettings 会因枚举不匹
@@ -466,10 +490,18 @@ export function validateSettings(s: Settings): void {
     );
   }
   checkRange('filePanel.port', s.filePanel.port, 0, 65535);
-  // v2.0 远程服务端配置校验
-  checkRange('remoteDaemon.port', s.remoteDaemon.port, 1, 65535);
+  // host-only 连接只扫描固定发现范围；范围外端口对正常客户端不可达。
+  checkRange(
+    'remoteDaemon.port',
+    s.remoteDaemon.port,
+    REMOTE_DAEMON_PORT_MIN,
+    REMOTE_DAEMON_PORT_MAX,
+  );
   if (typeof s.remoteDaemon.autoStart !== 'boolean') {
-    throw new SettingsError('InvalidSettings', `remoteDaemon.autoStart 必须是布尔,实际: ${typeof s.remoteDaemon.autoStart}`);
+    throw new SettingsError(
+      'InvalidSettings',
+      `remoteDaemon.autoStart 必须是布尔,实际: ${typeof s.remoteDaemon.autoStart}`,
+    );
   }
   // markdownStyle 放宽为字符串:除内置 auto / github-light / github-dark,还容纳
   // 'custom:<id>'(用户往 markdown-themes/ 放的 .css 主题)。自定义主题可能被

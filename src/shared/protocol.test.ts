@@ -14,6 +14,9 @@ import {
   COMMAND_CHANNELS,
   EVENT_CHANNELS,
   PROTOCOL_VERSION,
+  REMOTE_DAEMON_DEFAULT_PORT,
+  REMOTE_DAEMON_PORT_MAX,
+  REMOTE_DAEMON_PORT_MIN,
   getCommandRouting,
   type CommandEnvelope,
   type EventEnvelope,
@@ -21,9 +24,16 @@ import {
 
 describe('protocol constants', () => {
   it('PROTOCOL_VERSION is a positive integer', () => {
-    expect(PROTOCOL_VERSION).toBe(1);
+    expect(PROTOCOL_VERSION).toBe(2);
     expect(Number.isInteger(PROTOCOL_VERSION)).toBe(true);
     expect(PROTOCOL_VERSION).toBeGreaterThan(0);
+  });
+
+  it('host-only daemon discovery uses one shared 10-port range', () => {
+    expect(REMOTE_DAEMON_DEFAULT_PORT).toBe(32780);
+    expect(REMOTE_DAEMON_PORT_MIN).toBe(32780);
+    expect(REMOTE_DAEMON_PORT_MAX).toBe(32789);
+    expect(REMOTE_DAEMON_PORT_MAX - REMOTE_DAEMON_PORT_MIN + 1).toBe(10);
   });
 
   it('all command channels start with cmd: prefix', () => {
@@ -60,9 +70,18 @@ describe('command routing (每窗口后端架构边界)', () => {
     expect(getCommandRouting(COMMAND_CHANNELS.REMOTE_PROFILE_GET_CONNECTION)).toBe('local-control');
   });
 
-  it('剪贴板路由为 local-control(客户端本机资源)', () => {
+  it('剪贴板/外部链接路由为 local-control(客户端本机资源)', () => {
     expect(getCommandRouting(COMMAND_CHANNELS.SYSTEM_CLIPBOARD_READ_TEXT)).toBe('local-control');
     expect(getCommandRouting(COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT)).toBe('local-control');
+    expect(getCommandRouting(COMMAND_CHANNELS.SYSTEM_OPEN_EXTERNAL)).toBe('local-control');
+  });
+
+  it('daemon 服务端管理路由为 local-control(当前客户端机器的服务)', () => {
+    expect(getCommandRouting(COMMAND_CHANNELS.REMOTE_DAEMON_START)).toBe('local-control');
+    expect(getCommandRouting(COMMAND_CHANNELS.REMOTE_DAEMON_STOP)).toBe('local-control');
+    expect(getCommandRouting(COMMAND_CHANNELS.REMOTE_DAEMON_GET_STATUS)).toBe('local-control');
+    expect(getCommandRouting(COMMAND_CHANNELS.REMOTE_DAEMON_SET_PORT)).toBe('local-control');
+    expect(getCommandRouting(COMMAND_CHANNELS.REMOTE_DAEMON_SET_PASSWORD)).toBe('local-control');
   });
 
   it('APP_QUIT 路由为 local-control(退出当前客户端进程)', () => {

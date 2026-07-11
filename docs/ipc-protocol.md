@@ -324,7 +324,7 @@ Renderer 启动
   ↓
 2. invoke('cmd:app:get-protocol-version', {})
   ↓
-3. 收到 { protocolVersion: 1 }
+3. 收到 { protocolVersion: 2 }
   ↓
 4. 比较与 Renderer 编译时的 PROTOCOL_VERSION,不匹配 → 抛错并显示升级提示
   ↓
@@ -1794,7 +1794,7 @@ export interface Settings { ... }
 export interface ShellInfo { id: string; name: string; path: string; }
 
 // src/shared/protocol.ts
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export const Channels = {
   // Commands
