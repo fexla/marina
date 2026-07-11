@@ -1443,6 +1443,29 @@ html[data-maximized='true'] .app-root.with-shell {
   border-radius: 3px;
 }
 
+/*
+ * 远程入口视觉强调(可发现性):本地窗口且有可连 profile 时,"远程"按钮
+ * 显示数字角标。按钮本身加 has-remote-badge 类让图标/文字用 accent 色提醒,
+ * 角标是个小圆点显示可连台数。已是远程窗口不显示(用户已在用远程)。
+ */
+.settings-entry.has-remote-badge {
+  color: var(--color-accent, #f0f);
+}
+
+.remote-connectable-badge {
+  margin-left: auto;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--color-accent, #f0f);
+  color: var(--color-bg, #f0f);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+
 /* CP-4 勘误 #11:lucide 图标尺寸节制 — 在 sidebar / 右键 / nav 等处需要
  * 与文本基线对齐 + flex 收缩可控 */
 .settings-nav-icon svg,

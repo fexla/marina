@@ -122,6 +122,14 @@ export function Sidebar(): JSX.Element {
   const { t } = useTranslation();
   const [dragOver, setDragOver] = useState(false);
 
+  // 远程入口视觉强调(可发现性):本窗口若是本地后端且存在已配密码的可连 profile,
+  // 在"远程"按钮上显示数字角标,提示"有 N 台电脑可连"。已是远程窗口不强调
+  // (用户已在用远程)。0 profile 不强调(点进去会 toast 引导去设置)。
+  const connectableCount = state.remoteBackendProfiles.filter((p) => p.hasToken).length;
+  const myWindow = state.windows.find((w) => w.id === state.myWindowId);
+  const isRemoteWindow = !!myWindow?.backendProfileId;
+  const showRemoteBadge = !isRemoteWindow && connectableCount > 0;
+
   // 远程连接入口(footer 按钮):点击展开已保存的远程电脑菜单,选中开新窗口连过去。
   // 0 台引导去设置;未设密码(hasToken=false)灰显。
   const handleRemoteEntry = (e: React.MouseEvent<HTMLButtonElement>): void => {
@@ -542,12 +550,21 @@ export function Sidebar(): JSX.Element {
       <div className="sidebar-footer">
         <button
           type="button"
-          className="settings-entry"
+          className={`settings-entry${showRemoteBadge ? ' has-remote-badge' : ''}`}
           onClick={handleRemoteEntry}
-          title="连接到其他电脑"
+          title={
+            showRemoteBadge
+              ? `连接到其他电脑(${connectableCount} 台可连)`
+              : '连接到其他电脑'
+          }
         >
           <Icon name="server" size={14} />
           <span>远程</span>
+          {showRemoteBadge && (
+            <span className="remote-connectable-badge" aria-label={`${connectableCount} 台可连`}>
+              {connectableCount}
+            </span>
+          )}
         </button>
         <button
           type="button"
