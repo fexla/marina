@@ -847,9 +847,13 @@ html[data-maximized='true'] .app-root.with-shell {
 
 /*
  * 远程后端标识(每窗口后端 §14.9)。只在连了远程 daemon 的窗口显示。
- * 视觉上要明显区别于本地窗口(默认 accent 紫,醒目但不刺眼),
- * 让用户一眼看出“这个窗口的操作目标是另一台电脑”。
- * 箭头 → 表示“连向”。name 用 mono 字体对齐 window-badge 风格。
+ * 配色遵循标题栏既有语言(BETA-024 / Design Token Layer 2):
+ *   - app-name "Marina" → --color-accent-special(iris,主品牌)
+ *   - window-badge "Window N" → --color-warning(gold)
+ *   - version → --color-text-muted(灰,信息性)
+ * 后端标识是“这个窗口连哪台机器”的信息性文本,与 version 同性质,
+ * 用 --color-text-muted 保持安静,不与 Marina 的 iris 主色竞争视觉权重。
+ * 遵守 Layer 2 规则:禁止裸 var(--iris/--gold/...),只用 --color-* 语义槽位。
  */
 .titlebar-backend-badge {
   margin-left: 6px;
@@ -865,14 +869,13 @@ html[data-maximized='true'] .app-root.with-shell {
 }
 
 .titlebar-backend-name {
-  color: var(--color-accent, #f0f);
+  color: var(--color-text-muted, #f0f);
   font-family: var(--terminal-font-family, monospace);
   font-size: 10px;
-  font-weight: 600;
-  max-width: 240px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 240px;
 }
 
 .titlebar-version {
