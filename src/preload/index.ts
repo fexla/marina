@@ -355,6 +355,16 @@ const api = {
   /** 当前窗口编号 (Window N),0 表示未由 WindowManager 分配 */
   windowNumber,
   /**
+   * v2.0 每窗口后端:本窗口连的后端 profile id。
+   * null = 本地 main 后端;非空 = 连该 id 的远程 daemon。
+   * 从 URL ?backend= 解析,窗口创建时定死,生命周期内不变。
+   * renderer 用它判断“我是不是远程窗口”(WindowChrome 远程标识、
+   * 设置页行为分支等)。不依赖 snapshot.windows —— 远程窗口的
+   * snapshot 来自 daemon,daemon 不持有客户端 BrowserWindow,
+   * 其 snapshot.windows 是空的,无法反查本窗口 backend。
+   */
+  backendProfileId: backend,
+  /**
    * Windows build 号(如 22621),非 Windows 或解析失败为 null。
    * TerminalView 构造 xterm 实例时传给 windowsPty.buildNumber。
    */
