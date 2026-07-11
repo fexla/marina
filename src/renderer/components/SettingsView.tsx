@@ -289,7 +289,15 @@ function RemoteConnectionPanel({
   const state = useAppState();
 
   // ── 区块 A:允许远程连接(服务端角色)──────────────────────────────
-  const [port, setPort] = useState(String(state.settings.remoteDaemon?.port ?? 32780));
+  // port 输入框在 mount 时从 settings 初始化;跨窗口同步时若另一个窗口改了端口,
+  // store 里的值会变,需要同步到输入框。但用户可能正在编辑,不能覆盖正在输入的值。
+  // 策略:用 key 跟踪“是否被用户改过”,仅在未被改过 且 store 值与本地不同时同步。
+  const storePort = String(state.settings.remoteDaemon?.port ?? 32780);
+  const [port, setPort] = useState(storePort);
+  const [portTouched, setPortTouched] = useState(false);
+  useEffect(() => {
+    if (!portTouched && port !== storePort) setPort(storePort);
+  }, [storePort, port, portTouched]);
   const [serverPassword, setServerPassword] = useState('');
   const status = state.remoteDaemonStatus;
   const running = status?.running ?? false;
@@ -319,6 +327,7 @@ function RemoteConnectionPanel({
     }
     try {
       await window.api.invoke(COMMAND_CHANNELS.REMOTE_DAEMON_SET_PORT, { port: p });
+      setPortTouched(false);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -500,7 +509,7 @@ function RemoteConnectionPanel({
             <input
               className="settings-input remote-port-input"
               value={port}
-              onChange={(e) => setPort(e.target.value)}
+              onChange={(e) => { setPort(e.target.value); setPortTouched(true); }}
             />
             <button
               type="button"
