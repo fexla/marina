@@ -17,7 +17,7 @@
  *
  * @对应文档章节: 软件定义书 6.7 (窗口视觉),M1 待办 P0-1
  */
-import { useEffect, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import {
   COMMAND_CHANNELS,
   EVENT_CHANNELS,
@@ -109,12 +109,28 @@ export function WindowChrome({ windowStyle, buildVersion, buildType }: Props): J
   const appLabel =
     buildType === 'dev' ? 'Marina (dev)' : buildType === 'portable' ? 'Marina (portable)' : 'Marina';
 
+  // 远程后端标识(每窗口后端 §14.9):本窗口若连了远程 daemon,在标题栏显示
+  // 窗口编号后追加上游电脑名字。远程窗口跟本地窗口长得一样会让用户混淆
+  // “我是在本地还是远程操作”,必须有视觉区分。
+  // 数据来源:state.windows 里找本窗口的 WindowInfo.backendProfileId,
+  // 再从 state.remoteBackendProfiles 找 displayName/host。两条数据在 snapshot
+  // 里一起下发,远程窗口打开即有,不会闪。
+  const backendLabel = useMemo(() => {
+    const myWindow = state.windows.find((w) => w.id === state.myWindowId);
+    const profileId = myWindow?.backendProfileId;
+    if (!profileId) return null;
+    const profile = state.remoteBackendProfiles.find((p) => p.id === profileId);
+    if (!profile) return profileId; // profile 被删了但窗口还开着 — 显示 id 兒底
+    return `${profile.displayName} (${profile.host})`;
+  }, [state.windows, state.myWindowId, state.remoteBackendProfiles]);
+
   if (windowStyle === 'macos') {
     return (
       <MacosTitlebar
         buildVersion={buildVersion}
         appLabel={appLabel}
         windowNumber={windowNumber}
+        backendLabel={backendLabel}
         maximized={maximized}
         callMin={callMin}
         callClose={callClose}
@@ -134,6 +150,12 @@ export function WindowChrome({ windowStyle, buildVersion, buildType }: Props): J
       <div className="titlebar-title titlebar-drag">
         <span className="titlebar-app-name">{appLabel}</span>
         <span className="titlebar-window-badge">Window {windowNumber || '?'}</span>
+        {backendLabel && (
+          <span className="titlebar-backend-badge" title={`连接到: ${backendLabel}`}>
+            <span className="titlebar-backend-arrow" aria-hidden="true">→</span>
+            <span className="titlebar-backend-name">{backendLabel}</span>
+          </span>
+        )}
       </div>
       <div className="titlebar-spacer titlebar-drag" />
       <span className="titlebar-version titlebar-drag">v{buildVersion}</span>
@@ -188,6 +210,7 @@ function MacosTitlebar({
   buildVersion,
   appLabel,
   windowNumber,
+  backendLabel,
   maximized,
   callMin,
   callClose,
@@ -198,6 +221,7 @@ function MacosTitlebar({
   buildVersion: string;
   appLabel: string;
   windowNumber: number;
+  backendLabel: string | null;
   maximized: boolean;
   callMin: () => void;
   callClose: () => void;
@@ -256,6 +280,12 @@ function MacosTitlebar({
       <div className="titlebar-title titlebar-drag">
         <span className="titlebar-app-name">{appLabel}</span>
         <span className="titlebar-window-badge">Window {windowNumber || '?'}</span>
+        {backendLabel && (
+          <span className="titlebar-backend-badge" title={`连接到: ${backendLabel}`}>
+            <span className="titlebar-backend-arrow" aria-hidden="true">→</span>
+            <span className="titlebar-backend-name">{backendLabel}</span>
+          </span>
+        )}
       </div>
       <div className="titlebar-spacer titlebar-drag" />
       <span className="titlebar-version titlebar-drag">v{buildVersion}</span>

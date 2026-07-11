@@ -376,6 +376,19 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
           : {}),
         ...(envelope.payload.simpleMode ? { simpleMode: true } : {}),
       });
+      // OS 层窗口标题(任务栏 / Alt+Tab / dock 显示用)。自绘标题栏(frame:false)
+      // 已在 renderer 端 WindowChrome 显示远程标识;这里同步更新 OS title,让用户
+      // 在任务栏 / Alt+Tab 也能区分远程窗口。profile 名查不到(刚删)时回退到 id。
+      if (envelope.payload.backendProfileId) {
+        const profile = remoteProfileManager
+          ?.list()
+          .find((p) => p.id === envelope.payload.backendProfileId);
+        const name = profile
+          ? `${profile.displayName} (${profile.host})`
+          : envelope.payload.backendProfileId;
+        const win = windowManager.getById(info.id);
+        win?.setTitle(`Marina — Window ${info.number} → ${name}`);
+      }
       return { windowId: info.id, windowNumber: info.number };
     },
   );

@@ -845,6 +845,36 @@ html[data-maximized='true'] .app-root.with-shell {
   -webkit-app-region: drag;
 }
 
+/*
+ * 远程后端标识(每窗口后端 §14.9)。只在连了远程 daemon 的窗口显示。
+ * 视觉上要明显区别于本地窗口(默认 accent 紫,醒目但不刺眼),
+ * 让用户一眼看出“这个窗口的操作目标是另一台电脑”。
+ * 箭头 → 表示“连向”。name 用 mono 字体对齐 window-badge 风格。
+ */
+.titlebar-backend-badge {
+  margin-left: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  -webkit-app-region: drag;
+}
+
+.titlebar-backend-arrow {
+  color: var(--color-text-muted, #f0f);
+  font-size: 11px;
+}
+
+.titlebar-backend-name {
+  color: var(--color-accent, #f0f);
+  font-family: var(--terminal-font-family, monospace);
+  font-size: 10px;
+  font-weight: 600;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .titlebar-version {
   color: var(--color-text-muted, #f0f);
   font-family: var(--terminal-font-family, monospace);
