@@ -14,6 +14,7 @@ import {
   COMMAND_CHANNELS,
   EVENT_CHANNELS,
   PROTOCOL_VERSION,
+  getCommandRouting,
   type CommandEnvelope,
   type EventEnvelope,
 } from './protocol';
@@ -41,6 +42,45 @@ describe('protocol constants', () => {
   it('command and event channel names are unique', () => {
     const all = [...Object.values(COMMAND_CHANNELS), ...Object.values(EVENT_CHANNELS)];
     expect(new Set(all).size).toBe(all.length);
+  });
+});
+
+describe('command routing (每窗口后端架构边界)', () => {
+  it('窗口控制命令路由为 local-control', () => {
+    expect(getCommandRouting(COMMAND_CHANNELS.WINDOW_MINIMIZE)).toBe('local-control');
+    expect(getCommandRouting(COMMAND_CHANNELS.WINDOW_TOGGLE_MAXIMIZE)).toBe('local-control');
+    expect(getCommandRouting(COMMAND_CHANNELS.WINDOW_CLOSE_SELF)).toBe('local-control');
+    expect(getCommandRouting(COMMAND_CHANNELS.WINDOW_CREATE)).toBe('local-control');
+    expect(getCommandRouting(COMMAND_CHANNELS.WINDOW_FOCUS)).toBe('local-control');
+  });
+
+  it('远程 profile 凭据管理路由为 local-control(不能发给当前 daemon)', () => {
+    expect(getCommandRouting(COMMAND_CHANNELS.REMOTE_PROFILE_LIST)).toBe('local-control');
+    expect(getCommandRouting(COMMAND_CHANNELS.REMOTE_PROFILE_ADD)).toBe('local-control');
+    expect(getCommandRouting(COMMAND_CHANNELS.REMOTE_PROFILE_GET_CONNECTION)).toBe('local-control');
+  });
+
+  it('剪贴板路由为 local-control(客户端本机资源)', () => {
+    expect(getCommandRouting(COMMAND_CHANNELS.SYSTEM_CLIPBOARD_READ_TEXT)).toBe('local-control');
+    expect(getCommandRouting(COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT)).toBe('local-control');
+  });
+
+  it('APP_QUIT 路由为 local-control(退出当前客户端进程)', () => {
+    expect(getCommandRouting(COMMAND_CHANNELS.APP_QUIT)).toBe('local-control');
+  });
+
+  it('session/path/template/settings 等业务命令路由为 backend-data', () => {
+    expect(getCommandRouting(COMMAND_CHANNELS.SESSION_CREATE)).toBe('backend-data');
+    expect(getCommandRouting(COMMAND_CHANNELS.SESSION_GET_SCROLLBACK)).toBe('backend-data');
+    expect(getCommandRouting(COMMAND_CHANNELS.BOOKMARK_ADD)).toBe('backend-data');
+    expect(getCommandRouting(COMMAND_CHANNELS.SETTINGS_GET)).toBe('backend-data');
+    expect(getCommandRouting(COMMAND_CHANNELS.APP_GET_SNAPSHOT)).toBe('backend-data');
+  });
+
+  it('文件面板命令路由为 backend-data(session 在 daemon 上,文件操作走 daemon)', () => {
+    expect(getCommandRouting(COMMAND_CHANNELS.FILE_PANEL_GET_OPEN_FILES)).toBe('backend-data');
+    expect(getCommandRouting(COMMAND_CHANNELS.FILE_PANEL_READ)).toBe('backend-data');
+    expect(getCommandRouting(COMMAND_CHANNELS.FILE_PANEL_OPEN)).toBe('backend-data');
   });
 });
 

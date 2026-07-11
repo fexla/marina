@@ -22,6 +22,7 @@ import { platform, release } from 'os';
 import {
   COMMAND_CHANNELS,
   EVENT_CHANNELS,
+  getCommandRouting,
   type ClipboardReadTextResponse,
   type ClipboardWriteTextPayload,
   type ClipboardWriteTextResponse,
@@ -67,34 +68,10 @@ function readWindowParams(): { windowId: string; windowNumber: number; backend: 
 
 const { windowId, windowNumber, backend } = readWindowParams();
 
-/**
- * 客户端本地控制面命令。
- *
- * 远程窗口只把“后端业务数据”发给 daemon；BrowserWindow 生命周期始终属于
- * 当前客户端 Electron 进程。如果把 WINDOW_* 也发到远端,daemon 收到的
- * envelope.windowId 是 WS clientId,它不可能在服务端 WindowManager 里找到
- * 客户端 BrowserWindow,于是最小化 / 最大化 / 关闭全部静默失效。
- */
-const LOCAL_CONTROL_COMMANDS = new Set<string>([
-  COMMAND_CHANNELS.APP_QUIT,
-  COMMAND_CHANNELS.WINDOW_CREATE,
-  COMMAND_CHANNELS.WINDOW_CLOSE_SELF,
-  COMMAND_CHANNELS.WINDOW_CLOSE_ALL,
-  COMMAND_CHANNELS.WINDOW_FOCUS,
-  COMMAND_CHANNELS.WINDOW_MINIMIZE,
-  COMMAND_CHANNELS.WINDOW_TOGGLE_MAXIMIZE,
-  COMMAND_CHANNELS.WINDOW_GET_MAX_STATE,
-  // 远程 profile 是“本客户端如何连接别的电脑”的本地凭据,不能发给当前 daemon。
-  COMMAND_CHANNELS.REMOTE_PROFILE_LIST,
-  COMMAND_CHANNELS.REMOTE_PROFILE_ADD,
-  COMMAND_CHANNELS.REMOTE_PROFILE_UPDATE,
-  COMMAND_CHANNELS.REMOTE_PROFILE_DELETE,
-  COMMAND_CHANNELS.REMOTE_PROFILE_GET_CONNECTION,
-  // 剪贴板是客户端本机资源。复制选中文字要进客户端剪贴板,粘贴要从客户端剪贴板读。
-  // 若发给 daemon,用户在远程终端复制的内容会落到服务端剪贴板,无法在客户端本地应用粘贴。
-  COMMAND_CHANNELS.SYSTEM_CLIPBOARD_READ_TEXT,
-  COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT,
-]);
+// 客户端本地控制面的路由判断委托给 @shared/protocol 的声明式标注
+// (getCommandRouting)。新增本地控制命令只需在 protocol.ts 的
+// LOCAL_CONTROL_COMMANDS_SET 里声明,不需要在这里再维护一份 Set ——
+// 这避免了“新增命令忘记加到 preload”的隐式契约 bug。
 
 /** 当前 BrowserWindow 自身状态事件只能来自客户端本地 Electron main。 */
 const LOCAL_CONTROL_EVENTS = new Set<string>([EVENT_CHANNELS.WINDOW_MAX_STATE_CHANGED]);
@@ -303,7 +280,7 @@ async function invoke<P, R>(channel: string, payload: P): Promise<R> {
     });
   }
 
-  if (LOCAL_CONTROL_COMMANDS.has(channel)) {
+  if (getCommandRouting(channel) === 'local-control') {
     // 远程窗口里普通“新建窗口”必须继承当前 backend。否则本地 main 会创建
     // backend=null 的窗口,新窗口自然拿不到远程 path/session,表现为左侧空白。
     // 设置页显式传 backendProfileId(打开另一台电脑)时尊重显式值。

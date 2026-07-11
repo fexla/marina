@@ -206,6 +206,57 @@ export const COMMAND_CHANNELS = {
 export type CommandChannel = (typeof COMMAND_CHANNELS)[keyof typeof COMMAND_CHANNELS];
 
 /**
+ * 命令路由域(每窗口后端模型的核心架构边界)。
+ *
+ * preload 根据 channel 所属的域决定路由:
+ * - 'local-control':客户端本地控制面,永远走客户端 Electron IPC。
+ *   BrowserWindow 生命周期、窗口控件、本机资源(剪贴板/远程 profile 凭据)
+ *   属于当前客户端机器,绝不能发给 daemon。
+ * - 'backend-data':后端业务数据,本地窗口走本地 IPC,远程窗口走 WS→daemon。
+ *   session/path/template/settings 等业务状态属于后端(本地 main 或远程 daemon)。
+ *
+ * 默认 'backend-data'(向后兼容:大部分命令是后端数据)。
+ *
+ * 新增命令时:在 LOCAL_CONTROL_COMMANDS_SET 显式声明 'local-control' 即可,
+ * preload 自动路由,不需要在 preload/index.ts 再维护一份 Set。
+ * 这避免了“新增本地控制命令忘记加到 preload Set”的隐式契约 bug
+ * (review 发现的 clipboard 遗漏就是这个模式)。
+ */
+export type CommandRoutingDomain = 'local-control' | 'backend-data';
+
+/**
+ * 显式声明为本地控制面的命令集合。未列出的命令默认走 backend-data。
+ *
+ * 维护规则:新增的命令如果操作“当前客户端机器的本地资源”
+ * (BrowserWindow、本机剪贴板、本客户端的远程 profile 凭据),必须加到这里。
+ * 加这里之后不需要在 preload/index.ts 再做任何事 —— preload 读这个声明自动路由。
+ */
+const LOCAL_CONTROL_COMMANDS_SET: ReadonlySet<string> = new Set<CommandChannel>([
+  COMMAND_CHANNELS.APP_QUIT,
+  COMMAND_CHANNELS.WINDOW_CREATE,
+  COMMAND_CHANNELS.WINDOW_CLOSE_SELF,
+  COMMAND_CHANNELS.WINDOW_CLOSE_ALL,
+  COMMAND_CHANNELS.WINDOW_FOCUS,
+  COMMAND_CHANNELS.WINDOW_MINIMIZE,
+  COMMAND_CHANNELS.WINDOW_TOGGLE_MAXIMIZE,
+  COMMAND_CHANNELS.WINDOW_GET_MAX_STATE,
+  COMMAND_CHANNELS.REMOTE_PROFILE_LIST,
+  COMMAND_CHANNELS.REMOTE_PROFILE_ADD,
+  COMMAND_CHANNELS.REMOTE_PROFILE_UPDATE,
+  COMMAND_CHANNELS.REMOTE_PROFILE_DELETE,
+  COMMAND_CHANNELS.REMOTE_PROFILE_GET_CONNECTION,
+  COMMAND_CHANNELS.SYSTEM_CLIPBOARD_READ_TEXT,
+  COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT,
+]);
+
+/** 查询某 channel 的路由域。preload 用这个决定走本地 IPC 还是 WS。 */
+export function getCommandRouting(channel: string): CommandRoutingDomain {
+  return LOCAL_CONTROL_COMMANDS_SET.has(channel as CommandChannel)
+    ? 'local-control'
+    : 'backend-data';
+}
+
+/**
  * 所有事件通道的命名常量。
  */
 export const EVENT_CHANNELS = {
