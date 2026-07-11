@@ -292,6 +292,10 @@ export class WsServer {
     });
 
     ws.on('close', () => {
+      // 重连场景:新 ws 可能已用同一 clientId 注册(registerClient 覆盖旧条目)。
+      // 旧 ws 的 close 事件此时若触发,不能删除新 ws 的条目,否则重连后的 client
+      // 会从 registry 丢失 → session 被误 release。只有映射里仍是当前关闭的 ws 才删。
+      if (this.wsByClient.get(clientId) !== ws) return;
       this.wsByClient.delete(clientId);
       for (const h of this.disconnectedHandlers) {
         try {

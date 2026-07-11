@@ -251,3 +251,62 @@ describe('WsServer — handler 隔离', () => {
     expect(secondCalled).toBe(true);
   });
 });
+
+describe('WsServer — 重连竞态', () => {
+  it('同一 clientId 重连后,旧 ws 的 close 事件不删除新 ws 的 registry 条目', async () => {
+    // 场景:client A 连上(分配 id='recon-1'),然后重连(复用 id='recon-1'),
+    // 旧 ws 的 close 事件晚于新 ws 注册才触发。修复前:close 会错误删除新 ws 条目,
+    // 导致新连接从 registry 丢失。
+    const { server, port } = await startServer();
+
+    // 用 auth handler 固定 clientId,模拟 resume 重连。
+    server.setAuthHandler(() => ({ clientId: 'recon-1' }));
+
+    // onClientConnected 在每次 registerClient 后触发,用来等待握手完成。
+    let connectCount = 0;
+    const connectedAll = new Promise<void>((resolve) => {
+      server.onClientConnected(() => {
+        connectCount++;
+        if (connectCount >= 2) resolve();
+      });
+    });
+
+    // client 必须发 auth 帧才能完成握手。
+    function connectWithAuth(): WebSocket {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      ws.on('open', () => {
+        ws.send(JSON.stringify({ type: 'auth', token: 'test-token' }));
+      });
+      ws.on('error', () => {
+        // 旧 ws 会被关闭,错误事件正常,忽略
+      });
+      return ws;
+    }
+
+    const ws1 = connectWithAuth();
+    // 等首次连接握手完成
+    const firstConnected = new Promise<void>((r) =>
+      server.onClientConnected(() => r()),
+    );
+    await firstConnected;
+    expect(server.clientCount()).toBe(1);
+
+    // 重连:新 ws 复用同一 clientId
+    const ws2 = connectWithAuth();
+    await connectedAll;
+    expect(server.clientCount()).toBe(1);
+
+    // 现在关掉旧 ws1。旧 close 事件触发,但 registry 里已是 ws2。
+    // 修复前:close 会错误删除条目 → clientCount 变 0,新连接丢失。
+    const ws1Closed = new Promise<void>((r) => ws1.on('close', () => r()));
+    ws1.close();
+    await ws1Closed;
+    await new Promise((r) => setTimeout(r, 200));
+
+    // 新 ws2 应该仍在 registry
+    expect(server.clientCount()).toBe(1);
+
+    ws2.close();
+    await new Promise((r) => setTimeout(r, 200));
+  }, 10000);
+});

@@ -870,6 +870,15 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       if (!remoteProfileManager) {
         throw makeIpcError('RemoteProfileUnavailable', 'remote profile manager 未初始化');
       }
+      // 检查是否有窗口正在连该远程后端。已打开的远程窗口 URL ?backend=<id> 已定死,
+      // 删除 profile 后它的 preload 会拿不到连接信息,下次重连会失败。
+      const inUse = windowManager.list().find((w) => w.backendProfileId === envelope.payload.id);
+      if (inUse) {
+        throw makeIpcError(
+          'RemoteProfileInUse',
+          `该远程电脑正被窗口 ${inUse.number} 使用,请先关闭该窗口。`,
+        );
+      }
       try {
         remoteProfileManager.delete(envelope.payload.id);
       } catch (err) {

@@ -173,6 +173,20 @@ describe('preload remote backend guard', () => {
     );
   });
 
+  it('远程窗口剪贴板读写必须走客户端本地 IPC,不能发给 daemon', async () => {
+    await import('./index');
+
+    await exposedApi.invoke(COMMAND_CHANNELS.SYSTEM_CLIPBOARD_READ_TEXT, undefined);
+    await exposedApi.invoke(COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT, { text: 'hi' });
+
+    // 两次都应走本地 ipcRenderer(不能走 remoteTransport,否则操作的是 daemon 剪贴板)
+    const channels = invokeMock.mock.calls.map((c: unknown[]) => c[0] as string);
+    expect(channels).toContain(COMMAND_CHANNELS.SYSTEM_CLIPBOARD_READ_TEXT);
+    expect(channels).toContain(COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT);
+    expect(remoteInvokes.some((x) => x.channel === COMMAND_CHANNELS.SYSTEM_CLIPBOARD_READ_TEXT)).toBe(false);
+    expect(remoteInvokes.some((x) => x.channel === COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT)).toBe(false);
+  });
+
   it('远程窗口 maximize 状态事件必须订阅客户端本地 IPC', async () => {
     await import('./index');
 

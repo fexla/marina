@@ -90,6 +90,10 @@ const LOCAL_CONTROL_COMMANDS = new Set<string>([
   COMMAND_CHANNELS.REMOTE_PROFILE_UPDATE,
   COMMAND_CHANNELS.REMOTE_PROFILE_DELETE,
   COMMAND_CHANNELS.REMOTE_PROFILE_GET_CONNECTION,
+  // 剪贴板是客户端本机资源。复制选中文字要进客户端剪贴板,粘贴要从客户端剪贴板读。
+  // 若发给 daemon,用户在远程终端复制的内容会落到服务端剪贴板,无法在客户端本地应用粘贴。
+  COMMAND_CHANNELS.SYSTEM_CLIPBOARD_READ_TEXT,
+  COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT,
 ]);
 
 /** 当前 BrowserWindow 自身状态事件只能来自客户端本地 Electron main。 */
