@@ -123,9 +123,9 @@ describe('JsonStore', () => {
       await store.flush();
 
       // mock fs.rename 让它失败
-      const renameSpy = vi.spyOn(fs, 'rename').mockRejectedValueOnce(
-        new Error('mock rename failure'),
-      );
+      const renameSpy = vi
+        .spyOn(fs, 'rename')
+        .mockRejectedValueOnce(new Error('mock rename failure'));
       store.set({ version: 1, counter: 2, items: [] });
       await expect(store.flush()).rejects.toThrow(/atomic rename failed/);
       renameSpy.mockRestore();
@@ -146,8 +146,11 @@ describe('JsonStore', () => {
       // 立即读应该没东西
       await expect(fs.access(filePath)).rejects.toThrow();
 
-      // 等 debounce 触发
+      // 等 debounce timer 到期后，还要用 flush() 等待可能仍在进行的原子写。
+      // 全量 Vitest 并行运行时，50ms timer 已触发不代表 write+fsync+rename 已完成；
+      // 直接 read 会与原子写 race，afterEach 还可能删除其临时目录。
       await new Promise((r) => setTimeout(r, 80));
+      await store.flush();
       const data = JSON.parse(await fs.readFile(filePath, 'utf8'));
       expect(data.counter).toBe(3);
     });
