@@ -2,6 +2,18 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [0.2.5] — 2026-07-12
+
+### 新增
+
+- **终端专属文件面板布局。** 文件展示面板的宽度与折叠状态进入 session 临时 UI 布局；切换终端、跨窗口接管同一 session 后均会恢复，session 销毁或应用重启后自然失效。拖动仅在鼠标松开时同步最终宽度，避免高频 IPC 广播。
+- **每终端受管临时展示工作区。** 每次新建 session 都会获得 `MARINA_WORKSPACE`，内部程序可在其中生成文档，再沿用 `MARINA_SERVICE /open-file` 展示给用户。工作区位于 Marina 数据目录的专用受管根内，关闭终端后默认保留 7 天；设置可调 0–365 天，0 为立即删除。启动会回收过期目录，PTY 启动失败会立即撤销未交付的目录。
+
+### 安全与维护
+
+- 工作区 manifest 仅接受 UUID session id，删除操作限定在受管根目录内；损坏记录不会把回收路径导向用户文件。
+- 新增 `SessionWorkspaceManager` 单测，覆盖创建、延期回收、崩溃恢复、spawn 前撤销边界与路径安全；SessionManager 增加 UI 布局和环境变量覆盖保护测试。
+
 ## [0.2.3] — 2026-06-05
 
 issue #4 续 — hideTopTabBar 模式重选当前 path 不进 EmptyPathState 的修复。

@@ -6,8 +6,13 @@
 > 这份文档定义所有消息的 schema、语义、错误码、时序约束。
 > 实现代码必须严格遵循,不允许"自由发挥"。
 
-文档版本:2.0 · 最后更新:2026-07-05
+文档版本:2.1 · 最后更新:2026-07-12
 
+> **v2.1 变更**(2026-07-12,文件展示面板完善):
+> - 新增 `cmd:session:update-ui-layout`：会话级临时 UI 布局由后端随 `SessionInfo` 保存，接管/跨窗口可恢复，但 session 销毁后丢弃
+> - `SessionInfo.uiLayout.filePanel` 定义文件展示面板的 `width` / `collapsed`；其变动复用 `evt:session:state-changed`
+> - 每个新 session 在其后端的 `userData/file-panel-workspaces/<sessionId>/` 创建受管临时展示工作区，并注入 `MARINA_WORKSPACE`；关闭后按 `settings.filePanel.workspaceRetentionDays`（默认 7 天）回收
+>
 > **v2.0 变更**(2026-07-05,远程后端模式立项,ADR-014):
 > - **major bump**:命令信封 `windowId` → `clientId`(§2.3);事件信封加 `targetClientId`(§2.4)。原因:远程后端模式下 client ≠ 窗口,且断线重连 windowId 变而 clientId 不变。本地 in-process client 的 clientId 等于其 windowId,语义兼容
 > - 新增 §2.6 **Transport-Ws**(WebSocket + TLS),与现有 Transport-Local(Electron IPC)并存,跑同一套语义
@@ -261,6 +266,7 @@ v2.0 引入 `clientId` 后,两个字段名容易混淆,明确边界:
 | `cmd:session:send-input` | 向 session 发送键盘输入 |
 | `cmd:session:resize` | 通知 session 终端尺寸变化 |
 | `cmd:session:rename` | **(M1-C)** 重命名 session 的显示名 |
+| `cmd:session:update-ui-layout` | 更新 session 专属的临时 UI 布局（文件面板宽度/折叠态） |
 | `cmd:session:get-scrollback` | 获取 session 的 scrollback 缓冲(切换 owner 时用) |
 | `cmd:bookmark:add` | 添加收藏路径 |
 | `cmd:bookmark:remove` | 移除收藏 |
@@ -577,8 +583,11 @@ interface CreateSessionResponse {
 - `PtySpawnFailed`:node-pty 启动失败(详见错误的 `details` 字段)
 - `ShellNotFound`:模板对应的 shell 不存在
 - `CwdNotAccessible`:工作目录不存在或无权限
+- `WorkspaceCreateFailed`:受管临时展示工作区无法创建（数据目录无权限、磁盘空间不足等）
 
 **Side Effects**:
+- 在该后端的 `userData/file-panel-workspaces/<sessionId>/` 创建 session 专属临时展示工作区
+- 向 PTY 子进程注入 `MARINA_WORKSPACE`（绝对路径，不可由模板 env 覆盖）；程序在此创建文档后，可沿用 `MARINA_SERVICE` 的 `/open-file` API 展示给用户
 - 创建 PTY
 - 注入 OSC 1337 hook
 - Path 状态机可能触发(临时分类)
@@ -782,6 +791,35 @@ interface ClearManualRenamePayload {
 - 清掉 `manuallyRenamed` 标记
 - 不立即改 displayName(留待下一次 OSC 0/1/2 到来时覆盖)
 - 不广播事件(标记本身对 UI 不可见)
+
+---
+
+#### `cmd:session:update-ui-layout` (v2.1)
+更新 session 专属、非持久化的 UI 布局。布局是 `SessionInfo` 的一部分：同一
+session 被其他窗口接管后会保持，但 session 销毁、应用重启后不保留。它不是
+全局 Settings，也不形成产品意义上的 Workspace。
+
+```typescript
+interface UpdateSessionUiLayoutPayload {
+  sessionId: string;
+  patch: {
+    filePanel?: {
+      width?: number;       // 280..900，像素
+      collapsed?: boolean;
+    };
+  };
+}
+// Response: void
+```
+
+**Errors**:
+- `InvalidUiLayout`:缺少 `filePanel`，或 width 超出 `[280, 900]`、collapsed 非布尔值
+- 不存在的 sessionId 静默 no-op（与 resize / rename 一致）
+
+**Side Effects**:
+- 合并并校验 `SessionInfo.uiLayout`
+- 广播 `evt:session:state-changed`，其 `changes.uiLayout` 包含完整最新布局
+- Renderer 拖动宽度应在 mouseup 时仅提交最终值，避免高频状态广播
 
 ---
 
@@ -1390,7 +1428,7 @@ interface SessionCreatedPayload {
 ---
 
 #### `evt:session:state-changed`
-状态(active/idle/exited)、displayName、currentCwd、exitCode 等任意 SessionInfo 字段子集变化。
+状态(active/idle/exited)、displayName、currentCwd、exitCode、uiLayout 等任意 SessionInfo 字段子集变化。
 
 ```typescript
 interface SessionStateChangedPayload {

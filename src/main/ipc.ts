@@ -139,6 +139,7 @@ import {
   type UpdateSettingsPayload,
   type UpdateSshProfilePayload,
   type UpdateSshProfileResponse,
+  type UpdateSessionUiLayoutPayload,
   type WindowFocusRequestedPayload,
   type WindowListUpdatedPayload,
   type ImeProbeDumpPayload,
@@ -541,6 +542,15 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     COMMAND_CHANNELS.SESSION_CLEAR_MANUAL_RENAME,
     (_e, envelope: CommandEnvelope<{ sessionId: string }>): void => {
       sessionManager.clearManualRename(envelope.payload.sessionId);
+    },
+  );
+
+  // 会话专属 UI 布局由 SessionManager 作为临时 session 状态保存。它会随既有
+  // evt:session:state-changed 广播，owner 接管或远程客户端重连无需专门通道。
+  registerHandle(
+    COMMAND_CHANNELS.SESSION_UPDATE_UI_LAYOUT,
+    (_e, envelope: CommandEnvelope<UpdateSessionUiLayoutPayload>): void => {
+      sessionManager.updateUiLayout(envelope.payload.sessionId, envelope.payload.patch);
     },
   );
 

@@ -21,6 +21,7 @@ import type {
   PathTree,
   RemoteDaemonProfile,
   SessionInfo,
+  SessionUiLayoutPatch,
   Settings,
   SshProfile,
   Template,
@@ -83,6 +84,10 @@ export const COMMAND_CHANNELS = {
    * 的任务进度标题重新生效。
    */
   SESSION_CLEAR_MANUAL_RENAME: 'cmd:session:clear-manual-rename',
+  /**
+   * 更新当前终端的临时 UI 布局。布局随 session 接管同步，但 session 销毁后丢弃。
+   */
+  SESSION_UPDATE_UI_LAYOUT: 'cmd:session:update-ui-layout',
   /**
    * 右键 Tab → “在新窗口中打开”。
    * - 本地 backend:main 原子 release → 创建窗口 → claim 给新 windowId。
@@ -461,6 +466,12 @@ export interface CreateSessionResponse {
 export interface RenameSessionPayload {
   sessionId: string;
   newDisplayName: string;
+}
+
+/** cmd:session:update-ui-layout payload。main 端合并并校验区块值。 */
+export interface UpdateSessionUiLayoutPayload {
+  sessionId: string;
+  patch: SessionUiLayoutPatch;
 }
 
 export interface CloseSessionPayload {

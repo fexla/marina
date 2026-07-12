@@ -182,6 +182,27 @@ export interface WindowInfo {
  * Session 的可序列化外观 (用于 IPC 与 snapshot)。
  * 实际的 PTY 实例 / scrollback buffer 留在 Main,不传到 renderer。
  */
+/**
+ * 会话独有、随 session 生命周期存在的 UI 布局。
+ *
+ * 这不是用户全局偏好(Settings)，也不写入磁盘：Session 被销毁后布局自然失效。
+ * 放在 SessionInfo 使 owner 切换/跨窗口接管时能保持同一个终端的呈现方式；后续
+ * 终端专属 UI 元素应在此按区块扩展，而非在单个 React 组件里保存孤立 useState。
+ */
+export interface SessionUiLayout {
+  filePanel: {
+    /** 右侧文件展示面板宽度，像素；main 端限制为 [280, 900]。 */
+    width: number;
+    /** true 时保留窄展开条，隐藏文件面板内容。 */
+    collapsed: boolean;
+  };
+}
+
+/** 可由 renderer 提交的会话 UI 布局增量。 */
+export interface SessionUiLayoutPatch {
+  filePanel?: Partial<SessionUiLayout['filePanel']>;
+}
+
 export interface SessionInfo {
   id: string;
   /**
@@ -217,6 +238,8 @@ export interface SessionInfo {
   exitedAt?: number;
   /** 创建时间 (Unix ms) */
   createdAt: number;
+  /** 会话专属且不跨应用重启持久化的 UI 布局。 */
+  uiLayout?: SessionUiLayout;
 }
 
 /**
@@ -467,7 +490,9 @@ export interface Settings {
    *
    * 终端里跑的程序(agent / 脚本 / CLI)通过注入的 env(MARINA_SERVICE /
    * MARINA_TOKEN / TERMINAL_ID)调本机 RESTful 服务,把文件"打开"到绑定该
-   * 终端的侧边面板里。面板支持 文本 / 图片 / Markdown。
+   * 终端的侧边面板。每个 session 另有 MARINA_WORKSPACE 指向受管临时目录，
+   * 内部程序可在其中生成展示文档；目录不等于产品意义的 Workspace。面板支持
+   * 文本 / 图片 / Markdown。
    *
    * - enabled:false → 不起 HTTP 服务、不注入 env、不渲染面板(功能完全关闭)
    * - port:0 = 启动时让系统分配空闲端口(避免冲突,默认);正整数 = 尝试该固定
@@ -496,6 +521,11 @@ export interface Settings {
      * 不在 settings 校验处阻塞保存。
      */
     markdownStyle: string;
+    /**
+     * session 临时展示工作区在终端关闭后的保留天数。0 = 关闭后立即删除；
+     * 工作区始终会创建，不能用此值关闭功能。
+     */
+    workspaceRetentionDays: number;
   };
 
   /**
