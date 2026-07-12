@@ -2,6 +2,18 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [0.2.6] — 2026-07-12
+
+### 新增
+
+- **收藏项目右键安装 Marina Skill。** 本地收藏路径右键菜单新增“安装 Marina Skill…”，弹窗可同时选择 Pi、Claude Code、Codex；将内置 `show-in-marina` skill 分别复制到 `.pi/skills/`、`.claude/skills/`、`.agents/skills/`。同名 skill 已存在时先列出全部冲突，必须显式确认才覆盖。
+- **内置 `show-in-marina` skill。** 安装后的 agent 可使用 `MARINA_SERVICE` 打开文件展示面板，并优先将临时报告写入每 terminal 的 `MARINA_WORKSPACE`。
+
+### 安全与兼容
+
+- 安装器只复制 Marina 随包携带的受控 skill，不执行或安装任意用户提供的目录；覆盖范围严格限制为项目内同名 skill 目录。
+- 远程 backend 窗口将安装请求路由给 daemon，在远程项目上执行；SSH 路径不显示该菜单，避免把远端路径误当作本地文件系统。
+
 ## [0.2.5] — 2026-07-12
 
 ### 新增

@@ -40,6 +40,7 @@ import {
 } from './daemon-credentials';
 import { FilePanelService } from './file-panel-service';
 import { SessionWorkspaceManager } from './session-workspace-manager';
+import { SkillInstaller } from './skill-installer';
 import { MarkdownThemeManager } from './markdown-theme-manager';
 import { getPlatformAdapter } from './platform';
 import { AIClient } from './ai-client';
@@ -208,6 +209,13 @@ function bootstrap(): void {
   // 才调(见下方 initialize 之后)。SessionManager 现在就持有引用,供每个新
   // session 的 createSession 注入 env。详见 file-panel-service.ts 头注。
   const filePanelService = new FilePanelService();
+  // 内置 skill 在 dev 从源码读取、installed 包从 extraResources 读取。安装器只会
+  // 复制这一份受控内容到用户明确选择的本地收藏项目。
+  const skillInstaller = new SkillInstaller({
+    sourceDir: app.isPackaged
+      ? join(process.resourcesPath, 'skills', 'show-in-marina')
+      : join(__dirname, '..', '..', 'src', 'skills', 'show-in-marina'),
+  });
   // session 工作区只存 Marina 自己的临时展示文档。它不参与 Path 树、不暴露为
   // 产品意义的 workspace，且按 settings.filePanel.workspaceRetentionDays 延期回收。
   const sessionWorkspaceManager = new SessionWorkspaceManager({
@@ -485,6 +493,7 @@ function bootstrap(): void {
         knownHostsManager,
         templatesManager,
         filePanelService,
+        skillInstaller,
         markdownThemeManager,
         aiClient,
         remoteDaemonController,

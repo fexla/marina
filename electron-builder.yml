@@ -36,6 +36,10 @@ asarUnpack:
 extraResources:
   - from: src/shell-hooks
     to: shell-hooks
+  # 内置 show-in-marina skill 由主进程复制到用户选中的项目级 agent 目录；外部
+  # agent 进程需要真实文件，不能从 app.asar 读取。
+  - from: src/skills
+    to: skills
   # Win11 新右键菜单(IExplorerCommand)资源 —— 仅 installed 形态使用,
   # SettingsView 通过 cmd:explorer-integration:set-modern 触发 install.ps1。
   # MSIX 包由 native/context-menu/scripts/build.ps1 离线生成,这里只搬运产物。

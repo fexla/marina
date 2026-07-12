@@ -104,6 +104,8 @@ export const COMMAND_CHANNELS = {
   BOOKMARK_SET_DEFAULT_TEMPLATE: 'cmd:bookmark:set-default-template',
   BOOKMARK_PICK_FOLDER: 'cmd:bookmark:pick-folder',
   PATH_REMOVE_FROM_RECENT: 'cmd:path:remove-from-recent',
+  /** 将内置 show-in-marina skill 安装到所选收藏项目的 agent 目录。 */
+  SKILL_INSTALL_MARINA: 'cmd:skill:install-marina',
 
   // SSH profile / remote path 域
   SSH_PROFILE_LIST: 'cmd:ssh-profile:list',
@@ -466,6 +468,19 @@ export interface CreateSessionResponse {
 export interface RenameSessionPayload {
   sessionId: string;
   newDisplayName: string;
+}
+
+/** cmd:skill:install-marina payload。projectPath 必须是本地收藏目录。 */
+export interface InstallMarinaSkillPayload {
+  projectPath: string;
+  targets: Array<'pi' | 'claude' | 'codex'>;
+  /** true 仅由 renderer 经用户覆盖确认后传入。 */
+  overwrite?: boolean;
+}
+
+export interface InstallMarinaSkillResponse {
+  installed: Array<{ target: 'pi' | 'claude' | 'codex'; destination: string }>;
+  conflicts: Array<{ target: 'pi' | 'claude' | 'codex'; destination: string }>;
 }
 
 /** cmd:session:update-ui-layout payload。main 端合并并校验区块值。 */

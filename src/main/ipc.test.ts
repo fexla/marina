@@ -246,6 +246,9 @@ function makeStubs() {
       // 它的 on('filePanelUpdated') / onSessionDestroyed,以及 registerFilePanelHandlers
       // 注册的 5 个方法。EventEmitter + 这些方法在不 start 时都能正常工作。
       filePanelService: new FilePanelService(),
+      skillInstaller: {
+        install: vi.fn(async () => ({ installed: [], conflicts: [] })),
+      } as unknown,
       // 真实 MarkdownThemeManager(不 ensureFirstRun / startWatch):ipc 层
       // wireEventBroadcasts 只用到它的 on('listUpdated'),以及 registerMdThemeHandlers
       // 注册的 3 个方法。构造无副作用(懒 getter),EventEmitter 在不 watch 时也正常。
@@ -425,15 +428,18 @@ describe('IPC WINDOW_CREATE', () => {
     installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
 
     const handler = handlers.get(COMMAND_CHANNELS.WINDOW_CREATE);
-    const result = await handler!({}, {
-      windowId: 'old-local-window',
-      requestId: 'new-window-1',
-      payload: {
-        backendProfileId: 'remote-profile-1',
-        selectSessionId: 'remote-session-1',
-        simpleMode: true,
+    const result = await handler!(
+      {},
+      {
+        windowId: 'old-local-window',
+        requestId: 'new-window-1',
+        payload: {
+          backendProfileId: 'remote-profile-1',
+          selectSessionId: 'remote-session-1',
+          simpleMode: true,
+        },
       },
-    });
+    );
 
     expect(stubs.windowManager.createWindowFromFactory).toHaveBeenCalledWith({
       backendProfileId: 'remote-profile-1',
@@ -471,11 +477,14 @@ describe('IPC SESSION_FOCUS_OWNER', () => {
 
     const handler = handlers.get(COMMAND_CHANNELS.SESSION_FOCUS_OWNER);
     expect(handler).toBeTruthy();
-    await handler!({}, {
-      windowId: 'daemon-local-window',
-      requestId: 'focus-1',
-      payload: { sessionId: session.id },
-    });
+    await handler!(
+      {},
+      {
+        windowId: 'daemon-local-window',
+        requestId: 'focus-1',
+        payload: { sessionId: session.id },
+      },
+    );
 
     expect(stubs.windowManager.focus).toHaveBeenCalledWith(remoteOwnerId);
     expect(send).toHaveBeenCalledWith(

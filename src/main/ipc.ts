@@ -24,6 +24,7 @@
 import { app, BrowserWindow, clipboard, ipcMain, dialog, safeStorage, shell } from 'electron';
 import { getBuildType } from './build-type';
 import type { FilePanelService } from './file-panel-service';
+import type { SkillInstaller } from './skill-installer';
 import type { MarkdownThemeManager } from './markdown-theme-manager';
 import {
   getExplorerIntegrationStatus,
@@ -144,6 +145,8 @@ import {
   type WindowListUpdatedPayload,
   type ImeProbeDumpPayload,
   type ImeProbeDumpResponse,
+  type InstallMarinaSkillPayload,
+  type InstallMarinaSkillResponse,
 } from '@shared/protocol';
 import type { AppSnapshot, MdTheme, RemoteDaemonProfile, Settings, Template } from '@shared/types';
 import type { WindowManager } from './window-manager';
@@ -181,6 +184,8 @@ export interface IpcLayerDeps {
    * 生产必填;ipc 层本身不单测(AGENTS.md 5.4 转发逻辑测在 file-panel-service)。
    */
   filePanelService: FilePanelService;
+  /** 内置 show-in-marina skill 的项目级安装服务。 */
+  skillInstaller: SkillInstaller;
   /**
    * Markdown 面板主题管理器(Typora 式可扩展)。生产必填;负责扫主题目录、
    * 读 CSS 文本、fs.watch 自动发现增删。
@@ -782,6 +787,16 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     (_e, envelope: CommandEnvelope<RemoveFromRecentPayload>): void => {
       pathManager.removeFromRecent(envelope.payload.path);
     },
+  );
+
+  // 收藏路径右键的“安装 Marina Skill”。它写的是当前 backend 上所选项目的
+  // agent 目录，因此在远程 backend 窗口中会由 daemon 执行，不能标为 local-control。
+  registerHandle(
+    COMMAND_CHANNELS.SKILL_INSTALL_MARINA,
+    async (
+      _e,
+      envelope: CommandEnvelope<InstallMarinaSkillPayload>,
+    ): Promise<InstallMarinaSkillResponse> => deps.skillInstaller.install(envelope.payload),
   );
 
   // SSH profiles / remote bookmarks
