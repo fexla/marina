@@ -10,7 +10,7 @@
  *   ipc-protocol.md 第 4 章 handshake
  */
 import { useEffect, useState } from 'react';
-import { PROTOCOL_VERSION } from '@shared/protocol';
+import { COMMAND_CHANNELS, PROTOCOL_VERSION } from '@shared/protocol';
 import { AppStateProvider, useAppDispatch, useAppState, useIpcSync } from './store';
 import { Sidebar } from './components/Sidebar';
 import { MainPane } from './components/MainPane';
@@ -27,7 +27,7 @@ type HandshakeState =
   | { status: 'pending' }
   | { status: 'ok'; buildVersion: string; buildType: 'dev' | 'portable' | 'installed' }
   | { status: 'mismatch'; mainVersion: number; rendererVersion: number }
-  | { status: 'error'; message: string };
+  | { status: 'error'; message: string; errorCode: string | null };
 
 export function App(): JSX.Element {
   const [handshake, setHandshake] = useState<HandshakeState>({ status: 'pending' });
@@ -86,6 +86,7 @@ export function App(): JSX.Element {
       setHandshake({
         status: 'error',
         message: 'window.api 不存在 — preload 脚本未正确加载。',
+        errorCode: null,
       });
       return;
     }
@@ -103,9 +104,16 @@ export function App(): JSX.Element {
         setHandshake({ status: 'ok', buildVersion, buildType });
       })
       .catch((err: unknown) => {
+        // 远程窗口连不上 daemon 时,getProtocolVersion()→invoke()→ensureTransport()
+        // 会 throw ConnectError(带 code)。提取 code 供错误页给针对性诊断。
+        const errorCode =
+          err !== null && typeof err === 'object' && 'code' in err && typeof (err as { code?: unknown }).code === 'string'
+            ? (err as { code: string }).code
+            : null;
         setHandshake({
           status: 'error',
           message: err instanceof Error ? err.message : String(err),
+          errorCode,
         });
       });
   }, []);
@@ -126,6 +134,36 @@ export function App(): JSX.Element {
   }
 
   if (handshake.status === 'error') {
+    // 远程窗口连不上 daemon 时,getProtocolVersion 走 invoke→ensureTransport 会 throw,
+    // 提前在这里失败(到不了 ConnectedShell 的 sync.error)。所以这里也要判断远程窗口,
+    // 显示带标题栏 + 可复制的 RemoteConnectionErrorScreen,而不是无标题栏的 FullPagePlaceholder。
+    const backendId =
+      typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search).get('backend')
+        : null;
+    if (backendId) {
+      // 必须包 AppStateProvider:RemoteConnectionErrorScreen 内部调 useAppState()
+      // (取 settings.appearance.theme),它渲染的 WindowChrome 和 LanguageProvider
+      // 也各自调 useAppState()。而 useAppState 在无 Provider 时会 throw
+      // ('[store] useAppState 必须在 AppStateProvider 内使用'),没有 ErrorBoundary
+      // 兜底 → 整棵树崩溃白屏 = 用户看到“标题栏还是没有”
+      // (前两次修复无效的真正原因)。这里挂一个 Provider:snapshot 不会被拉
+      // (不调 useIpcSync),settings 保持空默认值 → theme fallback 'rose-pine',
+      // WindowChrome / LanguageProvider 读默认 context 正常渲染,不崩溃。
+      return (
+        <AppStateProvider
+          myWindowId={window.api.windowId}
+          myWindowNumber={window.api.windowNumber}
+        >
+          <RemoteConnectionErrorScreen
+            errorMessage={handshake.message}
+            errorCode={handshake.errorCode}
+            buildVersion="unknown"
+            buildType="portable"
+          />
+        </AppStateProvider>
+      );
+    }
     return (
       <FullPagePlaceholder
         title="Marina"
@@ -172,22 +210,46 @@ function ConnectedShell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 右键 Tab → "在新窗口中打开":?selectSessionId=X。等 snapshot 加载完(此时
-  // sessions 已包含新 owner 信息)再 dispatch 选中,避免选到不存在的 session。
+  // 右键 Tab → “在新窗口中打开”:?selectSessionId=X。等 snapshot 加载完再处理。
+  // 本地 backend 的旧流程在创建窗口前已把 owner claim 给新 windowId,这里只选中。
+  // 远程 backend 无法提前知道新 WS clientId,所以旧窗口先 release 成 orphan,
+  // 新窗口在这里用自己的 daemon clientId claim,再挂载 TerminalView。
   useEffect(() => {
     if (typeof window === 'undefined') return;
     if (!sync.ready) return;
     const params = new URLSearchParams(window.location.search);
     const initialSessionId = params.get('selectSessionId');
     if (!initialSessionId) return;
-    dispatch({
-      type: 'view/focus-requested',
-      selectSessionId: initialSessionId,
-    });
-    // 一次性,清掉 query 防止刷新 / DevTools 重载时重新触发
+
+    // 一次性,先清 query,避免 React 重渲 / DevTools reload 重复 claim。
     const url = new URL(window.location.href);
     url.searchParams.delete('selectSessionId');
     window.history.replaceState({}, '', url.toString());
+
+    const target = state.sessions.get(initialSessionId);
+    if (!target) return;
+    const selectTarget = (): void => {
+      dispatch({ type: 'view/focus-requested', selectSessionId: initialSessionId });
+    };
+
+    if (target.ownerWindowId === null) {
+      void window.api
+        .invoke(COMMAND_CHANNELS.SESSION_CLAIM, { sessionId: initialSessionId })
+        .then(() => {
+          // owner-changed 广播通常先到；本地补一次同值更新保证即使事件延迟,
+          // getDisplayableSession 也能立即让 TerminalView 挂载。
+          dispatch({
+            type: 'sessions/owner-changed',
+            sessionId: initialSessionId,
+            ownerWindowId: state.myWindowId,
+          });
+          selectTarget();
+        })
+        .catch((err) => console.error('[App] claim moved remote session failed', err));
+      return;
+    }
+
+    selectTarget();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sync.ready]);
 
@@ -240,6 +302,22 @@ function ConnectedShell({
   }, []);
 
   if (sync.error) {
+    // 远程窗口加载失败 = 远程连接失败(preload ensureTransport 抛 ConnectError)。
+    // 绝不静默回退本地。显示带窗口标题栏 + 针对性诊断的错误页(可复制/重试/关窗)。
+    const backendId =
+      typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search).get('backend')
+        : null;
+    if (backendId) {
+      return (
+        <RemoteConnectionErrorScreen
+          errorMessage={sync.error}
+          errorCode={sync.errorCode}
+          buildVersion={buildVersion}
+          buildType={buildType}
+        />
+      );
+    }
     return (
       <FullPagePlaceholder
         title="Marina"
@@ -294,16 +372,184 @@ function ConnectedShell({
   );
 }
 
+/**
+ * 远程连接错误码 → 针对性诊断(标题 + 排查清单)。preload ConnectError.code 驱动。
+ * 避免用户面对笼统“连不上”,按失败阶段给具体原因和排查方向。
+ */
+function getRemoteErrorDiagnosis(errorCode: string | null): {
+  title: string;
+  checklist: string[];
+} {
+  switch (errorCode) {
+    case 'AUTH_REJECTED':
+      return {
+        title: '连接密码错误',
+        checklist: [
+          '对方电脑的“连接密码”改过,或你填的是旧密码。',
+          '去对方 Marina → 远程连接 → 允许远程连接 → 复制最新的连接密码。',
+          '回到这台电脑 → 远程连接 → 连接到其他电脑 → 编辑该电脑,填入新密码。',
+        ],
+      };
+    case 'TCP_UNREACHABLE':
+      return {
+        title: '无法连接到对方电脑',
+        checklist: [
+          '对方 Marina 是否已点“允许远程连接”→ 开启(状态应显示“运行中 · 端口 32780”)。',
+          '对方防火墙是否放行 32780(三个 profile:域/专用/公用都要)。',
+          '你填的 IP 是否正确,且能 ping 通(WireGuard/VPN 是否已连接)。',
+          '对方 server 可能绑在了别的网卡 —— 检查对方是否有多个网络接口。',
+        ],
+      };
+    case 'WS_HANDSHAKE':
+      return {
+        title: '目标端口不是 Marina',
+        checklist: [
+          '你连的 IP+端口上跑的是别的程序,不是 Marina daemon。',
+          '确认对方 Marina 监听的端口(默认 32780),不要填到别的服务端口。',
+        ],
+      };
+    case 'AUTH_TIMEOUT':
+      return {
+        title: '对方 daemon 没有响应',
+        checklist: [
+          'WS 连上了但对方没在超时内回认证确认。可能对方 daemon 卡住或异常,尝试在对方机器重启 Marina。',
+          '两边 Marina 版本可能不兼容(本机版本与对方差异过大)。',
+          '请对方查看日志:%APPDATA%\\Marina\\logs\\main.log,搜 “transport-ws”,看 client 连接和认证过程是否到达(若没有 connection 日志 = 连接没到对方;有 auth rejected = 密码不对)。',
+        ],
+      };
+    case 'PROFILE_INCOMPLETE':
+      return {
+        title: '这台远程电脑配置不完整',
+        checklist: [
+          '去 设置 → 远程连接 → 连接到其他电脑,把 IP 和连接密码都填上。',
+        ],
+      };
+    default:
+      return {
+        title: '无法连接到远程电脑',
+        checklist: [
+          '确认对方 Marina 已开启“允许远程连接”。',
+          '确认密码正确、IP 可达、防火墙放行 32780。',
+          '看下方详细错误获取更多线索。',
+        ],
+      };
+  }
+}
+
+/**
+ * 远程窗口连接失败时的全屏错误页。与普通 FullPagePlaceholder 的区别:
+ * - 带窗口标题栏(WindowChrome),用户能最小化/最大化/关闭。
+ * - 按 error.code 给针对性诊断(标题 + 排查清单),不是笼统一句。
+ * - 错误详情可选中 + 一键复制(便于把错误发给排查者)。
+ * - 重试(reload 重新走 ensureTransport)+ 关闭窗口 按钮。
+ */
+function RemoteConnectionErrorScreen({
+  errorMessage,
+  errorCode,
+  buildVersion,
+  buildType,
+}: {
+  errorMessage: string;
+  errorCode: string | null;
+  buildVersion: string;
+  buildType: 'dev' | 'portable' | 'installed';
+}): JSX.Element {
+  const diagnosis = getRemoteErrorDiagnosis(errorCode);
+  const state = useAppState();
+  // snapshot 没加载时 settings 是空对象,fallback 默认主题。data-theme 必须设,
+  // 否则 CSS 变量(--color-bg-primary 等)未定义,整个页面(含标题栏)会变成 fallback 品红。
+  const currentTheme = state.settings.appearance?.theme ?? 'rose-pine';
+  const handleRetry = (): void => {
+    window.location.reload();
+  };
+  const handleClose = (): void => {
+    window.close();
+  };
+  const handleCopy = async (): Promise<void> => {
+    const detail = `[Marina 远程连接失败]\n错误码:${errorCode ?? 'unknown'}\n信息:${errorMessage}`;
+    // 优先 navigator.clipboard(安全上下文);不可用时 fallback 到隐藏 textarea + execCommand。
+    try {
+      await navigator.clipboard.writeText(detail);
+      return;
+    } catch {
+      /* 落到 fallback */
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = detail;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch {
+      /* 都不行就让用户手动选中下面的 pre */
+    }
+  };
+
+  // 包完整 Provider 树(与主界面一致),确保 WindowChrome / CSS 变量 / portal 容器正常。
+  return (
+    <LanguageProvider>
+      <div
+        className="app-root with-shell"
+        data-theme={currentTheme}
+        data-window-style="windows"
+      >
+        <WindowChrome windowStyle="windows" buildVersion={buildVersion} buildType={buildType} />
+        <div className="remote-error-screen">
+          <div className="remote-error-card">
+            <h1 className="remote-error-title">{diagnosis.title}</h1>
+            <p className="remote-error-subtitle">
+              这个窗口是远程窗口,但连不上对方电脑上的 Marina。
+            </p>
+
+            <ol className="remote-error-checklist">
+              {diagnosis.checklist.map((item, i) => (
+                <li key={i}>{item}</li>
+              ))}
+            </ol>
+
+            {/* 详细错误默认展开(不用 details 折叠),确保始终可见 + 可选中复制 */}
+            <div className="remote-error-detail">
+              <div className="remote-error-detail-label">详细错误(可选中,或点按钮复制)</div>
+              <pre className="remote-error-pre" ref={(el) => { /* 允许直接选中 */ void el; }}>{errorMessage}</pre>
+              <button
+                type="button"
+                className="settings-button remote-error-copy"
+                onClick={() => void handleCopy()}
+              >
+                复制错误信息
+              </button>
+            </div>
+
+            <div className="remote-error-actions">
+              <button type="button" className="settings-button" onClick={handleRetry}>
+                重试连接
+              </button>
+              <button type="button" className="settings-button danger" onClick={handleClose}>
+                关闭窗口
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </LanguageProvider>
+  );
+}
+
 function FullPagePlaceholder({
   title,
   subtitle,
   body,
   variant,
+  actions,
 }: {
   title: string;
   subtitle: string;
   body?: string;
   variant?: 'error';
+  actions?: JSX.Element;
 }): JSX.Element {
   return (
     <div className="app-root">
@@ -311,6 +557,7 @@ function FullPagePlaceholder({
         <h1>{title}</h1>
         <p className="subtitle">{subtitle}</p>
         {body && <pre className="error-pre">{body}</pre>}
+        {actions && <div className="bootstrap-actions">{actions}</div>}
       </div>
     </div>
   );

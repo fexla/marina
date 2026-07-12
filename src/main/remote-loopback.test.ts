@@ -48,6 +48,8 @@ async function startLoopback(dispatchImpl?: DispatchFn): Promise<Loopback> {
     sessionManager: sm,
     token: TOKEN,
     dispatch: dispatch as unknown as DispatchFn,
+    // 生产宽限期 10s；loopback 测试缩短，仍验证“超时后才 release”。
+    reconnectGraceMs: 30,
   });
   daemon.install();
   const port = await server.start(0);

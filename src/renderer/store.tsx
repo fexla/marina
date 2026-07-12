@@ -44,6 +44,7 @@ import {
   type SessionStateChangedPayload,
   type SettingsChangedPayload,
   type SshProfilesUpdatedPayload,
+  type RemoteDaemonStatusPayload,
   type TemplateListUpdatedPayload,
   type WindowFocusRequestedPayload,
   type WindowListUpdatedPayload,
@@ -74,6 +75,8 @@ export interface AppState {
   sshProfiles: SshProfile[];
   /** v2.0 远程后端(§14.9):remote daemon profile 列表(public 副本) */
   remoteBackendProfiles: RemoteDaemonProfile[];
+  /** v2.0 远程服务端运行状态(本窗口所连 daemon 的 server 状态) */
+  remoteDaemonStatus: RemoteDaemonStatusPayload | null;
   windows: WindowInfo[];
   templates: Template[];
   defaultTemplateId: string;
@@ -143,6 +146,7 @@ export type AppAction =
   | { type: 'bookmarks/update'; bookmarks: Bookmark[] }
   | { type: 'sshProfiles/update'; profiles: SshProfile[] }
   | { type: 'remoteBackendProfiles/update'; profiles: RemoteDaemonProfile[] }
+  | { type: 'remoteDaemonStatus/update'; status: RemoteDaemonStatusPayload | null }
   | { type: 'sessions/created'; session: SessionInfo }
   | { type: 'sessions/owner-changed'; sessionId: string; ownerWindowId: string | null }
   | { type: 'sessions/state-changed'; sessionId: string; changes: Partial<SessionInfo> }
@@ -195,6 +199,12 @@ function reducer(state: AppState, action: AppAction): AppState {
         templates: s.templates,
         defaultTemplateId: s.defaultTemplateId,
         settings: s.settings,
+        // 远程后端窗口的真实 owner id 不是本地 BrowserWindow 的 windowId,而是
+        // daemon 在 WS auth 后分配的 clientId。SessionManager.createSession 也会用
+        // 这个 clientId 写 session.ownerWindowId。若这里继续保留 preload URL 里的
+        // 本地 windowId,新建远程 session 会被 getDisplayableSession 误判为“别人持有”,
+        // TerminalView 不挂载,用户看到的现象就是“连接成功但打不开终端”。
+        myWindowId: s.myWindowId,
         // bookmarks 不从 pathTree 派生 — 完整列表由 evt:bookmarks:updated
         // 单独同步,snapshot 期先置空,等首个 bookmarks/update 来填。
         bookmarks: [],
@@ -229,6 +239,8 @@ function reducer(state: AppState, action: AppAction): AppState {
       return { ...state, sshProfiles: action.profiles };
     case 'remoteBackendProfiles/update':
       return { ...state, remoteBackendProfiles: action.profiles };
+    case 'remoteDaemonStatus/update':
+      return { ...state, remoteDaemonStatus: action.status };
 
     case 'sessions/created': {
       const sessions = new Map(state.sessions);
@@ -444,6 +456,12 @@ function reducer(state: AppState, action: AppAction): AppState {
 }
 
 /**
+ * 仅供单元测试验证 reducer 的远程 owner 语义。生产代码仍通过 AppStateProvider
+ * 使用 useReducer(reducer, ...),不要在组件里直接调用。
+ */
+export const __appReducerForTest = reducer;
+
+/**
  * 在三栏(bookmarks / temporary / recent)里找指定 pathId 的 PathNode。
  *
  * 公共导出:多处需要按 pathId 拿完整 PathNode(选中路径 / Tab 右键拿 cwd /
@@ -469,6 +487,7 @@ export function makeDefaultState(myWindowId: string, myWindowNumber: number): Ap
     bookmarks: [],
     sshProfiles: [],
     remoteBackendProfiles: [],
+    remoteDaemonStatus: null,
     windows: [],
     templates: [],
     defaultTemplateId: 'shell',
@@ -564,24 +583,28 @@ export function useAppStateRef(): MutableRefObject<AppState> {
  * 在挂载时拉 snapshot + 订阅所有事件;卸载时取消订阅。
  * 必须在 AppStateProvider 内使用一次 (通常在 App 组件)。
  */
-export function useIpcSync(): { ready: boolean; error: string | null } {
+export function useIpcSync(): {
+  ready: boolean;
+  error: string | null;
+  /** 远程连接失败的错误码(preload ConnectError.code,如 AUTH_REJECTED/TCP_UNREACHABLE)。null=非远程连接错误/未出错。 */
+  errorCode: string | null;
+} {
   const dispatch = useAppDispatch();
-  const myWindowId = useAppState().myWindowId;
   const [status, setStatus] = useReducer(
     (
-      _: { ready: boolean; error: string | null },
-      action: { type: 'ready' } | { type: 'error'; message: string },
+      _: { ready: boolean; error: string | null; errorCode: string | null },
+      action: { type: 'ready' } | { type: 'error'; message: string; errorCode?: string | null },
     ) => {
       switch (action.type) {
         case 'ready':
-          return { ready: true, error: null };
+          return { ready: true, error: null, errorCode: null };
         case 'error':
-          return { ready: false, error: action.message };
+          return { ready: false, error: action.message, errorCode: action.errorCode ?? null };
         default:
-          return { ready: false, error: null };
+          return { ready: false, error: null, errorCode: null };
       }
     },
-    { ready: false, error: null },
+    { ready: false, error: null, errorCode: null },
   );
 
   useEffect(() => {
@@ -590,14 +613,11 @@ export function useIpcSync(): { ready: boolean; error: string | null } {
 
     void (async () => {
       try {
-        const snapshot = await window.api.invoke<{ myWindowId: string }, GetSnapshotResponse>(
-          COMMAND_CHANNELS.APP_GET_SNAPSHOT,
-          { myWindowId },
-        );
-        if (cancelled) return;
-        dispatch({ type: 'snapshot/load', snapshot });
-
-        // 订阅事件
+        // 必须先订阅、后拉 snapshot。两者共用同一 IPC/WS 有序传输:
+        // - snapshot 处理前发生的事件会包含在 snapshot 里;
+        // - snapshot 响应后发生的事件会被已安装的 listener 接住。
+        // 旧顺序“snapshot → 逐个订阅”在中间有空档,远程 create session 时可能
+        // 丢 PATH_TREE_UPDATED / SESSION_CREATED,表现为服务端或其他窗口左侧缺项。
         cleanups.push(
           window.api.on<PathTreeUpdatedPayload>(EVENT_CHANNELS.PATH_TREE_UPDATED, (p) =>
             dispatch({ type: 'pathTree/update', tree: p.tree }),
@@ -608,9 +628,28 @@ export function useIpcSync(): { ready: boolean; error: string | null } {
           window.api.on<SshProfilesUpdatedPayload>(EVENT_CHANNELS.SSH_PROFILES_UPDATED, (p) =>
             dispatch({ type: 'sshProfiles/update', profiles: p.profiles }),
           ),
-          window.api.on<{ profiles: RemoteDaemonProfile[] }>(EVENT_CHANNELS.REMOTE_PROFILES_UPDATED, (p) =>
-            dispatch({ type: 'remoteBackendProfiles/update', profiles: p.profiles }),
+          window.api.on<{ profiles: RemoteDaemonProfile[] }>(
+            EVENT_CHANNELS.REMOTE_PROFILES_UPDATED,
+            (p) => dispatch({ type: 'remoteBackendProfiles/update', profiles: p.profiles }),
           ),
+          window.api.on<RemoteDaemonStatusPayload>(
+            EVENT_CHANNELS.REMOTE_DAEMON_STATUS_CHANGED,
+            (s) => dispatch({ type: 'remoteDaemonStatus/update', status: s }),
+          ),
+          // 启动时主动拉一次 daemon 服务端状态(订阅只覆盖后续变化)。
+          // 包成 IIFE 返回 cleanup,cleanups.push 要求每个参数是 () => void。
+          (() => {
+            void window.api
+              .invoke<unknown, { status: RemoteDaemonStatusPayload }>(
+                COMMAND_CHANNELS.REMOTE_DAEMON_GET_STATUS,
+                {},
+              )
+              .then((r) => dispatch({ type: 'remoteDaemonStatus/update', status: r.status }))
+              .catch(() => {
+                /* 远程不可达 / 未初始化时静默 */
+              });
+            return () => {};
+          })(),
           window.api.on<SessionCreatedPayload>(EVENT_CHANNELS.SESSION_CREATED, (p) =>
             dispatch({ type: 'sessions/created', session: p.session }),
           ),
@@ -671,6 +710,34 @@ export function useIpcSync(): { ready: boolean; error: string | null } {
           ),
         );
 
+        const snapshot = await window.api.invoke<{ myWindowId: string }, GetSnapshotResponse>(
+          COMMAND_CHANNELS.APP_GET_SNAPSHOT,
+          { myWindowId: window.api.windowId },
+        );
+
+        // remoteBackendProfiles 是“本客户端如何连接其他电脑”的本地控制面数据，
+        // 不能信任远程 snapshot 里的同名字段:远程窗口的 snapshot 来自 daemon，
+        // 那里保存的是 daemon 自己的 profile 列表。REMOTE_PROFILE_LIST 被声明为
+        // local-control，远程窗口调用时也会走客户端本地 IPC。订阅已在上面先装好，
+        // 因此后续新增/改名/删除由本地 REMOTE_PROFILES_UPDATED 持续同步。
+        let localRemoteProfiles = snapshot.remoteBackendProfiles;
+        try {
+          const result = await window.api.invoke<undefined, { profiles: RemoteDaemonProfile[] }>(
+            COMMAND_CHANNELS.REMOTE_PROFILE_LIST,
+            undefined,
+          );
+          localRemoteProfiles = result.profiles;
+        } catch {
+          // 本地 main 尚未注册该命令(协议不匹配)时保留 snapshot 值；握手版本检查
+          // 通常会更早拦截，此处只做向后兼容兜底，不能让整个 UI 因 profile 列表失败。
+        }
+
+        if (cancelled) return;
+        dispatch({
+          type: 'snapshot/load',
+          snapshot: { ...snapshot, remoteBackendProfiles: localRemoteProfiles },
+        });
+
         // 自定义 markdown 主题列表:启动拉一次(订阅已覆盖后续增删广播)。
         // 失败不阻塞主流程 —— 设置页下拉只是少自定义项,内置主题仍可用。
         try {
@@ -686,9 +753,19 @@ export function useIpcSync(): { ready: boolean; error: string | null } {
         setStatus({ type: 'ready' });
       } catch (err) {
         if (!cancelled) {
+          // err 可能是 preload 抛的 ConnectError(带 code,如 AUTH_REJECTED/TCP_UNREACHABLE)
+          // 或普通 Error。提取 code 供错误页给针对性诊断。
+          const errorCode =
+            err !== null &&
+            typeof err === 'object' &&
+            'code' in err &&
+            typeof (err as { code?: unknown }).code === 'string'
+              ? (err as { code: string }).code
+              : null;
           setStatus({
             type: 'error',
             message: err instanceof Error ? err.message : String(err),
+            errorCode,
           });
         }
       }
@@ -698,7 +775,7 @@ export function useIpcSync(): { ready: boolean; error: string | null } {
       cancelled = true;
       for (const c of cleanups) c();
     };
-  }, [dispatch, myWindowId]);
+  }, [dispatch]);
 
   return status;
 }

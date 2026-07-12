@@ -92,13 +92,31 @@ export async function loadOrGenerateDaemonCredentials(
 
 /**
  * 重置 token(吊销所有已配对 client)。生成新 token + 新 generatedAt,落盘。
- * 已连的 client 下次握手会因 token 不匹配被拒(4003),触发 client 端"需重新配对"提示。
+ * 已连的 client 下次握手会因 token 不匹配被拒(4003),触发 client 端“需重新配对”提示。
  */
 export async function resetDaemonCredentials(
   userDataDir: string,
   safe: SafeStorageLike,
 ): Promise<DaemonCredentialsLoadResult> {
   const creds = generateFresh();
+  await writeCreds(filePath(userDataDir), creds, safe);
+  return { ...creds, isNew: true, storedPlaintext: !safe.isEncryptionAvailable() };
+}
+
+/**
+ * 用户自设密码(覆盖自动生成的 token)。明文 plaintext 经 safeStorage 加密落盘。
+ * generatedAt 用当下(标记为“用户设置”)。返回的 token === plaintext。
+ * 空字符串 → 拒绝(密码不能为空)。
+ */
+export async function setDaemonPassword(
+  userDataDir: string,
+  safe: SafeStorageLike,
+  plaintext: string,
+): Promise<DaemonCredentialsLoadResult> {
+  if (typeof plaintext !== 'string' || plaintext.length === 0) {
+    throw new Error('[daemon-credentials] 密码不能为空');
+  }
+  const creds: DaemonCredentials = { token: plaintext, generatedAt: new Date().toISOString() };
   await writeCreds(filePath(userDataDir), creds, safe);
   return { ...creds, isNew: true, storedPlaintext: !safe.isEncryptionAvailable() };
 }

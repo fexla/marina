@@ -34,7 +34,6 @@ function baseInput(): Omit<RemoteDaemonProfile, 'id' | 'addedAt'> {
   return {
     displayName: '工作笔记本',
     host: '192.168.1.10',
-    port: 12580,
     tokenEncrypted: 'enc-base64-fake',
   };
 }
@@ -114,9 +113,9 @@ describe('RemoteProfileManager 校验', () => {
   });
 
   it('port 越界(0 / 65536)→ InvalidRemoteProfile', async () => {
-    const { mgr } = await makeManager();
-    expect(() => mgr.add({ ...baseInput(), port: 0 })).toThrow(/InvalidRemoteProfile/);
-    expect(() => mgr.add({ ...baseInput(), port: 65536 })).toThrow(/InvalidRemoteProfile/);
+    // port 已废(client 扫描 12580 起一段,profile 不存 port)。该校验已删,
+    // 此测试保留为历史记录占位 —— 实际 port 字段已从类型移除,add 不接受 port。
+    expect(true).toBe(true);
   });
 });
 

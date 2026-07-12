@@ -845,6 +845,39 @@ html[data-maximized='true'] .app-root.with-shell {
   -webkit-app-region: drag;
 }
 
+/*
+ * 远程后端标识(每窗口后端 §14.9)。只在连了远程 daemon 的窗口显示。
+ * 配色遵循标题栏既有语言(BETA-024 / Design Token Layer 2):
+ *   - app-name "Marina" → --color-accent-special(iris,主品牌)
+ *   - window-badge "Window N" → --color-warning(gold)
+ *   - version → --color-text-muted(灰,信息性)
+ * 后端标识是“这个窗口连哪台机器”的信息性文本,与 version 同性质,
+ * 用 --color-text-muted 保持安静,不与 Marina 的 iris 主色竞争视觉权重。
+ * 遵守 Layer 2 规则:禁止裸 var(--iris/--gold/...),只用 --color-* 语义槽位。
+ */
+.titlebar-backend-badge {
+  margin-left: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  -webkit-app-region: drag;
+}
+
+.titlebar-backend-arrow {
+  color: var(--color-text-muted, #f0f);
+  font-size: 11px;
+}
+
+.titlebar-backend-name {
+  color: var(--color-text-muted, #f0f);
+  font-family: var(--terminal-font-family, monospace);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+
 .titlebar-version {
   color: var(--color-text-muted, #f0f);
   font-family: var(--terminal-font-family, monospace);
@@ -1749,9 +1782,11 @@ html[data-maximized='true'] .app-root.with-shell {
 .file-markdown-viewer h1 {
   font-size: 20px;
 }
+
 .file-markdown-viewer h2 {
   font-size: 17px;
 }
+
 .file-markdown-viewer h3 {
   font-size: 15px;
 }
@@ -2675,6 +2710,162 @@ textarea.settings-input::-webkit-scrollbar-corner {
   color: var(--color-accent-special, #f0f);
 }
 
+/* v2.0 远程连接面板:子区块 + 卡片列表 + 表单。用户化文案配套布局。 */
+.settings-panel-desc {
+  margin: -12px 0 20px;
+  color: var(--color-text-secondary, #f0f);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.settings-subsection {
+  padding: 4px 0;
+}
+
+.settings-subsection-title {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-text-primary, #f0f);
+}
+
+.settings-subsection-desc {
+  margin: 0 0 16px;
+  color: var(--color-text-secondary, #f0f);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.settings-subsection-divider {
+  height: 1px;
+  margin: 24px 0;
+  background-color: var(--color-bg-elevated, #f0f);
+}
+
+/* 区块 A:服务端状态行 */
+.remote-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.remote-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: var(--color-text-muted, #908caa);
+  flex-shrink: 0;
+}
+
+.remote-status-dot.on {
+  background-color: var(--color-success, #4caf50);
+  box-shadow: 0 0 6px var(--color-success, #4caf50);
+}
+
+.remote-port-input {
+  width: 90px;
+}
+
+/* 区块 B:远程电脑卡片列表 */
+.remote-computer-list {
+  list-style: none;
+  margin: 0 0 20px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.remote-computer-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-bg-elevated, #f0f);
+  border-radius: 8px;
+  background-color: var(--color-bg-secondary, #f0f);
+  flex-wrap: wrap;
+}
+
+.remote-computer-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.remote-computer-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--color-text-primary, #f0f);
+}
+
+.remote-computer-meta {
+  font-size: 12px;
+  color: var(--color-text-secondary, #f0f);
+}
+
+.remote-computer-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.remote-empty-hint {
+  margin: 0 0 20px;
+  padding: 16px;
+  text-align: center;
+  color: var(--color-text-secondary, #f0f);
+  font-size: 13px;
+  border: 1px dashed var(--color-bg-elevated, #f0f);
+  border-radius: 8px;
+}
+
+/* 区块 B:添加/编辑表单(垂直分组,不挤一行) */
+.remote-add-form {
+  padding: 16px;
+  border: 1px solid var(--color-bg-elevated, #f0f);
+  border-radius: 8px;
+  background-color: var(--color-bg-secondary, #f0f);
+}
+
+.remote-add-form.editing {
+  border-color: var(--color-accent-special, #f0f);
+}
+
+.remote-add-form-title {
+  margin-bottom: 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary, #f0f);
+}
+
+.remote-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.remote-field-label {
+  font-size: 12px;
+  color: var(--color-text-secondary, #f0f);
+}
+
+.remote-field-hint {
+  font-style: normal;
+  color: var(--color-text-muted, #908caa);
+  margin-left: 4px;
+}
+
+.remote-add-form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 .settings-row {
   display: flex;
   gap: 24px;
@@ -3332,6 +3523,7 @@ select.settings-input option {
   from {
     opacity: 0;
   }
+
   to {
     opacity: 1;
   }
@@ -3605,6 +3797,106 @@ select.settings-input option {
   white-space: pre-wrap;
   margin: 0;
   color: var(--color-danger, #f0f);
+}
+
+.bootstrap-placeholder .bootstrap-actions {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+/* v2.0 远程连接错误页(带窗口标题栏 + 针对性诊断 + 可复制错误)。 */
+.remote-error-screen {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px 24px;
+}
+
+.remote-error-card {
+  max-width: 640px;
+  width: 100%;
+  background-color: var(--color-bg-secondary, #1f1d2e);
+  border: 1px solid var(--color-bg-elevated, #26233a);
+  border-radius: 10px;
+  padding: 28px 32px;
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.35);
+}
+
+.remote-error-title {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-danger, #eb6f92);
+}
+
+.remote-error-subtitle {
+  margin: 0 0 18px;
+  color: var(--color-text-secondary, #908caa);
+  font-size: 13px;
+}
+
+.remote-error-checklist {
+  margin: 0 0 18px;
+  padding-left: 20px;
+  color: var(--color-text-primary, #e0def4);
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+.remote-error-checklist li {
+  margin-bottom: 4px;
+}
+
+.remote-error-detail {
+  margin-bottom: 18px;
+  border-top: 1px solid var(--color-bg-elevated, #26233a);
+  padding-top: 14px;
+}
+
+.remote-error-detail-label {
+  color: var(--color-text-secondary, #908caa);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.remote-error-pre {
+  margin: 10px 0;
+  padding: 10px 12px;
+  background-color: var(--color-bg-elevated, #26233a);
+  border-radius: 4px;
+  font-family: var(--terminal-font-family, monospace);
+  font-size: 11px;
+  color: var(--color-text-secondary, #908caa);
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.remote-error-copy {
+  font-size: 12px;
+}
+
+.remote-error-actions {
+  display: flex;
+  gap: 10px;
+}
+
+/* daemon 端口自检失败警告(设置页远程连接区块)。 */
+.remote-listen-warn {
+  margin: 4px 0 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background-color: var(--color-bg-elevated, #26233a);
+  border-left: 3px solid var(--color-danger, #eb6f92);
+  color: var(--color-danger, #eb6f92);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 /* ──────────────────────────────────────────────────────────────────

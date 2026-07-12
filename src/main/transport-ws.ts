@@ -32,6 +32,7 @@ import { WebSocketServer } from 'ws';
 import type { WebSocket } from 'ws';
 import type { ClientTransport } from './client-registry';
 import type { CommandEnvelope, EventEnvelope } from '../shared/protocol';
+import { logger } from './logger';
 
 // ──────────────────────────────────────────────────────────────────
 // 帧格式(WS 上跑的 JSON 帧)
@@ -124,10 +125,7 @@ export function serializeFrame(frame: WsFrame): string {
  * readyState 非 OPEN 时静默丢弃(连接正在关闭,registry.safeSend 会兜底吞错,
  * 但这里提前 guard 避免 ws.send 抛 InvalidStateError)。
  */
-export function createWsClientTransport(
-  ws: WebSocket,
-  clientId: string,
-): ClientTransport {
+export function createWsClientTransport(ws: WebSocket, clientId: string): ClientTransport {
   return {
     clientId,
     send(channel, envelope) {
@@ -271,10 +269,16 @@ export class WsServer {
 
   /** 已通过认证(或无需认证):注册进 registry + 挂消息/关闭处理 + emit connected。 */
   private registerClient(ws: WebSocket, clientId: string): void {
+    const previous = this.wsByClient.get(clientId);
     this.wsByClient.set(clientId, ws);
+    // resume 可能在旧 socket 的 close 事件到达前完成。映射覆盖后立即终止旧连接，
+    // 避免两个 socket 暂时共用同一 clientId；旧 close 因实例检查不会删掉新映射。
+    if (previous && previous !== ws) previous.terminate();
     const transport = createWsClientTransport(ws, clientId);
 
     ws.on('message', (data) => {
+      // 被新连接替换的旧 socket 即使还有已排队 message，也不能再以同一身份发命令。
+      if (this.wsByClient.get(clientId) !== ws) return;
       const frame = parseFrame(data);
       if (!frame) return; // 非法帧静默丢弃
       for (const h of this.messageHandlers) {
@@ -282,15 +286,16 @@ export class WsServer {
           h(clientId, frame);
         } catch (err) {
           // 单个 handler 抛错不影响其他 handler / 其他 client。
-          console.warn(
-            `[transport-ws] message handler 抛错 clientId="${clientId}"(已忽略):`,
-            err,
-          );
+          console.warn(`[transport-ws] message handler 抛错 clientId="${clientId}"(已忽略):`, err);
         }
       }
     });
 
     ws.on('close', () => {
+      // 重连场景:新 ws 可能已用同一 clientId 注册(registerClient 覆盖旧条目)。
+      // 旧 ws 的 close 事件此时若触发,不能删除新 ws 的条目,否则重连后的 client
+      // 会从 registry 丢失 → session 被误 release。只有映射里仍是当前关闭的 ws 才删。
+      if (this.wsByClient.get(clientId) !== ws) return;
       this.wsByClient.delete(clientId);
       for (const h of this.disconnectedHandlers) {
         try {
@@ -323,9 +328,14 @@ export class WsServer {
    */
   private handleAuthenticatingConnection(ws: WebSocket): void {
     let settled = false;
+    // 用结构化 logger 落 main.log(不是 console.info):错误页 AUTH_TIMEOUT 诊断
+    // 明确要求用户“搜 main.log transport-ws”,console 输出不会进 main.log
+    // (打包 / 独立 daemon 模式下进程无可见 stdout),用 logger 才能真正写到磁盘。
+    logger.info('transport-ws', 'new client connection, waiting for auth frame');
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      logger.warn('transport-ws', 'auth timeout (no first frame in 10s), closing 4001');
       try {
         ws.close(4001, 'auth timeout');
       } catch {
@@ -335,10 +345,12 @@ export class WsServer {
 
     const onFirst = (data: unknown): void => {
       if (settled) return;
+      logger.info('transport-ws', 'received first frame, running auth handler');
       const result = this.authHandler!(data);
       if ('error' in result) {
         settled = true;
         clearTimeout(timer);
+        logger.warn('transport-ws', `auth rejected: ${result.error}, closing 4003`);
         try {
           ws.close(4003, result.error);
         } catch {
@@ -349,6 +361,7 @@ export class WsServer {
       settled = true;
       clearTimeout(timer);
       ws.off('message', onFirst);
+      logger.info('transport-ws', `auth ok, clientId=${result.clientId}`);
       this.registerClient(ws, result.clientId);
     };
     ws.on('message', onFirst);

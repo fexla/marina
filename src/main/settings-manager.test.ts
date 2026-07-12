@@ -13,6 +13,7 @@ import {
   SettingsManager,
   deepMerge,
   diffKeys,
+  stripUnknownLegacyFields,
   validateSettings,
 } from './settings-manager';
 import type { Settings } from '@shared/types';
@@ -56,12 +57,10 @@ describe('deepMerge', () => {
   });
 
   it('嵌套对象递归合并', () => {
-    expect(
-      deepMerge(
-        { x: { p: 1, q: 2 }, y: 'untouched' },
-        { x: { p: 99 } },
-      ),
-    ).toEqual({ x: { p: 99, q: 2 }, y: 'untouched' });
+    expect(deepMerge({ x: { p: 1, q: 2 }, y: 'untouched' }, { x: { p: 99 } })).toEqual({
+      x: { p: 99, q: 2 },
+      y: 'untouched',
+    });
   });
 
   it('数组整体替换不合并', () => {
@@ -102,11 +101,7 @@ describe('diffKeys', () => {
   });
 
   it('多层 + 多个 diff', () => {
-    const result = diffKeys(
-      '',
-      { a: { p: 1 }, b: 2, c: 3 },
-      { a: { p: 99 }, b: 2, c: 999 },
-    );
+    const result = diffKeys('', { a: { p: 1 }, b: 2, c: 3 }, { a: { p: 99 }, b: 2, c: 999 });
     expect(result.sort()).toEqual(['a.p', 'c'].sort());
   });
 
@@ -118,6 +113,27 @@ describe('diffKeys', () => {
 describe('validateSettings', () => {
   it('默认设置自身合法', () => {
     expect(() => validateSettings(DEFAULT_SETTINGS)).not.toThrow();
+  });
+
+  it('remoteDaemon.port 只允许客户端自动发现范围', () => {
+    for (const port of [32780, 32789]) {
+      const valid = structuredClone(DEFAULT_SETTINGS);
+      valid.remoteDaemon.port = port;
+      expect(() => validateSettings(valid)).not.toThrow();
+    }
+    for (const port of [32779, 32790, 40000]) {
+      const bad = structuredClone(DEFAULT_SETTINGS);
+      bad.remoteDaemon.port = port;
+      expect(() => validateSettings(bad)).toThrowError(/remoteDaemon\.port/);
+    }
+  });
+
+  it('旧版范围外 daemon 端口迁回默认值,升级不损坏整个 settings', () => {
+    const legacy = structuredClone(DEFAULT_SETTINGS);
+    legacy.remoteDaemon.port = 40000;
+    const migrated = stripUnknownLegacyFields(legacy);
+    expect(migrated.remoteDaemon.port).toBe(32780);
+    expect(legacy.remoteDaemon.port).toBe(40000); // 迁移函数不修改调用方对象
   });
 
   it('非法 theme throw InvalidSettings', () => {
@@ -164,9 +180,7 @@ describe('validateSettings', () => {
 
   it('systemIntegration.explorerOpenIn 非法 throw', () => {
     const bad = structuredClone(DEFAULT_SETTINGS);
-    (
-      bad.systemIntegration as { explorerOpenIn: string }
-    ).explorerOpenIn = 'detached';
+    (bad.systemIntegration as { explorerOpenIn: string }).explorerOpenIn = 'detached';
     expect(() => validateSettings(bad)).toThrowError(/explorerOpenIn/);
   });
 });
@@ -242,9 +256,9 @@ describe('SettingsManager — update', () => {
     const { mgr, store } = makeManager();
     await mgr.initialize();
 
-    expect(() =>
-      mgr.update({ appearance: { theme: 'nonexistent' as never } }),
-    ).toThrowError(/InvalidSettings/);
+    expect(() => mgr.update({ appearance: { theme: 'nonexistent' as never } })).toThrowError(
+      /InvalidSettings/,
+    );
     // 仍是原值
     expect(mgr.get().appearance.theme).toBe('rose-pine');
     // 没写盘

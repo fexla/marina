@@ -45,6 +45,9 @@ import {
   type AddSshProfileResponse,
   // 远程后端 profile(ADR-014 / §14.9)
   type AddRemoteProfilePayload,
+  type RemoteDaemonSetPasswordPayload,
+  type RemoteDaemonSetPortPayload,
+  type RemoteDaemonStatusResponse,
   type AddRemoteProfileResponse,
   type DeleteRemoteProfilePayload,
   type GetRemoteConnectionPayload,
@@ -150,6 +153,7 @@ import type { SessionManager } from './session-manager';
 import type { SshProfileManager } from './ssh-profile-manager';
 import type { RemoteProfileManager } from './remote-profile-manager';
 import { RemoteProfileManagerError } from './remote-profile-manager';
+import type { RemoteDaemonController } from './remote-daemon-controller';
 import type { TemplatesManager } from './templates-manager';
 import type { AIClient } from './ai-client';
 import type { KnownHostsManager } from './known-hosts-manager';
@@ -166,6 +170,8 @@ export interface IpcLayerDeps {
   sshProfileManager?: SshProfileManager;
   /** v2.0 远程后端(ADR-014 / §14.9):client 端 remote daemon profile 管理。可选。 */
   remoteProfileManager?: RemoteProfileManager;
+  /** v2.0 远程服务端控制器(UI 启停 + 配置)。可选(未注入时 daemon IPC 返回错误)。 */
+  remoteDaemonController?: RemoteDaemonController;
   /** SSH 方案 §阶段 3.1:已知主机指纹历史,可选(无 SSH 用户不创建) */
   knownHostsManager?: KnownHostsManager;
   templatesManager: TemplatesManager;
@@ -267,10 +273,7 @@ function sendEventTo<P>(clientId: string, channel: string, payload: P): void {
 // 远程 client 无 BrowserWindow,handler 里用 _e.sender 的命令(dialog 类文件
 // 选择)在 WS 下 sender=undefined 会失败 —— 这些命令远程不支持(loopback 核心
 // 是 session/shell;远程后端本就不该 daemon 弹本地对话框)。
-type RawHandler = (
-  e: Electron.IpcMainInvokeEvent,
-  envelope: CommandEnvelope,
-) => unknown;
+type RawHandler = (e: Electron.IpcMainInvokeEvent, envelope: CommandEnvelope) => unknown;
 const rawHandlers = new Map<string, RawHandler>();
 
 function registerHandle<P = unknown>(
@@ -291,7 +294,9 @@ function registerHandle<P = unknown>(
 export async function dispatchCommand(
   channel: string,
   envelope: CommandEnvelope,
-): Promise<{ ok: true; result: unknown } | { ok: false; error: { code: string; message: string } }> {
+): Promise<
+  { ok: true; result: unknown } | { ok: false; error: { code: string; message: string } }
+> {
   const handler = rawHandlers.get(channel);
   if (!handler) {
     return {
@@ -324,7 +329,23 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     remoteProfileManager,
     knownHostsManager,
     templatesManager,
+    remoteDaemonController,
   } = deps;
+
+  // REMOTE_DAEMON_* 是客户端本地控制面。controller 停止时内部 currentPort=null，
+  // 但设置页仍需显示本机“下次启动会用”的配置端口；统一用 settings 补齐。
+  const getLocalDaemonStatus = (): RemoteDaemonStatusResponse['status'] => {
+    const status = remoteDaemonController?.getStatus() ?? {
+      running: false,
+      port: null,
+      clientCount: 0,
+      hasPassword: false,
+    };
+    return {
+      ...status,
+      port: status.port ?? settingsManager.get().remoteDaemon.port,
+    };
+  };
 
   // App
   registerHandle(
@@ -357,12 +378,31 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   registerHandle(
     COMMAND_CHANNELS.WINDOW_CREATE,
     (_e, envelope: CommandEnvelope<CreateWindowPayload>): CreateWindowResponse => {
-      // v2.0 每窗口后端:透传 backendProfileId(renderer "在新窗口打开"远程 profile 时传)
-      const info = windowManager.createWindowFromFactory(
-        envelope.payload.backendProfileId
+      // 客户端本地控制面创建窗口。远程窗口通过 preload 调此本地 handler 时,
+      // 会带 backendProfileId + 可选 selectSessionId/simpleMode,新窗口因此继续
+      // 连接同一 daemon,而不是错误回到本地 backend。
+      const info = windowManager.createWindowFromFactory({
+        ...(envelope.payload.backendProfileId
           ? { backendProfileId: envelope.payload.backendProfileId }
-          : {},
-      );
+          : {}),
+        ...(envelope.payload.selectSessionId
+          ? { selectSessionId: envelope.payload.selectSessionId }
+          : {}),
+        ...(envelope.payload.simpleMode ? { simpleMode: true } : {}),
+      });
+      // OS 层窗口标题(任务栏 / Alt+Tab / dock 显示用)。自绘标题栏(frame:false)
+      // 已在 renderer 端 WindowChrome 显示远程标识;这里同步更新 OS title,让用户
+      // 在任务栏 / Alt+Tab 也能区分远程窗口。profile 名查不到(刚删)时回退到 id。
+      if (envelope.payload.backendProfileId) {
+        const profile = remoteProfileManager
+          ?.list()
+          .find((p) => p.id === envelope.payload.backendProfileId);
+        const name = profile
+          ? `${profile.displayName} (${profile.host})`
+          : envelope.payload.backendProfileId;
+        const win = windowManager.getById(info.id);
+        win?.setTitle(`Marina — Window ${info.number} → ${name}`);
+      }
       return { windowId: info.id, windowNumber: info.number };
     },
   );
@@ -617,8 +657,13 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
         throw makeIpcError('SessionNotFound', `sessionId="${envelope.payload.sessionId}"`);
       }
       if (!session.ownerWindowId) return; // 无主无可聚焦
-      const ok = windowManager.focus(session.ownerWindowId);
-      if (!ok) return; // owner 窗口已不存在,静默
+
+      // owner 可能是两种 client:
+      // 1) daemon 本进程 BrowserWindow id → WindowManager 可直接聚焦;
+      // 2) 远程 WS clientId → daemon 没有那个客户端的 BrowserWindow,不能拿
+      //    clientId 调本地 WindowManager。此时只定向发 focus-requested,由远程
+      //    preload 在客户端本机聚焦其 BrowserWindow,renderer 再选中 session。
+      windowManager.focus(session.ownerWindowId);
       sendEventTo<WindowFocusRequestedPayload>(
         session.ownerWindowId,
         EVENT_CHANNELS.WINDOW_FOCUS_REQUESTED,
@@ -821,10 +866,10 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       if (!remoteProfileManager) {
         throw makeIpcError('RemoteProfileUnavailable', 'remote profile manager 未初始化');
       }
-      const { token, ...rest } = envelope.payload;
+      const { password, ...rest } = envelope.payload;
       const input: Omit<RemoteDaemonProfile, 'id' | 'addedAt'> = { ...rest };
-      if (typeof token === 'string' && token.length > 0) {
-        input.tokenEncrypted = encryptPasswordOrThrow(token);
+      if (typeof password === 'string' && password.length > 0) {
+        input.tokenEncrypted = encryptPasswordOrThrow(password);
       }
       return { profile: remoteProfileManager.add(input) };
     },
@@ -836,13 +881,22 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       if (!remoteProfileManager) {
         throw makeIpcError('RemoteProfileUnavailable', 'remote profile manager 未初始化');
       }
-      const { token, ...partialRest } = envelope.payload.partial;
+      const { password, ...partialRest } = envelope.payload.partial;
       const partial: typeof partialRest & { tokenEncrypted?: string } = { ...partialRest };
-      if (typeof token === 'string') {
-        // '' 清除已配对 token;非空加密落盘(同 SSH password 语义)
-        partial.tokenEncrypted = token.length > 0 ? encryptPasswordOrThrow(token) : '';
+      if (typeof password === 'string') {
+        // '' 清除已配对密码;非空加密落盘(同 SSH password 语义)
+        partial.tokenEncrypted = password.length > 0 ? encryptPasswordOrThrow(password) : '';
       }
-      return { profile: remoteProfileManager.update(envelope.payload.id, partial) };
+      const profile = remoteProfileManager.update(envelope.payload.id, partial);
+      // profile 改名/改 host 后同步 OS 层 title(任务栏 / Alt+Tab)。renderer 的
+      // WindowChrome 通过本地 REMOTE_PROFILES_UPDATED 同步自绘标题栏。
+      for (const info of windowManager.list()) {
+        if (info.backendProfileId !== profile.id) continue;
+        windowManager
+          .getById(info.id)
+          ?.setTitle(`Marina — Window ${info.number} → ${profile.displayName} (${profile.host})`);
+      }
+      return { profile };
     },
   );
 
@@ -851,6 +905,15 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     (_e, envelope: CommandEnvelope<DeleteRemoteProfilePayload>): void => {
       if (!remoteProfileManager) {
         throw makeIpcError('RemoteProfileUnavailable', 'remote profile manager 未初始化');
+      }
+      // 检查是否有窗口正在连该远程后端。已打开的远程窗口 URL ?backend=<id> 已定死,
+      // 删除 profile 后它的 preload 会拿不到连接信息,下次重连会失败。
+      const inUse = windowManager.list().find((w) => w.backendProfileId === envelope.payload.id);
+      if (inUse) {
+        throw makeIpcError(
+          'RemoteProfileInUse',
+          `该远程电脑正被窗口 ${inUse.number} 使用,请先关闭该窗口。`,
+        );
       }
       try {
         remoteProfileManager.delete(envelope.payload.id);
@@ -875,12 +938,71 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       if (!token) return { connection: null };
       return {
         connection: {
-          url: `ws://${internal.host}:${internal.port}`,
+          host: internal.host,
           token,
           profileId: internal.id,
           displayName: internal.displayName,
         },
       };
+    },
+  );
+
+  // v2.0 远程服务端运行时启停 + 配置(UI 按钮触发)
+  registerHandle(
+    COMMAND_CHANNELS.REMOTE_DAEMON_START,
+    async (): Promise<RemoteDaemonStatusResponse> => {
+      if (!remoteDaemonController) {
+        throw makeIpcError('RemoteProfileUnavailable', 'remote daemon controller 未初始化');
+      }
+      const port = settingsManager.get().remoteDaemon.port;
+      await remoteDaemonController.start(port);
+      return { status: getLocalDaemonStatus() };
+    },
+  );
+  registerHandle(
+    COMMAND_CHANNELS.REMOTE_DAEMON_STOP,
+    async (): Promise<RemoteDaemonStatusResponse> => {
+      if (!remoteDaemonController) {
+        throw makeIpcError('RemoteProfileUnavailable', 'remote daemon controller 未初始化');
+      }
+      await remoteDaemonController.stop();
+      return { status: getLocalDaemonStatus() };
+    },
+  );
+  registerHandle(
+    COMMAND_CHANNELS.REMOTE_DAEMON_GET_STATUS,
+    (): RemoteDaemonStatusResponse => ({
+      status: getLocalDaemonStatus(),
+    }),
+  );
+  registerHandle(
+    COMMAND_CHANNELS.REMOTE_DAEMON_SET_PORT,
+    async (
+      _e,
+      envelope: CommandEnvelope<RemoteDaemonSetPortPayload>,
+    ): Promise<RemoteDaemonStatusResponse> => {
+      const port = envelope.payload.port;
+      settingsManager.update({
+        remoteDaemon: { ...settingsManager.get().remoteDaemon, port },
+      });
+      // 运行中则用新端口重启(踢所有 client 重连);未运行只改配置
+      if (remoteDaemonController) {
+        await remoteDaemonController.restartIfRunning(port);
+      }
+      return { status: getLocalDaemonStatus() };
+    },
+  );
+  registerHandle(
+    COMMAND_CHANNELS.REMOTE_DAEMON_SET_PASSWORD,
+    async (
+      _e,
+      envelope: CommandEnvelope<RemoteDaemonSetPasswordPayload>,
+    ): Promise<RemoteDaemonStatusResponse> => {
+      if (!remoteDaemonController) {
+        throw makeIpcError('RemoteProfileUnavailable', 'remote daemon controller 未初始化');
+      }
+      await remoteDaemonController.setPassword(envelope.payload.password);
+      return { status: getLocalDaemonStatus() };
     },
   );
 
@@ -1548,6 +1670,15 @@ function registerMdThemeHandlers(deps: IpcLayerDeps): void {
 }
 
 function wireEventBroadcasts(deps: IpcLayerDeps): void {
+  // v2.0 远程服务端状态变化 → 广播给所有 client(本地窗口 + 远程 WS)
+  if (deps.remoteDaemonController) {
+    deps.remoteDaemonController.onStatusChange = (status) =>
+      broadcastEvent(EVENT_CHANNELS.REMOTE_DAEMON_STATUS_CHANGED, {
+        ...status,
+        // controller 停止时 currentPort=null；本地设置页仍需显示配置端口。
+        port: status.port ?? deps.settingsManager.get().remoteDaemon.port,
+      });
+  }
   const {
     windowManager,
     pathManager,

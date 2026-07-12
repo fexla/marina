@@ -497,6 +497,18 @@ export interface Settings {
      */
     markdownStyle: string;
   };
+
+  /**
+   * v2.0 远程后端服务端配置(本机作为 daemon 被远程 client 连)。
+   * 启停由 UI 按钮(运行时)控制,这里存配置。端口/密码改了重启服务端生效。
+   * 密码不存这里(用 daemon-credentials.ts 的 safeStorage 加密文件,独立于 settings)。
+   */
+  remoteDaemon: {
+    /** WS server 监听端口,host-only 自动发现固定为 32780-32789,默认 32780。 */
+    port: number;
+    /** true = Marina 启动时自动起服务端(等价于启动后点“启动”按钮)。默认 false(显式启动)。 */
+    autoStart: boolean;
+  };
 }
 
 /**
@@ -642,18 +654,16 @@ export interface RemoteDaemonProfile {
   id: string;
   /** 用户起的名字,如 "工作笔记本" */
   displayName: string;
-  /** daemon 地址(IP / hostname / tailnet 名) */
+  /** daemon 地址(IP / hostname / tailnet 名 / 域名)。client 只需这个,端口自动扫描。 */
   host: string;
-  /** daemon WS 端口,默认 12580 */
-  port: number;
-  /** safeStorage 加密的 token(base64);仅 main 内部 */
+  /** safeStorage 加密的配对密码(base64);仅 main 内部 */
   tokenEncrypted?: string;
-  /** renderer 副本:是否已配对(存了 token) */
+  /** renderer 副本:是否已配对(存了密码) */
   hasToken?: boolean;
   /**
    * 阶段2b TLS:daemon 自签证书指纹(SHA256)。
    * 首次连接用户确认后存,后续连接比对,变化强警告(对齐 §14.3 known_hosts)。
-   * 阶段2 纯 token 认证时此字段不填。
+   * 阶段2 纯密码认证时此字段不填。
    */
   certFingerprint?: string;
   /** 上次成功连接时间戳(ms);用于 UI 排序 + 展示 */
@@ -701,7 +711,11 @@ export interface AppSnapshot {
   sessions: SessionInfo[];
   pathTree: PathTree;
   sshProfiles: SshProfile[];
-  /** v2.0 远程后端(§14.9):client 端 remote daemon profile 列表(public 副本)。 */
+  /**
+   * v2.0 远程后端 profile 列表(public 副本)。本地 snapshot 为客户端列表；
+   * 远程 snapshot 中该字段属于 daemon 自己，renderer 必须用 local-control
+   * REMOTE_PROFILE_LIST 替换，不能把两台机器的连接凭据域混在一起。
+   */
   remoteBackendProfiles: RemoteDaemonProfile[];
   templates: Template[];
   defaultTemplateId: string;

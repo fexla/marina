@@ -32,15 +32,23 @@ import { TemplatesManager } from './templates-manager';
 import { JsonStore } from './persistence';
 import { installIpcLayer, dispatchCommand } from './ipc';
 import { ClientRegistry } from './client-registry';
-import { RemoteDaemon } from './remote-daemon';
-import { loadOrGenerateDaemonCredentials, resetDaemonCredentials } from './daemon-credentials';
-import { WsServer } from './transport-ws';
+import { RemoteDaemonController } from './remote-daemon-controller';
+import {
+  loadOrGenerateDaemonCredentials,
+  resetDaemonCredentials,
+  setDaemonPassword,
+} from './daemon-credentials';
 import { FilePanelService } from './file-panel-service';
 import { MarkdownThemeManager } from './markdown-theme-manager';
 import { getPlatformAdapter } from './platform';
 import { AIClient } from './ai-client';
 import { WindowsAdapter } from './platform/windows';
-import { parseOpenHere, parseSimpleMode, parseHeadlessDaemon } from './argv-utils';
+import {
+  parseOpenHere,
+  parseSimpleMode,
+  parseHeadlessDaemon,
+  parseInstanceName,
+} from './argv-utils';
 import { getBuildType } from './build-type';
 import { logger } from './logger';
 import type {
@@ -102,7 +110,13 @@ function bootstrap(): void {
   //
   // 同样的 portable 形态也独立一份,避免运行中的 portable 与已安装版互踩
   // settings.json / 单实例锁。仅 installed 形态使用 "Marina" 原名。
-  if (!app.isPackaged) {
+  // --instance=<name> 覆盖以上:强制 app.name = 'Marina (<name>)',
+  // 用于本地开多实例调试(如 daemon+client 同机 localhost 测远程)。
+  // 必须在 requestSingleInstanceLock 之前(Electron 一旦解析 userData 会缓存)。
+  const instanceName = parseInstanceName(process.argv);
+  if (instanceName) {
+    app.setName(`Marina (${instanceName})`);
+  } else if (!app.isPackaged) {
     app.setName('Marina (dev)');
   } else if (process.env['PORTABLE_EXECUTABLE_DIR']) {
     app.setName('Marina (portable)');
@@ -341,16 +355,25 @@ function bootstrap(): void {
       // CSP via headers (兜底 + 消除 Electron unsafe-eval / 缺失 CSP 警告)。
       // dev 模式 Vite 的 React Refresh 用 new Function/eval,需要 'unsafe-eval';
       // 生产 (file://) 不需要。
+      //
+      // 远程后端(ADR-015):renderer 需连用户配置的任意 daemon host 的 ws://
+      // (127.0.0.1 / localhost / WireGuard IP / 局域网 IP / 域名)。
+      // V1 纯 ws:// (TLS 延期),V2 切 wss://。connect-src 必须放行 ws: / wss:,
+      // 否则 renderer 的 WebSocket 在出发前就被 CSP 拦死 —— daemon 一切正常
+      // 但 client 卡在握手超时(踩过坑,见 0.2.4 修复 + scripts/csp 集成测试)。
+      // 安全权衡:Marina 是桌面应用,renderer 只加载 'self' 本地资源,
+      // connect-src 放行 ws: 仅影响「主动连出到任意 WS」—— 对终端应用可接受
+      // (用户明确要连远程 daemon)。其余指令(script/font/img-src)保持严格。
       const cspProd =
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-        "font-src 'self' data:; img-src 'self' data:; connect-src 'self'";
+        "font-src 'self' data:; img-src 'self' data:; connect-src 'self' ws: wss:";
       const cspDev =
         "default-src 'self' http://127.0.0.1:* ws://127.0.0.1:*; " +
         "script-src 'self' 'unsafe-eval' 'unsafe-inline' http://127.0.0.1:*; " +
         "style-src 'self' 'unsafe-inline' http://127.0.0.1:*; " +
         "font-src 'self' data: http://127.0.0.1:*; " +
         "img-src 'self' data: http://127.0.0.1:*; " +
-        "connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*";
+        "connect-src 'self' http://127.0.0.1:* ws: wss:";
       electronSession.defaultSession.webRequest.onHeadersReceived((details, callback) => {
         callback({
           responseHeaders: {
@@ -409,6 +432,39 @@ function bootstrap(): void {
       // v2.0 dispatcher 基座:本地窗口 + 远程 WS client 都注册于此。
       // 在 installIpcLayer 前创建,远程后端模式下与 daemon 协调器(remote-daemon.ts)共享。
       const clientRegistry = new ClientRegistry();
+
+      // v2.0 远程服务端:加载/生成配对密码(safeStorage 加密持久化)。提前到此处
+      // 因为 controller 创建需要 getCredentialsToken。daemon 重启密码不变(client
+      // 配对一次永久有效,§14.9.4)。currentDaemonToken 是内存缓存,设密码/重置时更新。
+      const daemonCreds = await loadOrGenerateDaemonCredentials(
+        app.getPath('userData'),
+        safeStorage,
+      );
+      let currentDaemonToken: string = daemonCreds.token;
+      if (daemonCreds.isNew) {
+        // 配对密码绝不能写进持久日志:日志经常被用户打包发给开发者诊断。
+        // 首次密码只通过本机设置页 / 托盘“复制连接密码”显式读取。
+        logger.info(
+          'remote-daemon',
+          'new pairing password generated; reveal/copy it from local Settings or tray',
+        );
+        if (daemonCreds.storedPlaintext) {
+          logger.warn('remote-daemon', 'credentials stored PLAINTEXT (safeStorage unavailable)');
+        }
+      }
+
+      // controller:运行时启停 WS server(UI 按钮触发)。--daemon/autoStart 时自动 start。
+      const remoteDaemonController = new RemoteDaemonController({
+        registry: clientRegistry,
+        sessionManager,
+        dispatch: dispatchCommand,
+        getCredentialsToken: () => currentDaemonToken,
+        persistPassword: async (plaintext) => {
+          await setDaemonPassword(app.getPath('userData'), safeStorage, plaintext);
+          currentDaemonToken = plaintext;
+        },
+      });
+
       installIpcLayer({
         clientRegistry,
         windowManager,
@@ -422,6 +478,7 @@ function bootstrap(): void {
         filePanelService,
         markdownThemeManager,
         aiClient,
+        remoteDaemonController,
       });
 
       // ── 设置副作用 wiring ─────────────────────────────
@@ -545,58 +602,39 @@ function bootstrap(): void {
       // 所以 managers 初始化 + installIpcLayer 照常,这里只是加挂 WS server。
       // token 阶段1 临时生成 + 打日志(loopback 自测可见);safeStorage 持久化 +
       // 配对 UI 留阶段2(软件定义书 §14.9.4)。
+      // 运行时 UI 启停服务会变端口/状态(controller.start/stop/setPort)。
+      // 用 addStatusListener(不覆盖 ipc 的 broadcast 回调)同步托盘展示的端口。
+      // 历史教训:曾用 controller.onStatusChange = 赋值,覆盖了 ipc 设的 broadcast,
+      // 导致 start 后 UI 永远显示“未启动”(但 server 实际在跑)。
+      remoteDaemonController.addStatusListener((s) => {
+        trayManager.setDaemonPort(s.running ? s.port : settingsManager.get().remoteDaemon.port);
+      });
+      // v2.0 远程服务端:密码已加载(daemonCreds)。托盘菜单展示密码/端口 + 重置入口
+      // (所有模式都有,不只 --daemon)。--daemon 命令行 / settings.autoStart → 自动启动。
+      trayManager.setDaemonToken(currentDaemonToken);
+      trayManager.setResetDaemonTokenHandler(async () => {
+        // 重置 = 随机新密码(resetDaemonCredentials)+ controller 热换 + 更新缓存
+        const newCreds = await resetDaemonCredentials(app.getPath('userData'), safeStorage);
+        currentDaemonToken = newCreds.token;
+        remoteDaemonController.onPasswordChanged(newCreds.token);
+        trayManager.setDaemonToken(newCreds.token);
+        logger.warn('remote-daemon', `password reset; all clients revoked (must re-pair)`);
+      });
+
       const daemonMode = parseHeadlessDaemon(process.argv);
-      if (daemonMode?.daemon) {
-        // token 持久化(safeStorage 加密),daemon 重启不变 → client 配对一次永久有效
-        // (软件定义书 §14.9.4)。首次生成 / 文件损坏 / 重置后 isNew=true,此时打日志
-        // 方便用户首次配对;非首次不打(避免反复泄露到日志)。
-        const creds = await loadOrGenerateDaemonCredentials(
-          app.getPath('userData'),
-          safeStorage,
-        );
-        const wsServer = new WsServer();
-        const remoteDaemon = new RemoteDaemon({
-          wsServer,
-          registry: clientRegistry,
-          sessionManager,
-          token: creds.token,
-          dispatch: dispatchCommand,
-          onClientAuthenticated: (cid) =>
-            logger.info('remote-daemon', `client authenticated: ${cid}`),
-          onClientGone: (cid) => logger.info('remote-daemon', `client gone: ${cid}`),
-        });
-        remoteDaemon.install();
-        // 托盘菜单加"复制 daemon 配对 token"项(供 client 端用户拿 token 配对)。
-        // daemon 模式下 token 稳定(持久化),托盘随时可复制。
-        trayManager.setDaemonToken(creds.token);
-        // BLOCKER 修复(review #2):重置 token 入口。托盘菜单"重置"项调此 handler。
-        // resetDaemonCredentials 生成新 token 落盘 + remoteDaemon.resetToken hot-swap
-        // 运行时校验 + 踢所有已连 client(强制重连用新 token)= 完整吊销。
-        trayManager.setResetDaemonTokenHandler(async () => {
-          const newCreds = await resetDaemonCredentials(app.getPath('userData'), safeStorage);
-          remoteDaemon.resetToken(newCreds.token);
-          trayManager.setDaemonToken(newCreds.token);
-          logger.warn(
-            'remote-daemon',
-            `token reset & applied; all connected clients revoked (must re-pair)`,
-          );
-        });
+      const shouldAutoStart = daemonMode?.daemon || settingsManager.get().remoteDaemon.autoStart;
+      if (shouldAutoStart) {
+        const port = daemonMode?.port ?? settingsManager.get().remoteDaemon.port;
         try {
-          const actualPort = await wsServer.start(daemonMode.port);
+          const { port: actualPort } = await remoteDaemonController.start(port);
+          trayManager.setDaemonPort(actualPort);
           logger.info('remote-daemon', `WS server listening on port ${actualPort}`);
-          if (creds.isNew) {
-            // 仅首次生成时打 token(供用户配对);后续启动不打,避免日志反复泄露
-            logger.info('remote-daemon', `auth token (new, for pairing): ${creds.token}`);
-            if (creds.storedPlaintext) {
-              logger.warn(
-                'remote-daemon',
-                'credentials stored PLAINTEXT (safeStorage unavailable on this OS)',
-              );
-            }
-          }
         } catch (err) {
           logger.error('remote-daemon', 'WS server start failed', err);
         }
+      } else {
+        // 未自动启动:端口用 settings 默认展示(运行时 UI 启动后 status event 更新)
+        trayManager.setDaemonPort(settingsManager.get().remoteDaemon.port);
       }
 
       // 启动行为:--open-here 优先级最高 (Explorer 右键触发的冷启动 — 用户意图明确)。

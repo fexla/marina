@@ -3,13 +3,13 @@
  * @purpose argv 解析器单测。
  */
 import { describe, expect, it } from 'vitest';
-import { parseOpenHere, parseHeadlessDaemon } from './argv-utils';
+import { parseOpenHere, parseHeadlessDaemon, parseInstanceName } from './argv-utils';
 
 describe('parseOpenHere', () => {
   it('找到 --open-here 后取下一个 token', () => {
-    expect(
-      parseOpenHere(['C:\\Marina.exe', '--open-here', 'D:\\projects\\foo']),
-    ).toBe('D:\\projects\\foo');
+    expect(parseOpenHere(['C:\\Marina.exe', '--open-here', 'D:\\projects\\foo'])).toBe(
+      'D:\\projects\\foo',
+    );
   });
 
   it('没有 --open-here 返回 null', () => {
@@ -22,9 +22,7 @@ describe('parseOpenHere', () => {
 
   it('--open-here 后无任何非 flag token 返回 null', () => {
     // 历史测试 "防误吃" — 现在含义是 "扫完都没非 flag token"
-    expect(
-      parseOpenHere(['C:\\Marina.exe', '--open-here', '--auto-start']),
-    ).toBeNull();
+    expect(parseOpenHere(['C:\\Marina.exe', '--open-here', '--auto-start'])).toBeNull();
   });
 
   it('TIT-2: Electron 在 --open-here 后注入 Chromium flag,跳过它取真路径', () => {
@@ -52,9 +50,7 @@ describe('parseOpenHere', () => {
   });
 
   it('TIT-2: POSIX 绝对路径(macOS/Linux 入口预留)正常返回', () => {
-    expect(parseOpenHere(['app', '--open-here', '/Users/me/code'])).toBe(
-      '/Users/me/code',
-    );
+    expect(parseOpenHere(['app', '--open-here', '/Users/me/code'])).toBe('/Users/me/code');
   });
 
   it('--open-here 后是空字符串 返回 null', () => {
@@ -62,21 +58,15 @@ describe('parseOpenHere', () => {
   });
 
   it('多次出现取第一次', () => {
-    expect(
-      parseOpenHere([
-        'exe',
-        '--open-here',
-        'C:\\first',
-        '--open-here',
-        'C:\\second',
-      ]),
-    ).toBe('C:\\first');
+    expect(parseOpenHere(['exe', '--open-here', 'C:\\first', '--open-here', 'C:\\second'])).toBe(
+      'C:\\first',
+    );
   });
 
   it('路径含空格/反斜杠正常返回原文', () => {
-    expect(
-      parseOpenHere(['exe', '--open-here', 'C:\\Users\\My Name\\Docs']),
-    ).toBe('C:\\Users\\My Name\\Docs');
+    expect(parseOpenHere(['exe', '--open-here', 'C:\\Users\\My Name\\Docs'])).toBe(
+      'C:\\Users\\My Name\\Docs',
+    );
   });
 });
 
@@ -90,7 +80,7 @@ describe('parseHeadlessDaemon', () => {
     expect(parseHeadlessDaemon(['exe', '--headless', '--daemon'])).toEqual({
       daemon: true,
       headless: true,
-      port: 12580,
+      port: 32780,
     });
   });
 
@@ -98,7 +88,7 @@ describe('parseHeadlessDaemon', () => {
     expect(parseHeadlessDaemon(['exe', '--headless'])).toEqual({
       daemon: true,
       headless: true,
-      port: 12580,
+      port: 32780,
     });
   });
 
@@ -106,20 +96,42 @@ describe('parseHeadlessDaemon', () => {
     expect(parseHeadlessDaemon(['exe', '--daemon'])).toEqual({
       daemon: true,
       headless: false,
-      port: 12580,
+      port: 32780,
     });
   });
 
-  it('--port=N 覆盖默认端口', () => {
-    expect(parseHeadlessDaemon(['exe', '--daemon', '--port=9999'])).toEqual({
+  it('--port=N 在自动发现范围内覆盖默认端口', () => {
+    expect(parseHeadlessDaemon(['exe', '--daemon', '--port=32789'])).toEqual({
       daemon: true,
       headless: false,
-      port: 9999,
+      port: 32789,
     });
   });
 
-  it('--port 非法值(负数/NaN)回退默认端口', () => {
-    expect(parseHeadlessDaemon(['exe', '--daemon', '--port=-1'])!.port).toBe(12580);
-    expect(parseHeadlessDaemon(['exe', '--daemon', '--port=abc'])!.port).toBe(12580);
+  it('--port 范围外/非法值回退默认端口', () => {
+    for (const value of ['32779', '32790', '40000', '-1', 'abc']) {
+      expect(parseHeadlessDaemon(['exe', '--daemon', `--port=${value}`])!.port).toBe(32780);
+    }
+  });
+});
+
+describe('parseInstanceName', () => {
+  it('无 --instance → null', () => {
+    expect(parseInstanceName(['exe'])).toBeNull();
+    expect(parseInstanceName(['exe', '--daemon'])).toBeNull();
+  });
+
+  it('--instance=<name> → name', () => {
+    expect(parseInstanceName(['exe', '--instance=daemon'])).toBe('daemon');
+    expect(parseInstanceName(['exe', '--instance=client-1'])).toBe('client-1');
+  });
+
+  it('非法字符过滤(防路径注入)', () => {
+    expect(parseInstanceName(['exe', '--instance=..\\evil'])).toBe('evil');
+    expect(parseInstanceName(['exe', '--instance=a/b'])).toBe('ab');
+  });
+
+  it('过滤后为空 → null(走默认命名)', () => {
+    expect(parseInstanceName(['exe', '--instance=...'])).toBeNull();
   });
 });

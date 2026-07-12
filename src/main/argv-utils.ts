@@ -4,6 +4,11 @@
  *   (import main/index.ts 会触发 bootstrap → 调用 electron.app,
  *    在测试环境无法运行)。
  */
+import {
+  REMOTE_DAEMON_DEFAULT_PORT,
+  REMOTE_DAEMON_PORT_MAX,
+  REMOTE_DAEMON_PORT_MIN,
+} from '@shared/protocol';
 
 /**
  * 解析 argv,提取 `--open-here <path>` 后第一个非 flag token 作为目录路径。
@@ -75,13 +80,37 @@ export function parseSimpleMode(argv: readonly string[]): boolean {
 }
 
 /**
+ * 解析实例名:`--instance=<name>`。
+ *
+ * 用途:本地开多个 Marina 实例调试(如一个当 daemon、一个当 client,
+ * localhost 测远程连接,不必跨机器)。Electron 单实例锁按 app name(userData
+ * 目录)区分,name 决定 app.setName('Marina (<name>)') → 独立 userData +
+ * 独立锁 + 独立日志目录,多实例互不干扰、与 dev/portable/installed 也不冲突。
+ *
+ * 约定:name 仅 [A-Za-z0-9-_],非法字符过滤(防止路径注入)。空 / 缺失 → null
+ * (走默认 dev/portable/installed 命名)。
+ */
+export function parseInstanceName(argv: readonly string[]): string | null {
+  for (const tok of argv) {
+    if (!tok) continue;
+    if (tok.startsWith('--instance=')) {
+      const raw = tok.slice('--instance='.length);
+      const cleaned = raw.replace(/[^A-Za-z0-9_-]/g, '');
+      return cleaned || null;
+    }
+  }
+  return null;
+}
+
+/**
  * 解析 v2.0 远程后端 daemon 启动参数(ADR-014 / 软件定义书 §14.9)。
  *
  * 触发:argv 出现 `--daemon` 或 `--headless` 任一即进入 daemon 模式
  * (Marina.exe --headless --daemon 是完整形式;单独 --headless 也隐含 daemon,
  * 方便记忆)。两者都出现是惯例写法。
  *
- * 端口:`--port=<N>` 覆盖默认 12580。
+ * 端口:`--port=<N>` 覆盖默认 32780，但必须位于 host-only 自动发现范围
+ * 32780-32789；否则正常客户端永远扫描不到。
  *
  * @returns 非 daemon 启动返回 null;daemon 启动返回 { daemon, headless, port }
  */
@@ -97,12 +126,14 @@ export function parseHeadlessDaemon(argv: readonly string[]): DaemonMode | null 
   const daemon = argv.includes('--daemon');
   const headless = argv.includes('--headless');
   if (!daemon && !headless) return null;
-  let port = 12580;
+  let port: number = REMOTE_DAEMON_DEFAULT_PORT;
   for (const tok of argv) {
     if (!tok) continue;
     if (tok.startsWith('--port=')) {
       const p = parseInt(tok.slice('--port='.length), 10);
-      if (!Number.isNaN(p) && p > 0 && p < 65536) port = p;
+      if (!Number.isNaN(p) && p >= REMOTE_DAEMON_PORT_MIN && p <= REMOTE_DAEMON_PORT_MAX) {
+        port = p;
+      }
     }
   }
   return { daemon: true, headless, port };

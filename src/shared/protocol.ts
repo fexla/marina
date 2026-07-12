@@ -32,7 +32,14 @@ import type { DeepPartial } from './types-helpers';
  * 协议版本号。Main 与 Renderer 不匹配时拒绝 handshake。
  * Bump 规则:破坏性变更 +1;新增 channel 或扩展 payload 不需要 bump。
  */
-export const PROTOCOL_VERSION = 1 as const;
+// v2 引入每窗口远程后端、WS clientId owner 语义和控制面/数据面路由，
+// 与只理解本地 WindowInfo owner 的 v1 不兼容，必须在握手阶段明确拒绝混用。
+export const PROTOCOL_VERSION = 2 as const;
+
+/** host-only 连接发现协议固定扫描的 daemon 端口范围(含首尾)。 */
+export const REMOTE_DAEMON_PORT_MIN = 32780 as const;
+export const REMOTE_DAEMON_PORT_MAX = 32789 as const;
+export const REMOTE_DAEMON_DEFAULT_PORT = REMOTE_DAEMON_PORT_MIN;
 
 /**
  * 所有命令通道的命名常量。集中管理避免硬编码字符串散落各处。
@@ -77,9 +84,10 @@ export const COMMAND_CHANNELS = {
    */
   SESSION_CLEAR_MANUAL_RENAME: 'cmd:session:clear-manual-rename',
   /**
-   * 右键 Tab → "在新窗口中打开"。原子地把 session 从调用方窗口释放,
-   * 创建新窗口并把所有权直接转给新窗口,新窗口启动时从 URL ?selectSessionId
-   * 读到目标后 dispatch select-session 自动切到该 session。
+   * 右键 Tab → “在新窗口中打开”。
+   * - 本地 backend:main 原子 release → 创建窗口 → claim 给新 windowId。
+   * - 远程 backend:preload 拆成 daemon release + 客户端本地 WINDOW_CREATE;
+   *   新窗口连接后用新 WS clientId claim。
    */
   SESSION_OPEN_IN_NEW_WINDOW: 'cmd:session:open-in-new-window',
 
@@ -192,11 +200,78 @@ export const COMMAND_CHANNELS = {
   REMOTE_PROFILE_ADD: 'cmd:remote-profile:add',
   REMOTE_PROFILE_UPDATE: 'cmd:remote-profile:update',
   REMOTE_PROFILE_DELETE: 'cmd:remote-profile:delete',
-  /** preload 启动时拉某 profile 的连接信息(url + 解密后 token);null=无此 profile/无 token */
+  /** preload 启动时拉某 profile 的连接信息(host + 解密后密码);null=无此 profile/未配对 */
   REMOTE_PROFILE_GET_CONNECTION: 'cmd:remote-profile:get-connection',
+  // v2.0 远程服务端运行时启停 + 配置(UI 按钮触发)
+  REMOTE_DAEMON_START: 'cmd:remote-daemon:start',
+  REMOTE_DAEMON_STOP: 'cmd:remote-daemon:stop',
+  REMOTE_DAEMON_GET_STATUS: 'cmd:remote-daemon:get-status',
+  REMOTE_DAEMON_SET_PORT: 'cmd:remote-daemon:set-port',
+  REMOTE_DAEMON_SET_PASSWORD: 'cmd:remote-daemon:set-password',
 } as const;
 
 export type CommandChannel = (typeof COMMAND_CHANNELS)[keyof typeof COMMAND_CHANNELS];
+
+/**
+ * 命令路由域(每窗口后端模型的核心架构边界)。
+ *
+ * preload 根据 channel 所属的域决定路由:
+ * - 'local-control':客户端本地控制面,永远走客户端 Electron IPC。
+ *   BrowserWindow 生命周期、窗口控件、本机资源(剪贴板/远程 profile 凭据)
+ *   属于当前客户端机器,绝不能发给 daemon。
+ * - 'backend-data':后端业务数据,本地窗口走本地 IPC,远程窗口走 WS→daemon。
+ *   session/path/template/settings 等业务状态属于后端(本地 main 或远程 daemon)。
+ *
+ * 默认 'backend-data'(向后兼容:大部分命令是后端数据)。
+ *
+ * 新增命令时:在 LOCAL_CONTROL_COMMANDS_SET 显式声明 'local-control' 即可,
+ * preload 自动路由,不需要在 preload/index.ts 再维护一份 Set。
+ * 这避免了“新增本地控制命令忘记加到 preload Set”的隐式契约 bug
+ * (review 发现的 clipboard 遗漏就是这个模式)。
+ */
+export type CommandRoutingDomain = 'local-control' | 'backend-data';
+
+/**
+ * 显式声明为本地控制面的命令集合。未列出的命令默认走 backend-data。
+ *
+ * 维护规则:新增的命令如果操作“当前客户端机器的本地资源”
+ * (BrowserWindow、本机剪贴板/外部链接、本客户端的远程 profile 凭据、
+ * 本客户端是否对外提供 daemon 服务),必须加到这里。
+ * 加这里之后不需要在 preload/index.ts 再做任何事 —— preload 读这个声明自动路由。
+ */
+const LOCAL_CONTROL_COMMANDS_SET: ReadonlySet<string> = new Set<CommandChannel>([
+  COMMAND_CHANNELS.APP_QUIT,
+  COMMAND_CHANNELS.WINDOW_CREATE,
+  COMMAND_CHANNELS.WINDOW_CLOSE_SELF,
+  COMMAND_CHANNELS.WINDOW_CLOSE_ALL,
+  COMMAND_CHANNELS.WINDOW_FOCUS,
+  COMMAND_CHANNELS.WINDOW_MINIMIZE,
+  COMMAND_CHANNELS.WINDOW_TOGGLE_MAXIMIZE,
+  COMMAND_CHANNELS.WINDOW_GET_MAX_STATE,
+  COMMAND_CHANNELS.REMOTE_PROFILE_LIST,
+  COMMAND_CHANNELS.REMOTE_PROFILE_ADD,
+  COMMAND_CHANNELS.REMOTE_PROFILE_UPDATE,
+  COMMAND_CHANNELS.REMOTE_PROFILE_DELETE,
+  COMMAND_CHANNELS.REMOTE_PROFILE_GET_CONNECTION,
+  // “允许其他电脑连接本机”是当前客户端机器的服务端配置。远程窗口里也不能
+  // 把启停/改密码发给当前连接的 daemon，否则客户端可远程关闭服务或轮换密码。
+  COMMAND_CHANNELS.REMOTE_DAEMON_START,
+  COMMAND_CHANNELS.REMOTE_DAEMON_STOP,
+  COMMAND_CHANNELS.REMOTE_DAEMON_GET_STATUS,
+  COMMAND_CHANNELS.REMOTE_DAEMON_SET_PORT,
+  COMMAND_CHANNELS.REMOTE_DAEMON_SET_PASSWORD,
+  COMMAND_CHANNELS.SYSTEM_CLIPBOARD_READ_TEXT,
+  COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT,
+  // 用户点击链接时应在当前桌面打开浏览器，不能在 headless daemon 主机打开。
+  COMMAND_CHANNELS.SYSTEM_OPEN_EXTERNAL,
+]);
+
+/** 查询某 channel 的路由域。preload 用这个决定走本地 IPC 还是 WS。 */
+export function getCommandRouting(channel: string): CommandRoutingDomain {
+  return LOCAL_CONTROL_COMMANDS_SET.has(channel as CommandChannel)
+    ? 'local-control'
+    : 'backend-data';
+}
 
 /**
  * 所有事件通道的命名常量。
@@ -209,6 +284,8 @@ export const EVENT_CHANNELS = {
   WINDOW_FOCUS_REQUESTED: 'evt:window:focus-requested',
   /** M1-A:本窗口的 maximize / unmaximize 状态变化(供 renderer 切按钮图标 + 圆角) */
   WINDOW_MAX_STATE_CHANGED: 'evt:window:max-state-changed',
+  /** v2.0 远程服务端状态变化(启动/停止/client 连接/断开)→ renderer 更新 UI */
+  REMOTE_DAEMON_STATUS_CHANGED: 'evt:remote-daemon:status-changed',
 
   // Session
   SESSION_CREATED: 'evt:session:created',
@@ -304,8 +381,10 @@ export interface QuitResponse {
 // ──────────────────────────────────────────────────────────────────
 
 export interface CreateWindowPayload {
-  /** 可选:新窗口启动时聚焦的 sessionId (CP-3 加入,CP-2 忽略) */
+  /** 可选:新窗口启动时聚焦 / 接管的 sessionId。 */
   selectSessionId?: string;
+  /** true → 新窗口以简易模式启动(隐藏 Sidebar/Tab bar)。 */
+  simpleMode?: boolean;
   /**
    * v2.0 远程后端(每窗口后端):新窗口连的后端 profile id。
    * undefined/null = 本地 main 后端;非空 = 连该远程 daemon。
@@ -580,9 +659,8 @@ export interface ListSshProfilesResponse {
 export interface AddRemoteProfilePayload {
   displayName: string;
   host: string;
-  port: number;
-  /** 明文 token;main 用 safeStorage 加密落盘(同 SSH password 模式)。 */
-  token?: string;
+  /** 明文配对密码;main 用 safeStorage 加密落盘(同 SSH password 模式)。 */
+  password?: string;
   /** 阶段2b TLS:证书指纹(首次确认后存)。 */
   certFingerprint?: string;
 }
@@ -614,17 +692,86 @@ export interface UpdateRemoteProfileResponse {
 }
 
 /**
- * preload 启动时按 profileId 拉连接信息。null = 无此 profile / 未配对(无 token)。
- * 有值 = preload 据此建 RemoteTransport 连 ws://host:port。
- * token 是 main 解密后的明文(仅在本机内存中传给 preload,不出本机)。
+ * preload 启动时按 profileId 拉连接信息。null = 无此 profile / 未配对(无密码)。
+ * 有值 = preload 据此扫描 host 的端口(12580 起)连 Marina daemon。
+ * token 是 main 解密后的明文配对密码(仅在本机内存中传给 preload,不出本机)。
  */
 export interface GetRemoteConnectionResponse {
   connection: {
-    url: string;
+    host: string;
     token: string;
     profileId: string;
     displayName: string;
   } | null;
+}
+
+// ── v2.0 远程服务端(UI 启停 + 配置)──
+
+export interface RemoteDaemonStatusPayload {
+  running: boolean;
+  port: number | null;
+  clientCount: number;
+  hasPassword: boolean;
+  /**
+   * 端口监听自检结果(controller.start 后主动 connect 127.0.0.1:port 验证)。
+   * undefined = 尚未启动 / 未自检;{ ok: false, reason } = listen 失败(端口被占 / 绑定异常)。
+   * 用户看到“已开启但自检失败” → 能快速定位“服务开了但连不上”是监听问题。
+   */
+  listenCheck?: { ok: boolean; reason?: string };
+}
+
+/**
+ * v2.0 远程连接错误自动分析:把连接失败的**阶段**和**原因**细分,
+ * renderer 据此给针对性诊断(而不是笼统的“连不上”)。
+ *
+ * 错误点全链路:
+ *   client ──TCP connect──→ daemon [监听?] ──WS upgrade──→ ──auth(token)──→ [token 对?]
+ *
+ * 对应错误码:
+ *   LISTEN_FAILED    — daemon 端自检:端口起不来(占用/绑定)。仅 daemon 状态里用。
+ *   PROFILE_INCOMPLETE — client profile 缺 host/token(本地数据问题)。
+ *   TCP_REFUSED      — TCP 连接被拒(server 没起 / 端口没开 / 绑定到别的接口)。
+ *   TCP_TIMEOUT      — TCP 连接超时(防火墙 drop / WG 路由 / 网络不通)。与 REFUSED 的区别:REFUSED 是对方明确拒(RST),TIMEOUT 是包丢了。
+ *   TCP_UNREACHABLE  — 浏览器 WebSocket 无法区分 REFUSED/TIMEOUT(底层都报 close 1006)。
+ *                      统一归此类,错误页排查清单同时列两类可能。
+ *   WS_HANDSHAKE     — TCP 通但 WS 升级失败(目标不是 Marina daemon / 协议不对)。
+ *   AUTH_REJECTED    — daemon 明确拒认证(token 不匹配,close code 4001)。
+ *   AUTH_TIMEOUT     — WS 连上但 daemon 不回 auth-ok(daemon 异常 / 卡住 / 版本不兼容)。
+ *   NO_PORT_FOUND    — 扫描范围内所有端口都失败(用最有价值的子错误原因描述)。
+ */
+export type RemoteConnectErrorCode =
+  | 'LISTEN_FAILED'
+  | 'PROFILE_INCOMPLETE'
+  | 'TCP_UNREACHABLE'
+  | 'TCP_REFUSED'
+  | 'TCP_TIMEOUT'
+  | 'WS_HANDSHAKE'
+  | 'AUTH_REJECTED'
+  | 'AUTH_TIMEOUT'
+  | 'NO_PORT_FOUND';
+
+/** client 端连接失败时报告给 renderer 的结构化错误。 */
+export interface RemoteConnectError {
+  code: RemoteConnectErrorCode;
+  /** 人类可读的具体描述(含 host/port 等上下文)。renderer 错误页可直接展示。 */
+  message: string;
+  host: string;
+  /** 尝试的端口(扫描场景为最后一个试的端口)。 */
+  port?: number;
+  /** NO_PORT_FOUND 时,聚合各端口尝试的错误码(供 renderer 选最有价值诊断)。 */
+  triedErrors?: RemoteConnectErrorCode[];
+}
+
+export interface RemoteDaemonStatusResponse {
+  status: RemoteDaemonStatusPayload;
+}
+
+export interface RemoteDaemonSetPortPayload {
+  port: number;
+}
+
+export interface RemoteDaemonSetPasswordPayload {
+  password: string;
 }
 
 export interface PickSshKeyFilePayload {

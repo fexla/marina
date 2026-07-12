@@ -21,6 +21,10 @@ import { contextBridge, ipcRenderer, webFrame } from 'electron';
 import { platform, release } from 'os';
 import {
   COMMAND_CHANNELS,
+  EVENT_CHANNELS,
+  REMOTE_DAEMON_PORT_MAX,
+  REMOTE_DAEMON_PORT_MIN,
+  getCommandRouting,
   type ClipboardReadTextResponse,
   type ClipboardWriteTextPayload,
   type ClipboardWriteTextResponse,
@@ -28,7 +32,7 @@ import {
   type GetRemoteConnectionPayload,
   type GetRemoteConnectionResponse,
 } from '@shared/protocol';
-import { RemoteTransport, type WSLike } from './remote-transport';
+import { RemoteTransport, ConnectError, ConnectErrorCode, type WSLike } from './remote-transport';
 
 /**
  * 解析当前 OS 的 Windows build 号(如 22621),非 Windows 或解析失败返回 null。
@@ -66,6 +70,25 @@ function readWindowParams(): { windowId: string; windowNumber: number; backend: 
 
 const { windowId, windowNumber, backend } = readWindowParams();
 
+// 客户端本地控制面的路由判断委托给 @shared/protocol 的声明式标注
+// (getCommandRouting)。新增本地控制命令只需在 protocol.ts 的
+// LOCAL_CONTROL_COMMANDS_SET 里声明,不需要在这里再维护一份 Set ——
+// 这避免了“新增命令忘记加到 preload”的隐式契约 bug。
+
+/**
+ * 客户端本地控制面事件。
+ *
+ * REMOTE_PROFILES_UPDATED 描述“本客户端如何连接其他电脑”的本地凭据变化，
+ * REMOTE_DAEMON_STATUS_CHANGED 描述“本客户端是否允许其他电脑连接”的服务状态；
+ * 二者与各自命令同属客户端控制面。远程窗口若从 WS daemon 订阅，会收到
+ * daemon 那台机器的 profile/服务状态，导致设置页展示错误的数据域。
+ */
+const LOCAL_CONTROL_EVENTS = new Set<string>([
+  EVENT_CHANNELS.WINDOW_MAX_STATE_CHANGED,
+  EVENT_CHANNELS.REMOTE_PROFILES_UPDATED,
+  EVENT_CHANNELS.REMOTE_DAEMON_STATUS_CHANGED,
+]);
+
 // 浏览器原生 WebSocket 适配成 WSLike(RemoteTransport 期望的接口)。
 // preload 上下文有原生 WebSocket;这里桥接 on*/send/close + readyState。
 function browserWs(url: string): WSLike {
@@ -84,7 +107,8 @@ function browserWs(url: string): WSLike {
   };
   ws.onopen = () => adapter.onopen?.();
   ws.onmessage = (ev: MessageEvent) => adapter.onmessage?.({ data: ev.data });
-  ws.onclose = () => adapter.onclose?.();
+  // 透传 close code/reason(daemon 认证失败用 4003/4001,client 端错误分析依赖它)。
+  ws.onclose = (ev: CloseEvent) => adapter.onclose?.({ code: ev.code, reason: ev.reason });
   ws.onerror = (e) => adapter.onerror?.(e);
   return adapter;
 }
@@ -102,58 +126,187 @@ function ensureTransport(): Promise<void> {
     // 每窗口后端:窗口创建时定死 backend(URL ?backend=),生命周期内不变。
     if (!backend) return; // 本地窗口
     try {
-      const res = (await ipcRenderer.invoke(
-        COMMAND_CHANNELS.REMOTE_PROFILE_GET_CONNECTION,
-        {
-          windowId,
-          requestId: crypto.randomUUID(),
-          payload: { profileId: backend },
-        } as CommandEnvelope<GetRemoteConnectionPayload>,
-      )) as GetRemoteConnectionResponse;
-      if (res?.connection) {
-        const t = new RemoteTransport({
-          url: res.connection.url,
-          token: res.connection.token,
-          wsFactory: browserWs,
-          // 阶段3 断线重连:成功后 reload 重新拉 snapshot(session owner 在断线时
-          // 被 daemon 自动 release,重连后要重建视图)。reload 丢 renderer 状态可接受
-          // (断线是异常,用户重新介入合理)。
-          onReconnectSuccess: () => {
-            console.warn('[preload] remote reconnected — reload to refresh snapshot');
-            window.location.reload();
-          },
-          onReconnectStart: () => {
-            console.warn('[preload] remote connection lost — reconnecting...');
-          },
-          onReconnectFail: (reason) => {
-            console.error('[preload] remote reconnect failed (terminal):', reason);
-          },
-        });
-        await t.ready;
-        remoteTransport = t;
+      const res = (await ipcRenderer.invoke(COMMAND_CHANNELS.REMOTE_PROFILE_GET_CONNECTION, {
+        windowId,
+        requestId: crypto.randomUUID(),
+        payload: { profileId: backend },
+      } as CommandEnvelope<GetRemoteConnectionPayload>)) as GetRemoteConnectionResponse;
+      if (!res?.connection) {
+        throw new ConnectError(
+          ConnectErrorCode.PROFILE_INCOMPLETE,
+          '[preload] 该远程电脑配置不完整或连接密码无法解密,请在设置里重新保存连接密码。',
+        );
       }
+      const { host, token } = res.connection;
+      // profile 数据不全 → 明确报 PROFILE_INCOMPLETE(本地数据问题,非网络)。
+      if (!host || !token) {
+        throw new ConnectError(
+          ConnectErrorCode.PROFILE_INCOMPLETE,
+          `[preload] 该远程电脑配置不完整(缺 ${!host ? 'IP' : '密码'}),请在设置里补全。`,
+        );
+      }
+      // 端口扫描:从 32780 起,串行尝试 32780-32789。端口关闭 TCP RST 快速失败,
+      // 遇开放的错误端口才等握手超时(1.5s)。找到第一个握手通过的端口。
+      // 设计动机(用户需求):client 只需 IP,不用输端口。daemon 默认 32780,
+      // 扫描一小段兑底 daemon 端口被占改用别的。
+      const PORT_FROM = REMOTE_DAEMON_PORT_MIN;
+      const PORT_COUNT = REMOTE_DAEMON_PORT_MAX - REMOTE_DAEMON_PORT_MIN + 1;
+      let portFound: number | null = null;
+      // 收集各端口尝试的错误码,全失败时选最有价值的报告给用户。
+      const tried: Array<{ port: number; code: string; message: string }> = [];
+      for (let i = 0; i < PORT_COUNT; i++) {
+        const port = PORT_FROM + i;
+        const probe = new RemoteTransport({
+          url: `ws://${host}:${port}`,
+          token,
+          wsFactory: browserWs,
+          authTimeoutMs: 3000,
+          autoReconnect: false,
+        });
+        try {
+          await probe.ready;
+          probe.close();
+          portFound = port;
+          break;
+        } catch (err) {
+          probe.close();
+          const code = err instanceof ConnectError ? err.code : 'UNKNOWN';
+          const message = err instanceof Error ? err.message : String(err);
+          tried.push({ port, code, message });
+        }
+      }
+      if (portFound === null) {
+        // 选最有价值的错误码(优先级:AUTH_REJECTED > WS_HANDSHAKE > AUTH_TIMEOUT > TCP_UNREACHABLE)。
+        // AUTH_REJECTED 最有价值 —— 说明某个端口是 Marina daemon 但密码错(用户改密码即可)。
+        // 全部 TCP_UNREACHABLE → server 根本没起 / 网络不通(最常见)。
+        const priority: Record<string, number> = {
+          AUTH_REJECTED: 0,
+          WS_HANDSHAKE: 1,
+          AUTH_TIMEOUT: 2,
+          TCP_UNREACHABLE: 3,
+          UNKNOWN: 4,
+        };
+        const best = [...tried].sort(
+          (a, b) => (priority[a.code] ?? 9) - (priority[b.code] ?? 9),
+        )[0];
+        const bestCode = best?.code ?? 'TCP_UNREACHABLE';
+        const triedCodes = tried.map((t) => t.code);
+        // 构造给 renderer 的诊断信息(含 host/端口范围/最有价值原因)。
+        throw new ConnectError(
+          bestCode as ConnectErrorCode,
+          `[preload] 连接 ${host}:${PORT_FROM}-${PORT_FROM + PORT_COUNT - 1} 全部失败。` +
+            `最有价值原因:${best?.message ?? '无响应'}。` +
+            `尝试详情:${tried.map((t) => `${t.port}=${t.code}`).join(', ')}。` +
+            `triedCodes=${triedCodes.join(',')}`,
+        );
+      }
+      // 重建带重连回调的 transport 连找到的端口(扫描用的 probe 已 close)
+      const t = new RemoteTransport({
+        url: `ws://${host}:${portFound}`,
+        token,
+        wsFactory: browserWs,
+        // 阶段3 断线重连:成功后 reload 重新拉 snapshot(session owner 在断线时
+        // 被 daemon 自动 release,重连后要重建视图)。reload 丢 renderer 状态可接受
+        // (断线是异常,用户重新介入合理)。
+        onReconnectSuccess: () => {
+          console.warn('[preload] remote reconnected — reload to refresh snapshot');
+          window.location.reload();
+        },
+        onReconnectStart: () => {
+          console.warn('[preload] remote connection lost — reconnecting...');
+        },
+        onReconnectFail: (reason) => {
+          console.error('[preload] remote reconnect failed (terminal):', reason);
+        },
+      });
+      await t.ready;
+      remoteTransport = t;
     } catch (err) {
-      // 远程初始化失败 → 回退本地(本地路径仍可用)。renderer 会发现远程不可达。
-      console.error('[preload] remote transport init failed, fallback to local', err);
+      // 远程连接失败:绝不静默回退本地!每窗口后端模型下,用户明确要开远程窗口,
+      // 失败必须报错 —— 否则窗口偷偷变本地,用户看到本地数据会以为“打开错了/还是本地窗口”。
+      // 保留 ConnectError 的 code(preload 端口扫描/profile 检查会抛),renderer 错误页
+      // 据 code 给针对性诊断。非 ConnectError(如 IPC 拉取 connection 失败)包成通用错误。
+      if (err instanceof ConnectError) {
+        throw err;
+      }
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new ConnectError(
+        ConnectErrorCode.NO_PORT_FOUND,
+        `[preload] 拉取远程连接信息失败:${reason}`,
+      );
     }
   })();
   return transportInit;
 }
 
-/**
- * 包装 invoke:远程模式走 WS transport,本地走 ipcRenderer(自动加 windowId/requestId/payload 信封)。
- */
-async function invoke<P, R>(channel: string, payload: P): Promise<R> {
-  await ensureTransport();
-  if (remoteTransport) {
-    return remoteTransport.invoke<R>(channel, payload);
-  }
+/** 向客户端本地 Electron main 发命令,永不经过远程 transport。 */
+function invokeLocal<P, R>(channel: string, payload: P): Promise<R> {
   const envelope: CommandEnvelope<P> = {
     windowId,
     requestId: crypto.randomUUID(),
     payload,
   };
-  return ipcRenderer.invoke(channel, envelope);
+  return ipcRenderer.invoke(channel, envelope) as Promise<R>;
+}
+
+/**
+ * 包装 invoke:本地控制面命令始终走 ipcRenderer；远程窗口的后端业务命令走 WS。
+ */
+async function invoke<P, R>(channel: string, payload: P): Promise<R> {
+  // “在新窗口中打开 session”横跨两个控制域,不能整体发给 daemon:
+  // 1) daemon 数据面:旧 owner release session;
+  // 2) 客户端控制面:本地创建继承同一 backend 的 BrowserWindow;
+  // 3) 新窗口连上 daemon 后从 ?selectSessionId 自动 claim orphan session。
+  if (backend && channel === COMMAND_CHANNELS.SESSION_OPEN_IN_NEW_WINDOW) {
+    await ensureTransport();
+    if (!remoteTransport) {
+      throw new Error('[preload] remote transport 未初始化,无法移动 session 到新窗口');
+    }
+    const request = payload as { sessionId: string; simpleMode?: boolean };
+    try {
+      await remoteTransport.invoke(COMMAND_CHANNELS.SESSION_RELEASE, {
+        sessionId: request.sessionId,
+      });
+    } catch (err) {
+      // orphan session 本来就没有 owner,release 会报 NotOwner。只在 snapshot 再次
+      // 确认仍是 orphan 时允许继续；若已被其他 client 抢占则保留原错误。
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? String((err as { code?: unknown }).code)
+          : '';
+      if (code !== 'NotOwner') throw err;
+      const snapshot = await remoteTransport.invoke<{
+        sessions?: Array<{ id: string; ownerWindowId: string | null }>;
+      }>(COMMAND_CHANNELS.APP_GET_SNAPSHOT, { myWindowId: windowId });
+      const current = snapshot.sessions?.find((s) => s.id === request.sessionId);
+      if (!current || current.ownerWindowId !== null) throw err;
+    }
+    return invokeLocal<Record<string, unknown>, R>(COMMAND_CHANNELS.WINDOW_CREATE, {
+      backendProfileId: backend,
+      selectSessionId: request.sessionId,
+      ...(request.simpleMode ? { simpleMode: true } : {}),
+    });
+  }
+
+  if (getCommandRouting(channel) === 'local-control') {
+    // 远程窗口里普通“新建窗口”必须继承当前 backend。否则本地 main 会创建
+    // backend=null 的窗口,新窗口自然拿不到远程 path/session,表现为左侧空白。
+    // 设置页显式传 backendProfileId(打开另一台电脑)时尊重显式值。
+    if (channel === COMMAND_CHANNELS.WINDOW_CREATE && backend) {
+      const requested =
+        payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
+      return invokeLocal<Record<string, unknown>, R>(channel, {
+        backendProfileId: backend,
+        ...requested,
+      });
+    }
+    return invokeLocal<P, R>(channel, payload);
+  }
+  await ensureTransport();
+  if (remoteTransport) {
+    return remoteTransport.invoke<R>(channel, payload);
+  }
+  return invokeLocal<P, R>(channel, payload);
 }
 
 /**
@@ -166,16 +319,41 @@ function on<P>(channel: string, handler: (payload: P) => void): () => void {
       handler(envelope.payload);
     }
   };
-  // 本地路径立即注册(零回归);远程路径 transport ready 后额外注册。
-  ipcRenderer.on(channel, wrapped);
+
+  // 本地窗口全部走 ipcRenderer；远程窗口的 BrowserWindow 自身状态事件也必须
+  // 留在本地控制面,不能订阅 daemon 上不属于本窗口的 maximize 状态。
+  if (!backend || LOCAL_CONTROL_EVENTS.has(channel)) {
+    ipcRenderer.on(channel, wrapped);
+    return () => ipcRenderer.off(channel, wrapped);
+  }
+
+  // 远程窗口:绝不能先订阅本地 ipcRenderer。否则远程连接失败 / 密码无法解密时,
+  // 事件流会混入创建该 BrowserWindow 的本地后端,形成“命令已报错但 UI 仍被本地事件污染”
+  // 的隐蔽状态。远程事件只在 transport ready 后从 WS 订阅。
+  let disposed = false;
   let unsubRemote = (): void => {};
-  ensureTransport().then(() => {
-    if (remoteTransport) {
-      unsubRemote = remoteTransport.on(channel, handler as (payload: unknown) => void);
-    }
-  });
+  void ensureTransport()
+    .then(() => {
+      if (disposed) return;
+      if (remoteTransport) {
+        unsubRemote = remoteTransport.on(channel, (payload: unknown) => {
+          // daemon 的 SESSION_FOCUS_OWNER 对远程 owner 只能发定向事件,无法直接
+          // 控制客户端 BrowserWindow。收到该事件时先走本地控制面聚焦当前窗口,
+          // 再交给 renderer 选中目标 session。WINDOW_FOCUS 绝不能回发 daemon。
+          if (channel === EVENT_CHANNELS.WINDOW_FOCUS_REQUESTED) {
+            void invokeLocal(COMMAND_CHANNELS.WINDOW_FOCUS, { windowId }).catch((err) => {
+              console.error('[preload] failed to focus local remote window:', err);
+            });
+          }
+          (handler as (value: unknown) => void)(payload);
+        });
+      }
+    })
+    .catch((err) => {
+      console.error('[preload] remote event subscription failed:', err);
+    });
   return () => {
-    ipcRenderer.off(channel, wrapped);
+    disposed = true;
     unsubRemote();
   };
 }
@@ -189,6 +367,16 @@ const api = {
   windowId,
   /** 当前窗口编号 (Window N),0 表示未由 WindowManager 分配 */
   windowNumber,
+  /**
+   * v2.0 每窗口后端:本窗口连的后端 profile id。
+   * null = 本地 main 后端;非空 = 连该 id 的远程 daemon。
+   * 从 URL ?backend= 解析,窗口创建时定死,生命周期内不变。
+   * renderer 用它判断“我是不是远程窗口”(WindowChrome 远程标识、
+   * 设置页行为分支等)。不依赖 snapshot.windows —— 远程窗口的
+   * snapshot 来自 daemon,daemon 不持有客户端 BrowserWindow,
+   * 其 snapshot.windows 是空的,无法反查本窗口 backend。
+   */
+  backendProfileId: backend,
   /**
    * Windows build 号(如 22621),非 Windows 或解析失败为 null。
    * TerminalView 构造 xterm 实例时传给 windowsPty.buildNumber。
@@ -249,10 +437,10 @@ const api = {
     },
     async writeText(text: string): Promise<boolean> {
       try {
-        const res = await invoke<
-          ClipboardWriteTextPayload,
-          ClipboardWriteTextResponse
-        >(COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT, { text });
+        const res = await invoke<ClipboardWriteTextPayload, ClipboardWriteTextResponse>(
+          COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT,
+          { text },
+        );
         return res.ok;
       } catch {
         return false;

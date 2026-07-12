@@ -87,7 +87,13 @@ function generateTrayIcon(variant: 'default' | 'active'): NativeImage {
 
   // 画 ">" 提示符 (在 (4-9, 5-11) 区域用 IRIS 色)
   const promptPixels: ReadonlyArray<readonly [number, number]> = [
-    [4, 5], [5, 6], [6, 7], [7, 8], [6, 9], [5, 10], [4, 11],
+    [4, 5],
+    [5, 6],
+    [6, 7],
+    [7, 8],
+    [6, 9],
+    [5, 10],
+    [4, 11],
   ];
   for (const [px, py] of promptPixels) {
     const i = (py * size + px) * 4;
@@ -124,9 +130,11 @@ export class TrayManager {
   /** M1-H:状态变化节流,避免高频抖动 */
   private rebuildTimer: NodeJS.Timeout | null = null;
   private currentIconVariant: 'default' | 'active' = 'default';
-  /** v2.0 远程后端(§14.9):daemon 模式下的配对 token,供托盘菜单"复制 daemon token"。null = 非 daemon 模式 / 未设置。 */
+  /** v2.0 远程后端(§14.9):daemon 模式下的配对密码,供托盘菜单"复制 daemon 密码"。null = 非 daemon 模式 / 未设置。 */
   private daemonToken: string | null = null;
-  /** 重置 token 的回调(index.ts 注入:调 resetDaemonCredentials + setDaemonToken)。无 = 未注入。 */
+  /** daemon 监听端口(默认 12580),供托盘菜单展示"daemon 信息"。null = 非 daemon 模式。 */
+  private daemonPort: number | null = null;
+  /** 重置密码的回调(index.ts 注入:调 resetDaemonCredentials + setDaemonToken)。无 = 未注入。 */
   private resetDaemonTokenHandler: (() => Promise<void>) | null = null;
   /** v2.0 远程后端(每窗口):远程 profile 列表 provider,供托盘"连接到远程…"子菜单。无 = 未注入。 */
   private remoteProfilesProvider: (() => RemoteDaemonProfile[]) | null = null;
@@ -138,11 +146,17 @@ export class TrayManager {
   ) {}
 
   /**
-   * 设置 daemon 配对 token(供托盘菜单展示/复制)。
-   * index.ts 在 --headless --daemon 模式启动拿到 token 后调。
+   * 设置 daemon 配对密码(供托盘菜单展示/复制)。
+   * index.ts 在 --headless --daemon 模式启动拿到密码后调。
    */
   setDaemonToken(token: string | null): void {
     this.daemonToken = token;
+    this.rebuildContextMenu();
+  }
+
+  /** 设置 daemon 监听端口(供托盘菜单展示)。 */
+  setDaemonPort(port: number | null): void {
+    this.daemonPort = port;
     this.rebuildContextMenu();
   }
 
@@ -325,17 +339,22 @@ export class TrayManager {
       items.push({ type: 'separator' });
     }
 
-    // v2.0 远程后端(每窗口):连接到远程 daemon(开新窗口连)。列已配对 profile。
+    // v2.0 远程连接(客户端角色):开新窗口连保存的远程电脑。列已设密码的 profile。
     const remoteProfiles = this.remoteProfilesProvider?.() ?? [];
     if (remoteProfiles.length > 0) {
       items.push({
-        label: '连接到远程…',
+        label: '连接到其他电脑…',
         submenu: remoteProfiles.map((p) => ({
-          label: `${p.displayName} (${p.host}:${p.port})${p.hasToken ? '' : ' · 未配对'}`,
+          label: `${p.displayName} (${p.host})${p.hasToken ? '' : ' · 未设密码'}`,
           enabled: p.hasToken !== false,
           click: () => {
             try {
-              this.windowManager.createWindowFromFactory({ backendProfileId: p.id });
+              const info = this.windowManager.createWindowFromFactory({ backendProfileId: p.id });
+              // 托盘绕过 ipc WINDOW_CREATE handler，需同步设置 OS 层标题，
+              // 否则自绘标题栏有远程名但任务栏 / Alt+Tab 仍只显示普通 Window N。
+              this.windowManager
+                .getById(info.id)
+                ?.setTitle(`Marina — Window ${info.number} → ${p.displayName} (${p.host})`);
             } catch (err) {
               logger.error('TrayManager', 'open remote window failed', err);
             }
@@ -349,35 +368,39 @@ export class TrayManager {
       click: () => this.openSettings(),
     });
 
-    // v2.0 远程后端:daemon 模式下展示配对 token(供 client 端用户抄过去配对)
+    // v2.0 远程连接(服务端角色):展示服务端口 + 复制连接密码 + 重置密码快捷入口
+    // (密码加载后就有,不只运行中。设置页“允许远程连接”是主控,托盘是便捷复制/查看)。
     if (this.daemonToken) {
+      // 服务端口(只读展示,设置页可改)。未启动时展示配置里的端口。
+      if (this.daemonPort !== null) {
+        items.push({ label: `服务端口: ${this.daemonPort}`, enabled: false });
+      }
       items.push({
-        label: '复制 daemon 配对 token',
+        label: '复制连接密码',
         click: () => {
           clipboard.writeText(this.daemonToken ?? '');
-          logger.info('TrayManager', 'daemon pairing token copied to clipboard');
+          logger.info('TrayManager', 'connection password copied to clipboard');
         },
       });
-      // 重置 token(吊销所有已配对 client)。需确认 —— 重置后已连 client 全部被拒,
-      // 必须重新配对。仅在注入了 handler 时显示。
+      // 重置密码(吊销所有已连电脑)。需确认 —— 重置后已连的都要用新密码重连。
       if (this.resetDaemonTokenHandler) {
         items.push({
-          label: '重置 daemon 配对 token…',
+          label: '重置连接密码…',
           click: async () => {
             const choice = await dialog.showMessageBox({
               type: 'warning',
               buttons: ['重置', '取消'],
               defaultId: 1,
               cancelId: 1,
-              title: '重置 daemon 配对 token',
-              message: '重置后所有已配对的 client 都会被拒绝(需重新配对)。确定?',
+              title: '重置连接密码',
+              message: '重置后所有已连接的电脑都会被断开,需用新密码重新连接。确定?',
             });
             if (choice.response === 0) {
               try {
                 await this.resetDaemonTokenHandler!();
-                logger.info('TrayManager', 'daemon token reset (all clients revoked)');
+                logger.info('TrayManager', 'connection password reset (all clients revoked)');
               } catch (err) {
-                logger.error('TrayManager', 'daemon token reset failed', err);
+                logger.error('TrayManager', 'connection password reset failed', err);
               }
             }
           },
@@ -484,7 +507,7 @@ export class TrayManager {
 
     if (confirmOnQuit && liveCount > 0) {
       const owner = this.windowManager.getMostRecentlyActive();
-      const result = await dialog.showMessageBox(owner ?? undefined as never, {
+      const result = await dialog.showMessageBox(owner ?? (undefined as never), {
         type: 'warning',
         title: '完全退出 Marina?',
         message: `还有 ${liveCount} 个终端在运行,完全退出会关掉它们。`,

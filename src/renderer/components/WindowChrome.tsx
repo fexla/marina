@@ -24,13 +24,8 @@ import {
   type GetWindowMaxStateResponse,
   type WindowMaxStateChangedPayload,
 } from '@shared/protocol';
-import type { WindowStyle } from '@shared/types';
-import {
-  Minus,
-  Square,
-  Copy as RestoreIcon,
-  X,
-} from 'lucide-react';
+import type { RemoteDaemonProfile, WindowStyle } from '@shared/types';
+import { Minus, Square, Copy as RestoreIcon, X } from 'lucide-react';
 import { focusTerminalDom } from '../focus';
 import { useAppState } from '../store';
 
@@ -107,7 +102,62 @@ export function WindowChrome({ windowStyle, buildVersion, buildType }: Props): J
 
   // DEV-COEXIST:'Marina (dev) — Window 1' / 'Marina (portable) — ...' / 'Marina — ...'
   const appLabel =
-    buildType === 'dev' ? 'Marina (dev)' : buildType === 'portable' ? 'Marina (portable)' : 'Marina';
+    buildType === 'dev'
+      ? 'Marina (dev)'
+      : buildType === 'portable'
+        ? 'Marina (portable)'
+        : 'Marina';
+
+  // 远程后端标识(每窗口后端 §14.9):本窗口若连了远程 daemon,在标题栏显示
+  // 窗口编号后追加上游电脑名字。远程窗口跟本地窗口长得一样会让用户混淆
+  // “我是在本地还是远程操作”,必须有视觉区分。
+  //
+  // 远程后端标识(每窗口后端 §14.9):本窗口若连了远程 daemon,在标题栏显示
+  // 窗口编号后追加上游电脑名字。远程窗口跟本地窗口长得一样会让用户混淆
+  // “我是在本地还是远程操作”,必须有视觉区分。
+  //
+  // 数据来源:profileId 读 window.api.backendProfileId(preload 从 URL ?backend=
+  // 解析,窗口创建时定死,绝对可靠)。profile 名/host 异步拉本地
+  // REMOTE_PROFILE_LIST —— 这是客户端本地凭据(local-control,走客户端本地 IPC,
+  // 不经 daemon)。
+  // **不**能从 state.remoteBackendProfiles 查:远程窗口的 snapshot 来自 daemon,
+  // daemon 的 remoteProfiles 是它自己“能连的电脑”,不含客户端连本 daemon 的凭据。
+  const backendProfileId = window.api.backendProfileId;
+  const [backendLabel, setBackendLabel] = useState<string | null>(null);
+  useEffect(() => {
+    if (!backendProfileId) {
+      setBackendLabel(null);
+      return;
+    }
+    let cancelled = false;
+    // REMOTE_PROFILE_LIST 是 local-control(见 protocol.ts LOCAL_CONTROL_COMMANDS_SET),
+    // 远程窗口里也走客户端本地 IPC,返回客户端本地保存的 profile 列表。
+    void window.api
+      .invoke<undefined, { profiles: RemoteDaemonProfile[] }>(
+        COMMAND_CHANNELS.REMOTE_PROFILE_LIST,
+        undefined,
+      )
+      .then((res) => {
+        if (cancelled) return;
+        const profile = res.profiles.find((p) => p.id === backendProfileId);
+        // profile 被删了但窗口还开着 — 显示 id 兒底,至少让用户知道这是远程窗口。
+        setBackendLabel(profile ? `${profile.displayName} (${profile.host})` : backendProfileId);
+      })
+      .catch(() => {
+        if (!cancelled) setBackendLabel(backendProfileId);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [backendProfileId]);
+
+  // 已连接页面会通过本地 REMOTE_PROFILES_UPDATED 更新 store；profile 改名/改 host
+  // 时同步刷新标题。连接错误页没有 useIpcSync，仍由上面的本地拉取提供初始名称。
+  useEffect(() => {
+    if (!backendProfileId) return;
+    const profile = state.remoteBackendProfiles.find((p) => p.id === backendProfileId);
+    if (profile) setBackendLabel(`${profile.displayName} (${profile.host})`);
+  }, [backendProfileId, state.remoteBackendProfiles]);
 
   if (windowStyle === 'macos') {
     return (
@@ -115,6 +165,7 @@ export function WindowChrome({ windowStyle, buildVersion, buildType }: Props): J
         buildVersion={buildVersion}
         appLabel={appLabel}
         windowNumber={windowNumber}
+        backendLabel={backendLabel}
         maximized={maximized}
         callMin={callMin}
         callClose={callClose}
@@ -127,13 +178,18 @@ export function WindowChrome({ windowStyle, buildVersion, buildType }: Props): J
 
   // Windows 风格(默认):标题在左,控制按钮在右
   return (
-    <div
-      className="app-titlebar app-titlebar-windows"
-      onDoubleClick={handleDragRegionDblClick}
-    >
+    <div className="app-titlebar app-titlebar-windows" onDoubleClick={handleDragRegionDblClick}>
       <div className="titlebar-title titlebar-drag">
         <span className="titlebar-app-name">{appLabel}</span>
         <span className="titlebar-window-badge">Window {windowNumber || '?'}</span>
+        {backendLabel && (
+          <span className="titlebar-backend-badge" title={`连接到: ${backendLabel}`}>
+            <span className="titlebar-backend-arrow" aria-hidden="true">
+              →
+            </span>
+            <span className="titlebar-backend-name">{backendLabel}</span>
+          </span>
+        )}
       </div>
       <div className="titlebar-spacer titlebar-drag" />
       <span className="titlebar-version titlebar-drag">v{buildVersion}</span>
@@ -154,7 +210,11 @@ export function WindowChrome({ windowStyle, buildVersion, buildType }: Props): J
           title={maximized ? '还原' : '最大化'}
           aria-label={maximized ? '还原窗口' : '最大化窗口'}
         >
-          {maximized ? <RestoreIcon size={13} strokeWidth={1.6} /> : <Square size={13} strokeWidth={1.6} />}
+          {maximized ? (
+            <RestoreIcon size={13} strokeWidth={1.6} />
+          ) : (
+            <Square size={13} strokeWidth={1.6} />
+          )}
         </button>
         <button
           type="button"
@@ -188,6 +248,7 @@ function MacosTitlebar({
   buildVersion,
   appLabel,
   windowNumber,
+  backendLabel,
   maximized,
   callMin,
   callClose,
@@ -198,6 +259,7 @@ function MacosTitlebar({
   buildVersion: string;
   appLabel: string;
   windowNumber: number;
+  backendLabel: string | null;
   maximized: boolean;
   callMin: () => void;
   callClose: () => void;
@@ -256,6 +318,14 @@ function MacosTitlebar({
       <div className="titlebar-title titlebar-drag">
         <span className="titlebar-app-name">{appLabel}</span>
         <span className="titlebar-window-badge">Window {windowNumber || '?'}</span>
+        {backendLabel && (
+          <span className="titlebar-backend-badge" title={`连接到: ${backendLabel}`}>
+            <span className="titlebar-backend-arrow" aria-hidden="true">
+              →
+            </span>
+            <span className="titlebar-backend-name">{backendLabel}</span>
+          </span>
+        )}
       </div>
       <div className="titlebar-spacer titlebar-drag" />
       <span className="titlebar-version titlebar-drag">v{buildVersion}</span>

@@ -25,7 +25,7 @@
   "settings.category.behavior": "Behavior",
   "settings.category.data": "Data",
   "settings.category.remote": "Remote",
-  "settings.category.remoteBackend": "Remote Backend",
+  "settings.category.remoteConnection": "Remote Connection",
   "settings.category.systemIntegration": "System Integration",
   "settings.category.ai": "AI Assistant",
   "settings.category.advanced": "Advanced",

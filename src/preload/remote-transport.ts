@@ -57,8 +57,34 @@ export interface WSLike {
   // 事件钩子(调用方挂):
   onopen?: (() => void) | null;
   onmessage?: ((ev: { data: unknown }) => void) | null;
-  onclose?: (() => void) | null;
+  /** close 事件。code/reason 来自 WS CloseEvent(daemon 认证失败用 4003/4001)。 */
+  onclose?: ((ev: { code: number; reason: string }) => void) | null;
   onerror?: ((err: unknown) => void) | null;
+}
+
+/**
+ * 连接失败的错误码(字符串值与 @shared/protocol 的 RemoteConnectErrorCode 一致)。
+ * remote-transport 不直接依赖 protocol(保持 preload 独立),用本地常量,
+ * ensureTransport 负责转成 RemoteConnectError 传给 renderer。
+ */
+export const ConnectErrorCode = {
+  PROFILE_INCOMPLETE: 'PROFILE_INCOMPLETE',
+  TCP_UNREACHABLE: 'TCP_UNREACHABLE',
+  WS_HANDSHAKE: 'WS_HANDSHAKE',
+  AUTH_REJECTED: 'AUTH_REJECTED',
+  AUTH_TIMEOUT: 'AUTH_TIMEOUT',
+  NO_PORT_FOUND: 'NO_PORT_FOUND',
+} as const;
+export type ConnectErrorCode = (typeof ConnectErrorCode)[keyof typeof ConnectErrorCode];
+
+/** remote-transport 抛出的连接错误(带 code,便于上层归类)。 */
+export class ConnectError extends Error {
+  readonly code: ConnectErrorCode;
+  constructor(code: ConnectErrorCode, message: string) {
+    super(message);
+    this.name = 'ConnectError';
+    this.code = code;
+  }
 }
 
 /** WSLike 工厂(生产 = () => new WebSocket(url))。 */
@@ -114,6 +140,8 @@ export class RemoteTransport {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** 首次握手超时定时器(超时 failReady)。 */
   private authTimer: ReturnType<typeof setTimeout> | null = null;
+  /** ws 是否曾 open 过(用于区分 TCP 不通 vs WS 握手失败)。 */
+  private opened = false;
 
   readonly ready: Promise<void>;
 
@@ -131,9 +159,13 @@ export class RemoteTransport {
    */
   private connectWs(isFirst: boolean): void {
     this.ws = this.opts.wsFactory(this.opts.url);
-    this.ws.onopen = () => this.handleOpen();
+    this.opened = false;
+    this.ws.onopen = () => {
+      this.opened = true;
+      this.handleOpen();
+    };
     this.ws.onmessage = (ev) => this.handleMessage(ev.data);
-    this.ws.onclose = () => this.handleClose();
+    this.ws.onclose = (ev) => this.handleClose(ev);
     this.ws.onerror = (e) => this.handleError(e);
     if (isFirst) {
       // 仅首次握手设超时(初始化卡住要明确失败)。重连不设:靠 ws close 触发重试。
@@ -141,7 +173,12 @@ export class RemoteTransport {
       const to = this.opts.authTimeoutMs ?? 10000;
       this.authTimer = setTimeout(() => {
         if (this.clientId === null && !this.closed && !this.manuallyClosed) {
-          this.failReady(new Error('[remote-transport] 握手超时(未收到 __auth-ok__)'));
+          this.failReady(
+            new ConnectError(
+              ConnectErrorCode.AUTH_TIMEOUT,
+              `[remote-transport] 握手超时(ws 连上了但 daemon 未在 ${to}ms 内回 __auth-ok__)`,
+            ),
+          );
         }
       }, to);
     }
@@ -230,7 +267,12 @@ export class RemoteTransport {
         // 重连中发 auth 失败 → 关 ws 触发 handleClose 再试
         try { this.ws.close(); } catch { /* 忽略 */ }
       } else {
-        this.failReady(err instanceof Error ? err : new Error(String(err)));
+        this.failReady(
+          new ConnectError(
+            ConnectErrorCode.WS_HANDSHAKE,
+            `[remote-transport] 发送 auth 帧失败:${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
       }
     }
   }
@@ -280,15 +322,17 @@ export class RemoteTransport {
     // command 帧从 daemon 发来?daemon 不发 command 给 client,忽略。
   }
 
-  private handleClose(): void {
+  private handleClose(ev: { code: number; reason: string }): void {
     if (this.closed || this.manuallyClosed) return;
     // 清理握手超时定时器(无论哪条路径都不再需要)
     if (this.authTimer) { clearTimeout(this.authTimer); this.authTimer = null; }
-    // 握手前断(clientId 还没拿到 + 不在重连)= 初始化失败,不重连
+    // 握手前断(clientId 还没拿到 + 不在重连)= 初始化失败,不重连。
+    // 按 close code/opened 细分原因(错误页据此给针对性诊断)。
     if (this.clientId === null && !this.reconnecting) {
       this.closed = true;
-      this.failReady(new Error('[remote-transport] 连接在握手前关闭'));
-      this.rejectPending('连接在握手前关闭');
+      const err = this.classifyHandshakeFailure(ev);
+      this.failReady(err);
+      this.rejectPending(err.message);
       return;
     }
     // 已认证或重连中断 → 清 pending,进入/继续重连循环
@@ -307,6 +351,40 @@ export class RemoteTransport {
       this.opts.onReconnectStart?.();
     }
     this.scheduleReconnect();
+  }
+
+  /**
+   * 握手前失败归类:根据 close code / 是否 open 过,推断失败阶段。
+   * daemon 认证:4003=token 错,4001=等首帧超时(daemon 视角)。浏览器底层 TCP
+   * 错误一律 close 1006(不暴露 syscall code),用 opened 区分 TCP 层 vs WS 层。
+   */
+  private classifyHandshakeFailure(ev: { code: number; reason: string }): ConnectError {
+    // daemon 明确拒认证(token 不匹配)
+    if (ev.code === 4003) {
+      return new ConnectError(
+        ConnectErrorCode.AUTH_REJECTED,
+        `[remote-transport] 认证被拒:token 不匹配${ev.reason ? `(daemon:${ev.reason})` : ''}`,
+      );
+    }
+    // daemon 等首帧超时(client 发的 auth 没到 / daemon 版本不兼容)
+    if (ev.code === 4001) {
+      return new ConnectError(
+        ConnectErrorCode.AUTH_TIMEOUT,
+        `[remote-transport] daemon 等握手首帧超时(close 4001)`,
+      );
+    }
+    // open 都没触发 = TCP 层就没连上(server 没起 / 防火墙 / WG 路由)
+    if (!this.opened) {
+      return new ConnectError(
+        ConnectErrorCode.TCP_UNREACHABLE,
+        `[remote-transport] TCP 连接失败(close ${ev.code}):目标不可达,server 可能未启动或被防火墙阻挡`,
+      );
+    }
+    // open 过但握手前断(非 4001/4003)= WS 层问题(目标不是 Marina daemon / 协议不对)
+    return new ConnectError(
+      ConnectErrorCode.WS_HANDSHAKE,
+      `[remote-transport] WS 握手失败(close ${ev.code}):目标可能不是 Marina daemon`,
+    );
   }
 
   /**
@@ -334,7 +412,10 @@ export class RemoteTransport {
     // ws error 通常伴随 close;这里只在首次握手前失败时 failReady,
     // 重连中/已认证的错误由 handleClose 处理(避免重复触发)。
     if (this.clientId === null && !this.reconnecting) {
-      this.failReady(e instanceof Error ? e : new Error('[remote-transport] ws error'));
+      // 浏览器 WS 的 error event 不含 syscall code(底层 RST/超时都抽象成 close 1006)。
+      // 真正的分类在 handleClose.classifyHandshakeFailure 里做(用 opened 区分)。
+      // 这里只记日志,避免抢在 close 之前给错结论。
+      void e;
     }
   }
 

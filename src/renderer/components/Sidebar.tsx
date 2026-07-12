@@ -118,8 +118,41 @@ export function Sidebar(): JSX.Element {
   const dispatch = useAppDispatch();
   const toast = useToast();
   const modal = useModal();
+  const ctxMenu = useContextMenuApi();
   const { t } = useTranslation();
   const [dragOver, setDragOver] = useState(false);
+
+  // 远程连接入口(footer 按钮):点击展开已保存的远程电脑菜单,选中开新窗口连过去。
+  // 0 台引导去设置;未设密码(hasToken=false)灰显。
+  const handleRemoteEntry = (e: React.MouseEvent<HTMLButtonElement>): void => {
+    const profiles = state.remoteBackendProfiles;
+    if (profiles.length === 0) {
+      toast.push({ kind: 'info', message: '请先在 设置 → 远程连接 添加一台电脑' });
+      return;
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    ctxMenu.open({
+      x: rect.left,
+      y: rect.top,
+      items: profiles.map((p) => ({
+        label: `${p.displayName} (${p.host})`,
+        disabled: !p.hasToken,
+        ...(p.hasToken ? {} : { hint: '未设密码(去设置填写)' }),
+        onSelect: async () => {
+          try {
+            await window.api.invoke(COMMAND_CHANNELS.WINDOW_CREATE, {
+              backendProfileId: p.id,
+            });
+          } catch (err) {
+            toast.push({
+              kind: 'error',
+              message: `打开远程窗口失败:${err instanceof Error ? err.message : String(err)}`,
+            });
+          }
+        },
+      })),
+    });
+  };
   const [collapsedCategoryIds, setCollapsedCategoryIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -507,6 +540,15 @@ export function Sidebar(): JSX.Element {
         />
       </div>
       <div className="sidebar-footer">
+        <button
+          type="button"
+          className="settings-entry"
+          onClick={handleRemoteEntry}
+          title="连接到其他电脑"
+        >
+          <Icon name="server" size={14} />
+          <span>远程</span>
+        </button>
         <button
           type="button"
           className="settings-entry"

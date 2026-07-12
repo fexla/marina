@@ -12,7 +12,7 @@ function makeFakeWs(): WSLike & {
   sent: string[];
   fireOpen(): void;
   fireMessage(data: unknown): void;
-  fireClose(): void;
+  fireClose(code?: number, reason?: string): void;
   isOpen: boolean;
 } {
   const sent: string[] = [];
@@ -43,9 +43,9 @@ function makeFakeWs(): WSLike & {
       const d = typeof data === 'string' ? data : JSON.stringify(data);
       ws.onmessage?.({ data: d });
     },
-    fireClose() {
+    fireClose(code = 1006, reason = '') {
       ws.readyState = 3;
-      ws.onclose?.();
+      ws.onclose?.({ code, reason });
     },
   });
 }
@@ -86,11 +86,27 @@ describe('RemoteTransport — 握手', () => {
     await expect(transport.ready).rejects.toThrow(/握手超时/);
   });
 
-  it('连接在握手前关闭 → ready reject', async () => {
+  it('open 后 close(1006)→ WS_HANDSHAKE', async () => {
     const { fake, transport } = setup();
     fake.fireOpen();
-    fake.fireClose();
-    await expect(transport.ready).rejects.toThrow(/连接在握手前关闭/);
+    fake.fireClose(); // 默认 1006
+    await expect(transport.ready).rejects.toMatchObject({ code: 'WS_HANDSHAKE' });
+  });
+
+  it('open 都没触发 close(1006)→ TCP_UNREACHABLE', async () => {
+    const { fake, transport } = setup();
+    // 不 fireOpen 直接 close → 没 open 过 = TCP 层问题
+    fake.fireClose(1006);
+    await expect(transport.ready).rejects.toMatchObject({ code: 'TCP_UNREACHABLE' });
+    transport.close();
+  });
+
+  it('close 4003 → AUTH_REJECTED(token 错)', async () => {
+    const { fake, transport } = setup();
+    fake.fireOpen();
+    fake.fireClose(4003, 'token mismatch');
+    await expect(transport.ready).rejects.toMatchObject({ code: 'AUTH_REJECTED' });
+    transport.close();
   });
 });
 
