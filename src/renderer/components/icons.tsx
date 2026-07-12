@@ -18,6 +18,7 @@ import {
   Atom,
   Bookmark,
   Box,
+  ChevronDown,
   ChevronRight,
   CircleDot,
   Clipboard,
@@ -26,6 +27,8 @@ import {
   Database,
   Eraser,
   ExternalLink,
+  File,
+  Folder,
   GitBranch,
   History,
   Info,
@@ -85,8 +88,11 @@ export const Icons = {
   settings: Settings,
   alertTriangle: AlertTriangle,
   externalLink: ExternalLink,
+  chevronDown: ChevronDown,
   chevronRight: ChevronRight,
   circleDot: CircleDot,
+  file: File,
+  folder: Folder,
   close: X,
   plus: Plus,
 
@@ -95,12 +101,12 @@ export const Icons = {
   // (🐚🤖⚡📦 → 矢量图标),至少视觉上一致、矢量化、随主题色变。
   templateShell: Terminal,
   templateClaudeCode: Sparkles, // 与 Claude 品牌星形相近
-  templateCodex: Atom,           // OpenAI 圆轨道意象
-  templateOpenCode: Box,         // 与 OpenCode 立方体 logo 相近
+  templateCodex: Atom, // OpenAI 圆轨道意象
+  templateOpenCode: Box, // 与 OpenCode 立方体 logo 相近
 
   // shell 图标:不同 shell 用不同 lucide 区分
-  shellPwsh: SquareTerminal,         // PowerShell 7,带框 — 与 Windows 11 PowerShell 图标神似
-  shellPowershell: TerminalSquare,   // Windows PowerShell 5.1
+  shellPwsh: SquareTerminal, // PowerShell 7,带框 — 与 Windows 11 PowerShell 图标神似
+  shellPowershell: TerminalSquare, // Windows PowerShell 5.1
   shellCmd: Terminal,
   shellGitBash: GitBranch,
 } as const;

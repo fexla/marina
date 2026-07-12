@@ -39,6 +39,7 @@ import {
   setDaemonPassword,
 } from './daemon-credentials';
 import { FilePanelService } from './file-panel-service';
+import { FileTreeService } from './file-tree-service';
 import { SessionWorkspaceManager } from './session-workspace-manager';
 import { SkillInstaller } from './skill-installer';
 import { MarkdownThemeManager } from './markdown-theme-manager';
@@ -234,6 +235,14 @@ function bootstrap(): void {
       filePanelService,
       workspaceManager: sessionWorkspaceManager,
     },
+  );
+  // ADR-016:文件树仅把 live owner session 的 currentCwd 与受管 workspace
+  // 暴露为两条只读根。服务不持有路径缓存，每个请求都回查 SessionManager /
+  // SessionWorkspaceManager，避免 cwd 变化、接管或 session 销毁后的陈旧授权。
+  const fileTreeService = new FileTreeService(
+    sessionManager,
+    sessionWorkspaceManager,
+    filePanelService,
   );
   const trayManager = new TrayManager(windowManager, sessionManager, settingsManager);
 
@@ -493,6 +502,7 @@ function bootstrap(): void {
         knownHostsManager,
         templatesManager,
         filePanelService,
+        fileTreeService,
         skillInstaller,
         markdownThemeManager,
         aiClient,

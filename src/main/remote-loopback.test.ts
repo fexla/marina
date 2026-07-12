@@ -134,7 +134,7 @@ describe('loopback: RemoteTransport ↔ RemoteDaemon(真实 WS)', () => {
 
     const result = await t.invoke(COMMAND_CHANNELS.SESSION_UPDATE_UI_LAYOUT, {
       sessionId: 'session-layout-test',
-      patch: { filePanel: { width: 560, collapsed: true } },
+      patch: { docks: { right: { width: 560, collapsed: true } } },
     });
 
     expect(result).toEqual({

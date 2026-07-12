@@ -16,6 +16,8 @@ import type {
   AppSnapshot,
   Bookmark,
   FileKind,
+  FileTreeEntry,
+  FileTreeRootId,
   MdTheme,
   OpenedFile,
   PathTree,
@@ -192,6 +194,14 @@ export const COMMAND_CHANNELS = {
   FILE_PANEL_READ: 'cmd:file-panel:read',
   /** 读 markdown 里的本地图片为 dataUrl(相对 md 文件目录解析,绕开 CSP 对 file:// 的禁) */
   FILE_PANEL_READ_IMAGE: 'cmd:file-panel:read-image',
+
+  // File tree 域 —— active owner session 的受限双根只读导航(ADR-016)
+  /** 获取 currentCwd / MARINA_WORKSPACE 两个逻辑根的可用性；不返回绝对路径。 */
+  FILE_TREE_GET_ROOTS: 'cmd:file-tree:get-roots',
+  /** 懒加载一个受限根下的直接子项；不递归、不接受绝对路径。 */
+  FILE_TREE_LIST_DIRECTORY: 'cmd:file-tree:list-directory',
+  /** 受限校验后打开树中选择的文件，返回既有 FilePanel 快照。 */
+  FILE_TREE_OPEN_FILE: 'cmd:file-tree:open-file',
 
   // Markdown 主题域 —— Typora 式可扩展:用户往 userData/markdown-themes/ 放 .css
   // 即多一个 markdown 面板风格(见 src/main/markdown-theme-manager.ts)。
@@ -1304,6 +1314,46 @@ export interface FilePanelUpdatedPayload {
 
 /** ReadFileResponse 的 kind 与 FileKind 的交集(排除 web,本轮不支持)。 */
 export type ReadableFileKind = Exclude<FileKind, 'unknown'>;
+
+// ──────────────────────────────────────────────────────────────────
+// File tree 域（ADR-016：当前 owner session 的双根只读导航）
+// ──────────────────────────────────────────────────────────────────
+
+export interface GetFileTreeRootsPayload {
+  sessionId: string;
+}
+
+export interface FileTreeRootInfo {
+  id: FileTreeRootId;
+  label: string;
+  available: boolean;
+  reason?: string;
+}
+
+export interface GetFileTreeRootsResponse {
+  roots: FileTreeRootInfo[];
+}
+
+export interface ListFileTreeDirectoryPayload {
+  sessionId: string;
+  rootId: FileTreeRootId;
+  /** 相对 root 的路径；根目录用空字符串，绝对路径和 `..` 由 main 拒绝。 */
+  relativePath?: string;
+}
+
+export interface ListFileTreeDirectoryResponse {
+  rootId: FileTreeRootId;
+  relativePath: string;
+  entries: FileTreeEntry[];
+  /** true 表示为避免大目录撑爆 IPC，本次仅返回前 500 个可访问直接子项。 */
+  truncated: boolean;
+}
+
+export interface OpenFileTreeFilePayload {
+  sessionId: string;
+  rootId: FileTreeRootId;
+  relativePath: string;
+}
 
 // ──────────────────────────────────────────────────────────────────
 // Markdown 主题域 (Typora 式可扩展面板风格)

@@ -233,6 +233,17 @@ function makeStubs() {
     on: vi.fn(),
   };
 
+  const fileTreeService = {
+    getRoots: vi.fn(async () => []),
+    listDirectory: vi.fn(async () => ({
+      rootId: 'session-cwd',
+      relativePath: '',
+      entries: [],
+      truncated: false,
+    })),
+    openFile: vi.fn(async () => ({ files: [], activePath: null })),
+  };
+
   return {
     createCalls,
     deps: {
@@ -246,6 +257,7 @@ function makeStubs() {
       // 它的 on('filePanelUpdated') / onSessionDestroyed,以及 registerFilePanelHandlers
       // 注册的 5 个方法。EventEmitter + 这些方法在不 start 时都能正常工作。
       filePanelService: new FilePanelService(),
+      fileTreeService: fileTreeService as unknown,
       skillInstaller: {
         install: vi.fn(async () => ({ installed: [], conflicts: [] })),
       } as unknown,
@@ -262,6 +274,7 @@ function makeStubs() {
       settingsManager,
       windowManager,
       sshProfileManager,
+      fileTreeService,
     },
   };
 }
@@ -492,6 +505,32 @@ describe('IPC SESSION_FOCUS_OWNER', () => {
       expect.objectContaining({
         payload: { reason: 'session-click', selectSessionId: session.id },
       }),
+    );
+  });
+});
+
+describe('IPC FILE_TREE', () => {
+  it('将 envelope windowId 作为 requesterId 传给受限文件树服务', async () => {
+    const { installIpcLayer } = await freshIpc();
+    const { deps, stubs } = makeStubs();
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    const handler = handlers.get(COMMAND_CHANNELS.FILE_TREE_LIST_DIRECTORY);
+    expect(handler).toBeTruthy();
+    await handler!(
+      {},
+      {
+        windowId: 'owner-client',
+        requestId: 'file-tree-1',
+        payload: { sessionId: 'session-1', rootId: 'managed-workspace', relativePath: 'docs' },
+      },
+    );
+
+    expect(stubs.fileTreeService.listDirectory).toHaveBeenCalledWith(
+      'session-1',
+      'owner-client',
+      'managed-workspace',
+      'docs',
     );
   });
 });

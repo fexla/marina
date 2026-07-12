@@ -48,6 +48,8 @@ import type {
   SessionStateChangedPayload,
 } from '@shared/protocol';
 import type {
+  DockLayoutState,
+  LayoutNode,
   SessionInfo,
   SessionUiLayout,
   SessionUiLayoutPatch,
@@ -111,13 +113,47 @@ const CWD_GRACE_MS = 5000;
  * 新 session 的临时 UI 布局初值。每次写入 SessionInfo 时都 clone，禁止不同
  * ManagedSession 共享可变对象；后续终端专属 UI 区块统一在此处添加默认值。
  */
-const DEFAULT_SESSION_UI_LAYOUT: SessionUiLayout = {
-  filePanel: { width: 440, collapsed: false },
+/**
+ * Dock 几何白名单。它是 main 端的安全边界：renderer 只能修改明确注册 dock 的
+ * 标量几何态，不能借 SessionUiLayoutPatch 注入任意 dock 或布局树。
+ *
+ * 宽度属于 dock，不属于其中的 file-tree/file-panel 页面；切换页面必须保持同一
+ * 几何，见 ADR-016。main 不依赖 React registry，仍保持 IPC 校验权威。
+ */
+const DOCK_LAYOUT_RULES: Readonly<Record<string, { minWidth: number; maxWidth: number }>> = {
+  right: { minWidth: 280, maxWidth: 900 },
+};
+
+/** 产品规则生成的浅层布局树。renderer 只读；拖拽改树没有 IPC 入口(ADR-016)。 */
+function createDefaultSessionLayoutTree(): LayoutNode {
+  return {
+    kind: 'split',
+    direction: 'horizontal',
+    children: [
+      { kind: 'leaf', panelId: 'terminal' },
+      {
+        kind: 'stack',
+        defaultActivePanelId: 'file-tree',
+        children: [
+          { kind: 'leaf', panelId: 'file-tree' },
+          { kind: 'leaf', panelId: 'file-panel' },
+        ],
+      },
+    ],
+  };
+}
+
+const DEFAULT_DOCK_LAYOUTS: Readonly<Record<string, DockLayoutState>> = {
+  right: { width: 440, collapsed: false },
 };
 
 function createDefaultSessionUiLayout(): SessionUiLayout {
   return {
-    filePanel: { ...DEFAULT_SESSION_UI_LAYOUT.filePanel },
+    version: 2,
+    tree: createDefaultSessionLayoutTree(),
+    docks: Object.fromEntries(
+      Object.entries(DEFAULT_DOCK_LAYOUTS).map(([dockId, state]) => [dockId, { ...state }]),
+    ),
   };
 }
 const CWD_POLL_INTERVAL_MS = 5000;
@@ -1014,55 +1050,73 @@ export class SessionManager extends EventEmitter {
   updateUiLayout(sessionId: string, patch: SessionUiLayoutPatch): void {
     const managed = this.sessions.get(sessionId);
     if (!managed) return;
-    if (
-      !patch ||
-      typeof patch !== 'object' ||
-      !patch.filePanel ||
-      typeof patch.filePanel !== 'object'
-    ) {
+    if (!patch || typeof patch !== 'object' || !patch.docks || typeof patch.docks !== 'object') {
       throw new SessionManagerError(
         'InvalidUiLayout',
-        `sessionId="${sessionId}" 的 UI 布局增量无效。至少需要 filePanel 对象，` +
-          '可更新 width(280-900) 或 collapsed(boolean)。',
+        `sessionId="${sessionId}" 的 UI 布局增量无效。至少需要 docks 对象；` +
+          '仅可更新已注册 dock 的 width 或 collapsed，不能修改布局树。',
+      );
+    }
+
+    const entries = Object.entries(patch.docks);
+    if (entries.length === 0) {
+      throw new SessionManagerError(
+        'InvalidUiLayout',
+        `sessionId="${sessionId}" 的 docks 不能为空。请提交至少一个已注册 dock 的几何态。`,
       );
     }
 
     const current = managed.info.uiLayout ?? createDefaultSessionUiLayout();
     const next: SessionUiLayout = {
-      filePanel: { ...current.filePanel },
+      version: current.version,
+      tree: current.tree,
+      docks: Object.fromEntries(
+        Object.entries(current.docks).map(([dockId, state]) => [dockId, { ...state }]),
+      ),
     };
-    const filePanelPatch = patch.filePanel;
-    if (filePanelPatch.width !== undefined) {
-      if (
-        typeof filePanelPatch.width !== 'number' ||
-        !Number.isFinite(filePanelPatch.width) ||
-        filePanelPatch.width < 280 ||
-        filePanelPatch.width > 900
-      ) {
+    let changed = false;
+
+    for (const [dockId, dockPatch] of entries) {
+      const rule = DOCK_LAYOUT_RULES[dockId];
+      const currentDock = next.docks[dockId];
+      if (!rule || !currentDock || !dockPatch || typeof dockPatch !== 'object') {
         throw new SessionManagerError(
           'InvalidUiLayout',
-          `sessionId="${sessionId}" 的 filePanel.width 必须是 [280, 900] 内的有限数字，` +
-            `实际: ${String(filePanelPatch.width)}。`,
+          `sessionId="${sessionId}" 的 dockId="${dockId}" 未注册或增量不是对象。` +
+            `允许的 dock：${Object.keys(DOCK_LAYOUT_RULES).join(', ')}。`,
         );
       }
-      next.filePanel.width = Math.round(filePanelPatch.width);
-    }
-    if (filePanelPatch.collapsed !== undefined) {
-      if (typeof filePanelPatch.collapsed !== 'boolean') {
-        throw new SessionManagerError(
-          'InvalidUiLayout',
-          `sessionId="${sessionId}" 的 filePanel.collapsed 必须是 boolean，` +
-            `实际: ${typeof filePanelPatch.collapsed}。`,
-        );
+      if (dockPatch.width !== undefined) {
+        if (
+          typeof dockPatch.width !== 'number' ||
+          !Number.isFinite(dockPatch.width) ||
+          dockPatch.width < rule.minWidth ||
+          dockPatch.width > rule.maxWidth
+        ) {
+          throw new SessionManagerError(
+            'InvalidUiLayout',
+            `sessionId="${sessionId}" 的 ${dockId}.width 必须是 [${rule.minWidth}, ${rule.maxWidth}] ` +
+              `内的有限数字，实际: ${String(dockPatch.width)}。`,
+          );
+        }
+        const width = Math.round(dockPatch.width);
+        changed ||= width !== currentDock.width;
+        currentDock.width = width;
       }
-      next.filePanel.collapsed = filePanelPatch.collapsed;
+      if (dockPatch.collapsed !== undefined) {
+        if (typeof dockPatch.collapsed !== 'boolean') {
+          throw new SessionManagerError(
+            'InvalidUiLayout',
+            `sessionId="${sessionId}" 的 ${dockId}.collapsed 必须是 boolean，` +
+              `实际: ${typeof dockPatch.collapsed}。`,
+          );
+        }
+        changed ||= dockPatch.collapsed !== currentDock.collapsed;
+        currentDock.collapsed = dockPatch.collapsed;
+      }
     }
-    if (
-      next.filePanel.width === current.filePanel.width &&
-      next.filePanel.collapsed === current.filePanel.collapsed
-    ) {
-      return;
-    }
+
+    if (!changed) return;
     managed.info.uiLayout = next;
     this.emitStateChanged(managed, { uiLayout: next });
   }

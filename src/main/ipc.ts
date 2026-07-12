@@ -24,6 +24,7 @@
 import { app, BrowserWindow, clipboard, ipcMain, dialog, safeStorage, shell } from 'electron';
 import { getBuildType } from './build-type';
 import type { FilePanelService } from './file-panel-service';
+import type { FileTreeService } from './file-tree-service';
 import type { SkillInstaller } from './skill-installer';
 import type { MarkdownThemeManager } from './markdown-theme-manager';
 import {
@@ -66,6 +67,11 @@ import {
   type FilePanelActionPayload,
   type FilePanelSnapshot,
   type FilePanelUpdatedPayload,
+  type GetFileTreeRootsPayload,
+  type GetFileTreeRootsResponse,
+  type ListFileTreeDirectoryPayload,
+  type ListFileTreeDirectoryResponse,
+  type OpenFileTreeFilePayload,
   type GetOpenFilesPayload,
   type ReadFilePayload,
   type ReadImagePayload,
@@ -184,6 +190,8 @@ export interface IpcLayerDeps {
    * 生产必填;ipc 层本身不单测(AGENTS.md 5.4 转发逻辑测在 file-panel-service)。
    */
   filePanelService: FilePanelService;
+  /** ADR-016 受限文件树服务：仅 active owner session 的 cwd/workspace 双根只读导航。 */
+  fileTreeService: FileTreeService;
   /** 内置 show-in-marina skill 的项目级安装服务。 */
   skillInstaller: SkillInstaller;
   /**
@@ -240,6 +248,7 @@ export function installIpcLayer(deps: IpcLayerDeps): void {
 
   registerCommandHandlers(deps);
   registerFilePanelHandlers(deps);
+  registerFileTreeHandlers(deps);
   registerMdThemeHandlers(deps);
   wireEventBroadcasts(deps);
 }
@@ -1641,6 +1650,52 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
         envelope.payload.sessionId,
         envelope.payload.mdPath,
         envelope.payload.src,
+      ),
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────
+// File tree handlers（ADR-016 双根只读导航）
+//
+// FileTreeService 在每个请求中同时校验 session owner 与 realpath 根包含关系；
+// handler 只负责从 CommandEnvelope 传 client/window id，不能在这里“图省事”
+// 改成无 owner 的普通 fs API。
+// ──────────────────────────────────────────────────────────────────
+function registerFileTreeHandlers(deps: IpcLayerDeps): void {
+  const { fileTreeService } = deps;
+
+  registerHandle(
+    COMMAND_CHANNELS.FILE_TREE_GET_ROOTS,
+    async (
+      _e,
+      envelope: CommandEnvelope<GetFileTreeRootsPayload>,
+    ): Promise<GetFileTreeRootsResponse> => ({
+      roots: await fileTreeService.getRoots(envelope.payload.sessionId, envelope.windowId),
+    }),
+  );
+
+  registerHandle(
+    COMMAND_CHANNELS.FILE_TREE_LIST_DIRECTORY,
+    async (
+      _e,
+      envelope: CommandEnvelope<ListFileTreeDirectoryPayload>,
+    ): Promise<ListFileTreeDirectoryResponse> =>
+      fileTreeService.listDirectory(
+        envelope.payload.sessionId,
+        envelope.windowId,
+        envelope.payload.rootId,
+        envelope.payload.relativePath ?? '',
+      ),
+  );
+
+  registerHandle(
+    COMMAND_CHANNELS.FILE_TREE_OPEN_FILE,
+    async (_e, envelope: CommandEnvelope<OpenFileTreeFilePayload>): Promise<FilePanelSnapshot> =>
+      fileTreeService.openFile(
+        envelope.payload.sessionId,
+        envelope.windowId,
+        envelope.payload.rootId,
+        envelope.payload.relativePath,
       ),
   );
 }

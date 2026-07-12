@@ -99,10 +99,13 @@ describe('command routing (每窗口后端架构边界)', () => {
     expect(getCommandRouting(COMMAND_CHANNELS.APP_GET_SNAPSHOT)).toBe('backend-data');
   });
 
-  it('文件面板命令路由为 backend-data(session 在 daemon 上,文件操作走 daemon)', () => {
+  it('文件面板/文件树命令路由为 backend-data(session 与受限文件根均在 daemon 上)', () => {
     expect(getCommandRouting(COMMAND_CHANNELS.FILE_PANEL_GET_OPEN_FILES)).toBe('backend-data');
     expect(getCommandRouting(COMMAND_CHANNELS.FILE_PANEL_READ)).toBe('backend-data');
     expect(getCommandRouting(COMMAND_CHANNELS.FILE_PANEL_OPEN)).toBe('backend-data');
+    expect(getCommandRouting(COMMAND_CHANNELS.FILE_TREE_GET_ROOTS)).toBe('backend-data');
+    expect(getCommandRouting(COMMAND_CHANNELS.FILE_TREE_LIST_DIRECTORY)).toBe('backend-data');
+    expect(getCommandRouting(COMMAND_CHANNELS.FILE_TREE_OPEN_FILE)).toBe('backend-data');
   });
 });
 

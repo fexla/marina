@@ -1474,25 +1474,56 @@ html[data-maximized='true'] .app-root.with-shell {
   position: relative;
 }
 
-/* ── 终端侧边文件面板 (MARINA_SERVICE 远程调用) ───────────────────
- * .terminal-area 是 TabBar 之下的行容器:左 = 终端(flex:1),右 = .file-panel
- * (固定宽,可拖边缘改宽,可折叠成竖条)。切终端时父级换 key 重挂,内容跟着切。
+/* ── 受控主工作区布局（ADR-016） ─────────────────────────────────
+ * LayoutNode 能表达 split / stack / leaf，但当前产品规则固定为终端主区 + 右 dock。
+ * 不提供用户拖放改树；这里的 resize 只更新当前 session 面板的受校验标量状态。
  */
 .terminal-area {
   flex: 1 1 0;
   display: flex;
-  flex-direction: row;
+  min-width: 0;
   min-height: 0;
 }
 
-/* 终端 / 空状态占满剩余宽度;面板固定宽(flex:0 0 auto,宽由 inline style) */
-.terminal-area > :first-child {
+.terminal-area > * {
   flex: 1 1 0;
   min-width: 0;
   min-height: 0;
 }
 
-.file-panel {
+.layout-host,
+.layout-split,
+.layout-terminal-leaf {
+  min-width: 0;
+  min-height: 0;
+}
+
+.layout-host,
+.layout-split {
+  flex: 1 1 0;
+  display: flex;
+}
+
+.layout-split-horizontal {
+  flex-direction: row;
+}
+
+.layout-split-vertical {
+  flex-direction: column;
+}
+
+.layout-terminal-leaf {
+  flex: 1 1 0;
+  display: flex;
+}
+
+.layout-terminal-leaf > * {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.panel-dock {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
@@ -1503,13 +1534,12 @@ html[data-maximized='true'] .app-root.with-shell {
   overflow: hidden;
 }
 
-/* 折叠态:只剩窄竖条 + 展开按钮 */
-.file-panel-collapsed {
+.panel-dock-collapsed {
   width: 22px;
   border-left: 1px solid var(--color-bg-elevated, #f0f);
 }
 
-.file-panel-expand-btn {
+.panel-dock-expand-button {
   width: 22px;
   height: 100%;
   border: none;
@@ -1519,14 +1549,13 @@ html[data-maximized='true'] .app-root.with-shell {
   font-size: 16px;
 }
 
-.file-panel-expand-btn:hover {
+.panel-dock-expand-button:hover {
   color: var(--color-text-primary, #f0f);
   background-color: var(--color-bg-elevated, #f0f);
 }
 
-/* 左边缘 resize handle:镜像 .sidebar-resize-handle。绝对定位贴左、跨边界,
- * 命中区 6px(手感),视觉高亮 1px。hover/active 显浅线作 affordance。 */
-.file-panel-resize-handle {
+/* 左边缘 resize handle：固定 dock 向左扩张，鼠标移动仅在 mouseup 时提交 IPC。 */
+.panel-dock-resize-handle {
   position: absolute;
   left: -3px;
   top: 0;
@@ -1536,42 +1565,73 @@ html[data-maximized='true'] .app-root.with-shell {
   z-index: 5;
 }
 
-.file-panel-resize-handle:hover,
-.file-panel-resize-handle:active {
+.panel-dock-resize-handle:hover,
+.panel-dock-resize-handle:active {
   background-color: var(--color-accent-special, #f0f);
   opacity: 0.4;
 }
 
-.file-panel-header {
+.panel-dock-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 6px 8px;
+  min-width: 0;
   border-bottom: 1px solid var(--color-bg-elevated, #f0f);
   flex: 0 0 auto;
 }
 
-.file-panel-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--color-text-primary, #f0f);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+.panel-dock-tabs {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  overflow-x: auto;
 }
 
-.file-panel-collapse-btn {
+.panel-dock-tab,
+.panel-dock-collapse-button {
   border: none;
   background: transparent;
   color: var(--color-text-muted, #f0f);
   cursor: pointer;
-  font-size: 16px;
-  padding: 2px 6px;
-  border-radius: 4px;
+  font-size: 12px;
 }
 
-.file-panel-collapse-btn:hover {
+.panel-dock-tab {
+  flex: 0 0 auto;
+  padding: 7px 8px 6px;
+  border-bottom: 2px solid transparent;
+}
+
+.panel-dock-tab:hover,
+.panel-dock-tab.active {
   color: var(--color-text-primary, #f0f);
   background-color: var(--color-bg-elevated, #f0f);
+}
+
+.panel-dock-tab.active {
+  border-bottom-color: var(--color-accent-special, #f0f);
+}
+
+.panel-dock-collapse-button {
+  padding: 5px 7px;
+}
+
+.panel-dock-collapse-button:hover {
+  color: var(--color-text-primary, #f0f);
+  background-color: var(--color-bg-elevated, #f0f);
+}
+
+.panel-dock-body,
+.file-panel-content,
+.file-tree-panel {
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+}
+
+.panel-dock-body,
+.file-panel-content {
+  display: flex;
+  flex-direction: column;
 }
 
 .file-panel-tabs {
@@ -1667,6 +1727,95 @@ html[data-maximized='true'] .app-root.with-shell {
   padding: 0;
 }
 
+/* ── FileTreePanel：固定双根、只读、按需展开 ─────────────────────── */
+.file-tree-panel {
+  overflow: auto;
+  padding: 5px 0 8px;
+  font-size: 12px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.file-tree-root {
+  margin: 0;
+}
+
+.file-tree-root-button,
+.file-tree-entry-button {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-primary, #f0f);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.file-tree-root-button {
+  padding: 5px 8px;
+  font-weight: 600;
+}
+
+.file-tree-root-button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.file-tree-entry-button {
+  padding: 3px 8px 3px 14px;
+}
+
+.file-tree-root-button:not(:disabled):hover,
+.file-tree-entry-button:hover {
+  background-color: var(--color-bg-elevated, #f0f);
+}
+
+.file-tree-entry .file-tree-entry {
+  margin-left: 14px;
+}
+
+.file-tree-entry-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-tree-leaf-spacer {
+  display: inline-block;
+  width: 12px;
+  flex: 0 0 12px;
+}
+
+.file-tree-indent,
+.file-tree-unavailable {
+  margin: 0;
+  padding: 3px 8px 4px 38px;
+  color: var(--color-text-muted, #f0f);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.file-tree-error {
+  color: var(--color-danger, #f0f);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.file-tree-loading,
+.file-tree-empty,
+.file-tree-truncated {
+  color: var(--color-text-muted, #f0f);
+  font-size: 11px;
+}
+
+.file-tree-truncated {
+  color: var(--color-warning, #f0f);
+}
+
 .file-panel-placeholder,
 .file-viewer-loading,
 .file-viewer-error {
@@ -1709,7 +1858,7 @@ html[data-maximized='true'] .app-root.with-shell {
  * 输出包在 .markdown-body 里(样式来自 github-markdown-css 包)。这里去掉它
  * 自带的白/黑底、16px 大字号、24px padding,只留 GitHub 的版式与配色,让它融
  * 进面板背景。明暗由 MarkdownViewer 的 color-scheme 控制,不跟随系统。 */
-.file-panel .markdown-body {
+.panel-dock .markdown-body {
   /* 撑满外层 body(其 padding 已被 :has 规则在本元素存在时清零),让自带背景
    * 覆盖整个面板内容区。padding 给文档内边距(背景覆盖到 padding 边)。
    * box-sizing border-box 让 min-height:100% 含 padding,短内容也撑满不溢出
@@ -1728,12 +1877,12 @@ html[data-maximized='true'] .app-root.with-shell {
  * 直接在 class 上设 GitHub 的核心变量 + 容器背景/字色。变量供 .markdown-body
  * 的子元素(table th / pre / code / a)消费,使它们与容器背景搭,不再出现"深紫
  * 面板上白表格黑字"。值复制自 github-markdown-css 的 light/dark 块。
- * 用 .file-panel .markdown-body.md-github-* 三类选择器抬高特异性,压过 github
+ * 用 .panel-dock .markdown-body.md-github-* 三类选择器抬高特异性,压过 github
  * css 自带的 .markdown-body(单类)。 */
 /* stylelint-disable custom-property-pattern, custom-property-empty-line-before --
  * github-markdown-css 包用 camelCase 变量名(--bgColor-default 等),必须同名
  * 才能覆盖,无法改成项目的 kebab-case。仅这两个规则块豁免。 */
-.file-panel .markdown-body.md-github-light {
+.panel-dock .markdown-body.md-github-light {
   color-scheme: light;
   background-color: #ffffff;
   color: #1f2328;
@@ -1746,7 +1895,7 @@ html[data-maximized='true'] .app-root.with-shell {
   --fgColor-accent: #0969da;
 }
 
-.file-panel .markdown-body.md-github-dark {
+.panel-dock .markdown-body.md-github-dark {
   color-scheme: dark;
   background-color: #0d1117;
   color: #f0f6fc;

@@ -37,7 +37,7 @@ import {
   useAppState,
 } from '../store';
 import { TerminalView } from './TerminalView';
-import { FilePanel } from './file-panel/FilePanel';
+import { LayoutHost } from './layout/LayoutHost';
 import { focusTerminalDom } from '../focus';
 import { Icon, type IconName } from './icons';
 import { TemplateIcon } from './TemplateIcon';
@@ -185,21 +185,19 @@ export function MainPane(): JSX.Element {
       )}
       <div className="terminal-area">
         {displayable ? (
-          <TerminalView
-            // 用 sessionId 作 key,确保切换时彻底重建 xterm 实例
-            key={displayable.id}
-            session={displayable}
-          />
+          !state.simpleMode && state.settings.filePanel?.enabled ? (
+            <LayoutHost
+              // LayoutHost 按 session 的 main 端 tree 渲染终端主区 + 固定右 dock。
+              // sessionId 改变时整体重挂，避免 FileTree/FilePanel 暂态串到新 terminal。
+              key={`layout-${displayable.id}`}
+              session={displayable}
+              terminal={<TerminalView key={displayable.id} session={displayable} />}
+            />
+          ) : (
+            <TerminalView key={displayable.id} session={displayable} />
+          )
         ) : (
           <EmptyPathState pathId={state.selectedPathId} />
-        )}
-        {/*
-          终端侧边文件面板:绑定当前 displayable 终端,切终端时 key 变 → 重挂,
-          内容自动跟着切。条件:有终端 + 非简易模式 + settings.filePanel.enabled。
-          SSH 终端也渲染面板,但远程程序到不了本机 MARINA_SERVICE,实际无文件。
-        */}
-        {displayable && !state.simpleMode && state.settings.filePanel?.enabled && (
-          <FilePanel key={`fp-${displayable.id}`} sessionId={displayable.id} />
         )}
       </div>
     </main>

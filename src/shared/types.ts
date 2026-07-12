@@ -189,18 +189,45 @@ export interface WindowInfo {
  * 放在 SessionInfo 使 owner 切换/跨窗口接管时能保持同一个终端的呈现方式；后续
  * 终端专属 UI 元素应在此按区块扩展，而非在单个 React 组件里保存孤立 useState。
  */
-export interface SessionUiLayout {
-  filePanel: {
-    /** 右侧文件展示面板宽度，像素；main 端限制为 [280, 900]。 */
-    width: number;
-    /** true 时保留窄展开条，隐藏文件面板内容。 */
-    collapsed: boolean;
-  };
+export type LayoutNode =
+  | {
+      /** 并列区域；当前产品规则只生成 terminal + right dock 的水平 split。 */
+      kind: 'split';
+      direction: 'horizontal' | 'vertical';
+      children: LayoutNode[];
+    }
+  | {
+      /** 固定 dock 内互斥显示的面板组；结构由产品规则维护，renderer 不可提交。 */
+      kind: 'stack';
+      children: LayoutNode[];
+      defaultActivePanelId: string;
+    }
+  | {
+      /** 叶节点：terminal 是不可关闭的主区；其余值对应 renderer PanelRegistry。 */
+      kind: 'leaf';
+      panelId: string;
+    };
+
+/** 单一 dock 的 session 临时几何态。宽度/折叠属于布局容器，不属于其中某个页面。 */
+export interface DockLayoutState {
+  /** dock 宽度，像素；具体范围由 main 的 Dock registry 校验。 */
+  width: number;
+  /** true 时仅保留窄展开条，隐藏整个 dock，而非某个 active panel。 */
+  collapsed: boolean;
 }
 
-/** 可由 renderer 提交的会话 UI 布局增量。 */
+export interface SessionUiLayout {
+  /** 内存 UI schema 版本；不跨应用重启持久化，仅为未来安全演进留标识。 */
+  version: 2;
+  /** 产品规则生成的只读布局树；renderer 不可通过 IPC 修改。 */
+  tree: LayoutNode;
+  /** 各产品规则 dock 的独立几何态，键为 dock id（当前仅 `right`）。 */
+  docks: Record<string, DockLayoutState>;
+}
+
+/** 可由 renderer 提交的会话 UI 布局增量。仅允许已注册 dock 的标量几何态。 */
 export interface SessionUiLayoutPatch {
-  filePanel?: Partial<SessionUiLayout['filePanel']>;
+  docks?: Record<string, Partial<DockLayoutState>>;
 }
 
 export interface SessionInfo {
@@ -801,6 +828,20 @@ export interface OpenedFile {
   /** 字节数,fs.stat 结果(超限文件 read 会被截断) */
   size: number;
   /** fs.stat mtimeMs;变化驱动 viewer 重新 read(自动刷新) */
+  mtimeMs: number;
+}
+
+/** FileTreePanel 可访问的 session 局部逻辑根；绝不是产品 Project / Workspace。 */
+export type FileTreeRootId = 'session-cwd' | 'managed-workspace';
+
+/** 一次受限目录列举返回的单个直接子项；不会递归枚举。 */
+export interface FileTreeEntry {
+  /** 相对逻辑根的路径；仅可回传给 file-tree IPC，不接受绝对路径。 */
+  relativePath: string;
+  /** 当前目录下的显示名称。 */
+  name: string;
+  kind: 'file' | 'directory';
+  size: number;
   mtimeMs: number;
 }
 

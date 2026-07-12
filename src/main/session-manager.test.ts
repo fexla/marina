@@ -2297,14 +2297,24 @@ describe('SessionManager — session UI 布局', () => {
       cols: 80,
       rows: 24,
     });
-    expect(info.uiLayout).toEqual({ filePanel: { width: 440, collapsed: false } });
+    expect(info.uiLayout).toMatchObject({
+      version: 2,
+      tree: { kind: 'split', direction: 'horizontal' },
+      docks: {
+        right: { width: 440, collapsed: false },
+      },
+    });
 
     const changes: unknown[] = [];
     mgr.on('sessionStateChanged', (event) => changes.push(event.changes));
-    mgr.updateUiLayout(info.id, { filePanel: { width: 560, collapsed: true } });
+    mgr.updateUiLayout(info.id, { docks: { right: { width: 560, collapsed: true } } });
 
-    expect(mgr.get(info.id)?.uiLayout).toEqual({ filePanel: { width: 560, collapsed: true } });
-    expect(changes).toContainEqual({ uiLayout: { filePanel: { width: 560, collapsed: true } } });
+    expect(mgr.get(info.id)?.uiLayout?.docks.right).toEqual({ width: 560, collapsed: true });
+    expect(changes).toContainEqual({
+      uiLayout: expect.objectContaining({
+        docks: expect.objectContaining({ right: { width: 560, collapsed: true } }),
+      }),
+    });
   });
 
   it('拒绝越界 UI 布局且保持原值', async () => {
@@ -2317,10 +2327,14 @@ describe('SessionManager — session UI 布局', () => {
       rows: 24,
     });
 
-    expect(() => mgr.updateUiLayout(info.id, { filePanel: { width: 100 } })).toThrow(
-      'filePanel.width 必须是 [280, 900]',
+    expect(() => mgr.updateUiLayout(info.id, { docks: { right: { width: 100 } } })).toThrow(
+      'right.width 必须是 [280, 900]',
     );
-    expect(mgr.get(info.id)?.uiLayout?.filePanel.width).toBe(440);
+    expect(mgr.get(info.id)?.uiLayout?.docks.right?.width).toBe(440);
+
+    expect(() => mgr.updateUiLayout(info.id, { docks: { unregistered: { width: 320 } } })).toThrow(
+      'dockId="unregistered" 未注册',
+    );
   });
 });
 
