@@ -800,8 +800,8 @@ interface ClearManualRenamePayload {
 
 ---
 
-#### `cmd:session:update-ui-layout` (v2.1)
-更新 session 专属、非持久化的 UI 布局。布局是 `SessionInfo` 的一部分：同一
+#### `cmd:session:update-ui-layout` (v2.2,ADR-016)
+更新 session 专属、非持久化的 dock 几何态。布局是 `SessionInfo` 的一部分：同一
 session 被其他窗口接管后会保持，但 session 销毁、应用重启后不保留。它不是
 全局 Settings，也不形成产品意义上的 Workspace。
 
@@ -809,23 +809,87 @@ session 被其他窗口接管后会保持，但 session 销毁、应用重启后
 interface UpdateSessionUiLayoutPayload {
   sessionId: string;
   patch: {
-    filePanel?: {
-      width?: number;       // 280..900，像素
+    docks: Record<string, {
+      width?: number;
       collapsed?: boolean;
-    };
+    }>;
   };
 }
 // Response: void
 ```
 
+**约束**:
+- renderer 不可提交 `tree`；布局树由 main 的产品规则生成，当前固定为 terminal
+  主区 + right dock stack，不能通过此命令实现自由拖拽或浮动。
+- 仅接受已注册 dock：当前仅 `right.width` 为 280..900，`right.collapsed` 为 boolean。
+  它属于整个 right dock，切换 `file-tree` / `file-panel` 不得改变几何；未知 dockId 一律拒绝。
+
 **Errors**:
-- `InvalidUiLayout`:缺少 `filePanel`，或 width 超出 `[280, 900]`、collapsed 非布尔值
+- `InvalidUiLayout`:缺少/空 `docks`、未知 dockId、width 超出范围、collapsed 非布尔值
 - 不存在的 sessionId 静默 no-op（与 resize / rename 一致）
 
 **Side Effects**:
-- 合并并校验 `SessionInfo.uiLayout`
+- 合并并校验 `SessionInfo.uiLayout.docks`；`tree` 不可变
 - 广播 `evt:session:state-changed`，其 `changes.uiLayout` 包含完整最新布局
 - Renderer 拖动宽度应在 mouseup 时仅提交最终值，避免高频状态广播
+
+---
+
+#### `cmd:file-tree:get-roots` / `list-directory` / `open-file` (v2.2,ADR-016)
+受限文件树仅服务于**当前 owner session**，根目录固定为 `session.currentCwd` 与
+`MARINA_WORKSPACE`。这是目录查看和文件预览入口，不是通用文件管理 API；传统 SSH
+session 不因此支持 SFTP。
+
+```typescript
+interface GetFileTreeRootsPayload { sessionId: string }
+interface GetFileTreeRootsResponse {
+  roots: Array<{
+    id: 'session-cwd' | 'managed-workspace';
+    label: string;
+    available: boolean;
+    reason?: string;
+  }>;
+}
+
+interface ListFileTreeDirectoryPayload {
+  sessionId: string;
+  rootId: 'session-cwd' | 'managed-workspace';
+  relativePath?: string; // 根 = ''；绝对路径、NUL、.. 一律拒绝
+}
+interface ListFileTreeDirectoryResponse {
+  rootId: 'session-cwd' | 'managed-workspace';
+  relativePath: string;
+  entries: Array<{
+    relativePath: string;
+    name: string;
+    kind: 'file' | 'directory';
+    size: number;
+    mtimeMs: number;
+  }>;
+  truncated: boolean; // 至多 500 个直接子项，绝不递归
+}
+
+interface OpenFileTreeFilePayload {
+  sessionId: string;
+  rootId: 'session-cwd' | 'managed-workspace';
+  relativePath: string;
+}
+// open-file response: FilePanelSnapshot
+```
+
+**安全与错误**:
+- 三个命令均为 backend-data：远程窗口请求由 daemon 主机执行，绝不读取 viewer 本机。
+- 每次请求都验证 `ownerWindowId === envelope.windowId`；接管后旧 owner 立即失权。
+- main 对根和目标均 `realpath`，再以 `path.relative` 路径段边界验证包含关系；symbolic
+  link / Windows junction 指向根外时不列出且不可打开。
+- `NotOwner`、`RootUnavailable`、`OutsideAllowedRoot`、`InvalidPath`、`NotDirectory`、
+  `NotFile`、`ReadFailed` 会 reject；SSH/已删目录等 root 不可用场景通过 get-roots 返回
+  `available:false`，UI 不得尝试 SFTP 降级。
+
+**Side Effects**:
+- `get-roots` / `list-directory` 只读，无 watch、无递归扫描。
+- `open-file` 在完成同一套根校验后调用既有 FilePanelService，复用 `OpenedFile`、Viewer
+  与文件变更刷新；不产生任何文件系统写入。
 
 ---
 
