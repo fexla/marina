@@ -328,6 +328,25 @@ describe('SettingsManager — reset', () => {
   });
 });
 
+describe('SettingsManager — 临时展示工作区保留期', () => {
+  it('默认保留 7 天，并支持即改即生效', async () => {
+    const { mgr } = makeManager();
+    await mgr.initialize();
+    expect(mgr.get().filePanel.workspaceRetentionDays).toBe(7);
+
+    mgr.update({ filePanel: { workspaceRetentionDays: 14 } });
+    expect(mgr.get().filePanel.workspaceRetentionDays).toBe(14);
+  });
+
+  it.each([-1, 1.5, 366, Number.NaN])('拒绝非法保留天数 %s', async (days) => {
+    const { mgr } = makeManager();
+    await mgr.initialize();
+    expect(() => mgr.update({ filePanel: { workspaceRetentionDays: days } })).toThrow(
+      /workspaceRetentionDays/,
+    );
+  });
+});
+
 describe('SettingsError', () => {
   it('暴露 code + details', () => {
     const err = new SettingsError('InvalidSettings', 'foo', { field: 'theme' });

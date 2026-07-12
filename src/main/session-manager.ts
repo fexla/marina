@@ -47,7 +47,13 @@ import type {
   SessionOutputPayload,
   SessionStateChangedPayload,
 } from '@shared/protocol';
-import type { SessionInfo, Template, Settings } from '@shared/types';
+import type {
+  SessionInfo,
+  SessionUiLayout,
+  SessionUiLayoutPatch,
+  Template,
+  Settings,
+} from '@shared/types';
 import type { WindowManager } from './window-manager';
 import type { PathManager } from './path-manager';
 import type { TemplatesManager } from './templates-manager';
@@ -89,6 +95,7 @@ const SPAWN_ENV_SKIP = [
   'ELECTRON_RENDERER_URL',
   'MARINA_SERVICE',
   'MARINA_TOKEN',
+  'MARINA_WORKSPACE',
   'TERMINAL_ID',
 ];
 
@@ -99,6 +106,20 @@ const SPAWN_ENV_SKIP = [
  * 与 ADR-003 一致。
  */
 const CWD_GRACE_MS = 5000;
+
+/**
+ * 新 session 的临时 UI 布局初值。每次写入 SessionInfo 时都 clone，禁止不同
+ * ManagedSession 共享可变对象；后续终端专属 UI 区块统一在此处添加默认值。
+ */
+const DEFAULT_SESSION_UI_LAYOUT: SessionUiLayout = {
+  filePanel: { width: 440, collapsed: false },
+};
+
+function createDefaultSessionUiLayout(): SessionUiLayout {
+  return {
+    filePanel: { ...DEFAULT_SESSION_UI_LAYOUT.filePanel },
+  };
+}
 const CWD_POLL_INTERVAL_MS = 5000;
 
 /**
@@ -446,7 +467,9 @@ export class SessionManagerError extends Error {
       | 'NotOwner'
       | 'PtySpawnFailed'
       | 'CwdNotAccessible'
-      | 'NoShellAvailable',
+      | 'NoShellAvailable'
+      | 'WorkspaceCreateFailed'
+      | 'InvalidUiLayout',
     message: string,
     public readonly details?: Record<string, unknown>,
   ) {
@@ -465,6 +488,16 @@ export class SessionManagerError extends Error {
  */
 export interface FilePanelEnvSource {
   getUrl(): { baseUrl: string; token: string } | null;
+}
+
+/**
+ * SessionWorkspaceManager 对 SessionManager 的最小依赖面。接口让 PTY 单测能
+ * 注入内存 stub，不必在每个测试里写真实临时目录。
+ */
+export interface SessionWorkspaceSource {
+  create(sessionId: string): Promise<string>;
+  discard(sessionId: string): Promise<void>;
+  release(sessionId: string): void;
 }
 
 export interface SessionManagerOptions {
@@ -515,6 +548,11 @@ export interface SessionManagerOptions {
    * .enabled(getUrl() 在 disabled 时返回 null);TERMINAL_ID 一律注入。
    */
   filePanelService?: FilePanelEnvSource | null;
+  /**
+   * 每个 session 的受管临时展示目录。生产必传；保留为 optional 是为了让旧的
+   * SessionManager 单测/嵌入式调用显式选择不创建真实文件系统目录。
+   */
+  workspaceManager?: SessionWorkspaceSource | null;
 }
 
 export class SessionManager extends EventEmitter {
@@ -531,6 +569,8 @@ export class SessionManager extends EventEmitter {
   private readonly appVersion: string;
   /** 终端侧边文件面板服务(可选),用于注入 MARINA_SERVICE/MARINA_TOKEN env。 */
   private readonly filePanelService: FilePanelEnvSource | null;
+  /** session 临时展示工作区的生命周期管理器。 */
+  private readonly workspaceManager: SessionWorkspaceSource | null;
   /**
    * 最近一次 createSession 的非阻塞警告(例如保存了密码但缺 sshpass)。
    * ipc 层在 createSession resolve 后立即读取并清空,传给 renderer 弹 toast。
@@ -573,6 +613,7 @@ export class SessionManager extends EventEmitter {
     this.emitBatchMs = options.emitBatchMs ?? EMIT_BATCH_MS;
     this.appVersion = options.appVersion ?? '';
     this.filePanelService = options.filePanelService ?? null;
+    this.workspaceManager = options.workspaceManager ?? null;
   }
 
   // ──────────────────────────────────────────────────────────────────
@@ -684,6 +725,7 @@ export class SessionManager extends EventEmitter {
     // 该把文件开到哪个终端的面板。必须在 env 构建之前生成,因为下面要把
     // 它写进 env;原先生成点在 PTY spawn 之后(line 743),那里改成直接引用。
     const sessionId = randomUUID();
+    let workspacePath: string | null = null;
     const env = buildSpawnEnv(process.env, SPAWN_ENV_SKIP);
     // BETA-001:Windows 上 process.env.PATH 是启动时的快照,装新软件后不会自动
     // 刷新。每次 spawn 前从注册表合并最新 PATH 覆写过去,确保新装的 python.exe /
@@ -714,9 +756,11 @@ export class SessionManager extends EventEmitter {
         env.MARINA_TOKEN = fpUrl.token;
       }
     }
-    env.TERMINAL_ID = sessionId;
     Object.assign(env, launchParams.env);
     Object.assign(env, template.env);
+    // 这两个值是 session 身份/受管目录，不允许模板或 launch 参数覆盖；否则 agent
+    // 可能把文档写给别的终端，甚至写到调用者伪造的目录。
+    env.TERMINAL_ID = sessionId;
     // BETA-ENV-1:Windows 上必做的最后一道防御 —— 补齐 canonical SystemRoot
     // 三种 casing,并展开 PATH-like 字段里残留的 %SystemRoot% / %windir% 等
     // 占位符。任一缺失都会让子进程的 system32 系命令(powershell / cmd /
@@ -764,6 +808,25 @@ export class SessionManager extends EventEmitter {
       spawnFile = shell.executablePath;
     }
 
+    // 工作区在所有 shell / SSH 前置校验通过后、PTY spawn 前创建。这样前置校验
+    // 失败不会遗留空目录，而子进程一启动又总能读到存在的 MARINA_WORKSPACE。
+    if (this.workspaceManager) {
+      try {
+        workspacePath = await this.workspaceManager.create(sessionId);
+        env.MARINA_WORKSPACE = workspacePath;
+      } catch (err) {
+        throw new SessionManagerError(
+          'WorkspaceCreateFailed',
+          `无法为 sessionId="${sessionId}" 创建临时展示工作区。` +
+            `可能原因: (1) Marina 数据目录无写入权限; (2) 磁盘空间不足; ` +
+            `(3) 上次异常退出遗留目录与 UUID 冲突。原始错误: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          { sessionId },
+        );
+      }
+    }
+
     let pty: IPty;
     try {
       pty = this.spawnFn(spawnFile, launchParams.args, {
@@ -781,6 +844,19 @@ export class SessionManager extends EventEmitter {
         useConpty: true,
       });
     } catch (err) {
+      // PTY 未成功交给子进程，工作区没有用户可见价值；立即撤销，而不是等保留期。
+      if (workspacePath && this.workspaceManager) {
+        try {
+          await this.workspaceManager.discard(sessionId);
+        } catch (cleanupErr) {
+          logger.warn(
+            'SessionManager',
+            `workspace discard failed after spawn failure sid=${sessionId}: ${
+              cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)
+            }`,
+          );
+        }
+      }
       throw new SessionManagerError(
         'PtySpawnFailed',
         `无法启动 "${spawnFile}" cwd="${cwd}". ` +
@@ -808,6 +884,7 @@ export class SessionManager extends EventEmitter {
       ownerWindowId: input.ownerWindowId || null,
       state: 'idle',
       createdAt: Date.now(),
+      uiLayout: createDefaultSessionUiLayout(),
     };
 
     const disposables: IDisposable[] = [];
@@ -925,6 +1002,69 @@ export class SessionManager extends EventEmitter {
     const managed = this.sessions.get(sessionId);
     if (!managed) return;
     managed.manuallyRenamed = false;
+  }
+
+  /**
+   * 更新 session 专属的临时 UI 布局。
+   *
+   * 布局由 main 保持为 session 的一部分，所以 session 被别的窗口接管时也能
+   * 恢复；它不进入 settings.json，session 销毁时自然丢弃。状态转移参见
+   * 软件定义书.md 第 8.3 节：这里只改可序列化外观，不改变 PTY 生命周期。
+   */
+  updateUiLayout(sessionId: string, patch: SessionUiLayoutPatch): void {
+    const managed = this.sessions.get(sessionId);
+    if (!managed) return;
+    if (
+      !patch ||
+      typeof patch !== 'object' ||
+      !patch.filePanel ||
+      typeof patch.filePanel !== 'object'
+    ) {
+      throw new SessionManagerError(
+        'InvalidUiLayout',
+        `sessionId="${sessionId}" 的 UI 布局增量无效。至少需要 filePanel 对象，` +
+          '可更新 width(280-900) 或 collapsed(boolean)。',
+      );
+    }
+
+    const current = managed.info.uiLayout ?? createDefaultSessionUiLayout();
+    const next: SessionUiLayout = {
+      filePanel: { ...current.filePanel },
+    };
+    const filePanelPatch = patch.filePanel;
+    if (filePanelPatch.width !== undefined) {
+      if (
+        typeof filePanelPatch.width !== 'number' ||
+        !Number.isFinite(filePanelPatch.width) ||
+        filePanelPatch.width < 280 ||
+        filePanelPatch.width > 900
+      ) {
+        throw new SessionManagerError(
+          'InvalidUiLayout',
+          `sessionId="${sessionId}" 的 filePanel.width 必须是 [280, 900] 内的有限数字，` +
+            `实际: ${String(filePanelPatch.width)}。`,
+        );
+      }
+      next.filePanel.width = Math.round(filePanelPatch.width);
+    }
+    if (filePanelPatch.collapsed !== undefined) {
+      if (typeof filePanelPatch.collapsed !== 'boolean') {
+        throw new SessionManagerError(
+          'InvalidUiLayout',
+          `sessionId="${sessionId}" 的 filePanel.collapsed 必须是 boolean，` +
+            `实际: ${typeof filePanelPatch.collapsed}。`,
+        );
+      }
+      next.filePanel.collapsed = filePanelPatch.collapsed;
+    }
+    if (
+      next.filePanel.width === current.filePanel.width &&
+      next.filePanel.collapsed === current.filePanel.collapsed
+    ) {
+      return;
+    }
+    managed.info.uiLayout = next;
+    this.emitStateChanged(managed, { uiLayout: next });
   }
 
   /**
@@ -1548,6 +1688,18 @@ export class SessionManager extends EventEmitter {
     managed.serializeAddon = null;
     this.sessions.delete(sid);
     this.pathManager.detachSession(sid);
+    // 目录保留期从 session 被销毁时开始，而不是 PTY exited 时开始：已退出 tab
+    // 仍可在面板里查看生成文档，符合 exited 无时限保留的状态机语义。
+    try {
+      this.workspaceManager?.release(sid);
+    } catch (err) {
+      // 工作区元数据失败不能阻塞主 session 销毁；manager 会在下次启动根据
+      // manifest 重试回收，日志保留足够诊断信息。
+      logger.warn(
+        'SessionManager',
+        `workspace release failed sid=${sid}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     this.emit('sessionDestroyed', { sessionId: sid, reason });
   }
 

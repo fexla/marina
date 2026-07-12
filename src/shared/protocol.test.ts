@@ -91,6 +91,9 @@ describe('command routing (每窗口后端架构边界)', () => {
   it('session/path/template/settings 等业务命令路由为 backend-data', () => {
     expect(getCommandRouting(COMMAND_CHANNELS.SESSION_CREATE)).toBe('backend-data');
     expect(getCommandRouting(COMMAND_CHANNELS.SESSION_GET_SCROLLBACK)).toBe('backend-data');
+    // 终端布局属于 session 的临时业务状态，远程窗口必须把它发到 daemon，
+    // 不能留在客户端本地，否则跨窗口接管会恢复默认布局。
+    expect(getCommandRouting(COMMAND_CHANNELS.SESSION_UPDATE_UI_LAYOUT)).toBe('backend-data');
     expect(getCommandRouting(COMMAND_CHANNELS.BOOKMARK_ADD)).toBe('backend-data');
     expect(getCommandRouting(COMMAND_CHANNELS.SETTINGS_GET)).toBe('backend-data');
     expect(getCommandRouting(COMMAND_CHANNELS.APP_GET_SNAPSHOT)).toBe('backend-data');

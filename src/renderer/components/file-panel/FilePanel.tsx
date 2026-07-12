@@ -10,6 +10,8 @@
  * - 左边缘 resize handle:拖动改宽(镜像 .sidebar-resize-handle)
  *
  * @状态来源:filePanels Map 来自 store(main 推 evt:file-panel:updated)。
+ *   面板宽度/折叠态来自 SessionInfo.uiLayout：它是 main 端维护的 session
+ *   临时 UI 状态，切 tab、接管或切窗口都不会回到组件默认值。
  *   mount / sessionId 变化时主动拉一次 get-open-files(处理 claim 接管已有
  *   文件 / 窗口刚聚焦等"事件可能已错过"的场景)。
  *
@@ -41,8 +43,19 @@ export function FilePanel({ sessionId }: FilePanelProps): JSX.Element | null {
     files: [],
     activePath: null,
   };
-  const [width, setWidth] = useState(DEFAULT_WIDTH);
-  const [collapsed, setCollapsed] = useState(false);
+  // 布局由 main 端的 SessionInfo 真值同步。拖拽期间的 pendingWidth 只用于每帧
+  // 即时渲染；mouseup 才提交一次 IPC，避免把 mousemove 高频广播给所有窗口。
+  const persistedLayout = state.sessions.get(sessionId)?.uiLayout?.filePanel;
+  const persistedWidth = persistedLayout?.width ?? DEFAULT_WIDTH;
+  const [pendingWidth, setPendingWidth] = useState<number | null>(null);
+  const width = pendingWidth ?? persistedWidth;
+  const collapsed = persistedLayout?.collapsed ?? false;
+
+  useEffect(() => {
+    // 收到 main 回推的新宽度（或切到另一个 session）后解除本地拖拽覆盖，继续
+    // 以 session 真值渲染。若 IPC 失败，catch 会立即清空 pendingWidth 回退旧值。
+    setPendingWidth(null);
+  }, [sessionId, persistedWidth]);
 
   // mount / sessionId 变化 → 拉一次当前列表(接管时事件可能已错过)
   useEffect(() => {
@@ -91,18 +104,35 @@ export function FilePanel({ sessionId }: FilePanelProps): JSX.Element | null {
   };
 
   // 拖左边缘改宽:鼠标左移 delta → 面板变宽(面板贴右侧,向左扩张)
+  const updateLayout = (patch: { width?: number; collapsed?: boolean }): void => {
+    window.api
+      .invoke(COMMAND_CHANNELS.SESSION_UPDATE_UI_LAYOUT, {
+        sessionId,
+        patch: { filePanel: patch },
+      })
+      .catch((err: unknown) => {
+        // 宽度拖拽失败时回到 main 端最后确认的值，不能让一个无效本地值卡住 UI。
+        setPendingWidth(null);
+        console.warn('[FilePanel] update session UI layout failed', err);
+      });
+  };
+
   const startResize = (e: MouseEvent<HTMLDivElement>): void => {
     e.preventDefault();
     const startX = e.clientX;
     const startW = width;
+    let finalWidth = startW;
     const onMove = (ev: globalThis.MouseEvent): void => {
       const delta = startX - ev.clientX;
-      setWidth(Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, startW + delta)));
+      finalWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, startW + delta));
+      setPendingWidth(finalWidth);
     };
     const stop = (): void => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', stop);
       dragCleanupRef.current = null;
+      // 没移动就不制造一次状态事件；移动过只提交最终值。
+      if (finalWidth !== persistedWidth) updateLayout({ width: finalWidth });
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', stop);
@@ -117,7 +147,7 @@ export function FilePanel({ sessionId }: FilePanelProps): JSX.Element | null {
         <button
           type="button"
           className="file-panel-expand-btn"
-          onClick={() => setCollapsed(false)}
+          onClick={() => updateLayout({ collapsed: false })}
           title={tx('展开文件面板', 'Expand file panel')}
           aria-label={tx('展开文件面板', 'Expand file panel')}
         >
@@ -140,7 +170,7 @@ export function FilePanel({ sessionId }: FilePanelProps): JSX.Element | null {
         <button
           type="button"
           className="file-panel-collapse-btn"
-          onClick={() => setCollapsed(true)}
+          onClick={() => updateLayout({ collapsed: true })}
           title={tx('折叠', 'Collapse')}
           aria-label={tx('折叠', 'Collapse')}
         >

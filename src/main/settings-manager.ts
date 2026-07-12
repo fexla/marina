@@ -78,6 +78,9 @@ export const DEFAULT_SETTINGS: Settings = {
     port: 0,
     // 默认 auto:与 marina 主题配色协调。想看 GitHub 风格的用户在设置页改。
     markdownStyle: 'auto' as const,
+    // 每个 session 都有独立的临时展示目录；关闭后保留 7 天，给用户和 agent
+    // 留出回看生成文档的窗口。0 是立即删除，不表示禁用创建。
+    workspaceRetentionDays: 7,
   },
   // v2.0 远程服务端:默认不起(显式 UI 启动),端口 32780。
   remoteDaemon: {
@@ -490,6 +493,13 @@ export function validateSettings(s: Settings): void {
     );
   }
   checkRange('filePanel.port', s.filePanel.port, 0, 65535);
+  checkRange('filePanel.workspaceRetentionDays', s.filePanel.workspaceRetentionDays, 0, 365);
+  if (!Number.isInteger(s.filePanel.workspaceRetentionDays)) {
+    throw new SettingsError(
+      'InvalidSettings',
+      `filePanel.workspaceRetentionDays 必须是整数,实际: ${s.filePanel.workspaceRetentionDays}`,
+    );
+  }
   // host-only 连接只扫描固定发现范围；范围外端口对正常客户端不可达。
   checkRange(
     'remoteDaemon.port',

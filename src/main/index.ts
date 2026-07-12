@@ -39,6 +39,7 @@ import {
   setDaemonPassword,
 } from './daemon-credentials';
 import { FilePanelService } from './file-panel-service';
+import { SessionWorkspaceManager } from './session-workspace-manager';
 import { MarkdownThemeManager } from './markdown-theme-manager';
 import { getPlatformAdapter } from './platform';
 import { AIClient } from './ai-client';
@@ -207,6 +208,12 @@ function bootstrap(): void {
   // 才调(见下方 initialize 之后)。SessionManager 现在就持有引用,供每个新
   // session 的 createSession 注入 env。详见 file-panel-service.ts 头注。
   const filePanelService = new FilePanelService();
+  // session 工作区只存 Marina 自己的临时展示文档。它不参与 Path 树、不暴露为
+  // 产品意义的 workspace，且按 settings.filePanel.workspaceRetentionDays 延期回收。
+  const sessionWorkspaceManager = new SessionWorkspaceManager({
+    rootDir: join(dataDir, 'file-panel-workspaces'),
+    getRetentionDays: () => settingsManager.get().filePanel.workspaceRetentionDays,
+  });
   const sessionManager = new SessionManager(
     windowManager,
     pathManager,
@@ -217,6 +224,7 @@ function bootstrap(): void {
       // 用户在 .bashrc / Profile.ps1 里可以拿这个版本号做条件判断。
       appVersion: app.getVersion(),
       filePanelService,
+      workspaceManager: sessionWorkspaceManager,
     },
   );
   const trayManager = new TrayManager(windowManager, sessionManager, settingsManager);
@@ -387,6 +395,7 @@ function bootstrap(): void {
       const settingsSrc = await settingsManager.initialize();
       logger.info('main', `settings loaded from: ${settingsSrc}`);
       logger.setLevel(settingsManager.get().advanced.logLevel === 'DEBUG' ? 'debug' : 'info');
+      await sessionWorkspaceManager.initialize();
       const { bookmarksSource } = await pathManager.initialize();
       logger.info('main', `bookmarks loaded from: ${bookmarksSource}`);
       const sshProfilesSrc = await sshProfileManager.initialize();
@@ -479,6 +488,11 @@ function bootstrap(): void {
         markdownThemeManager,
         aiClient,
         remoteDaemonController,
+      });
+
+      // 工作区保留期变更后立即重算最近一次回收，已关闭的工作区也会使用新值。
+      settingsManager.on('settingsChanged', () => {
+        sessionWorkspaceManager.rescheduleCleanup();
       });
 
       // ── 设置副作用 wiring ─────────────────────────────
@@ -712,6 +726,7 @@ function bootstrap(): void {
         remoteProfileManager.flush(),
         knownHostsManager.flush(),
         templatesManager.flush(),
+        sessionWorkspaceManager.flush(),
         logger.flush(),
       ]);
       await Promise.race([flushAll, new Promise<void>((resolve) => setTimeout(resolve, 1000))]);

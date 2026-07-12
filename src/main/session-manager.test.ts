@@ -198,7 +198,7 @@ function makeStubSettingsManager(overrides: Partial<Settings['advanced']> = {}):
       bracketedPaste: true,
     },
     systemIntegration: { explorerOpenIn: 'new-window' },
-    filePanel: { enabled: true, port: 0, markdownStyle: 'auto' },
+    filePanel: { enabled: true, port: 0, markdownStyle: 'auto', workspaceRetentionDays: 7 },
     remoteDaemon: { port: 32780, autoStart: false },
     advanced: {
       logLevel: 'INFO',
@@ -282,6 +282,11 @@ function makeManager(
     templates?: Template[];
     /** 终端侧边文件面板 env 注入源;不传 = 不注入 MARINA_SERVICE/MARINA_TOKEN */
     filePanelService?: { getUrl(): { baseUrl: string; token: string } | null };
+    workspaceManager?: {
+      create(sessionId: string): Promise<string>;
+      discard(sessionId: string): Promise<void>;
+      release(sessionId: string): void;
+    };
   } = {},
 ): {
   mgr: SessionManager;
@@ -303,6 +308,7 @@ function makeManager(
     emitBatchMs: opts.emitBatchMs ?? 0,
     skipCwdValidation: true,
     filePanelService: opts.filePanelService ?? null,
+    workspaceManager: opts.workspaceManager ?? null,
   });
   return { mgr, win, path };
 }
@@ -2278,6 +2284,47 @@ describe('SessionManagerError', () => {
 });
 
 // ──────────────────────────────────────────────────────────────────
+// Session 专属 UI 布局
+// ──────────────────────────────────────────────────────────────────
+
+describe('SessionManager — session UI 布局', () => {
+  it('创建默认布局并在更新时通过 state-changed 广播', async () => {
+    const { mgr } = makeManager();
+    const info = await mgr.createSession({
+      pathId: 'C:\\fake',
+      templateId: 'shell',
+      ownerWindowId: 'w1',
+      cols: 80,
+      rows: 24,
+    });
+    expect(info.uiLayout).toEqual({ filePanel: { width: 440, collapsed: false } });
+
+    const changes: unknown[] = [];
+    mgr.on('sessionStateChanged', (event) => changes.push(event.changes));
+    mgr.updateUiLayout(info.id, { filePanel: { width: 560, collapsed: true } });
+
+    expect(mgr.get(info.id)?.uiLayout).toEqual({ filePanel: { width: 560, collapsed: true } });
+    expect(changes).toContainEqual({ uiLayout: { filePanel: { width: 560, collapsed: true } } });
+  });
+
+  it('拒绝越界 UI 布局且保持原值', async () => {
+    const { mgr } = makeManager();
+    const info = await mgr.createSession({
+      pathId: 'C:\\fake',
+      templateId: 'shell',
+      ownerWindowId: 'w1',
+      cols: 80,
+      rows: 24,
+    });
+
+    expect(() => mgr.updateUiLayout(info.id, { filePanel: { width: 100 } })).toThrow(
+      'filePanel.width 必须是 [280, 900]',
+    );
+    expect(mgr.get(info.id)?.uiLayout?.filePanel.width).toBe(440);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────
 // 终端侧边文件面板:env 注入(MARINA_SERVICE / MARINA_TOKEN / TERMINAL_ID)
 // ──────────────────────────────────────────────────────────────────
 
@@ -2298,6 +2345,37 @@ describe('SessionManager — file panel env 注入', () => {
     expect(env.MARINA_SERVICE).toBe('http://127.0.0.1:19999');
     expect(env.MARINA_TOKEN).toBe('fake-token-xyz');
     expect(env.TERMINAL_ID).toBe(info.id);
+  });
+
+  it('workspace manager → 注入不可被模板覆盖的 MARINA_WORKSPACE', async () => {
+    const calls: string[] = [];
+    const workspace = {
+      create: async (sessionId: string) => {
+        calls.push(`create:${sessionId}`);
+        return `C:\\marina-workspaces\\${sessionId}`;
+      },
+      discard: async (sessionId: string) => {
+        calls.push(`discard:${sessionId}`);
+      },
+      release: (sessionId: string) => {
+        calls.push(`release:${sessionId}`);
+      },
+    };
+    const templates = [{ ...BUILTIN_TEMPLATES[0]!, env: { MARINA_WORKSPACE: 'forged' } }];
+    const { mgr } = makeManager({ workspaceManager: workspace, templates });
+    const info = await mgr.createSession({
+      pathId: 'C:\\fake',
+      templateId: 'shell',
+      ownerWindowId: 'w1',
+      cols: 80,
+      rows: 24,
+    });
+    const env = FakePty.instances[0]!.options.env;
+    expect(env.MARINA_WORKSPACE).toBe(`C:\\marina-workspaces\\${info.id}`);
+    expect(calls).toContain(`create:${info.id}`);
+
+    mgr.closeSession(info.id);
+    expect(calls).toContain(`release:${info.id}`);
   });
 
   it('enabled=false → 不注入服务地址/token,但仍注入 TERMINAL_ID', async () => {

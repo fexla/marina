@@ -18,6 +18,7 @@ import { WsServer } from './transport-ws';
 import { RemoteDaemon, type DispatchFn } from './remote-daemon';
 import { RemoteTransport, type WsFactory } from '../preload/remote-transport';
 import type { SessionManager } from './session-manager';
+import { COMMAND_CHANNELS } from '@shared/protocol';
 
 const TOKEN = 'loopback-token';
 
@@ -41,7 +42,9 @@ async function startLoopback(dispatchImpl?: DispatchFn): Promise<Loopback> {
   const server = new WsServer();
   const registry = new ClientRegistry();
   const sm = mockSessionManager();
-  const dispatch = vi.fn(dispatchImpl ?? (async () => ({ ok: true as const, result: { pong: true } })));
+  const dispatch = vi.fn(
+    dispatchImpl ?? (async () => ({ ok: true as const, result: { pong: true } })),
+  );
   const daemon = new RemoteDaemon({
     wsServer: server,
     registry,
@@ -119,6 +122,29 @@ describe('loopback: RemoteTransport ↔ RemoteDaemon(真实 WS)', () => {
     const result = await t.invoke('cmd:app:get-snapshot', {});
     expect(result).toEqual({ echoedWindowId: t.getClientId() });
     expect(lb.dispatch).toHaveBeenCalledTimes(1);
+    t.close();
+  });
+
+  it('会话 UI 布局命令经 WS 发往 daemon（不落在客户端本地）', async () => {
+    const lb = await startLoopback(async (channel, envelope) => ({
+      ok: true as const,
+      result: { channel, sessionId: (envelope.payload as { sessionId: string }).sessionId },
+    }));
+    const t = await connectTransport(lb.port);
+
+    const result = await t.invoke(COMMAND_CHANNELS.SESSION_UPDATE_UI_LAYOUT, {
+      sessionId: 'session-layout-test',
+      patch: { filePanel: { width: 560, collapsed: true } },
+    });
+
+    expect(result).toEqual({
+      channel: COMMAND_CHANNELS.SESSION_UPDATE_UI_LAYOUT,
+      sessionId: 'session-layout-test',
+    });
+    expect(lb.dispatch).toHaveBeenCalledWith(
+      COMMAND_CHANNELS.SESSION_UPDATE_UI_LAYOUT,
+      expect.objectContaining({ windowId: t.getClientId() }),
+    );
     t.close();
   });
 

@@ -953,6 +953,24 @@ function AppearancePanel({ setError }: { setError: (msg: string | null) => void 
       </SettingRow>
 
       <SettingRow
+        label={tx('临时展示文件保留天数', 'Temporary display-file retention')}
+        hint={tx(
+          '每个终端都有独立临时目录，内部程序可通过 MARINA_WORKSPACE 写入展示文件。终端关闭后保留此天数；0 表示立即删除。',
+          'Each terminal receives a MARINA_WORKSPACE for documents shown in the file panel. Files are retained for this many days after the terminal closes; 0 deletes them immediately.',
+        )}
+      >
+        <NumberInput
+          value={state.settings.filePanel?.workspaceRetentionDays ?? 7}
+          min={0}
+          max={365}
+          step={1}
+          onChange={(value) =>
+            void updateSettings({ filePanel: { workspaceRetentionDays: value } }, setError)
+          }
+        />
+      </SettingRow>
+
+      <SettingRow
         label={tx('主题目录', 'Themes folder')}
         hint={tx(
           '自定义 markdown 主题(.css)放这里即出现在上方下拉。文件名即主题名,改完 CSS 切走再切回即生效',
