@@ -6,8 +6,13 @@
 > 这份文档定义所有消息的 schema、语义、错误码、时序约束。
 > 实现代码必须严格遵循,不允许"自由发挥"。
 
-文档版本:2.1 · 最后更新:2026-07-12
+文档版本:2.2 · 最后更新:2026-07-12
 
+> **v2.2 变更**(2026-07-12,内置 Skill 安装器):
+> - 新增 `cmd:skill:install-marina`：将受控的内置 `show-in-marina` skill 安装到所选本地收藏项目的 Pi / Claude Code / Codex 项目级发现目录
+> - overwrite=false 时仅返回全部冲突；renderer 必须展示覆盖确认后才可传 overwrite=true
+> - 此命令是 backend-data：远程 backend 窗口在 daemon 所在项目安装，SSH 路径不提供入口
+>
 > **v2.1 变更**(2026-07-12,文件展示面板完善):
 > - 新增 `cmd:session:update-ui-layout`：会话级临时 UI 布局由后端随 `SessionInfo` 保存，接管/跨窗口可恢复，但 session 销毁后丢弃
 > - `SessionInfo.uiLayout.filePanel` 定义文件展示面板的 `width` / `collapsed`；其变动复用 `evt:session:state-changed`
@@ -275,6 +280,7 @@ v2.0 引入 `clientId` 后,两个字段名容易混淆,明确边界:
 | `cmd:bookmark:set-default-template` | 设置某收藏路径的默认模板 |
 | `cmd:bookmark:pick-folder` | 调起文件夹选择器,返回选择的路径 |
 | `cmd:path:remove-from-recent` | 从"最近"中移除某路径 |
+| `cmd:skill:install-marina` | 将内置 show-in-marina skill 安装到本地收藏项目 |
 | `cmd:template:add` | 创建自定义模板 |
 | `cmd:template:update` | 修改模板(含内置部分字段) |
 | `cmd:template:delete` | 删除自定义模板(内置不可删) |
@@ -844,6 +850,29 @@ interface GetScrollbackResponse {
 
 **Errors**:
 - `SessionNotFound`
+
+#### `cmd:skill:install-marina` (v2.2)
+将 Marina 内置、受控的 `show-in-marina` skill 复制到选中本地项目。目标目录：Pi
+`.pi/skills/show-in-marina`、Claude Code `.claude/skills/show-in-marina`、Codex
+`.agents/skills/show-in-marina`。
+
+```typescript
+interface InstallMarinaSkillPayload {
+  projectPath: string;
+  targets: Array<'pi' | 'claude' | 'codex'>;
+  overwrite?: boolean;
+}
+interface InstallMarinaSkillResponse {
+  installed: Array<{ target: string; destination: string }>;
+  conflicts: Array<{ target: string; destination: string }>;
+}
+```
+
+**冲突语义**：`overwrite` 缺省/false 且任一目标已存在时，`installed=[]`，返回
+完整 `conflicts`，不写任何目录。用户确认覆盖后才以 `overwrite=true` 重试。
+
+**安全边界**：只复制安装包随附的 skill，不接受 renderer 提供的源路径；覆盖仅删除
+`<project>/.{pi|claude|agents}/skills/show-in-marina`。
 
 ### 5.3 Bookmark / Path
 

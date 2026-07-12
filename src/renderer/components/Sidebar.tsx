@@ -38,18 +38,14 @@ import {
 import type { PathNode, SessionInfo } from '@shared/types';
 import { disambiguatePathNames } from '@shared/path-display';
 import { useTranslation } from './LanguageProvider';
-import {
-  findMyOwnedSessionId,
-  useAppDispatch,
-  useAppState,
-  useAppStateRef,
-} from '../store';
+import { findMyOwnedSessionId, useAppDispatch, useAppState, useAppStateRef } from '../store';
 import { Icon, type IconName } from './icons';
 import { useContextMenuApi, type ContextMenuItem } from './ContextMenu';
 import { useModal } from './Modal';
 import { useToast } from './Toast';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { buildSessionContextMenu } from './sessionContextMenu';
+import { SkillInstallDialog } from './SkillInstallDialog';
 
 /**
  * 状态点颜色 (软件定义书 6.2.4 状态指示):
@@ -153,12 +149,8 @@ export function Sidebar(): JSX.Element {
       })),
     });
   };
-  const [collapsedCategoryIds, setCollapsedCategoryIds] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const [segment, setSegmentState] = useState<SidebarSegment>(() =>
-    readSegmentFromStorage(),
-  );
+  const [collapsedCategoryIds, setCollapsedCategoryIds] = useState<Set<string>>(() => new Set());
+  const [segment, setSegmentState] = useState<SidebarSegment>(() => readSegmentFromStorage());
   const setSegment = (next: SidebarSegment): void => {
     setSegmentState(next);
     try {
@@ -175,9 +167,7 @@ export function Sidebar(): JSX.Element {
   // 而不依赖 setState updater(updater 内 throw 会把异常抛到 commit)。
   // document.body.style.cursor 临时锁成 ew-resize,防止拖动越过 sidebar 边界
   // 进入终端区时鼠标光标抖。
-  const [sidebarWidth, setSidebarWidth] = useState<number>(() =>
-    readSidebarWidthFromStorage(),
-  );
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => readSidebarWidthFromStorage());
   const widthRef = useRef(sidebarWidth);
   widthRef.current = sidebarWidth;
   const isResizingRef = useRef(false);
@@ -258,8 +248,7 @@ export function Sidebar(): JSX.Element {
     [state.pathTree.recent, effectiveSegment],
   );
 
-  const isCategoryCollapsed = (categoryId: string): boolean =>
-    collapsedCategoryIds.has(categoryId);
+  const isCategoryCollapsed = (categoryId: string): boolean => collapsedCategoryIds.has(categoryId);
 
   const handleToggleCategory = (categoryId: string): void => {
     setCollapsedCategoryIds((prev) => {
@@ -326,10 +315,9 @@ export function Sidebar(): JSX.Element {
         {},
       );
       if (result.path === null) return;
-      await window.api.invoke<unknown, AddBookmarkResponse>(
-        COMMAND_CHANNELS.BOOKMARK_ADD,
-        { path: result.path },
-      );
+      await window.api.invoke<unknown, AddBookmarkResponse>(COMMAND_CHANNELS.BOOKMARK_ADD, {
+        path: result.path,
+      });
     } catch (err) {
       toast.push({
         kind: 'error',
@@ -447,10 +435,9 @@ export function Sidebar(): JSX.Element {
       const path = (file as File & { path?: string }).path;
       if (!path) continue;
       try {
-        await window.api.invoke<unknown, AddBookmarkResponse>(
-          COMMAND_CHANNELS.BOOKMARK_ADD,
-          { path },
-        );
+        await window.api.invoke<unknown, AddBookmarkResponse>(COMMAND_CHANNELS.BOOKMARK_ADD, {
+          path,
+        });
       } catch (err) {
         console.error('[Sidebar] drop add-bookmark failed', err);
       }
@@ -604,9 +591,7 @@ function Category({
   // BETA-014:同 category 内末级文件夹同名时自动补父目录区分;手动命名的不参与。
   const displayNames = useMemo(() => disambiguatePathNames(paths), [paths]);
   return (
-    <section
-      className={`sidebar-category${collapsed ? ' collapsed' : ''}`}
-    >
+    <section className={`sidebar-category${collapsed ? ' collapsed' : ''}`}>
       <header
         className="sidebar-category-header"
         onClick={() => onToggleCollapsed(categoryId)}
@@ -675,14 +660,14 @@ function PathItem({
   );
   const activeCount = sessions.length;
   // BETA-014:优先用 Category 算好的去重名;退到本节点 displayName / 末段
-  const displayName =
-    displayNameOverride ??
-    node.displayName ??
-    formatPathDisplayName(node);
+  const displayName = displayNameOverride ?? node.displayName ?? formatPathDisplayName(node);
 
   // M1-C:行内重命名 (仅收藏支持)
   const [renaming, setRenaming] = useState(false);
   const [renameText, setRenameText] = useState(displayName);
+  // 只对本地收藏路径开放：SSH 路径指向另一台未运行 Marina 的机器，不能安全地
+  // 创建 .pi/.claude/.agents 项目目录；远程 backend 则由 daemon 正常处理。
+  const [skillInstallerOpen, setSkillInstallerOpen] = useState(false);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
 
   const beginRename = (): void => {
@@ -724,12 +709,11 @@ function PathItem({
   const handleDoubleClick = async (): Promise<void> => {
     // 双击 = 在该 path 下用默认模板新建 session
     // 优先级:bookmark.defaultTemplateId > 全局 defaultTemplateId > 'shell' 兜底
-    const templateId =
-      node.defaultTemplateId ?? state.defaultTemplateId ?? 'shell';
+    const templateId = node.defaultTemplateId ?? state.defaultTemplateId ?? 'shell';
     try {
       const dims = state.lastTerminalDims;
       const res = await window.api.invoke<unknown, CreateSessionResponse>(
-          COMMAND_CHANNELS.SESSION_CREATE,
+        COMMAND_CHANNELS.SESSION_CREATE,
         {
           pathId: node.id,
           templateId,
@@ -788,6 +772,13 @@ function PathItem({
 
     if (node.category === 'bookmarked') {
       items.push({ divider: true, label: '' });
+      if (node.kind === 'local' && !node.invalid) {
+        items.push({
+          label: '安装 Marina Skill…',
+          hint: '为 Pi / Claude Code / Codex 安装 show-in-marina',
+          onSelect: () => setSkillInstallerOpen(true),
+        });
+      }
       items.push({ label: '重命名…', onSelect: beginRename });
       items.push({
         label: '移除收藏',
@@ -805,9 +796,7 @@ function PathItem({
             }
           };
           removeBookmark()
-            .then(() =>
-              toast.push({ kind: 'success', message: `已移除收藏 ${displayName}` }),
-            )
+            .then(() => toast.push({ kind: 'success', message: `已移除收藏 ${displayName}` }))
             .catch((err: unknown) =>
               toast.push({
                 kind: 'error',
@@ -893,15 +882,16 @@ function PathItem({
   };
 
   return (
-    <li className={`path-item${selected ? ' selected' : ''}${node.invalid ? ' invalid' : ''}`}>
-      <div
-        className="path-item-row"
-        onClick={handleSelect}
-        onDoubleClick={() => void handleDoubleClick()}
-        onContextMenu={handleContextMenu}
-        title={node.invalid ? `${node.path}\n⚠️ 路径不可访问` : node.path}
-      >
-        {/*
+    <>
+      <li className={`path-item${selected ? ' selected' : ''}${node.invalid ? ' invalid' : ''}`}>
+        <div
+          className="path-item-row"
+          onClick={handleSelect}
+          onDoubleClick={() => void handleDoubleClick()}
+          onContextMenu={handleContextMenu}
+          title={node.invalid ? `${node.path}\n⚠️ 路径不可访问` : node.path}
+        >
+          {/*
           F2(beta 勘误2):左侧固定 12px 槽位,按优先级选一个内容渲染 —
           展开箭头(有会话时)> 警告 icon(invalid 时)> 透明 placeholder。
           三种状态用同一个槽位,保证所有路径行的 name 文本起始 x 坐标一致,
@@ -909,62 +899,72 @@ function PathItem({
           有会话且 invalid 的极少数情况(session 创建后路径被删):展开
           箭头优先,⚠️ 通过 title tooltip 提示。
         */}
-        {sessions.length > 0 ? (
-          <span
-            className="path-expand-arrow"
-            onClick={handleToggleExpand}
-            aria-label={expanded ? '收起' : '展开'}
-          >
-            {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          </span>
-        ) : node.invalid ? (
-          <span className="path-expand-arrow path-invalid-slot" aria-label="路径不可访问">
-            <AlertTriangle size={12} className="path-invalid-icon" />
-          </span>
-        ) : (
-          <span className="path-expand-arrow placeholder" />
-        )}
-        {renaming ? (
-          <input
-            ref={renameInputRef}
-            type="text"
-            className="path-name-rename-input"
-            value={renameText}
-            onChange={(e) => setRenameText(e.target.value)}
-            onBlur={commitRename}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                commitRename();
-              } else if (e.key === 'Escape') {
-                e.preventDefault();
-                setRenaming(false);
-              }
-            }}
-            onClick={(e) => e.stopPropagation()}
-          />
-        ) : (
-          <span className="path-name">{displayName}</span>
-        )}
-        {activeCount > 0 && !renaming && (
-          <span className="path-session-count" title={`${activeCount} 个终端`}>
-            {activeCount}
-          </span>
-        )}
-      </div>
-      {expanded && sessions.length > 0 && (
-        <ul className="session-list">
-          {sessions.map((s) => (
-            <SessionItem
-              key={s.id}
-              session={s}
-              myWindowId={state.myWindowId}
-              selected={state.selectedSessionId === s.id}
+          {sessions.length > 0 ? (
+            <span
+              className="path-expand-arrow"
+              onClick={handleToggleExpand}
+              aria-label={expanded ? '收起' : '展开'}
+            >
+              {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            </span>
+          ) : node.invalid ? (
+            <span className="path-expand-arrow path-invalid-slot" aria-label="路径不可访问">
+              <AlertTriangle size={12} className="path-invalid-icon" />
+            </span>
+          ) : (
+            <span className="path-expand-arrow placeholder" />
+          )}
+          {renaming ? (
+            <input
+              ref={renameInputRef}
+              type="text"
+              className="path-name-rename-input"
+              value={renameText}
+              onChange={(e) => setRenameText(e.target.value)}
+              onBlur={commitRename}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  commitRename();
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setRenaming(false);
+                }
+              }}
+              onClick={(e) => e.stopPropagation()}
             />
-          ))}
-        </ul>
+          ) : (
+            <span className="path-name">{displayName}</span>
+          )}
+          {activeCount > 0 && !renaming && (
+            <span className="path-session-count" title={`${activeCount} 个终端`}>
+              {activeCount}
+            </span>
+          )}
+        </div>
+        {expanded && sessions.length > 0 && (
+          <ul className="session-list">
+            {sessions.map((s) => (
+              <SessionItem
+                key={s.id}
+                session={s}
+                myWindowId={state.myWindowId}
+                selected={state.selectedSessionId === s.id}
+              />
+            ))}
+          </ul>
+        )}
+      </li>
+      {skillInstallerOpen && (
+        <SkillInstallDialog
+          projectPath={node.path}
+          projectName={displayName}
+          onClose={() => setSkillInstallerOpen(false)}
+          onSuccess={(message) => toast.push({ kind: 'success', message })}
+          onError={(message) => toast.push({ kind: 'error', message, durationMs: 10000 })}
+        />
       )}
-    </li>
+    </>
   );
 }
 
@@ -984,18 +984,13 @@ interface SessionItemProps {
  * 用 React.memo 包裹后,sessions/state-changed 仅会让"那个真正变化的
  * session"对应的 SessionItem 重渲,其余引用未变的 props 被 memo 跳过。
  */
-function SessionItemImpl({
-  session,
-  myWindowId,
-  selected,
-}: SessionItemProps): JSX.Element {
+function SessionItemImpl({ session, myWindowId, selected }: SessionItemProps): JSX.Element {
   const dispatch = useAppDispatch();
   const ctxMenu = useContextMenuApi();
   const toast = useToast();
   const stateRef = useAppStateRef();
   const isMine = session.ownerWindowId === myWindowId;
-  const ownedByOther =
-    session.ownerWindowId !== null && session.ownerWindowId !== myWindowId;
+  const ownedByOther = session.ownerWindowId !== null && session.ownerWindowId !== myWindowId;
 
   // M1-C:行内重命名
   const [renaming, setRenaming] = useState(false);
@@ -1088,24 +1083,22 @@ function SessionItemImpl({
     dispatch({ type: 'view/select-path', pathId: session.pathId });
     dispatch({ type: 'view/select-session', sessionId: session.id });
 
-    window.api
-      .invoke(COMMAND_CHANNELS.SESSION_CLAIM, { sessionId: session.id })
-      .catch((err) => {
-        console.error('[Sidebar] claim failed, rolling back', err);
+    window.api.invoke(COMMAND_CHANNELS.SESSION_CLAIM, { sessionId: session.id }).catch((err) => {
+      console.error('[Sidebar] claim failed, rolling back', err);
+      dispatch({
+        type: 'sessions/owner-changed',
+        sessionId: session.id,
+        ownerWindowId: null,
+      });
+      if (prevOwnedId && prevOwnedId !== session.id) {
         dispatch({
           type: 'sessions/owner-changed',
-          sessionId: session.id,
-          ownerWindowId: null,
+          sessionId: prevOwnedId,
+          ownerWindowId: myWindowId,
         });
-        if (prevOwnedId && prevOwnedId !== session.id) {
-          dispatch({
-            type: 'sessions/owner-changed',
-            sessionId: prevOwnedId,
-            ownerWindowId: myWindowId,
-          });
-        }
-        dispatch({ type: 'view/select-session', sessionId: prevOwnedId });
-      });
+      }
+      dispatch({ type: 'view/select-session', sessionId: prevOwnedId });
+    });
   };
 
   // ADR-008:currentCwd 与 originalCwd 不一致时显示 ⚠️ tooltip 真实 cwd。
@@ -1142,9 +1135,7 @@ function SessionItemImpl({
         )}
         {session.state === 'exited' &&
           typeof session.exitCode === 'number' &&
-          session.exitCode !== 0 && (
-            <X size={9} className="session-state-dot-icon fail" />
-          )}
+          session.exitCode !== 0 && <X size={9} className="session-state-dot-icon fail" />}
       </span>
       {renaming ? (
         <input
@@ -1174,10 +1165,7 @@ function SessionItemImpl({
         </span>
       )}
       {session.state === 'exited' && !renaming && (
-        <span
-          className="session-exit-code"
-          title={`已退出 (exitCode=${session.exitCode ?? 0})`}
-        >
+        <span className="session-exit-code" title={`已退出 (exitCode=${session.exitCode ?? 0})`}>
           <Icon name="circleDot" size={11} />
         </span>
       )}

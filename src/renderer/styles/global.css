@@ -3612,6 +3612,46 @@ select.settings-input option {
   border-color: var(--color-bg-strong, #f0f);
 }
 
+/* ── Marina Skill installer ─────────────────────────────────────── */
+.skill-install-dialog {
+  width: min(460px, calc(100vw - 32px));
+}
+
+.skill-install-options {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+
+.skill-install-option {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  background-color: var(--color-bg-primary, #f0f);
+  border: 1px solid var(--color-bg-elevated, #f0f);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.skill-install-option:hover {
+  background-color: var(--color-bg-hover, #f0f);
+}
+
+.skill-install-option input {
+  margin: 2px 0 0;
+}
+
+.skill-install-option span {
+  display: grid;
+  gap: 3px;
+}
+
+.skill-install-option code {
+  color: var(--color-text-muted, #f0f);
+  font-size: 11px;
+}
+
 .app-modal-actions {
   display: flex;
   gap: 8px;
