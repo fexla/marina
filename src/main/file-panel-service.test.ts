@@ -218,6 +218,20 @@ describe('FilePanelService - HTTP 鉴权与路由', () => {
     expect(r.status).toBe(401);
   });
 
+  it('GET /health 免鉴权返回 200 (给 marina ping 用)', async () => {
+    // /health 是唯一的免鉴权端点:终端里的 agent 脚本(marina.ps1 ping)
+    // 在未注入 MARINA_TOKEN 时也要能探活,否则无法和"Marina 没在跑"区分。
+    const r = await fetch(`${baseUrl}/health`);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { ok: boolean; marina: boolean };
+    expect(body).toEqual({ ok: true, marina: true });
+  });
+
+  it('GET /health 带 token 也 200 (不破坏鉴权流程)', async () => {
+    const r = await fetch(`${baseUrl}/health`, { headers: authHeaders() });
+    expect(r.status).toBe(200);
+  });
+
   it('错 token → 401', async () => {
     const r = await fetch(`${baseUrl}/opening-files?terminal=s1`, {
       headers: { Authorization: 'Bearer wrong' },

@@ -540,13 +540,23 @@ export class FilePanelService extends EventEmitter {
   // ────────────────────────────────────────────────────────────────
 
   private handle(req: IncomingMessage, res: ServerResponse): void {
-    // 所有接口都要鉴权(包括 GET)。先校验 token,再路由。
+    const u = new URL(req.url ?? '/', this.baseUrl ?? `http://${HOST}`);
+    const method = req.method ?? 'GET';
+
+    // GET /health 是唯一的免鉴权端点:纯存活探测,给终端里跑的 agent 脚本
+    // (marina ping)用。必须放在 checkAuth 之前 —— 否则未注入 MARINA_TOKEN
+    // 的进程探不到活,无法和"Marina 没在跑"区分。返回体不含敏感信息;
+    // HTTP 只绑 127.0.0.1 已是第一道防线(见文件头"安全面收口")。
+    if (method === 'GET' && u.pathname === '/health') {
+      this.send(res, 200, { ok: true, marina: true });
+      return;
+    }
+
+    // 其余所有接口都要鉴权(包括 GET)。先校验 token,再路由。
     if (!this.checkAuth(req)) {
       this.send(res, 401, { error: 'unauthorized: invalid or missing token' });
       return;
     }
-    const u = new URL(req.url ?? '/', this.baseUrl ?? `http://${HOST}`);
-    const method = req.method ?? 'GET';
     const terminal = u.searchParams.get('terminal') ?? undefined;
 
     // GET /opening-files?terminal=<id>
