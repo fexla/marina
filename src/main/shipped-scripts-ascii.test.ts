@@ -24,10 +24,11 @@
  *   we cannot guarantee. Pure ASCII is the only stable rule.
  *
  * Scope:
- *   All Windows script files (.ps1 and .bat) under src/shell-hooks/ and
- *   scripts/ that get bundled into the installer via extraResources in
- *   electron-builder.yml. If you add a new .ps1 / .bat to that pipeline,
- *   add it to LOCALE_SENSITIVE_FILES below.
+ *   All Windows script files (.ps1 / .cmd / .bat) under src/shell-hooks/,
+ *   src/skills/show-in-marina/, and scripts/ that get bundled into the
+ *   installer via extraResources in electron-builder.yml. If you add a new
+ *   .ps1 / .cmd / .bat to that pipeline, add it to LOCALE_SENSITIVE_FILES
+ *   below.
  *
  *   .sh / .fish files are out of scope — POSIX shells treat `#` comments
  *   as opaque until newline, so non-ASCII bytes in comments cannot
@@ -56,6 +57,10 @@ const LOCALE_SENSITIVE_FILES = [
   'src/shell-hooks/cmd.bat',
   'scripts/install-context-menu.ps1',
   'scripts/uninstall-context-menu.ps1',
+  // show-in-marina skill ships to user projects via skill-installer (cp of
+  // src/skills/show-in-marina) and is parsed by powershell.exe / cmd.exe.
+  'src/skills/show-in-marina/marina.ps1',
+  'src/skills/show-in-marina/marina.cmd',
 ] as const;
 
 const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);

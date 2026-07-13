@@ -67,3 +67,9 @@ EasyTerm-userdata-*/
 
 # Local PR review notes / drafts — not for upstream
 docs/pr-reviews/
+
+# Python bytecode caches produced by marina-cli-mock-server.py during the
+# CLI integration tests. The production skill is PowerShell-only (no .py);
+# Python appears here solely as the test mock-server runtime.
+__pycache__/
+*.pyc
