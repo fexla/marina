@@ -1,62 +1,100 @@
 ---
 name: show-in-marina
-description: Use Marina's terminal-side file panel to show the user Markdown, text, code, or image results. Use after producing a report, plan, review, research result, or other artifact worth reading outside chat. Requires MARINA_SERVICE.
+description: Use Marina's terminal-side file panel to show the user Markdown, text, code, or image results. Use after producing a report, plan, review, research result, or other artifact worth reading outside chat. Requires Marina (the CLI checks; do not read env vars yourself).
 ---
 
 # Show files in Marina
 
-Use this skill to place a result in the active terminal's Marina file panel instead of pasting a long document into chat.
+Place a result in the active terminal's Marina file panel instead of pasting a
+long document into chat. This skill ships a small Windows CLI, `marina.cmd`,
+that handles env vars, HTTP, UTF-8 encoding, and Bearer auth for you.
 
-## Check the environment
+## How to invoke the CLI (important)
 
-Marina provides these variables to every terminal session:
+`marina.cmd` lives **in the same directory as this SKILL.md**. Always invoke it
+by that path — never assume a bare `marina` is on PATH (it is not), and never
+modify PATH or create a launcher elsewhere. Resolve `marina.cmd` next to this
+SKILL.md and call that explicit path.
 
-- `MARINA_SERVICE` — local HTTP base URL
-- `MARINA_TOKEN` — Bearer token
-- `TERMINAL_ID` — active terminal session identifier
-- `MARINA_WORKSPACE` — session-owned temporary directory for display artifacts
+In PowerShell, from the directory containing this SKILL.md:
 
-Only call the API when `MARINA_SERVICE` is non-empty:
-
-```bash
-[ -n "$MARINA_SERVICE" ] && echo ok || echo "not-in-marina"
+```powershell
+.\marina.cmd ping
 ```
 
-## Create a display artifact
+From any other working directory, pass the resolved path explicitly:
 
-Prefer the session-owned temporary directory for non-project artifacts. It avoids polluting the repository and Marina retains it after the terminal closes for the configured period (seven days by default).
-
-```bash
-SHOW_DIR="${MARINA_WORKSPACE:-${TEMP:-/tmp}/pi-marina}"
-[ -n "$MARINA_WORKSPACE" ] || mkdir -p "$SHOW_DIR"
-FILE="$SHOW_DIR/session-summary.md"
-
-cat > "$FILE" <<'EOF'
-# Work summary
-
-- Result one
-- Result two
-EOF
+```powershell
+& "<path-to-this-skill-directory>\marina.cmd" ping
 ```
 
-`MARINA_WORKSPACE` is temporary. Do not put the only copy of a deliverable, a project file, or a long-lived archive there. Use the selected project’s `docs/` directory for deliverables that belong in source control.
+The examples below use `.\marina.cmd` for brevity; substitute the resolved path
+when your working directory differs.
 
-## Open the file in the panel
+**Do not** call `curl`, `Invoke-RestMethod`, or read `$MARINA_SERVICE` /
+`$MARINA_TOKEN` yourself. The CLI is the only supported entry point.
 
-Use an absolute path. For paths containing non-ASCII text, pipe JSON through `--data-binary` so Windows curl does not re-encode it.
+## Quick check: am I in Marina?
 
-```bash
-printf '{"terminal":"%s","path":"%s"}' "$TERMINAL_ID" "$FILE" \
-  | curl -sS "$MARINA_SERVICE/open-file" \
-      -H "Authorization: Bearer $MARINA_TOKEN" \
-      -H "Content-Type: application/json" \
-      --data-binary @-
+```powershell
+.\marina.cmd ping
 ```
 
-Marina automatically refreshes an opened file when it changes. Reuse a stable filename such as `session-summary.md` while iterating, rather than opening many tabs.
+The exit code tells you what to do:
 
-## Limits
+- `0` → Marina is online. You can `show` results to the panel.
+- `1` → not in a Marina terminal, the file panel is disabled, or the reachable
+  service did not return the Marina health marker. Fall back to a concise
+  result in chat.
 
-- Markdown, text/code, and images are supported.
-- Text is limited to 2 MB; images are limited to 10 MB.
+## Show a result
+
+There is **no stdin mode** and **no `--as` option**. Piping content through
+stdin is unreliable on Windows PowerShell 5.1 (the parent pipeline re-encodes
+bytes to the console code page before the CLI sees them, corrupting non-ASCII).
+Instead:
+
+1. Write the artifact to a file with your normal file-writing tool, as UTF-8
+   (no BOM). Source-controlled deliverables belong in the project's `docs/`;
+   throwaway display-only artifacts can go in the system temp directory.
+2. Show that file's path:
+
+```powershell
+.\marina.cmd show .\docs\architecture-review.md
+```
+
+To iterate, overwrite the same file and re-run `show` with the same path — the
+panel refreshes that tab in place instead of stacking a new one.
+
+`-q` / `--quiet` suppresses the success line:
+
+```powershell
+.\marina.cmd show --quiet .\docs\architecture-review.md
+```
+
+## Other commands
+
+```powershell
+.\marina.cmd list              # files open in this terminal's panel
+.\marina.cmd list --json       # machine-readable output
+.\marina.cmd close .\docs\architecture-review.md   # close a file in the panel
+```
+
+## Exit codes
+
+| code | meaning                                          | what to do                       |
+|------|-------------------------------------------------|----------------------------------|
+| 0    | success                                         | continue                         |
+| 1    | Marina offline / not in Marina / panel disabled / health marker missing | paste result in chat |
+| 2    | usage error (unknown option, missing path, unknown command) | fix the command        |
+| 3    | Marina online but rejected (file missing, not a regular file, ...) | read stderr   |
+
+## Notes
+
+- Supported content: Markdown, text/code, images. Text over 2 MB is truncated
+  in the preview; images over 10 MB are rejected at preview time.
 - The panel complements a concise chat summary; it does not replace one.
+- How the CLI finds the panel: it reads `MARINA_SERVICE` / `MARINA_TOKEN` /
+  `TERMINAL_ID` that Marina injects into the session. If any required var is
+  missing the command fails with exit 1 — there is **no** port-scanning or
+  address fallback, so a silent misroute cannot happen.
