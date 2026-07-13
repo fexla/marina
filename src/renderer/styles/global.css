@@ -719,6 +719,67 @@
   /* Layer 3 故意省略;深色,不需要 color-scheme 显式声明 */
 }
 
+/* GitHub Light — GitHub Primer 默认浅色配色
+ * 调色板出处:Primer Design System (github/primitives)
+ * 核心色:canvas #ffffff / subtle #f6f8fa / fg #1f2328 / accent #0969da
+ * 所有 text-* 在 #ffffff 上 ≥4.5:1 (WCAG AA) */
+[data-theme='github-light'] {
+  /* Layer 2 — Semantic;直接采用 Primer hex,无独立 Layer 1 调色板词汇 */
+  --color-bg-primary: #ffffff; /* canvas.default */
+  --color-bg-secondary: #f6f8fa; /* canvas.subtle */
+  --color-bg-elevated: #eaeef2; /* 浮卡 / 菜单 / 弹窗底 */
+  --color-bg-hover: #f3f4f6; /* neutral hover */
+  --color-bg-active: #ddf4ff; /* accent.subtle — 选中态蓝调 */
+  --color-bg-strong: #d0d7de; /* border.default — 滚动条 thumb */
+  --color-text-primary: #1f2328; /* fg.default */
+  --color-text-secondary: #59636e; /* fg.muted ≥6:1 */
+  --color-text-muted: #6e7781; /* fg.subtle ~4.6:1 */
+  --color-danger: #cf222e; /* danger.fg */
+  --color-warning: #9a6700; /* attention.fg(深琥珀,浅底可读) */
+  --color-success: #1a7f37; /* success.fg */
+  --color-info: #0969da; /* accent.fg */
+  --color-accent-secondary: #8250df; /* done.fg(紫) */
+  --color-accent-special: #0969da; /* accent.fg(主强调) */
+
+  /* Layer 3 故意省略 — 全代码库零消费者 */
+
+  color-scheme: light;
+}
+
+/* GitHub Dark — GitHub Primer 默认深色配色
+ * 调色板出处:Primer Design System (github/primitives, dark variant)
+ * 核心色:canvas #0d1117 / subtle #161b22 / fg #e6edf3 / accent #2f81f7 */
+[data-theme='github-dark'] {
+  /* Layer 2 — Semantic;直接采用 Primer hex */
+  --color-bg-primary: #0d1117; /* canvas.default */
+  --color-bg-secondary: #161b22; /* canvas.subtle */
+  --color-bg-elevated: #1c2128; /* 浮卡 / 菜单 / 弹窗底 */
+  --color-bg-hover: #21262d; /* border.muted — hover */
+  --color-bg-active: #30363d; /* border.default — 选中态 */
+  --color-bg-strong: #484f58; /* neutral — 滚动条 thumb */
+  --color-text-primary: #e6edf3; /* fg.default */
+  --color-text-secondary: #7d8590; /* fg.muted */
+  --color-text-muted: #6e7681; /* fg.subtle */
+  --color-danger: #ff7b72; /* danger.fg */
+  --color-warning: #d29922; /* attention.fg */
+  --color-success: #3fb950; /* success.fg */
+  --color-info: #2f81f7; /* accent.fg */
+  --color-accent-secondary: #a371f7; /* done.fg(紫) */
+  --color-accent-special: #2f81f7; /* accent.fg(主强调) */
+
+  /* Layer 3 故意省略 — 全代码库零消费者;深色,不需要 color-scheme 显式声明 */
+}
+
+/* GitHub 主题本地化:GitHub 的普通内容标题沿用正文前景色,蓝色只承担链接、
+ * 选中、焦点和品牌等交互强调。不要直接改 --color-accent-special,否则会让
+ * 活跃导航、按钮焦点和 Markdown 链接失去 GitHub 蓝的视觉层级。 */
+[data-theme='github-light'] .settings-panel-title,
+[data-theme='github-light'] .welcome-state h2,
+[data-theme='github-dark'] .settings-panel-title,
+[data-theme='github-dark'] .welcome-state h2 {
+  color: var(--color-text-primary, #f0f);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -4115,6 +4176,10 @@ select.settings-input option {
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none' stroke='%23736a6d' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='1.5,1.5 6,6 10.5,1.5'/></svg>");
 }
 
+[data-theme='github-light'] select.settings-input {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none' stroke='%236e7781' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='1.5,1.5 6,6 10.5,1.5'/></svg>");
+}
+
 /* B8 + BETA-037:浅色主题阴影减淡。
  * 原硬编码 rgb(0 0 0 / 28-45%) 在浅底上呈"墨水块",调到 12-22% 减少视觉重量。
  * 深色主题阴影不动(28-45% 在深底正好融入)。
@@ -4128,7 +4193,8 @@ select.settings-input option {
 [data-theme='cutie'] .ctx-menu,
 [data-theme='catppuccin-latte'] .ctx-menu,
 [data-theme='tokyo-night-day'] .ctx-menu,
-[data-theme='light-pink'] .ctx-menu {
+[data-theme='light-pink'] .ctx-menu,
+[data-theme='github-light'] .ctx-menu {
   box-shadow: 0 6px 18px rgb(0 0 0 / 14%);
 }
 
@@ -4138,7 +4204,8 @@ select.settings-input option {
 [data-theme='cutie'] .app-modal-backdrop,
 [data-theme='catppuccin-latte'] .app-modal-backdrop,
 [data-theme='tokyo-night-day'] .app-modal-backdrop,
-[data-theme='light-pink'] .app-modal-backdrop {
+[data-theme='light-pink'] .app-modal-backdrop,
+[data-theme='github-light'] .app-modal-backdrop {
   background-color: rgb(0 0 0 / 22%);
 }
 
@@ -4146,7 +4213,8 @@ select.settings-input option {
 [data-theme='cutie'] .app-modal-panel,
 [data-theme='catppuccin-latte'] .app-modal-panel,
 [data-theme='tokyo-night-day'] .app-modal-panel,
-[data-theme='light-pink'] .app-modal-panel {
+[data-theme='light-pink'] .app-modal-panel,
+[data-theme='github-light'] .app-modal-panel {
   box-shadow: 0 12px 36px rgb(0 0 0 / 18%);
 }
 
@@ -4155,11 +4223,13 @@ select.settings-input option {
 [data-theme='catppuccin-latte'] .toast,
 [data-theme='tokyo-night-day'] .toast,
 [data-theme='light-pink'] .toast,
+[data-theme='github-light'] .toast,
 [data-theme='rose-pine-dawn'] .terminal-search-bar,
 [data-theme='cutie'] .terminal-search-bar,
 [data-theme='catppuccin-latte'] .terminal-search-bar,
 [data-theme='tokyo-night-day'] .terminal-search-bar,
-[data-theme='light-pink'] .terminal-search-bar {
+[data-theme='light-pink'] .terminal-search-bar,
+[data-theme='github-light'] .terminal-search-bar {
   box-shadow: 0 4px 16px rgb(0 0 0 / 14%);
 }
 
@@ -4167,7 +4237,8 @@ select.settings-input option {
 [data-theme='cutie'] .bootstrap-placeholder,
 [data-theme='catppuccin-latte'] .bootstrap-placeholder,
 [data-theme='tokyo-night-day'] .bootstrap-placeholder,
-[data-theme='light-pink'] .bootstrap-placeholder {
+[data-theme='light-pink'] .bootstrap-placeholder,
+[data-theme='github-light'] .bootstrap-placeholder {
   box-shadow: 0 4px 24px rgb(0 0 0 / 12%);
 }
 

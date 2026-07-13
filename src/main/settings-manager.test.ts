@@ -273,6 +273,8 @@ describe('SettingsManager — update', () => {
     'business',
     'ubuntu',
     'windows-terminal',
+    'github-light',
+    'github-dark',
   ] as const)('合法主题 %s 通过校验', async (theme) => {
     const { mgr } = makeManager();
     await mgr.initialize();

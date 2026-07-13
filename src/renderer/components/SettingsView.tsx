@@ -701,6 +701,9 @@ const THEMES: Array<{ id: ThemeId; label: string; tone: '深色' | '浅色'; not
   { id: 'tokyo-night-day', label: 'Tokyo Night Day', tone: '浅色' },
   { id: 'catppuccin-mocha', label: 'Catppuccin Mocha', tone: '深色' },
   { id: 'catppuccin-latte', label: 'Catppuccin Latte', tone: '浅色' },
+  // GitHub Primer 配色(官方辨识度高的明暗一套)
+  { id: 'github-light', label: 'GitHub Light', tone: '浅色' },
+  { id: 'github-dark', label: 'GitHub Dark', tone: '深色' },
 ];
 
 function AppearancePanel({ setError }: { setError: (msg: string | null) => void }): JSX.Element {

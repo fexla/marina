@@ -150,7 +150,7 @@ function buildLightExtendedAnsi(): string[] {
 const LIGHT_EXTENDED_ANSI = buildLightExtendedAnsi();
 
 /**
- * 7 套主题对应的 xterm theme 颜色 (软件定义书 5.1.9)。
+ * 各主题对应的 xterm theme 颜色 (软件定义书 5.1.9)。
  * 与 global.css 的 [data-theme="..."] CSS 变量同源,任何主题变更都需
  * 同时更新这两处。
  */
@@ -531,6 +531,63 @@ const XTERM_THEMES: Record<ThemeId, ITheme> = {
     brightMagenta: '#ffb8d1',
     brightCyan: '#c2ffdf',
     brightWhite: '#ffffff',
+  },
+  // GitHub Light — GitHub Primer 默认浅色配色 (github/primitives)
+  // 与 global.css [data-theme='github-light'] 同源;extendedAnsi 走浅色表,
+  // 自动开启 minimumContrastRatio=4.5 对比度兜底。
+  // ANSI 正常色采用 Primer fg 色,bright 系与 normal 同色(浅底上无需更亮),
+  // brightBlack(brightMuted 用于 dimmed 文本)用 fg.subtle,brightWhite
+  // 用 fg.default 做最深强调。
+  'github-light': {
+    background: '#ffffff',
+    foreground: '#1f2328',
+    cursor: '#1f2328',
+    cursorAccent: '#ffffff',
+    selectionBackground: '#ddf4ff',
+    black: '#24292f',
+    red: '#cf222e',
+    green: '#1a7f37',
+    yellow: '#9a6700',
+    blue: '#0969da',
+    magenta: '#8250df',
+    cyan: '#1b7c83',
+    white: '#59636e',
+    brightBlack: '#6e7781',
+    brightRed: '#cf222e',
+    brightGreen: '#1a7f37',
+    brightYellow: '#9a6700',
+    brightBlue: '#0969da',
+    brightMagenta: '#8250df',
+    brightCyan: '#1b7c83',
+    brightWhite: '#1f2328',
+    extendedAnsi: LIGHT_EXTENDED_ANSI,
+  },
+  // GitHub Dark — GitHub Primer 默认深色配色 (github/primitives, dark variant)
+  // 与 global.css [data-theme='github-dark'] 同源。
+  // ANSI 色采用 Primer dark fg 色,bright 系取 Primer 的 brighter 变体
+  // (accent/attention/success 等的 emphasis 色),在 #0d1117 上对比充足。
+  'github-dark': {
+    background: '#0d1117',
+    foreground: '#e6edf3',
+    cursor: '#e6edf3',
+    cursorAccent: '#0d1117',
+    selectionBackground: '#264f78',
+    black: '#484f58',
+    red: '#ff7b72',
+    green: '#3fb950',
+    yellow: '#d29922',
+    blue: '#58a6ff',
+    magenta: '#bc8cff',
+    cyan: '#39c5cf',
+    white: '#b1bac4',
+    brightBlack: '#6e7681',
+    brightRed: '#ffa198',
+    brightGreen: '#56d364',
+    brightYellow: '#e3b341',
+    brightBlue: '#79c0ff',
+    brightMagenta: '#d2a8ff',
+    brightCyan: '#56d4dd',
+    brightWhite: '#f0f6fc',
   },
 };
 

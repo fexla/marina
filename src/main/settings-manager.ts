@@ -139,6 +139,9 @@ const VALID_THEMES: ThemeId[] = [
   'tokyo-night-day',
   'light-pink',
   'fairyfloss',
+  // GitHub Primer 配色
+  'github-light',
+  'github-dark',
 ];
 
 /**

@@ -101,7 +101,10 @@ export type ThemeId =
   | 'catppuccin-latte'
   | 'tokyo-night-day'
   | 'light-pink'
-  | 'fairyfloss';
+  | 'fairyfloss'
+  // GitHub Primer 配色(官方辨识度高的明暗一套)
+  | 'github-light'
+  | 'github-dark';
 
 /**
  * 窗口外观风格 (M1-A 引入,Milestone 1)。
