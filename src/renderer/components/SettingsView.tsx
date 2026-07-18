@@ -3245,6 +3245,50 @@ function AdvancedPanel({ setError }: { setError: (msg: string | null) => void })
         </select>
       </SettingRow>
 
+      {/* v0.3.0 (ADR-017):Git 面板开关。false 时右 dock 不出现「Git」tab。 */}
+      <SettingRow
+        label={tx('启用 Git 面板', 'Enable Git panel')}
+        hint={tx(
+          '勾选后,当前 session 的 cwd 在 Git 仓库内时,右 dock 会出现「Git」tab 列出工作区变更(只读:浏览变更 + 看 diff,不做 stage/commit/push)。不勾则完全不出现。cd 进/出仓库会动态出现/消失。',
+          'When on, sessions whose cwd is inside a Git repository show a "Git" tab in the right dock listing working-tree changes (read-only: browse changes + view diffs; no stage/commit/push). When off, the tab never appears. Tab appears/disappears dynamically as you cd in/out of a repo.',
+        )}
+      >
+        <label className="settings-checkbox">
+          <input
+            type="checkbox"
+            checked={adv?.enableGitPanel === true}
+            onChange={(e) =>
+              void updateSettings(
+                { advanced: { enableGitPanel: e.target.checked } },
+                setError,
+              )
+            }
+          />
+          <span>{tx('显示 Git 变更面板', 'Show Git changes panel')}</span>
+        </label>
+      </SettingRow>
+
+      <SettingRow
+        label={tx('Git 二进制路径', 'Git binary path')}
+        hint={tx(
+          'Git 面板调系统 git 二进制读 status/diff。空 = 用 PATH 里的 git(Windows 装了 Git for Windows 通常就行)。如果「Git」tab 不出现且你确信在仓库内,在此显式指定,如 C:\\Program Files\\Git\\bin\\git.exe。',
+          'The Git panel calls the system git binary to read status/diff. Empty = use git from PATH (usually works once Git for Windows is installed). If the "Git" tab fails to appear while you are sure you are inside a repository, specify the path explicitly, e.g. C:\\Program Files\\Git\\bin\\git.exe.',
+        )}
+      >
+        <input
+          type="text"
+          className="settings-input"
+          value={adv?.gitBinaryPath ?? ''}
+          placeholder={tx('留空 = 用 PATH 里的 git', 'Empty = use git from PATH')}
+          onChange={(e) =>
+            void updateSettings(
+              { advanced: { gitBinaryPath: e.target.value } },
+              setError,
+            )
+          }
+        />
+      </SettingRow>
+
       <SettingRow
         label={tx('重置所有设置', 'Reset all settings')}
         hint={tx(
