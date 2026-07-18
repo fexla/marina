@@ -22,7 +22,7 @@
  * - 自动刷新:每个已打开文件起 fs.watch,200ms 防抖;变更 → 重 stat 更新
  *   mtimeMs/size → emit。renderer 的 viewer 把 mtimeMs 列入 effect 依赖,
  *   变化即重新 read,实现"文件改了面板自动刷新"。
- * - 大小上限:text/markdown 2MB(超出截断 + truncated 标记,镜像 scrollback
+ * - 大小上限:text/markdown/diff 2MB(超出截断 + truncated 标记,镜像 scrollback
  *   ring 的尾部裁切哲学);image 10MB(超出拒绝,避免 base64 撑爆 IPC)。
  *
  * @SSH 限制:SSH 会话的 currentCwd 是远程路径,且远程进程根本到不了本机
@@ -318,7 +318,7 @@ export class FilePanelService extends EventEmitter {
       const mime = IMAGE_MIME[ext] ?? 'application/octet-stream';
       return { kind: 'image', dataUrl: `data:${mime};base64,${buf.toString('base64')}`, mime };
     }
-    // text / markdown
+    // text / markdown / diff(三种同为 UTF-8 读路径,diff 由 renderer 高亮)
     const buf = await fs.readFile(abs);
     const truncated = buf.byteLength > MAX_READ_TEXT_BYTES;
     const text = truncated

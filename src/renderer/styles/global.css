@@ -2152,6 +2152,116 @@ html[data-maximized='true'] .app-root.with-shell {
   font-style: italic;
 }
 
+/* ─────────────────────────────────────────────────────────────────
+ * DiffViewer(方案-diff高亮-20260719.md 方案 B / ADR-017)
+ * 行级底色用 color-mix + 主题色变量,7 套主题(rose-pine/dawn/moon/cutie/
+ * business/ubuntu/windows-terminal)自适应。浓度 16%:深浅主题都不刺眼。
+ * ───────────────────────────────────────────────────────────────── */
+.diff-viewer {
+  margin: 0;
+  font-family: ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-primary, #f0f);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.diff-line {
+  display: block;
+  min-height: 1.5em; /* 空行也占高,保对齐 */
+  padding-left: 0.5ch;
+}
+
+/* 行首 +/- 符号槽:固定宽 + user-select:none → 选中复制行内容不带符号 */
+.diff-line-sign {
+  display: inline-block;
+  width: 1.5ch;
+  flex: 0 0 1.5ch;
+  color: var(--color-text-muted, #f0f);
+  user-select: none;
+  opacity: 0.55; /* 信息已在行底色,符号弱化避免刺眼 */
+}
+
+.diff-line-body {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* add:绿底(复用 --color-success) */
+.diff-line-add {
+  background-color: color-mix(in srgb, var(--color-success, #4d8a5e) 16%, transparent);
+}
+
+.diff-line-add .diff-line-sign {
+  color: var(--color-success, #4d8a5e);
+  opacity: 0.85;
+}
+
+/* del:红底(复用 --color-danger) */
+.diff-line-del {
+  background-color: color-mix(in srgb, var(--color-danger, #e91e63) 16%, transparent);
+}
+
+.diff-line-del .diff-line-sign {
+  color: var(--color-danger, #e91e63);
+  opacity: 0.85;
+}
+
+/* hunk header @@ ... @@:蓝/info 色 + 淡蓝底 + 粗体 */
+.diff-line-hunk {
+  color: var(--color-info, #b89cd9);
+  background-color: color-mix(in srgb, var(--color-info, #b89cd9) 10%, transparent);
+  font-weight: 600;
+}
+
+.diff-line-hunk .diff-line-sign {
+  color: transparent;
+}
+
+/* file header(diff --git / --- / +++):粗体,无特别底色 */
+.diff-line-header {
+  font-weight: 600;
+  color: var(--color-text-primary, #f0f);
+}
+
+.diff-line-header .diff-line-sign {
+  color: transparent;
+}
+
+/* meta(index / Binary files / mode 等):淡灰,弱化 */
+.diff-line-meta {
+  color: var(--color-text-muted, #f0f);
+}
+
+.diff-line-meta .diff-line-sign {
+  color: transparent;
+}
+
+/* "\ No newline at end of file":淡灰斜体 */
+.diff-line-nl {
+  color: var(--color-text-muted, #f0f);
+  font-style: italic;
+}
+
+.diff-line-nl .diff-line-sign {
+  color: transparent;
+}
+
+/* ctx(未变行):默认色,无底色。符号槽透明。 */
+.diff-line-ctx .diff-line-sign {
+  color: transparent;
+}
+
+/* highlight.js 的行内 token 类(对 diff 基本被行底色覆盖,但保留以防未来切到
+ * 带语法着色的代码 diff —— 那时这些类会生效)。默认透明以免与行底色冲突。 */
+.diff-line-body .hljs-addition,
+.diff-line-body .hljs-deletion,
+.diff-line-body .hljs-meta,
+.diff-line-body .hljs-comment {
+  background: transparent;
+}
+
 .md-img-error,
 .md-img-loading {
   color: var(--color-text-muted, #f0f);

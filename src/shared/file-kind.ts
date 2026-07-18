@@ -179,8 +179,9 @@ const TEXT_NO_EXT = new Set([
   '.dockerignore',
 ]);
 
-/** v0.3.0:diff/patch 文件归 text(纯文本渲染,+/− 前缀天然有视觉区分)。
- * 语法高亮增强(DiffViewer 组件)留待 v0.3.1 用户反馈后再加,避免过度工程。 */
+/** v0.3.0:diff/patch/rej 文件归 'diff',由 DiffViewer 用 highlight.js
+ * (diff 语言)做行级着色(add=绿底/del=红底/hunk=蓝/meta=淡灰)。
+ * 与方案-diff高亮-20260719.md 方案 B 一致;词级/并排视图明确不做(§13.2)。 */
 const DIFF_EXT = new Set(['diff', 'patch', 'rej']);
 
 /**
@@ -214,6 +215,6 @@ export function detectFileKind(fileName: string): FileKind {
   if (MARKDOWN_EXT.has(ext)) return 'markdown';
   if (IMAGE_EXT.has(ext)) return 'image';
   if (TEXT_EXT.has(ext)) return 'text';
-  if (DIFF_EXT.has(ext)) return 'text';
+  if (DIFF_EXT.has(ext)) return 'diff';
   return 'unknown';
 }

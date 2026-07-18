@@ -826,7 +826,7 @@ export interface SessionRuntimeShape {
  * 'web' 是为未来网页预览(本地 HTML / 远程 URL)预留的槽位,本轮 detectFileKind
  * 不会返回它;FileViewer 里有对应分支但渲染占位提示。
  */
-export type FileKind = 'text' | 'markdown' | 'image' | 'unknown';
+export type FileKind = 'text' | 'markdown' | 'image' | 'diff' | 'unknown';
 
 /**
  * 一个"已打开"文件的元数据。**不含文件内容** —— 内容按需由 renderer 通过

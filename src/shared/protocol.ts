@@ -1314,12 +1314,13 @@ export type ReadImageResponse = { dataUrl: string } | { error: string };
 
 /**
  * cmd:file-panel:read 返回。按 kind 区分内容载体:
- * - text/markdown:UTF-8 字符串(超 MAX_READ_TEXT_BYTES 截断,truncated=true)
+ * - text/markdown/diff:UTF-8 字符串(超 MAX_READ_TEXT_BYTES 截断,truncated=true)
+ *   diff 由 renderer DiffViewer 用 highlight.js 做行级着色(方案-diff高亮.md B)
  * - image:base64 dataUrl(可直接喂 <img src>),mime 供调试/未来按类型优化
  * - unknown:文件类型不支持预览(二进制 / 陌生扩展名)
  */
 export type ReadFileResponse =
-  | { kind: 'text' | 'markdown'; text: string; truncated: boolean }
+  | { kind: 'text' | 'markdown' | 'diff'; text: string; truncated: boolean }
   | { kind: 'image'; dataUrl: string; mime: string }
   | { kind: 'unknown'; message: string };
 

@@ -11,6 +11,7 @@ import { useTranslation } from '../LanguageProvider';
 import { TextViewer } from './TextViewer';
 import { MarkdownViewer } from './MarkdownViewer';
 import { ImageViewer } from './ImageViewer';
+import { DiffViewer } from './DiffViewer';
 
 interface FileViewerProps {
   sessionId: string;
@@ -25,6 +26,8 @@ export function FileViewer({ sessionId, file }: FileViewerProps): JSX.Element {
       return <MarkdownViewer sessionId={sessionId} file={file} />;
     case 'image':
       return <ImageViewer sessionId={sessionId} file={file} />;
+    case 'diff':
+      return <DiffViewer sessionId={sessionId} file={file} />;
     case 'unknown':
       return <UnknownView file={file} />;
     default:

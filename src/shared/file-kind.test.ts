@@ -65,4 +65,16 @@ describe('detectFileKind', () => {
     expect(detectFileKind('archive.tar.gz')).toBe('unknown'); // gz 不在文本表
     expect(detectFileKind('src/app.component.ts')).toBe('text');
   });
+
+  it('diff/patch/rej 扩展名归 diff(v0.3.0,ADR-017,由 DiffViewer 高亮)', () => {
+    expect(detectFileKind('change.diff')).toBe('diff');
+    expect(detectFileKind('pr.patch')).toBe('diff');
+    expect(detectFileKind('rejected.rej')).toBe('diff');
+    // 大小写不敏感
+    expect(detectFileKind('CHANGE.DIFF')).toBe('diff');
+    // 多段名取最后一段
+    expect(detectFileKind('0001-fix-bug.patch')).toBe('diff');
+    // diff 优先于 text(这些扩展名不被 TEXT_EXT 吃掉)
+    expect(detectFileKind('a/b/c.diff')).toBe('diff');
+  });
 });

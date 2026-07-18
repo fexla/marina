@@ -8,6 +8,7 @@
 
 - **Git 变更浏览面板（ADR-017）。** 当前终端 session 的 cwd 在 Git 仓库内时，右侧 dock 自动出现「Git」tab，列出工作区变更（modified / added / deleted / renamed / untracked / conflict），点文件跳「已打开」面板查看 unified diff。**动态 LayoutNode**：cd 进/出仓库时该 tab 自动出现/消失，非仓库 cwd 不会显示空状态文案——评审裁决直接不渲染 tab。严格**只读**：只调 `git status` / `git diff`，**永远不做** stage / commit / push / pull / fetch / merge / rebase / stash / branch / checkout / log / blame 等 Git 管理操作（§13.2 / §14.6）。SSH session 不支持（不引入远端 git 协议）；`advanced.enableGitPanel = false` 时 tab 永不出现（视野守护，与 `advanced.enableRemote` 同构）。
 - **文件条目统一抽象。** 右 dock 三面板（文件 / Git / 已打开）的文件条目在代码层统一为 `<FileListRow>`：左键行为由所在面板注入（展开目录 / 打开 diff / 切 tab），右键菜单统一走既有 `ContextMenu`（打开 / 复制路径 / 在 Explorer 中显示 / 关闭其他 / 关闭所有 等）。diff 临时文件入 `MARINA_WORKSPACE/__marina_diff__/`，随 session 回收。
+- **diff 行级语法高亮（方案 B）。** 新增 `FileKind = 'diff'` 与 `DiffViewer` 组件，用 highlight.js（按需 import core + diff 语言，避免全量 ~600KB）对 unified diff 逐行着色：新增行绿底、删除行红底、hunk header（`@@`）蓝底粗体、file header（`diff --git` / `---` / `+++`）粗体、meta 行淡灰。行首 `+`/`-` 符号独立槽 + `user-select: none`，选中复制不带符号。底色用 `color-mix` + 主题色变量，7 套主题（rose-pine / dawn / moon / cutie / business / ubuntu / windows-terminal）自适应。明确**不做**词级 intra-line word diff、并排 side-by-side、行号 gutter、代码语法着色（§13.2 边界，避免滑向 Git GUI）。
 - **设置项。** 「高级」分类新增「启用 Git 面板」开关（默认开）与「Git 二进制路径」（空 = PATH 查找），即改即生效。
 
 ### 安全

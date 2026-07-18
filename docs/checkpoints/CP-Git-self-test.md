@@ -63,7 +63,12 @@
 
 ## 已知不工作的事(需要开发者关注)
 
-1. **diff 语法高亮未做**。本期 `.diff` 归 text 走 TextViewer 纯文本渲染(+/- 前缀有视觉区分但无高亮)。DiffViewer 增强组件记到 BACKLOG,待用户反馈后做(v0.3.1)。
+1. **diff 语法高亮(行级)已实现**(方案 B,highlight.js 按需 import)。`.diff`/`.patch`/`.rej`
+   归新 `FileKind = 'diff'`,由 `DiffViewer.tsx` 逐行 `hljs.highlight` 做行级着色:
+   add=绿底/del=红底/hunk=蓝/meta=淡灰/file-header=粗体,行首 +/- 符号独立槽
+   (user-select:none → 复制不带符号)。CSP 已含 `style-src 'unsafe-inline'`,hljs 输出
+   纯 class span 无脚本风险。包体积:+~49KB 未压缩(按需 import core+diff,非全量)。
+   **词级 intra-line word diff / 并排 side-by-side / 行号 gutter 明确不做**(§13.2 边界)。
 2. **仓库变更不自动刷新 Git 面板内容**。watcher 的 emit wire 已接好(`evt:git:status-updated`),但 GitService 内部的 fs.watch 暂未启用。当前:用户切回 Git tab 不会自动重拉(需关 tab 重开或切 session)。这是 PRD §5.1.4 的最小可行权衡,watcher 启用后零改动消除该限制。
 3. **跨窗口 owner Git 面板**:窗口 A 持有 session,窗口 B 点 Git tab 会被拒(NotOwner),但错误目前只 console.warn,没弹 toast。file-tree 同样行为,一致性 OK 但体验待优化。
 4. **大量变更(>500)** 列表截断显示「仅显示前 500 项」,但没分页/搜索。极端仓库(改了几千文件)体验差,记 BACKLOG。
