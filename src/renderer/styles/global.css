@@ -2264,13 +2264,97 @@ html[data-maximized='true'] .app-root.with-shell {
   color: transparent;
 }
 
-/* highlight.js 的行内 token 类(对 diff 基本被行底色覆盖,但保留以防未来切到
- * 带语法着色的代码 diff —— 那时这些类会生效)。默认透明以免与行底色冲突。 */
+/* ── highlight.js token 着色(双层高亮的内层)─────────────────────────
+ * 外层 .diff-line-add/del 控制行底色,内层这些 .hljs-* 控制 token 前景色。
+ * 用主题变量映射,一套 CSS 适配 7 套主题(rose-pine/dawn/moon/cutie/business/
+ * ubuntu/windows-terminal)——每个主题的 --color-* 已定义合适色值。
+ *
+ * background:transparent 关键:hljs 自带的主题会给 .hljs-addition 等加底色,
+ * 我们用自己的行底色,必须清掉 hljs 的避免重叠污染。
+ */
 .diff-line-body .hljs-addition,
 .diff-line-body .hljs-deletion,
 .diff-line-body .hljs-meta,
 .diff-line-body .hljs-comment {
   background: transparent;
+}
+
+/* 代码 token 色映射(GitHub 风格调性,但用 Marina 主题变量保证一致性):
+ * - keyword(import/const/if 等):info 蓝(主强调色)
+ * - string/attr:"..." 绿
+ * - number/literal:warning 橙
+ * - comment:// 灰
+ * - function/title:函数名,info 蓝
+ * - type/class/built_in:类型名,success 绿(与 string 区分:通常更深)
+ * - property/variable:默认色
+ * - tag(HTML/XML 标签):info 蓝
+ */
+.diff-line-body .hljs-keyword,
+.diff-line-body .hljs-selector-tag {
+  color: var(--color-info, #b89cd9);
+}
+
+.diff-line-body .hljs-string,
+.diff-line-body .hljs-attr,
+.diff-line-body .hljs-template-string,
+.diff-line-body .hljs-regexp {
+  color: var(--color-success, #4d8a5e);
+}
+
+.diff-line-body .hljs-number,
+.diff-line-body .hljs-literal,
+.diff-line-body .hljs-symbol,
+.diff-line-body .hljs-bullet {
+  color: var(--color-warning, #d99a3a);
+}
+
+.diff-line-body .hljs-comment,
+.diff-line-body .hljs-doctag {
+  color: var(--color-text-muted, #999);
+  font-style: italic;
+}
+
+.diff-line-body .hljs-title,
+.diff-line-body .hljs-title.function_,
+.diff-line-body .hljs-section {
+  color: var(--color-info, #b89cd9);
+  font-weight: 500;
+}
+
+.diff-line-body .hljs-type,
+.diff-line-body .hljs-class .hljs-title,
+.diff-line-body .hljs-built_in {
+  color: var(--color-success, #4d8a5e);
+  font-weight: 500;
+}
+
+.diff-line-body .hljs-property,
+.diff-line-body .hljs-variable,
+.diff-line-body .hljs-variable.constant_,
+.diff-line-body .hljs-params {
+  color: var(--color-text-primary, #f0f);
+}
+
+.diff-line-body .hljs-name,
+.diff-line-body .hljs-tag {
+  color: var(--color-info, #b89cd9);
+}
+
+.diff-line-body .hljs-attribute {
+  color: var(--color-warning, #d99a3a);
+}
+
+.diff-line-body .hljs-meta .hljs-keyword {
+  /* 如 TypeScript 的 import 路径修饰 */
+  color: var(--color-info, #b89cd9);
+}
+
+.diff-line-body .hljs-emphasis {
+  font-style: italic;
+}
+
+.diff-line-body .hljs-strong {
+  font-weight: 700;
 }
 
 .md-img-error,
