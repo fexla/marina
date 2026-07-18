@@ -2135,6 +2135,42 @@ html[data-maximized='true'] .app-root.with-shell {
   padding: 4px 8px;
 }
 
+/* v0.3.0:视图模式 toggle(tree/flat)。面板顶部右侧的图标按钮组。 */
+.git-panel-toolbar {
+  display: flex;
+  gap: 2px;
+  padding: 2px 6px 4px;
+  border-bottom: 1px solid var(--color-bg-elevated, transparent);
+  flex: 0 0 auto; /* 不被滚动区压缩 */
+}
+
+.git-panel-toolbar-btn {
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted, #f0f);
+  padding: 4px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.git-panel-toolbar-btn:hover {
+  background: var(--color-bg-elevated, #f0f);
+  color: var(--color-text-primary, #f0f);
+}
+
+.git-panel-toolbar-btn.active {
+  color: var(--color-info, #f0f);
+  background: color-mix(in srgb, var(--color-info, #b89cd9) 12%, transparent);
+}
+
+/* GitTree:复用 FileListRow(list variant)渲染,本身只提供容器。 */
+.git-tree {
+  padding-top: 2px;
+}
+
 .file-panel-placeholder,
 .file-viewer-loading,
 .file-viewer-error {

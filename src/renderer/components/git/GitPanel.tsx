@@ -19,7 +19,7 @@
  *   mount 先读缓存秒显,后台静默刷新(loading 不覆盖已有 snapshot)。缓存失效由
  *   main 端 evt:git:status-updated(预取/watcher)或本组件 loadStatus 成功驱动。
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   COMMAND_CHANNELS,
   EVENT_CHANNELS,
@@ -29,6 +29,7 @@ import {
   type GitStatusUpdatedPayload,
   type GitUnavailableReason,
 } from '@shared/protocol';
+import { buildGitTree, type GitTreeNode } from '@shared/build-git-tree';
 import { dividerItem } from '../common/fileListRowContextMenu';
 import { FileListRow, type StatusBadge, type StatusTone } from '../common/FileListRow';
 import { Icon } from '../icons';
@@ -41,6 +42,29 @@ import {
   setCachedStatus,
   type GitStatusCacheEntry,
 } from '@shared/git-status-cache';
+import { GitTree } from './GitTree';
+
+/** v0.3.0:树形/平铺视图模式。默认 tree(对齐 VS Code Source Control)。 */
+type GitViewMode = 'tree' | 'flat';
+const VIEW_MODE_STORAGE_KEY = 'marina.git.viewMode';
+const DEFAULT_VIEW_MODE: GitViewMode = 'tree';
+
+function readViewMode(): GitViewMode {
+  try {
+    const v = localStorage.getItem(VIEW_MODE_STORAGE_KEY);
+    return v === 'flat' || v === 'tree' ? v : DEFAULT_VIEW_MODE;
+  } catch {
+    return DEFAULT_VIEW_MODE;
+  }
+}
+
+function writeViewMode(mode: GitViewMode): void {
+  try {
+    localStorage.setItem(VIEW_MODE_STORAGE_KEY, mode);
+  } catch {
+    /* localStorage 不可用(隐私模式等)→ 静默,仅本次会话生效 */
+  }
+}
 
 interface GitPanelProps {
   sessionId: string;
@@ -90,6 +114,7 @@ function toneLabel(tone: GitStatusTone, tx: (zh: string, en: string) => string):
 
 export function GitPanel({ sessionId }: GitPanelProps): JSX.Element {
   const { tx } = useTranslation();
+  const [viewMode, setViewMode] = useState<GitViewMode>(readViewMode);
   // mount 初始化:先读组件外缓存。命中 → loading:false + snapshot 秒显(零延迟);
   // 未命中 → loading:true 走首次拉取。这是 stale-while-revalidate 的核心。
   const [state, setState] = useState<ViewState>(() => {
@@ -179,6 +204,16 @@ export function GitPanel({ sessionId }: GitPanelProps): JSX.Element {
     return off;
   }, [sessionId]);
 
+  // tree 模式:把所有 groups 的 entries 打平后构建目录树。useMemo 只在 snapshot/viewMode
+  // 变时重算。必须在所有 early return 之前调用(React hooks 规则)。
+  const treeNodes = useMemo<GitTreeNode[]>(() => {
+    if (viewMode !== 'tree' || !state.snapshot) return [];
+    const allEntries = state.snapshot.groups.flatMap((g) =>
+      g.entries.map((e) => ({ relativePath: e.relativePath, oldPath: e.oldPath, tone: g.tone })),
+    );
+    return buildGitTree(allEntries);
+  }, [viewMode, state.snapshot]);
+
   const openDiff = (relativePath: string): void => {
     window.api
       .invoke(COMMAND_CHANNELS.GIT_OPEN_DIFF, { sessionId, relativePath })
@@ -243,54 +278,94 @@ export function GitPanel({ sessionId }: GitPanelProps): JSX.Element {
     );
   }
 
+  const switchViewMode = (mode: GitViewMode): void => {
+    setViewMode(mode);
+    writeViewMode(mode);
+  };
+
   return (
     <div className="git-panel" aria-label={tx('Git', 'Git')}>
-      {state.snapshot.groups.map((group) => {
-        // untracked 默认折叠:node_modules / build 产物会污染列表。
-        const isUntracked = group.tone === 'untracked';
-        const expanded = !isUntracked || state.untrackedExpanded;
-        return (
-          <section key={group.tone} className="git-panel-group">
-            <button
-              type="button"
-              className="git-panel-group-header"
-              onClick={() =>
-                isUntracked && setState((s) => ({ ...s, untrackedExpanded: !s.untrackedExpanded }))
-              }
-              aria-expanded={expanded}
-              disabled={!isUntracked}
-            >
-              {isUntracked ? (
-                <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={12} />
-              ) : (
-                <span className="git-panel-group-spacer" />
+      <div className="git-panel-toolbar" role="group" aria-label={tx('视图模式', 'View mode')}>
+        <button
+          type="button"
+          className={`git-panel-toolbar-btn${viewMode === 'tree' ? ' active' : ''}`}
+          onClick={() => switchViewMode('tree')}
+          title={tx('树形视图', 'Tree view')}
+          aria-pressed={viewMode === 'tree'}
+        >
+          <Icon name="folderTree" size={14} />
+        </button>
+        <button
+          type="button"
+          className={`git-panel-toolbar-btn${viewMode === 'flat' ? ' active' : ''}`}
+          onClick={() => switchViewMode('flat')}
+          title={tx('平铺视图(按状态分组)', 'Flat view (grouped by status)')}
+          aria-pressed={viewMode === 'flat'}
+        >
+          <Icon name="list" size={14} />
+        </button>
+      </div>
+      {viewMode === 'tree' ? (
+        <GitTree
+          nodes={treeNodes}
+          onOpenDiff={openDiff}
+          buildEntryMenu={buildEntryMenu}
+        />
+      ) : (
+        state.snapshot.groups.map((group) => {
+          // untracked 默认折叠:node_modules / build 产物会污染列表。
+          const isUntracked = group.tone === 'untracked';
+          const expanded = !isUntracked || state.untrackedExpanded;
+          return (
+            <section key={group.tone} className="git-panel-group">
+              <button
+                type="button"
+                className="git-panel-group-header"
+                onClick={() =>
+                  isUntracked &&
+                  setState((s) => ({ ...s, untrackedExpanded: !s.untrackedExpanded }))
+                }
+                aria-expanded={expanded}
+                disabled={!isUntracked}
+              >
+                {isUntracked ? (
+                  <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={12} />
+                ) : (
+                  <span className="git-panel-group-spacer" />
+                )}
+                <span className={`git-panel-group-label tone-${group.tone}`}>
+                  {toneLabel(group.tone, tx)}
+                </span>
+                <span className="git-panel-group-count">{group.entries.length}</span>
+              </button>
+              {expanded && (
+                <div className="git-panel-group-entries">
+                  {group.entries.map((entry) => (
+                    <FileListRow
+                      key={entry.relativePath}
+                      variant="list"
+                      icon="file"
+                      label={
+                        entry.oldPath
+                          ? `${entry.oldPath} → ${entry.relativePath}`
+                          : entry.relativePath
+                      }
+                      title={
+                        entry.oldPath
+                          ? `${entry.oldPath} → ${entry.relativePath}`
+                          : entry.relativePath
+                      }
+                      statusBadge={badgeFor(group.tone)}
+                      onClick={() => openDiff(entry.relativePath)}
+                      buildContextMenu={() => buildEntryMenu(entry.relativePath)}
+                    />
+                  ))}
+                </div>
               )}
-              <span className={`git-panel-group-label tone-${group.tone}`}>
-                {toneLabel(group.tone, tx)}
-              </span>
-              <span className="git-panel-group-count">{group.entries.length}</span>
-            </button>
-            {expanded && (
-              <div className="git-panel-group-entries">
-                {group.entries.map((entry) => (
-                  <FileListRow
-                    key={entry.relativePath}
-                    variant="list"
-                    icon="file"
-                    label={
-                      entry.oldPath ? `${entry.oldPath} → ${entry.relativePath}` : entry.relativePath
-                    }
-                    title={entry.oldPath ? `${entry.oldPath} → ${entry.relativePath}` : entry.relativePath}
-                    statusBadge={badgeFor(group.tone)}
-                    onClick={() => openDiff(entry.relativePath)}
-                    buildContextMenu={() => buildEntryMenu(entry.relativePath)}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
-        );
-      })}
+            </section>
+          );
+        })
+      )}
       {state.snapshot.truncated && (
         <div className="git-panel-truncated">
           {tx('变更过多,仅显示前 500 项。', 'Too many changes; showing the first 500.')}
