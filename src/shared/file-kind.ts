@@ -179,6 +179,10 @@ const TEXT_NO_EXT = new Set([
   '.dockerignore',
 ]);
 
+/** v0.3.0:diff/patch 文件归 text(纯文本渲染,+/− 前缀天然有视觉区分)。
+ * 语法高亮增强(DiffViewer 组件)留待 v0.3.1 用户反馈后再加,避免过度工程。 */
+const DIFF_EXT = new Set(['diff', 'patch', 'rej']);
+
 /**
  * 取文件名扩展名(小写,不含点)。
  *
@@ -210,5 +214,6 @@ export function detectFileKind(fileName: string): FileKind {
   if (MARKDOWN_EXT.has(ext)) return 'markdown';
   if (IMAGE_EXT.has(ext)) return 'image';
   if (TEXT_EXT.has(ext)) return 'text';
+  if (DIFF_EXT.has(ext)) return 'text';
   return 'unknown';
 }

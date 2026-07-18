@@ -1,0 +1,240 @@
+/**
+ * @file src/renderer/components/git/GitPanel.tsx
+ * @purpose 当前 owner session 的 Git 变更浏览面板(v0.3.0)。
+ *
+ * @关键设计:
+ * - 扁平变更列表(不递归目录树),按 tone 分组(conflict 置顶,untracked 默认折叠)。
+ *   点文件 → cmd:git:open-diff → 跳「已打开」面板看 diff(FilePanelService 接管)。
+ * - 状态拉取每次面板激活时主动调 cmd:git:get-status。本期 watcher 未启用,
+ *   仓库变更不自动推;用户切回面板即重拉(对齐 PRD §5.1.4 的最小可行)。
+ * - 右键菜单走统一 <FileListRow> 的 buildContextMenu,与 file-tree/file-panel 一致。
+ *
+ * @对应文档章节: 软件定义书.md §14.6 受限 Git 变更浏览例外(v0.3.0,ADR-017);
+ *   docs/方案-Git面板与文件条目统一-20260718.md §5.1。
+ *
+ * @不要在这里做的事:
+ * - 不调任何写 .git 的命令(没有对应 IPC,产品边界)。
+ * - 不展示 commit history / branch / log(超出本期范围)。
+ * - 不缓存 status 真值:每次拉取都走 IPC,GitService 是唯一状态源。
+ */
+import { useCallback, useEffect, useState } from 'react';
+import {
+  COMMAND_CHANNELS,
+  type GetGitStatusResponse,
+  type GitStatusGroup,
+  type GitStatusTone,
+  type GitUnavailableReason,
+} from '@shared/protocol';
+import { dividerItem } from '../common/fileListRowContextMenu';
+import { FileListRow, type StatusBadge, type StatusTone } from '../common/FileListRow';
+import { Icon } from '../icons';
+import { useTranslation } from '../LanguageProvider';
+import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
+import { useToast } from '../Toast';
+import type { ContextMenuItem } from '../ContextMenu';
+
+interface GitPanelProps {
+  sessionId: string;
+}
+
+interface ViewState {
+  loading: boolean;
+  snapshot?: { groups: GitStatusGroup[]; truncated: boolean } | undefined;
+  unavailable?: GitUnavailableReason | undefined;
+  error?: string | undefined;
+  /** untracked 组是否展开(node_modules 等会污染列表,默认折叠)。 */
+  untrackedExpanded: boolean;
+}
+
+/**
+ * tone → StatusBadge 字母映射(与 GitService.toneToLetter 对齐,但 renderer
+ * 不依赖 main 的内部函数,自行定义避免跨进程耦合)。
+ */
+function badgeFor(tone: GitStatusTone): StatusBadge | null {
+  const letter: Record<GitStatusTone, string> = {
+    conflict: 'C',
+    modified: 'M',
+    added: 'A',
+    deleted: 'D',
+    renamed: 'R',
+    untracked: '?',
+  };
+  return { letter: letter[tone], tone: tone as StatusTone };
+}
+
+function toneLabel(tone: GitStatusTone, tx: (zh: string, en: string) => string): string {
+  switch (tone) {
+    case 'conflict':
+      return tx('冲突', 'Conflicts');
+    case 'modified':
+      return tx('已修改', 'Modified');
+    case 'added':
+      return tx('已新增', 'Added');
+    case 'deleted':
+      return tx('已删除', 'Deleted');
+    case 'renamed':
+      return tx('已重命名', 'Renamed');
+    case 'untracked':
+      return tx('未跟踪', 'Untracked');
+  }
+}
+
+export function GitPanel({ sessionId }: GitPanelProps): JSX.Element {
+  const { tx } = useTranslation();
+  const [state, setState] = useState<ViewState>({
+    loading: true,
+    untrackedExpanded: false,
+  });
+  const copyToClipboard = useCopyToClipboard();
+  const toast = useToast();
+
+  const loadStatus = useCallback(async (): Promise<void> => {
+    setState((s) => ({ ...s, loading: true, error: undefined }));
+    try {
+      const resp = await window.api.invoke<unknown, GetGitStatusResponse>(
+        COMMAND_CHANNELS.GIT_GET_STATUS,
+        { sessionId },
+      );
+      if ('unavailable' in resp) {
+        setState((s) => ({ ...s, loading: false, unavailable: resp.unavailable, snapshot: undefined }));
+      } else {
+        setState((s) => ({
+          ...s,
+          loading: false,
+          unavailable: undefined,
+          snapshot: { groups: resp.groups, truncated: resp.truncated },
+        }));
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn('[GitPanel] get-status failed', err);
+      setState((s) => ({ ...s, loading: false, error: message }));
+    }
+  }, [sessionId]);
+
+  // mount / sessionId 变化时拉一次。LayoutHost 按 sessionId 重挂,避免旧 session
+  // 状态闪到新终端。用户切回面板(从「文件」/「已打开」tab 切回)时 key 不变,
+  // 不会自动重拉 —— 但仓库变更在切走期间发生,用户切回看不到最新。本期接受
+  // 这个权衡(对齐 PRD §5.1.4 最小可行);watcher 启用后零改动消除该限制。
+  useEffect(() => {
+    void loadStatus();
+  }, [loadStatus]);
+
+  const openDiff = (relativePath: string): void => {
+    window.api
+      .invoke(COMMAND_CHANNELS.GIT_OPEN_DIFF, { sessionId, relativePath })
+      // main 端 GitService.openDiff 成功后进 FilePanelService.openFile,后者
+      // 发 evt:file-panel:updated(requestActivation=true)切到「已打开」。
+      .catch((err: unknown) => {
+        console.warn('[GitPanel] open-diff failed', err);
+        toast.push({
+          kind: 'error',
+          message: `打开 diff 失败:${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+  };
+
+  const buildEntryMenu = (relativePath: string): ContextMenuItem[] => {
+    const items: ContextMenuItem[] = [
+      {
+        label: tx('打开 diff', 'Open diff'),
+        onSelect: () => openDiff(relativePath),
+      },
+      dividerItem(),
+      {
+        // 相对仓库根的路径,对 commit message / 引用最实用。
+        label: tx('复制相对路径', 'Copy relative path'),
+        onSelect: () => copyToClipboard(relativePath, '相对路径'),
+      },
+    ];
+    return items;
+  };
+
+  // ── 状态分支:loading / error / unavailable / 正常 ──
+  if (state.loading && !state.snapshot && !state.unavailable) {
+    return <div className="git-panel-loading">{tx('正在读取变更…', 'Loading changes…')}</div>;
+  }
+  if (state.error) {
+    return (
+      <div className="git-panel-error">
+        {tx('读取 Git 状态失败', 'Failed to read Git status')}: {state.error}
+      </div>
+    );
+  }
+  if (state.unavailable) {
+    // 动态 LayoutNode 已在 main 端裁掉 Git tab(unavailable 时不生成 git leaf)。
+    // 走到这里说明:用户看着 Git tab 时仓库被删 / cd 出仓库 / 设置关了。
+    // 给一个明确但克制的提示,不弹错误。
+    const msg: Record<GitUnavailableReason, string> = {
+      'not-a-repo': tx('当前目录已不在 Git 仓库内', 'Current directory is no longer a Git repository'),
+      'ssh-unsupported': tx('SSH 会话不支持 Git 面板', 'Git panel is not supported for SSH sessions'),
+      disabled: tx('Git 面板已在设置中关闭', 'Git panel is disabled in settings'),
+      'git-binary-missing': tx('未找到 git 二进制', 'Git binary not found'),
+    };
+    return <div className="git-panel-unavailable">{msg[state.unavailable]}</div>;
+  }
+  if (!state.snapshot) {
+    return <div className="git-panel-loading">{tx('正在读取变更…', 'Loading changes…')}</div>;
+  }
+  if (state.snapshot.groups.length === 0) {
+    return (
+      <div className="git-panel-clean">{tx('工作区干净,无未提交变更', 'Working tree clean')}</div>
+    );
+  }
+
+  return (
+    <div className="git-panel" aria-label={tx('Git', 'Git')}>
+      {state.snapshot.groups.map((group) => {
+        // untracked 默认折叠:node_modules / build 产物会污染列表。
+        const isUntracked = group.tone === 'untracked';
+        const expanded = !isUntracked || state.untrackedExpanded;
+        return (
+          <section key={group.tone} className="git-panel-group">
+            <button
+              type="button"
+              className="git-panel-group-header"
+              onClick={() =>
+                isUntracked && setState((s) => ({ ...s, untrackedExpanded: !s.untrackedExpanded }))
+              }
+              aria-expanded={expanded}
+              disabled={!isUntracked}
+            >
+              {isUntracked ? (
+                <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={12} />
+              ) : (
+                <span className="git-panel-group-spacer" />
+              )}
+              <span className={`git-panel-group-label tone-${group.tone}`}>
+                {toneLabel(group.tone, tx)}
+              </span>
+              <span className="git-panel-group-count">{group.entries.length}</span>
+            </button>
+            {expanded && (
+              <div className="git-panel-group-entries">
+                {group.entries.map((entry) => (
+                  <FileListRow
+                    key={entry.relativePath}
+                    variant="list"
+                    icon="file"
+                    label={
+                      entry.oldPath ? `${entry.oldPath} → ${entry.relativePath}` : entry.relativePath
+                    }
+                    title={entry.oldPath ? `${entry.oldPath} → ${entry.relativePath}` : entry.relativePath}
+                    statusBadge={badgeFor(group.tone)}
+                    onClick={() => openDiff(entry.relativePath)}
+                    buildContextMenu={() => buildEntryMenu(entry.relativePath)}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        );
+      })}
+      {state.snapshot.truncated && (
+        <div className="git-panel-truncated">
+          {tx('变更过多,仅显示前 500 项。', 'Too many changes; showing the first 500.')}
+        </div>
+      )}
+    </div>
+  );
+}
