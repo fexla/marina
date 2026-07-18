@@ -2,6 +2,24 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [0.3.0] — 2026-07-19
+
+### 新增
+
+- **Git 变更浏览面板（ADR-017）。** 当前终端 session 的 cwd 在 Git 仓库内时，右侧 dock 自动出现「Git」tab，列出工作区变更（modified / added / deleted / renamed / untracked / conflict），点文件跳「已打开」面板查看 unified diff。**动态 LayoutNode**：cd 进/出仓库时该 tab 自动出现/消失，非仓库 cwd 不会显示空状态文案——评审裁决直接不渲染 tab。严格**只读**：只调 `git status` / `git diff`，**永远不做** stage / commit / push / pull / fetch / merge / rebase / stash / branch / checkout / log / blame 等 Git 管理操作（§13.2 / §14.6）。SSH session 不支持（不引入远端 git 协议）；`advanced.enableGitPanel = false` 时 tab 永不出现（视野守护，与 `advanced.enableRemote` 同构）。
+- **文件条目统一抽象。** 右 dock 三面板（文件 / Git / 已打开）的文件条目在代码层统一为 `<FileListRow>`：左键行为由所在面板注入（展开目录 / 打开 diff / 切 tab），右键菜单统一走既有 `ContextMenu`（打开 / 复制路径 / 在 Explorer 中显示 / 关闭其他 / 关闭所有 等）。diff 临时文件入 `MARINA_WORKSPACE/__marina_diff__/`，随 session 回收。
+- **设置项。** 「高级」分类新增「启用 Git 面板」开关（默认开）与「Git 二进制路径」（空 = PATH 查找），即改即生效。
+
+### 安全
+
+- `GitService` 与 `FileTreeService` 同构：每次请求校验 `ownerWindowId === requesterId` + SSH 拒绝 + realpath + repoRoot 包含校验；`runGit` spawn 限 5s 超时 + 8MB stdout 上限防恶意大输出。`cmd:git:get-status` 不回传 `repoRoot` 绝对路径给 renderer。
+- 「在 Explorer 中显示」对 file-tree 条目走专用 `cmd:file-tree:reveal-path` IPC，main 端做与 `open-file` 同一套根包含校验后调 `shell.showItemInFolder`，renderer 始终拿不到受限根外的绝对路径。
+
+### 设计哲学
+
+- 维持「终端管理器」边界：Git 面板只取 JetBrains 同类的**浏览**能力，明确不取**管理**能力，避免滑向 Git GUI（§13.2 / ADR-017）。
+- 维持 ADR-016 不变：`LayoutNode` 仍由 main 端产品规则维护，renderer 无修改布局树的 IPC；只是规则从静态模板变为按 session 能力（cwd 是否在仓库）动态生成。
+
 ## [0.2.6] — 2026-07-12
 
 ### 新增

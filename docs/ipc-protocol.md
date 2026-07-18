@@ -897,6 +897,48 @@ interface OpenFileTreeFilePayload {
 
 ---
 
+#### `cmd:git:get-status` / `open-diff` (v0.3.0,ADR-017)
+受限 Git 变更浏览，与 file-tree 同构的安全模式。仅调 `git status` / `git diff`，
+永不调写 .git 的命令。SSH session 不支持；非仓库 cwd 返回 `unavailable`。
+
+```typescript
+interface GetGitStatusPayload { sessionId: string }
+type GitUnavailableReason = 'disabled' | 'ssh-unsupported' | 'not-a-repo' | 'git-binary-missing';
+interface GitStatusGroup {
+  tone: 'conflict' | 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked';
+  entries: Array<{ relativePath: string; oldPath?: string }>;
+}
+type GetGitStatusResponse =
+  | { groups: GitStatusGroup[]; truncated: boolean }              // 仓库可用
+  | { unavailable: GitUnavailableReason };                        // 不可用(Git tab 不出现)
+
+interface OpenGitDiffPayload { sessionId: string; relativePath: string }
+// open-diff response: FilePanelSnapshot(复用既有)
+```
+
+**安全与错误**:
+- 三个命令均为 backend-data，远程窗口请求由 daemon 主机执行。
+- 每次请求验证 `ownerWindowId === envelope.windowId`；接管后旧 owner 立即失权。
+- SSH session 一律拒绝(不引入远端 git 协议)，返回 `unavailable: 'ssh-unsupported'`。
+- `relativePath` 拒绝 `..` / 绝对路径 / NUL；main 端 realpath 后再次验证 repoRoot 包含。
+- `runGit` spawn 限 5s 超时 + 8MB stdout 上限防恶意大输出。
+
+**Side Effects**:
+- `get-status` 只读，无副作用。
+- `open-diff` 产 unified diff 写入 session 的
+  `MARINA_WORKSPACE/__marina_diff__/<sanitized>__<sha8>.diff`，再调既有
+  FilePanelService.openFile → emit `evt:file-panel:updated`(requestActivation=true)
+  → LayoutHost 自动切到「已打开」面板。diff 临时文件随 session 回收。
+
+**动态 LayoutNode**(评审裁决 2026-07-19)：`git` leaf 是否出现在 session 的
+`uiLayout.tree` 由 main 端 SessionManager 按 cwd 是否在仓库内动态决定。
+cwd 变更(OSC 1337 / NtQuery polling)后防抖 200ms 评估 → flip 时重建 tree +
+emit `evt:session:state-changed`。非仓库 cwd 不返回 `unavailable` 文案给
+GitPanel(因为 tab 根本不出现)，仅在「看着 tab 时 cd 出仓库」的边角态走到
+GitPanel 的 unavailable 分支。
+
+---
+
 > v1.2 起 `cmd:session:restart-from-tombstone` 已删除(ADR-008)。如需"再跑一次相同模板",在同一 path 下 `cmd:session:create` 即可。
 
 ---
