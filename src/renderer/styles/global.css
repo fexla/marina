@@ -2032,6 +2032,17 @@ html[data-maximized='true'] .app-root.with-shell {
   font-size: 12px;
 }
 
+/* .git-panel 是列表容器(正常态),承接 .panel-dock-body(flex 列)的剩余高度
+ * 并内部滚动。flex:1 1 auto + min-height:0 是 flex 子项允许收缩的必要组合,
+ * 缺一不可(缺 min-height:0 会被内容撑爆,overflow 失效)。
+ * loading/error/unavailable/clean 是占位态,不需要滚动(内容少)。 */
+.git-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
 .git-panel-loading,
 .git-panel-unavailable,
 .git-panel-clean {

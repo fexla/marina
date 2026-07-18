@@ -15,7 +15,9 @@
  * @不要在这里做的事:
  * - 不调任何写 .git 的命令(没有对应 IPC,产品边界)。
  * - 不展示 commit history / branch / log(超出本期范围)。
- * - 不缓存 status 真值:每次拉取都走 IPC,GitService 是唯一状态源。
+ * - status 真值走组件外缓存(git-status-cache.ts),消除面板切换的 spawn git 延迟。
+ *   mount 先读缓存秒显,后台静默刷新(loading 不覆盖已有 snapshot)。缓存失效由
+ *   main 端 evt:git:status-updated(预取/watcher)或本组件 loadStatus 成功驱动。
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -32,6 +34,11 @@ import { useTranslation } from '../LanguageProvider';
 import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
 import { useToast } from '../Toast';
 import type { ContextMenuItem } from '../ContextMenu';
+import {
+  getCachedStatus,
+  setCachedStatus,
+  type GitStatusCacheEntry,
+} from '@shared/git-status-cache';
 
 interface GitPanelProps {
   sessionId: string;
@@ -81,14 +88,30 @@ function toneLabel(tone: GitStatusTone, tx: (zh: string, en: string) => string):
 
 export function GitPanel({ sessionId }: GitPanelProps): JSX.Element {
   const { tx } = useTranslation();
-  const [state, setState] = useState<ViewState>({
-    loading: true,
-    untrackedExpanded: false,
+  // mount 初始化:先读组件外缓存。命中 → loading:false + snapshot 秒显(零延迟);
+  // 未命中 → loading:true 走首次拉取。这是 stale-while-revalidate 的核心。
+  const [state, setState] = useState<ViewState>(() => {
+    const cached = getCachedStatus(sessionId);
+    if (cached) {
+      return {
+        loading: false,
+        untrackedExpanded: false,
+        snapshot:
+          cached.groups !== undefined
+            ? { groups: cached.groups, truncated: cached.truncated ?? false }
+            : undefined,
+        unavailable: cached.unavailable,
+      };
+    }
+    return { loading: true, untrackedExpanded: false };
   });
   const copyToClipboard = useCopyToClipboard();
   const toast = useToast();
 
   const loadStatus = useCallback(async (): Promise<void> => {
+    // 关键:后台刷新时不把已有 snapshot 清掉(避免秒显后闪烁)。
+    // loading 标志用于指示"后台正在刷",但 UI 分支里只要 snapshot/unavailable 还在
+    // 就继续显示旧值,不回到 loading 占位。
     setState((s) => ({ ...s, loading: true, error: undefined }));
     try {
       const resp = await window.api.invoke<unknown, GetGitStatusResponse>(
@@ -97,6 +120,7 @@ export function GitPanel({ sessionId }: GitPanelProps): JSX.Element {
       );
       if ('unavailable' in resp) {
         setState((s) => ({ ...s, loading: false, unavailable: resp.unavailable, snapshot: undefined }));
+        setCachedStatus(sessionId, { unavailable: resp.unavailable, at: Date.now() });
       } else {
         setState((s) => ({
           ...s,
@@ -104,6 +128,12 @@ export function GitPanel({ sessionId }: GitPanelProps): JSX.Element {
           unavailable: undefined,
           snapshot: { groups: resp.groups, truncated: resp.truncated },
         }));
+        const entry: GitStatusCacheEntry = {
+          groups: resp.groups,
+          truncated: resp.truncated,
+          at: Date.now(),
+        };
+        setCachedStatus(sessionId, entry);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -112,10 +142,9 @@ export function GitPanel({ sessionId }: GitPanelProps): JSX.Element {
     }
   }, [sessionId]);
 
-  // mount / sessionId 变化时拉一次。LayoutHost 按 sessionId 重挂,避免旧 session
-  // 状态闪到新终端。用户切回面板(从「文件」/「已打开」tab 切回)时 key 不变,
-  // 不会自动重拉 —— 但仓库变更在切走期间发生,用户切回看不到最新。本期接受
-  // 这个权衡(对齐 PRD §5.1.4 最小可行);watcher 启用后零改动消除该限制。
+  // mount / sessionId 变化时拉一次(后台刷新)。有缓存时 UI 已秒显旧值,这里拉
+  // 新值是为了同步"切走期间仓库被改"的最新状态。watcher(commit E)启用后,仓库
+  // 变更会主动 evt:git:status-updated 推过来,本 effect 仍保留作为 mount 兑底。
   useEffect(() => {
     void loadStatus();
   }, [loadStatus]);
@@ -151,6 +180,8 @@ export function GitPanel({ sessionId }: GitPanelProps): JSX.Element {
   };
 
   // ── 状态分支:loading / error / unavailable / 正常 ──
+  // 有缓存(snapshot/unavailable)时优先显示旧值,不回 loading 占位(避免闪烁)。
+  // 只有"首次进入且无缓存"才显示 loading。
   if (state.loading && !state.snapshot && !state.unavailable) {
     return <div className="git-panel-loading">{tx('正在读取变更…', 'Loading changes…')}</div>;
   }
