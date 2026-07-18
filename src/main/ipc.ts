@@ -25,6 +25,7 @@ import { app, BrowserWindow, clipboard, ipcMain, dialog, safeStorage, shell } fr
 import { getBuildType } from './build-type';
 import type { FilePanelService } from './file-panel-service';
 import type { FileTreeService } from './file-tree-service';
+import type { GitService } from './git-service';
 import type { SkillInstaller } from './skill-installer';
 import type { MarkdownThemeManager } from './markdown-theme-manager';
 import {
@@ -73,6 +74,9 @@ import {
   type ListFileTreeDirectoryResponse,
   type OpenFileTreeFilePayload,
   type RevealFileTreePathPayload,
+  type GetGitStatusPayload,
+  type GetGitStatusResponse,
+  type OpenGitDiffPayload,
   type GetOpenFilesPayload,
   type ReadFilePayload,
   type ReadImagePayload,
@@ -193,6 +197,12 @@ export interface IpcLayerDeps {
   filePanelService: FilePanelService;
   /** ADR-016 受限文件树服务：仅 active owner session 的 cwd/workspace 双根只读导航。 */
   fileTreeService: FileTreeService;
+  /**
+   * v0.3.0 (ADR-017):Git 变更浏览服务。与 fileTreeService 同构的安全模式;
+   * 只调 git status / git diff,永不写 .git。生产必填;转发逻辑测在
+   * git-service.test.ts(本层仅转发)。
+   */
+  gitService: GitService;
   /** 内置 show-in-marina skill 的项目级安装服务。 */
   skillInstaller: SkillInstaller;
   /**
@@ -250,6 +260,7 @@ export function installIpcLayer(deps: IpcLayerDeps): void {
   registerCommandHandlers(deps);
   registerFilePanelHandlers(deps);
   registerFileTreeHandlers(deps);
+  registerGitHandlers(deps);
   registerMdThemeHandlers(deps);
   wireEventBroadcasts(deps);
 }
@@ -1716,7 +1727,40 @@ function registerFileTreeHandlers(deps: IpcLayerDeps): void {
 }
 
 // ──────────────────────────────────────────────────────────────────
-// Markdown 主题(Typora 式可扩展面板风格)。这些 IPC 供 renderer:
+// Git 域 (v0.3.0,ADR-017)。与 file-tree 域同构的安全模式;
+// 仅 owner + 非 SSH + repoRoot 包含校验。只读:不调任何写 .git 的命令。
+// ──────────────────────────────────────────────────────────────────
+function registerGitHandlers(deps: IpcLayerDeps): void {
+  const { gitService } = deps;
+
+  registerHandle(
+    COMMAND_CHANNELS.GIT_GET_STATUS,
+    async (
+      _e,
+      envelope: CommandEnvelope<GetGitStatusPayload>,
+    ): Promise<GetGitStatusResponse> => {
+      const result = await gitService.getStatus(envelope.payload.sessionId, envelope.windowId);
+      // GitService 返回 {repoRoot, groups, truncated} 或 {unavailable}。
+      // protocol 层不回传 repoRoot(避免泄露绝对路径给 renderer)。
+      if ('unavailable' in result) return { unavailable: result.unavailable };
+      return { groups: result.groups, truncated: result.truncated };
+    },
+  );
+
+  registerHandle(
+    COMMAND_CHANNELS.GIT_OPEN_DIFF,
+    async (
+      _e,
+      envelope: CommandEnvelope<OpenGitDiffPayload>,
+    ): Promise<FilePanelSnapshot> =>
+      gitService.openDiff(
+        envelope.payload.sessionId,
+        envelope.windowId,
+        envelope.payload.relativePath,
+      ),
+  );
+}
+
 // - 拉主题列表(设置页下拉 + 启动初始化)
 // - 取某主题 CSS 文本(注入 <style>)
 // - 打开主题目录(放/编辑 .css)
@@ -1783,6 +1827,7 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     remoteProfileManager,
     templatesManager,
     filePanelService,
+    gitService,
     markdownThemeManager,
   } = deps;
 
@@ -1852,6 +1897,8 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   sessionManager.on('sessionDestroyed', (e: SessionDestroyedPayload) => {
     // 文件面板:session 没了,清掉它的已打开文件 + fs.watch 句柄
     filePanelService.onSessionDestroyed(e.sessionId);
+    // v0.3.0:Git 面板同理清掋 watcher + 防抖 timer。
+    gitService.onSessionDestroyed(e.sessionId);
     broadcastEvent<SessionDestroyedPayload>(EVENT_CHANNELS.SESSION_DESTROYED, e);
     broadcastAppState(deps);
   });
@@ -1867,6 +1914,15 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
       EVENT_CHANNELS.FILE_PANEL_UPDATED,
       p,
     );
+  });
+
+  // v0.3.0:Git 面板状态变化(watcher 检测到仓库变更时触发)。本期 watcher 尚未
+  // 启用,getStatus 由 renderer 面板激活时主动拉取;此处 wire 先备好,后续加
+  // watcher 时零改动。策略与 file-panel 同:仅推 owner 窗口。
+  gitService.on('gitStatusUpdated', (p: { sessionId: string }) => {
+    const session = sessionManager.get(p.sessionId);
+    if (!session?.ownerWindowId) return;
+    sendEventTo(EVENT_CHANNELS.GIT_STATUS_UPDATED, session.ownerWindowId, p);
   });
 
   // 自定义 markdown 主题列表变化(用户往 markdown-themes/ 增删 .css)→ 广播给

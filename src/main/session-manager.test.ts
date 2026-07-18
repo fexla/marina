@@ -207,6 +207,8 @@ function makeStubSettingsManager(overrides: Partial<Settings['advanced']> = {}):
       enableControlMaster: false,
       enableRemote: false,
       terminalRenderer: 'auto',
+      enableGitPanel: true,
+      gitBinaryPath: '',
       ...overrides,
     },
   };

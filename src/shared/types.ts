@@ -475,6 +475,21 @@ export interface Settings {
      * 在 mount 时决定,运行时切换需重建)。
      */
     terminalRenderer: 'auto' | 'webgl' | 'dom';
+
+    /**
+     * v0.3.0 (ADR-017):Git 面板总开关。false 时右 dock 不出现「Git」tab,
+     * SessionManager 不为任何 session 生成 git LayoutNode leaf。与
+     * advanced.enableRemote 的视野守护模式同构:本地纯净用户可一键关掉。
+     * 默认 true(Git 变更浏览是通用能力,不同于 SSH 的地域性)。
+     */
+    enableGitPanel: boolean;
+    /**
+     * v0.3.0:git 二进制路径。'' = 依赖系统 PATH 查找(Windows 装 Git for
+     * Windows 后通常在 PATH);非空 = 用户显式指定(如
+     * 'C:\\Program Files\\Git\\bin\\git.exe')。GitService.resolveGitBinary
+     * 会 stat 验证存在性。
+     */
+    gitBinaryPath: string;
   };
 
   /**

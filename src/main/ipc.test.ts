@@ -24,6 +24,7 @@ import type { CommandEnvelope, CreateSessionPayload } from '@shared/protocol';
 import type { SessionInfo } from '@shared/types';
 import type * as IpcModule from './ipc';
 import { FilePanelService } from './file-panel-service';
+import { GitService } from './git-service';
 import { MarkdownThemeManager } from './markdown-theme-manager';
 import { ClientRegistry } from './client-registry';
 import { makePathId } from './path-manager';
@@ -258,6 +259,15 @@ function makeStubs() {
       // 注册的 5 个方法。EventEmitter + 这些方法在不 start 时都能正常工作。
       filePanelService: new FilePanelService(),
       fileTreeService: fileTreeService as unknown,
+      // 真实 GitService 实例(不调 setRuntimeConfig / 不启 watcher):ipc 层
+      // wireEventBroadcasts 只用 on('gitStatusUpdated') / onSessionDestroyed,
+      // registerGitHandlers 注册的 getStatus / openDiff 在测试中不会被调用
+      // (没有专门的 git IPC 测试用例,git-service 自身有完整单测)。
+      gitService: new GitService(
+        { get: () => null },
+        { getPathForSession: () => null },
+        new FilePanelService(),
+      ),
       skillInstaller: {
         install: vi.fn(async () => ({ installed: [], conflicts: [] })),
       } as unknown,

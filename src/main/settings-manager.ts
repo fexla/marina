@@ -106,6 +106,10 @@ export const DEFAULT_SETTINGS: Settings = {
     // BETA-003 修复)。'webgl' / 'dom' 是显式覆盖,通常给调研某些 WebGL
     // 兼容性 bug 用(例如某些 TUI 的光标渲染在 WebGL 下异常)。
     terminalRenderer: 'auto',
+    // v0.3.0 (ADR-017):Git 面板默认开。变更浏览是通用能力,与 SSH 的地域性不同。
+    enableGitPanel: true,
+    // v0.3.0:空 = 依赖 PATH 查找。用户可在设置页指定路径。
+    gitBinaryPath: '',
   },
   // BETA-031 AI 助手默认全 disabled,用户开启 + 填 key 后才生效
   ai: {

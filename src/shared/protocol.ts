@@ -207,6 +207,14 @@ export const COMMAND_CHANNELS = {
    *  shell.showItemInFolder，避免 renderer 拿到任意文件路径。 */
   FILE_TREE_REVEAL_PATH: 'cmd:file-tree:reveal-path',
 
+  // Git 域 —— active owner session 的只读变更浏览与 diff 预览(v0.3.0,ADR-017)。
+  // 与 file-tree 同构的安全模式:owner 校验 + SSH 拒绝 + repoRoot 包含校验。
+  // 只调 git status / git diff;永不调写 .git 的命令(见 §13.2/§14.6)。
+  /** 拉当前仓库工作区变更分组(SSH/非 repo/disable 返回 unavailable)。 */
+  GIT_GET_STATUS: 'cmd:git:get-status',
+  /** 产出某文件的 unified diff,写入受管临时文件后交给 FilePanelService 打开。 */
+  GIT_OPEN_DIFF: 'cmd:git:open-diff',
+
   // Markdown 主题域 —— Typora 式可扩展:用户往 userData/markdown-themes/ 放 .css
   // 即多一个 markdown 面板风格(见 src/main/markdown-theme-manager.ts)。
   /** 列出所有自定义 markdown 主题(扫 markdown-themes/*.css) */
@@ -340,6 +348,12 @@ export const EVENT_CHANNELS = {
    * 同策略),renderer 收到后更新 filePanels Map。
    */
   FILE_PANEL_UPDATED: 'evt:file-panel:updated',
+
+  /**
+   * v0.3.0:Git 面板仓库变更状态更新。广播给 owner 窗口,renderer 重拉
+   * cmd:git:get-status。本期为预留位(watcher 暂未启用,getStatus 主动拉取)。
+   */
+  GIT_STATUS_UPDATED: 'evt:git:status-updated',
 
   /**
    * 自定义 markdown 主题列表变化(用户往 markdown-themes/ 增删 .css,fs.watch
@@ -1374,6 +1388,66 @@ export interface RevealFileTreePathPayload {
   sessionId: string;
   rootId: FileTreeRootId;
   relativePath: string;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Git 域 (v0.3.0,ADR-017 —— 受限只读变更浏览与 diff 预览)
+// 与 file-tree 同构的安全模式;仅调 git status / git diff,永不写 .git。
+// ──────────────────────────────────────────────────────────────────
+
+/** Git 变更分组语义色。与 FileListRow 的 statusBadge tone 对齐。 */
+export type GitStatusTone =
+  | 'conflict'
+  | 'modified'
+  | 'added'
+  | 'deleted'
+  | 'renamed'
+  | 'untracked';
+
+export interface GitStatusEntry {
+  /** 相对 repoRoot 的 POSIX 风格路径(renamed 时是新路径)。 */
+  relativePath: string;
+  /** renamed 专用:旧路径;其他状态不携带。 */
+  oldPath?: string;
+}
+
+export interface GitStatusGroup {
+  tone: GitStatusTone;
+  entries: GitStatusEntry[];
+}
+
+/** git:status 不可用原因。renderer 据此在「Git tab 不出现」之外提供诊断。 */
+export type GitUnavailableReason =
+  | 'disabled'
+  | 'ssh-unsupported'
+  | 'not-a-repo'
+  | 'git-binary-missing';
+
+/** cmd:git:get-status 返回。repoRoot 不返回给 renderer(避免泄露绝对路径)。 */
+export interface GitStatusSnapshot {
+  groups: GitStatusGroup[];
+  truncated: boolean;
+}
+
+/** cmd:git:get-status payload。 */
+export interface GetGitStatusPayload {
+  sessionId: string;
+}
+
+/** cmd:git:get-status 返回。available=false 时 renderer 不渲染 Git tab。 */
+export type GetGitStatusResponse =
+  | (GitStatusSnapshot & { unavailable?: undefined })
+  | { unavailable: GitUnavailableReason };
+
+/** cmd:git:open-diff payload。relativePath 由 getStatus 返回,renderer 原样回传。 */
+export interface OpenGitDiffPayload {
+  sessionId: string;
+  relativePath: string;
+}
+
+/** evt:git:status-updated payload(本期预留位,watcher 暂未启用)。 */
+export interface GitStatusUpdatedPayload {
+  sessionId: string;
 }
 
 // ──────────────────────────────────────────────────────────────────

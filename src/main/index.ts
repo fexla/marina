@@ -40,6 +40,7 @@ import {
 } from './daemon-credentials';
 import { FilePanelService } from './file-panel-service';
 import { FileTreeService } from './file-tree-service';
+import { GitService } from './git-service';
 import { SessionWorkspaceManager } from './session-workspace-manager';
 import { SkillInstaller } from './skill-installer';
 import { MarkdownThemeManager } from './markdown-theme-manager';
@@ -244,6 +245,19 @@ function bootstrap(): void {
     sessionWorkspaceManager,
     filePanelService,
   );
+  // v0.3.0:GitService 与 FileTreeService 同构(同 sessionLookup + workspaceLookup
+  // + filePanelService 依赖)。runtimeConfig(enableGitPanel / gitBinaryPath)由
+  // settings 驱动,启动后与 SettingsManager.change 事件同步,这样设置页改开关
+  // 立即生效(SessionManager 据此重算所有 session 的 LayoutNode,Git tab 出现/消失)。
+  const gitService = new GitService(
+    sessionManager,
+    sessionWorkspaceManager,
+    filePanelService,
+  );
+  gitService.setRuntimeConfig({
+    enableGitPanel: settingsManager.get().advanced.enableGitPanel,
+    gitBinaryPath: settingsManager.get().advanced.gitBinaryPath,
+  });
   const trayManager = new TrayManager(windowManager, sessionManager, settingsManager);
 
   // M1-G:WindowManager 工厂注入 — 把 settings.windowDefaults 包成
@@ -503,6 +517,7 @@ function bootstrap(): void {
         templatesManager,
         filePanelService,
         fileTreeService,
+        gitService,
         skillInstaller,
         markdownThemeManager,
         aiClient,
