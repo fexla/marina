@@ -40,10 +40,20 @@ const SKILL_DIR = resolve(__dirname, '..', 'skills', 'show-in-marina');
 // 被测对象是真实的 marina.cmd 启动器(不是 marina.ps1 本身)。这样退出码
 // 穿透(`endlocal & exit /b %errorlevel%`)和 %~dp0 解析都被覆盖。
 const CMD = join(SKILL_DIR, 'marina.cmd');
+// bash / Git Bash 封装(同目录、无扩展名)。它 exec powershell.exe -File
+// marina.ps1，退出码由 exec 直接透传。被测是为了覆盖:
+// (1) MSYS 下 cmd /c 的 /c->C:/ 陷阱确实被绕过(不会 exit 0 误判);
+// (2) BASH_SOURCE 定位同目录 marina.ps1 正确;
+// (3) "$@" 能把含空格的路径完整传到 ps1。
+const BASH_WRAPPER = join(SKILL_DIR, 'marina');
 const MOCK_SERVER = resolve(__dirname, 'marina-cli-mock-server.py');
 const TOKEN = 'test-token-xyz';
-// 含 MARINA_WORKSPACE 只为清干净开发机残留 —— 该变量在新设计里已不用,
-// 清掉它可证明"无 workspace 也能正常工作"(无 fallback 的反面证据)。
+// 含 MARINA_WORKSPACE 是为了在测单个用例时把它从环境里清掉 (防止开发机
+// 残留干扰被测 CLI 的 env 严格性证据)。注意：该变量本身仍然存在，是
+// Marina 为每个 session 注入的临时展示目录 (见 session-workspace-manager.ts)，
+// 是 AI 写展示文档的推荐位置 (见 SKILL.md)。它只是不被 marina.ps1 本身读取 ——
+// CLI 只读 MARINA_SERVICE/TOKEN/TERMINAL_ID 做鉴权与路由。这里从 env 清掉它，
+// 是为了证明“CLI 不依赖 MARINA_WORKSPACE 就能工作”，而不是说它被废弃了。
 const MARINA_VARS = ['MARINA_SERVICE', 'MARINA_TOKEN', 'TERMINAL_ID', 'MARINA_WORKSPACE'] as const;
 
 /**
@@ -72,11 +82,40 @@ function findPython(): string | null {
   return null;
 }
 
+/**
+ * bash 封装脚本的运行时:bash。在 Windows 上常见于 Git Bash / MSYS2
+ * (随 Git for Windows 安装)。非 Windows 或未装 Git Bash 的 CI 上可能没有
+ * → 返回 null → bash 封装那组 describe skip(不静默声称覆盖了 bash 封装)。
+ *
+ * 依次试 `bash`(在 PATH 上)与 Git for Windows 的常见路径 bash.exe。任一能
+ * `bash -c 'exit 0'` 返回 0 即认为可用。
+ */
+function findBash(): string | null {
+  const candidates = [
+    'bash',
+    'C:\\Program Files\\Git\\bin\\bash.exe',
+    'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
+    'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+  ];
+  for (const candidate of candidates) {
+    try {
+      const r = spawnSync(candidate, ['-c', 'exit 0'], { stdio: 'ignore' });
+      if (r.status === 0) return candidate;
+    } catch {
+      // ENOENT 等 —— 试下一个候选。
+    }
+  }
+  return null;
+}
+
 const PS = findPowerShell();
 const PY = findPython();
+const BASH = findBash();
 // 需要两者都到位:PS = 被测对象运行时, PY = mock server 宿主。任一缺失
 // 即整组 skip —— 不静默声称"启动器覆盖"。
 const describeOrSkip = PS && PY ? describe : describe.skip;
+// bash 封装那组额外需要 BASH 在场(Git Bash / MSYS)。任一缺失即整组 skip。
+const describeBashOrSkip = PS && PY && BASH ? describe : describe.skip;
 
 interface RecordedRequest {
   method: string;
@@ -110,6 +149,70 @@ function runMarina(
     shell: true,
     windowsHide: true,
     stdio: opts.input !== undefined ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+/**
+ * 跑真实的 bash 封装脚本 marina(同目录、无扩展名)。显式用 BASH 解释器执行
+ * (BASH_WRAPPER 路径作为脚本传给 bash)，这样不依赖文件是否有 +x。spawnSync
+ * 本身是同步阻塞调用，但万一封装脚本因 bug 挂起(例如未来改错意外把 exec
+ * 换成交互式调用)，会让整个测试套静止。因此用 spawn 异步 + timeout 包裹，
+ * 超时则 kill 并返回一个明确的 error.status=null，断言失败信息可读。这与
+ * runMarina (cmd.exe 启动器)不同 —— cmd 启动器已被项目历史上充分验证不会
+ * 挂起，bash 封装是新代码，需要这个安全网。
+ */
+function runMarinaBash(
+  args: string[],
+  opts: { env?: Record<string, string | undefined>; cwd?: string } = {},
+  timeoutMs = 10000,
+): Promise<{
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  error?: Error;
+  timedOut: boolean;
+}> {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const v of MARINA_VARS) delete env[v];
+  if (opts.env) {
+    for (const [k, v] of Object.entries(opts.env)) {
+      if (v === undefined) delete env[k];
+      else env[k] = v;
+    }
+  }
+  const child = spawn(BASH as string, [BASH_WRAPPER, ...args], {
+    env,
+    cwd: opts.cwd,
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout?.on('data', (d) => {
+    stdout += d.toString();
+  });
+  child.stderr?.on('data', (d) => {
+    stderr += d.toString();
+  });
+  return new Promise<{
+    status: number | null;
+    stdout: string;
+    stderr: string;
+    error?: Error;
+    timedOut: boolean;
+  }>((resolve) => {
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      resolve({ status: null, stdout, stderr, timedOut: true });
+    }, timeoutMs);
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      resolve({ status: null, stdout, stderr, error: err, timedOut: false });
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      resolve({ status: code, stdout, stderr, timedOut: false });
+    });
   });
 }
 
@@ -394,6 +497,120 @@ describeOrSkip('marina.cmd launcher + marina.ps1 (requires PowerShell + Python m
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+    expect(r.stdout.trim()).toBe('marina: online');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// bash 封装脚本 marina(同目录、无扩展名)。它与 marina.cmd 走不同的调用链:
+//   bash marina → exec powershell.exe -File marina.ps1
+// 被测点不是 marina.ps1 的业务逻辑(那已被上一组覆盖),而是封装脚本的:
+//   (1) 退出码透传(exec)
+//   (2) BASH_SOURCE 定位同目录 marina.ps1
+//   (3) "$@" 能把含空格的路径完整传到 ps1
+//   (4) 不会像 cmd /c 那样静默 exit 0(MSYS /c->C:/ 陷阱的反面证据)
+// 这一组额外需要 BASH 可用(Git Bash / MSYS);CI 上若没有 bash 则整组 skip。
+// ════════════════════════════════════════════════════════════════════════
+describeBashOrSkip('marina bash wrapper (requires bash + PowerShell + Python mock)', () => {
+  let mock: { proc: ChildProcess; baseUrl: string; logFile: string };
+  let workspace: string;
+
+  beforeEach(async () => {
+    workspace = mkdtempSync(join(tmpdir(), 'marina-bash-test-'));
+    mock = await startMock();
+  });
+
+  afterEach(async () => {
+    try {
+      mock.proc.kill();
+      await new Promise<void>((r) => mock.proc.on('exit', () => r()));
+    } catch {
+      /* best effort */
+    }
+    rmSync(workspace, { recursive: true, force: true });
+    try {
+      rmSync(mock.logFile, { force: true });
+    } catch {
+      /* best effort */
+    }
+  });
+
+  function readRequests(): RecordedRequest[] {
+    if (!existsSync(mock.logFile)) return [];
+    const content = readFileSync(mock.logFile, 'utf-8');
+    return content
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as RecordedRequest);
+  }
+
+  // ── 退出码透传(最关键)──────────────────────────────────────
+  it('ping online -> exit 0 propagates through the bash wrapper', async () => {
+    const r = await runMarinaBash(['ping'], { env: { MARINA_SERVICE: mock.baseUrl } });
+    // 理论上 0;最坏情况是 exit 1(Marina 离线)。exit 0 = 封装工作正常 + 隐式
+    // 证明不是 MSYS /c->C:/ 陷阱(那个会 exit 0但输出交互式 prompt，这里断 stdout)。
+    expect(r.timedOut, 'bash wrapper hung — likely an accidental interactive shell').toBe(false);
+    expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+    expect(r.stdout.trim()).toBe('marina: online');
+  });
+
+  // ── 错误输入不挂起、退出码为 2 ──────────────────────────────────
+  // 这正是 MSYS /c->C:/ 陷阱的反面证据:陷阱下 unknown 命令会启动交互式 cmd
+  // 并 exit 0;正确的 bash 封装会 exit 2。
+  it('unknown command -> exit 2, does not hang (the cmd /c trap would exit 0)', async () => {
+    const r = await runMarinaBash(['bogus'], {
+      env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+    });
+    expect(r.timedOut, 'bash wrapper hung on unknown command').toBe(false);
+    expect(r.status, `stdout: ${r.stdout}\nstderr: ${r.stderr}`).toBe(2);
+    expect(r.stderr).toContain('unknown command');
+  });
+
+  it('show with no path -> exit 2, does not hang', async () => {
+    const r = await runMarinaBash(['show'], {
+      env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+    });
+    expect(r.timedOut, 'bash wrapper hung on missing path').toBe(false);
+    expect(r.status, `stdout: ${r.stdout}\nstderr: ${r.stderr}`).toBe(2);
+    expect(r.stderr).toContain('PATH');
+  });
+
+  it('no subcommand -> exit 2, does not hang', async () => {
+    const r = await runMarinaBash([], {
+      env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+    });
+    expect(r.timedOut, 'bash wrapper hung on no command').toBe(false);
+    expect(r.status, `stdout: ${r.stdout}\nstderr: ${r.stderr}`).toBe(2);
+  });
+
+  // ── 含空格路径完整传递 ────────────────────────────────────────
+  // "$@" 必须把 'with spaces/report.md' 作为一个参数交给 powershell -File，
+  // 不能被 MSYS 路径转换或词分割拆坏。mock server 记录的 body.path 应与原路径一致。
+  it('show forwards a path with spaces to ps1 intact', async () => {
+    const dir = join(workspace, 'dir with spaces');
+    const f = join(dir, 'report.md');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(f, '# spaced');
+    const r = await runMarinaBash(['show', f], {
+      env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't-sp' },
+    });
+    expect(r.timedOut, 'bash wrapper hung on spaced path').toBe(false);
+    expect(r.status, `stdout: ${r.stdout}\nstderr: ${r.stderr}`).toBe(0);
+    const openReq = readRequests().find((x) => x.path === '/open-file');
+    expect(openReq, `no /open-file recorded; stdout=${r.stdout} stderr=${r.stderr}`).toBeDefined();
+    expect(JSON.parse(openReq!.body)).toMatchObject({ path: f, terminal: 't-sp' });
+  });
+
+  // ── BASH_SOURCE 定位同目录 marina.ps1 ─────────────────────────
+  // 从任意 cwd 调用封装，它应该靠 BASH_SOURCE 找到同目录的 ps1，而不依赖 cwd。
+  it('wrapper resolves marina.ps1 via BASH_SOURCE regardless of cwd', async () => {
+    const r = await runMarinaBash(['ping'], {
+      env: { MARINA_SERVICE: mock.baseUrl },
+      cwd: tmpdir(),
+    });
+    expect(r.timedOut, 'bash wrapper hung when cwd != skill dir').toBe(false);
     expect(r.status, `stderr: ${r.stderr}`).toBe(0);
     expect(r.stdout.trim()).toBe('marina: online');
   });

@@ -31,9 +31,9 @@
   here can mis-decode and break the parser. Same rule as src/shell-hooks.
   No BOM. English only. Guarded by shipped-scripts-ascii.test.ts.
 
-  NO STDIN / STAGING MODE (design decision):
+  NO STDIN MODE (design decision):
     An earlier version read generated content from stdin and staged it under
-    MARINA_WORKSPACE. That path is NOT reliable on Windows PowerShell 5.1:
+    MARINA_WORKSPACE. That stdin path is NOT reliable on Windows PowerShell 5.1:
     when an AI pipes content (`cat report.md | marina.cmd show`), the PS 5.1
     parent pipeline re-encodes the bytes to the console output code page
     (CP936/GBK on zh-CN) BEFORE they reach powershell.exe. Setting
@@ -46,8 +46,19 @@
     Node fs as UTF-8 (buf.toString('utf8')). The agent's file-writing tool
     writes UTF-8 without a BOM, so no BOM handling is needed on either side;
     fully bypassing the PS pipeline.
-    This removes the --as option and the MARINA_WORKSPACE requirement, and
-    with them the traversal / write-before-failure risks of the old mode.
+    This removes the --as option and the stdin-staging mode, and with them
+    the traversal / write-before-failure risks of the old mode.
+
+    MARINA_WORKSPACE is NOT deprecated: it is the per-session scratch
+    directory Marina injects into the child process env, and the RECOMMENDED
+    place for the AI to write throwaway display-only artifacts before calling
+    `marina show <path>` (see SKILL.md). This script itself never reads
+    MARINA_WORKSPACE -- the agent writes files into it with its own tool, then
+    hands the resulting path to `show`. The stdin pipeline problem above is
+    specifically about piping bytes through a shell pipe; writing a file with
+    a proper file-writing tool and then passing the PATH is unaffected and is
+    exactly the supported usage. (Marina's main process creates and reclaims
+    this directory per session; see src/main/session-workspace-manager.ts.)
 
   Corresponding Marina code:
     src/main/file-panel-service.ts  routes: GET /health (auth-free, returns
@@ -214,7 +225,7 @@ function Invoke-CmdShow {
     else { $path = $a; $i++ }
   }
   if (-not $path) {
-    Die $script:EXIT_USAGE 'show: requires a PATH (no stdin/staging mode -- write the file, then `marina show <path>`)'
+    Die $script:EXIT_USAGE 'show: requires a PATH (no stdin mode -- write the file, then `marina show <path>`)'
   }
   $p = Resolve-AbsPath -P $path
   if (-not (Test-Path -LiteralPath $p -PathType Leaf)) {
@@ -285,9 +296,10 @@ commands:
   list              list files open in this terminal's panel
                     --json      raw JSON output
 
-There is no stdin/staging mode. Write the artifact to a file first (with your
-file-writing tool, UTF-8), then `marina show <PATH>`. The PS 5.1 pipeline
-corrupts non-ASCII bytes piped through stdin before this script sees them.
+There is no stdin mode. Write the artifact to a file first (with your
+file-writing tool, UTF-8; the recommended location is $MARINA_WORKSPACE),
+then `marina show <PATH>`. The PS 5.1 pipeline corrupts non-ASCII bytes
+piped through stdin before this script sees them.
 '@)
 }
 

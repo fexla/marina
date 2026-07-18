@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+#
+# @file marina
+# @purpose Bash / Git Bash wrapper around marina.ps1 for AI agents that run
+#   this skill from a bash tool on Windows (e.g. an agent whose shell is
+#   MSYS / Git Bash). It exists to dodge a silent-success trap when invoking
+#   the sibling marina.cmd from inside bash.
+#
+# @why this wrapper exists (the cmd /c trap):
+#   When an AI agent runs `cmd /c "marina.cmd ..." ` inside a bash tool on
+#   Windows, MSYS / Git Bash applies POSIX-to-Windows path conversion to the
+#   arguments BEFORE handing them to cmd.exe. The `/c` flag is NOT a path,
+#   but MSYS rewrites it to `C:/` anyway. cmd.exe therefore never receives
+#   the `/c` flag and, instead of running marina.cmd and exiting, it starts
+#   an INTERACTIVE cmd session that prints a prompt and hangs until the
+#   agent's bash tool times out -- and critically returns exit 0, so the
+#   agent wrongly believes the command succeeded.
+#
+#   Verified on a clean Windows box:
+#     cmd /c "marina.cmd" foobar   -> interactive cmd, exit 0   (WRONG)
+#     cmd //c "marina.cmd" foobar  -> exit 2                    (correct)
+#     ./marina.cmd foobar          -> exit 2                    (correct)
+#     powershell -File marina.ps1  -> exit 2                    (correct)
+#
+#   The robust fix is to bypass cmd.exe entirely and call the real logic
+#   (marina.ps1) via powershell.exe -File directly. That is exactly what
+#   this wrapper does. It does NO business logic itself -- it just locates
+#   the sibling marina.ps1 and execs powershell on it, forwarding all args
+#   and letting the child exit code propagate through `exec`.
+#
+# @scope: Windows-only. It depends on powershell.exe, which ships with every
+#   Windows install. On a non-Windows host without powershell.exe it prints a
+#   clear error and exits non-zero. It is intentionally useless there.
+#
+# @ascii-only (ENC-1): matches the sibling marina.cmd / marina.ps1 rule.
+#   English only, no BOM. Guarded by shipped-scripts-ascii.test.ts.
+#
+# @corresponding:
+#   src/skills/show-in-marina/marina.ps1   (the real CLI logic)
+#   src/skills/show-in-marina/marina.cmd   (the cmd / PowerShell launcher)
+#   src/skills/show-in-marina/SKILL.md     (when to use which entry point)
+
+# Locate the directory of THIS script (the directory this file is shipped
+# into, side by side with marina.ps1). $BASH_SOURCE gives the path this
+# script was invoked from, so it works regardless of the agent's cwd or PATH
+# -- we never assume a bare `marina.ps1` is on PATH. (It does NOT resolve
+# symbolic links; invocation via a symlink would look for marina.ps1 next to
+# the symlink. SKILL.md requires invoking the installed file directly, so
+# symlink invocation is not a supported path.)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PS1_PATH="${SCRIPT_DIR}/marina.ps1"
+
+if [ ! -f "${PS1_PATH}" ]; then
+  echo "marina: marina.ps1 not found next to ${BASH_SOURCE[0]} (looked: ${PS1_PATH})" >&2
+  exit 127
+fi
+
+# Convert the .ps1 path to a Windows-style path before handing it to
+# powershell.exe. Under Git Bash / MSYS the MSYS runtime would convert a
+# POSIX path argument for us, but that is a runtime feature, not guaranteed
+# on every bash port (e.g. a stripped Cygwin, or a non-MSYS bash). cygpath
+# is the explicit, portable conversion; if it is missing we fall back to
+# the POSIX path and rely on the MSYS runtime conversion (the common case).
+if command -v cygpath >/dev/null 2>&1; then
+  PS1_PATH_WIN="$(cygpath -w "${PS1_PATH}")"
+else
+  PS1_PATH_WIN="${PS1_PATH}"
+fi
+
+# Find powershell.exe. On Windows it is normally on PATH; if not, fall back
+# to the well-known System32 location before giving up with a clear message.
+PS_BIN=""
+if command -v powershell.exe >/dev/null 2>&1; then
+  PS_BIN="powershell.exe"
+elif [ -x "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe" ]; then
+  PS_BIN="/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+fi
+
+if [ -z "${PS_BIN}" ]; then
+  echo "marina: powershell.exe not found on PATH or in System32. This wrapper is Windows-only; on non-Windows hosts use the marina.ps1 contents directly or skip this skill." >&2
+  exit 127
+fi
+
+# -NoProfile: skip the user PowerShell profile for a clean, fast startup.
+# -ExecutionPolicy Bypass: run the .ps1 regardless of the machine default
+#   policy (agents cannot be expected to run Set-ExecutionPolicy first).
+# -File: pass the script path; "$@" forwards every remaining arg verbatim.
+# `exec` replaces this shell with powershell so the child's exit code is the
+# exit code the caller sees -- no wrapper-level masking.
+exec "${PS_BIN}" -NoProfile -ExecutionPolicy Bypass -File "${PS1_PATH_WIN}" "$@"
