@@ -634,6 +634,12 @@ export class SessionManager extends EventEmitter {
     pathKind: 'local' | 'ssh',
   ) => Promise<{ available: boolean }>) | null = null;
   /**
+   * v0.3.0:Git status 预取回调。cwd 进仓库(flip 到 available)时触发,让
+   * GitService 在后台拉一次 status 并 emit 事件,renderer 预填缓存,消除面板
+   * 切换的 spawn git 延迟(AGENTS.md §10 面板切换延迟约束)。null = 未注入(测试)。
+   */
+  private gitStatusPrefetcher: ((sessionId: string) => Promise<void>) | null = null;
+  /**
    * v0.3.0:每个 session 上一次的 git 可用性,用于检测 flip(避免重复 emit)。
    * 默认 false(createSession 同步路径用保守 tree)。
    */
@@ -703,6 +709,15 @@ export class SessionManager extends EventEmitter {
     for (const sid of this.sessions.keys()) {
       void this.scheduleGitRecompute(sid, { immediate: true });
     }
+  }
+
+  /**
+   * v0.3.0:注入 Git status 预取回调(GitService.prefetchStatus)。在 cwd 进仓库
+   * (flip 到 available)时触发,让 renderer 提前拿到的 status 填缓存。
+   * 与 attachGitAvailabilityProvider 同构,依赖注入避免循环依赖。
+   */
+  attachGitStatusPrefetcher(prefetcher: (sessionId: string) => Promise<void>): void {
+    this.gitStatusPrefetcher = prefetcher;
   }
 
   /**
@@ -2144,6 +2159,14 @@ export class SessionManager extends EventEmitter {
       docks: current.docks, // 几何不变,只换 tree
     };
     managed.info.uiLayout = next;
+    // v0.3.0 预取:刚检测到 cwd 进仓库(flip 到 available)时,后台拉一次 status
+    // 推给 renderer 填缓存。用户点 Git tab 时缓存命中,零延迟。fire-and-forget,
+    // 不 await(不阻塞 LayoutNode emit / UI 响应)。失败由 prefetchStatus 内部 catch。
+    if (available && this.gitStatusPrefetcher) {
+      void this.gitStatusPrefetcher(managed.info.id).catch(() => {
+        /* prefetchStatus 已内部 catch;这里兑底防 unhandledrejection */
+      });
+    }
     this.emitStateChanged(managed, { uiLayout: next });
   }
 

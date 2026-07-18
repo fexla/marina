@@ -198,6 +198,46 @@ describe('GitService', () => {
   it('onSessionDestroyed:对无 watcher 的 session 调用也不抛', () => {
     expect(() => service.onSessionDestroyed('never-existed')).not.toThrow();
   });
+
+  // ── prefetchStatus:v0.3.0 预取,emit 已 strip repoRoot 的 snapshot ──
+  it('prefetchStatus:拉 status 并 emit gitStatusUpdated(不含 repoRoot)', async () => {
+    const sample = '1 .M N... 100644 100644 100644 aaaa bbbb modified.txt\0';
+    vi.spyOn(
+      service as unknown as { runGit: (...a: never[]) => Promise<unknown> },
+      'runGit',
+    ).mockResolvedValue({ stdout: Buffer.from(sample, 'utf8'), stderr: '', exitCode: 0 });
+    const emitted: unknown[] = [];
+    service.on('gitStatusUpdated', (p) => emitted.push(p));
+    await service.prefetchStatus('s1');
+    expect(emitted).toHaveLength(1);
+    const p = emitted[0] as {
+      sessionId: string;
+      groups?: unknown[];
+      truncated?: boolean;
+      unavailable?: string;
+      repoRoot?: string;
+    };
+    expect(p.sessionId).toBe('s1');
+    expect(p.groups).toBeDefined();
+    expect(p.truncated).toBe(false);
+    // 安全:绝不泄露 repoRoot 给 renderer。
+    expect(p.repoRoot).toBeUndefined();
+  });
+
+  it('prefetchStatus:SSH session emit unavailable,不 throw', async () => {
+    const emitted: unknown[] = [];
+    service.on('gitStatusUpdated', (p) => emitted.push(p));
+    await expect(service.prefetchStatus('ssh1')).resolves.toBeUndefined();
+    expect(emitted).toHaveLength(1);
+    expect((emitted[0] as { unavailable: string }).unavailable).toBe('ssh-unsupported');
+  });
+
+  it('prefetchStatus:session 不存在时不 emit(竞态静默退出)', async () => {
+    const emitted: unknown[] = [];
+    service.on('gitStatusUpdated', (p) => emitted.push(p));
+    await expect(service.prefetchStatus('never-existed')).resolves.toBeUndefined();
+    expect(emitted).toHaveLength(0);
+  });
 });
 
 // ── parsePorcelainV2 纯函数单测(不依赖 service 实例)─────────────────

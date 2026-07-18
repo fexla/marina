@@ -2538,4 +2538,58 @@ describe('SessionManager — dynamic Git LayoutNode (v0.3.0)', () => {
       expect(changes.some((c) => (c as { uiLayout?: unknown }).uiLayout)).toBe(true);
     });
   });
+
+  it('v0.3.0 预取:flip 到 available=true 时调 prefetcher,flip 到 false 不调', async () => {
+    const { mgr } = makeManager({});
+    let available = false;
+    mgr.attachGitAvailabilityProvider(async () => ({ available }));
+    const prefetched: string[] = [];
+    mgr.attachGitStatusPrefetcher(async (sid) => {
+      prefetched.push(sid);
+    });
+    const info = await mgr.createSession({
+      pathId: repoDir,
+      templateId: 'shell',
+      ownerWindowId: 'w1',
+      cols: 80,
+      rows: 24,
+    });
+    // 初次评估 available=false → 不应预取。
+    await vi.waitFor(() => {
+      expect(mgr.get(info.id)?.uiLayout?.tree).toBeTruthy();
+    });
+    expect(prefetched).toEqual([]);
+    // flip 到 true → 应预取一次。
+    available = true;
+    mgr.recomputeGitAvailabilityForAllSessions();
+    await vi.waitFor(() => {
+      expect(prefetched).toContain(info.id);
+    });
+    expect(prefetched.filter((s) => s === info.id)).toHaveLength(1);
+    // 再 flip 回 false → 不应再调。
+    const countBefore = prefetched.length;
+    available = false;
+    mgr.recomputeGitAvailabilityForAllSessions();
+    await vi.waitFor(() => {
+      expect(mgr.get(info.id)?.uiLayout?.tree).toBeTruthy();
+    });
+    expect(prefetched.length).toBe(countBefore);
+  });
+
+  it('v0.3.0 预取:未注入 prefetcher 时 flip 不报错(向后兼容)', async () => {
+    const { mgr } = makeManager({});
+    mgr.attachGitAvailabilityProvider(async () => ({ available: true }));
+    // 不 attachGitStatusPrefetcher → flip 时不应 throw。
+    const info = await mgr.createSession({
+      pathId: repoDir,
+      templateId: 'shell',
+      ownerWindowId: 'w1',
+      cols: 80,
+      rows: 24,
+    });
+    await vi.waitFor(() => {
+      const tree = mgr.get(info.id)?.uiLayout?.tree;
+      expect(tree).toBeTruthy();
+    });
+  });
 });

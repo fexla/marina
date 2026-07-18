@@ -76,6 +76,7 @@ import {
   type RevealFileTreePathPayload,
   type GetGitStatusPayload,
   type GetGitStatusResponse,
+  type GitStatusUpdatedPayload,
   type OpenGitDiffPayload,
   type GetOpenFilesPayload,
   type ReadFilePayload,
@@ -1916,10 +1917,13 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     );
   });
 
-  // v0.3.0:Git 面板状态变化(watcher 检测到仓库变更时触发)。本期 watcher 尚未
-  // 启用,getStatus 由 renderer 面板激活时主动拉取;此处 wire 先备好,后续加
-  // watcher 时零改动。策略与 file-panel 同:仅推 owner 窗口。
-  gitService.on('gitStatusUpdated', (p: { sessionId: string }) => {
+  // v0.3.0:Git 面板状态变化。两路触发:
+  //  (1) 预取:SessionManager 检测到 cwd 进仓库(flip available)→ GitService.prefetchStatus
+  //      → 拉 status → emit(填 renderer 缓存,消除面板切换延迟)
+  //  (2) watcher(commit E):仓库变更 debounce → 重拉 status → emit
+  // payload 带 snapshot(已 strip repoRoot),renderer 收到零额外 IPC 直填缓存。
+  // 策略与 file-panel 同:仅推 owner 窗口。
+  gitService.on('gitStatusUpdated', (p: GitStatusUpdatedPayload) => {
     const session = sessionManager.get(p.sessionId);
     if (!session?.ownerWindowId) return;
     sendEventTo(EVENT_CHANNELS.GIT_STATUS_UPDATED, session.ownerWindowId, p);

@@ -224,6 +224,95 @@ export class GitService extends EventEmitter {
   }
 
   /**
+   * 预取 status 并 emit gitStatusUpdated 事件(供 renderer 缓存)。
+   *
+   * 由 SessionManager 在检测到 cwd 进仓库(flip 到 available)时调用,目的是让
+   * renderer 在用户点 Git tab 之前就把缓存填上,消除面板切换的 spawn git 延迟
+   * (AGENTS.md §10 面板切换延迟约束)。
+   *
+   * 与 getStatus 的区别:
+   * - 不走 owner 校验:这是 main 端内部主动调用,不是 renderer 请求。SessionManager
+   *   是可信调用方(它管 session 生命周期,拥有 cwd 真值)。
+   * - 不 throw:预取失败(SSH / 非 repo / disable / git 报错)静默转为 unavailable
+   *   或不 emit,避免预取扊住 session 创建/cd 流程。
+   *
+   * emit 的 payload 是「已 strip repoRoot」的形状(与 IPC getStatus handler 一致),
+   * renderer 收到后直接写 git-status-cache,零额外 IPC。
+   */
+  async prefetchStatus(sessionId: string): Promise<void> {
+    // session 已销毁(预取与 destroy 竞态)→ 不 emit。sessionManager.get 也找不到,
+    // ipc wire 会 return,emit 了也白 emit,还污染 EventEmitter。静默退出。
+    if (!this.sessionLookup.get(sessionId)) return;
+    let stripped: { groups: GitStatusGroup[]; truncated: boolean } | { unavailable: GitUnavailableReason };
+    try {
+      const result = await this.getStatusInternal(sessionId);
+      stripped =
+        'unavailable' in result
+          ? { unavailable: result.unavailable }
+          : { groups: result.groups, truncated: result.truncated };
+    } catch (err) {
+      // 预取不应 throw 扊主流程(session 创建/cd)。记日志,不 emit(renderer
+      // 会在用户点 Git tab 时走常规 getStatus 拉到错误)。
+      logger.warn(
+        'GitService',
+        `prefetchStatus failed sid=${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+    this.emit('gitStatusUpdated', { sessionId, ...stripped });
+  }
+
+  /**
+   * 内部 getStatus:跳过 owner 校验(可信内部调用)。其他逻辑与 getStatus 完全一致。
+   * 被 prefetchStatus / watcher 复用。
+   */
+  private async getStatusInternal(
+    sessionId: string,
+  ): Promise<GitStatusSnapshot | { unavailable: GitUnavailableReason }> {
+    const session = this.sessionLookup.get(sessionId);
+    if (!session) {
+      // session 已销毁(预取与销毁竞态)。返 unavailable 而非 throw,预取静默退出。
+      return { unavailable: 'not-a-repo' };
+    }
+    if (pathKindFromPathId(session.pathId) === 'ssh') {
+      return { unavailable: 'ssh-unsupported' };
+    }
+    if (!this.runtimeConfig.enableGitPanel) {
+      return { unavailable: 'disabled' };
+    }
+    const cwdReal = await this.realpathOrThrow(session.currentCwd);
+    const repoRoot = await findRepoRoot(cwdReal);
+    if (!repoRoot) return { unavailable: 'not-a-repo' };
+    const { stdout } = await this.runGit(repoRoot, [
+      'status',
+      '--porcelain=v2',
+      '-z',
+      '--untracked-files=all',
+    ]);
+    const groups = parsePorcelainV2(stdout.toString('utf8'));
+    let truncated = false;
+    if (groups.reduce((n, g) => n + g.entries.length, 0) > MAX_STATUS_ENTRIES) {
+      truncated = true;
+      // 截断:保留按 tone 优先级的前 N 项(冲突置顶逻辑在 parsePorcelainV2 里已排序)。
+      let used = 0;
+      const kept: typeof groups = [];
+      for (const g of groups) {
+        const room = MAX_STATUS_ENTRIES - used;
+        if (room <= 0) break;
+        if (g.entries.length <= room) {
+          kept.push(g);
+          used += g.entries.length;
+        } else {
+          kept.push({ ...g, entries: g.entries.slice(0, room) });
+          used = MAX_STATUS_ENTRIES;
+        }
+      }
+      return { repoRoot, groups: kept, truncated };
+    }
+    return { repoRoot, groups, truncated };
+  }
+
+  /**
    * 产出某文件的 unified diff 并交给 FilePanelService 打开预览。
    *
    * diff 写入 session 的 MARINA_WORKSPACE/__marina_diff__/<sha>.diff,作为

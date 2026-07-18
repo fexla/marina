@@ -22,9 +22,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   COMMAND_CHANNELS,
+  EVENT_CHANNELS,
   type GetGitStatusResponse,
   type GitStatusGroup,
   type GitStatusTone,
+  type GitStatusUpdatedPayload,
   type GitUnavailableReason,
 } from '@shared/protocol';
 import { dividerItem } from '../common/fileListRowContextMenu';
@@ -148,6 +150,34 @@ export function GitPanel({ sessionId }: GitPanelProps): JSX.Element {
   useEffect(() => {
     void loadStatus();
   }, [loadStatus]);
+
+  // v0.3.0 预取/watcher 订阅:main 端在 cwd 进仓库(预取)或仓库变更(watcher)时
+  // emit evt:git:status-updated 带 snapshot。过滤本 session → 直接用 payload 更新
+  // state + 缓存,不走二次 IPC。这是"零延迟面板切换"的关键:用户点 tab 之前
+  // 预取已把缓存填好,切过来秒显最新值。
+  useEffect(() => {
+    const off = window.api.on<GitStatusUpdatedPayload>(
+      EVENT_CHANNELS.GIT_STATUS_UPDATED,
+      (payload) => {
+        if (payload.sessionId !== sessionId) return;
+        if ('unavailable' in payload && payload.unavailable !== undefined) {
+          setState((s) => ({ ...s, loading: false, unavailable: payload.unavailable, snapshot: undefined }));
+          setCachedStatus(sessionId, { unavailable: payload.unavailable, at: Date.now() });
+        } else {
+          const groups = payload.groups ?? [];
+          const truncated = payload.truncated ?? false;
+          setState((s) => ({
+            ...s,
+            loading: false,
+            unavailable: undefined,
+            snapshot: { groups, truncated },
+          }));
+          setCachedStatus(sessionId, { groups, truncated, at: Date.now() });
+        }
+      },
+    );
+    return off;
+  }, [sessionId]);
 
   const openDiff = (relativePath: string): void => {
     window.api

@@ -466,6 +466,9 @@ function bootstrap(): void {
       sessionManager.attachGitAvailabilityProvider((cwdReal, pathKind) =>
         gitService.evaluateAvailability(cwdReal, pathKind).then((r) => ({ available: r.available })),
       );
+      // v0.3.0 预取:cwd 进仓库时让 GitService 后台拉 status 推给 renderer 填缓存,
+      // 消除面板切换延迟(AGENTS.md §10)。
+      sessionManager.attachGitStatusPrefetcher((sid) => gitService.prefetchStatus(sid));
 
       // Typora 式 markdown 主题:扫 userData/markdown-themes/*.css,首次种入
       // 预置(README + sepia),fs.watch 自动发现增删。在 installIpcLayer 前

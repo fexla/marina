@@ -1446,9 +1446,18 @@ export interface OpenGitDiffPayload {
   relativePath: string;
 }
 
-/** evt:git:status-updated payload(本期预留位,watcher 暂未启用)。 */
+/** evt:git:status-updated payload。
+ * 由 main 端预取(SessionManager 检测到 cwd 进仓库时)/ watcher(仓库变更)
+ * 主动推。snapshot 为「已 strip repoRoot」的 GetGitStatusResponse 形状,renderer
+ * 收到后直接写缓存(git-status-cache),零额外 IPC。
+ * 注:不推送 loading/error 态(那些是 UI 瞬态)。 */
 export interface GitStatusUpdatedPayload {
   sessionId: string;
+  /** 正常状态。与 unavailable 互斥。 */
+  groups?: GitStatusGroup[];
+  truncated?: boolean;
+  /** 不可用状态原因(预取/watcher 发现 cd 出仓库 / disable 等)。 */
+  unavailable?: GitUnavailableReason | undefined;
 }
 
 // ──────────────────────────────────────────────────────────────────
