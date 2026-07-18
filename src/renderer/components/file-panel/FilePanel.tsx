@@ -20,9 +20,17 @@
 import { useEffect } from 'react';
 import { COMMAND_CHANNELS, type FilePanelSnapshot } from '@shared/protocol';
 import type { OpenedFile } from '@shared/types';
+import {
+  copyPathItems,
+  dividerItem,
+  revealInExplorerItem,
+} from '../common/fileListRowContextMenu';
 import { FileListRow } from '../common/FileListRow';
 import { useAppDispatch, useAppState } from '../../store';
 import { useTranslation } from '../LanguageProvider';
+import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
+import { useToast } from '../Toast';
+import type { ContextMenuItem } from '../ContextMenu';
 import { FileViewer } from './FileViewer';
 
 interface FilePanelProps {
@@ -34,6 +42,10 @@ export function FilePanel({ sessionId }: FilePanelProps): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
   const { tx } = useTranslation();
+  // 右键菜单依赖。提到顶层取一次,避免每个 tab row 各起一份 hook —— tab 数量
+  // 可能较多(打开 10+ 文件),统一取更简。buildContextMenu 闭包捕获即可。
+  const copyToClipboard = useCopyToClipboard();
+  const toast = useToast();
   const snapshot: FilePanelSnapshot = state.filePanels.get(sessionId) ?? {
     files: [],
     activePath: null,
@@ -79,6 +91,20 @@ export function FilePanel({ sessionId }: FilePanelProps): JSX.Element {
       .catch((err: unknown) => console.warn('[FilePanel] close failed', err));
   };
 
+  // 「关闭其他」与「关闭所有」:逐个调 close。main 端没有批量 close IPC
+  // (也不值得为 tab 菜单加一个);每个 close 各发一次 evt:file-panel:updated,
+  // reducer 幂等累积,视觉上 tab 逐个消失。并发 close 同一 session 不冲突 ——
+  // FilePanelService 的 panels Map 操作在 Node 单线程里串行。
+  const handleCloseOthers = (keepPath: string): void => {
+    for (const f of snapshot.files) {
+      if (f.path !== keepPath) handleClose(f.path);
+    }
+  };
+
+  const handleCloseAll = (): void => {
+    for (const f of snapshot.files) handleClose(f.path);
+  };
+
   return (
     <div className="file-panel-content">
       <div className="file-panel-tabs">
@@ -92,6 +118,30 @@ export function FilePanel({ sessionId }: FilePanelProps): JSX.Element {
         ) : (
           snapshot.files.map((file) => {
             const isActive = file.path === snapshot.activePath;
+            const buildContextMenu = (): ContextMenuItem[] => {
+              const items: ContextMenuItem[] = [];
+              items.push({
+                label: tx('关闭', 'Close'),
+                onSelect: () => handleClose(file.path),
+              });
+              items.push({
+                label: tx('关闭其他', 'Close others'),
+                disabled: snapshot.files.length <= 1,
+                onSelect: () => handleCloseOthers(file.path),
+              });
+              items.push({
+                label: tx('关闭所有', 'Close all'),
+                disabled: snapshot.files.length === 0,
+                onSelect: () => handleCloseAll(),
+              });
+              items.push(dividerItem());
+              // file-panel 的 OpenedFile.path 是 main 端规范化的绝对路径,
+              // 且 file-panel HTTP 机制在 SSH 上架构性失效(SSH session files 为空),
+              // 因此这里不必担心 SSH 灰显 —— 能看到 tab 就一定是本地路径。
+              items.push(...copyPathItems(file.path, null, { copyToClipboard, toastError: (m) => toast.push({ kind: 'error', message: m }) }));
+              items.push(revealInExplorerItem(file.path, { copyToClipboard, toastError: (m) => toast.push({ kind: 'error', message: m }) }));
+              return items;
+            };
             return (
               <FileListRow
                 key={file.path}
@@ -101,6 +151,7 @@ export function FilePanel({ sessionId }: FilePanelProps): JSX.Element {
                 title={file.path}
                 selected={isActive}
                 onClick={() => handleShow(file.path)}
+                buildContextMenu={buildContextMenu}
                 /* × 关闭按钮保留原视觉与交互:点击不触发 onClick(切 tab),
                    只调 close。trailing 槽挂在 row 容器上,与 button 分离。 */
                 trailing={

@@ -23,9 +23,13 @@ import {
   type ListFileTreeDirectoryResponse,
 } from '@shared/protocol';
 import type { FileTreeEntry, FileTreeRootId } from '@shared/types';
+import { dividerItem } from '../common/fileListRowContextMenu';
 import { FileListRow } from '../common/FileListRow';
 import { Icon } from '../icons';
 import { useTranslation } from '../LanguageProvider';
+import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
+import { useToast } from '../Toast';
+import type { ContextMenuItem } from '../ContextMenu';
 
 interface FileTreePanelProps {
   /** 当前窗口实际持有的 session；main 会拒绝非 owner 的请求。 */
@@ -179,6 +183,7 @@ export function FileTreePanel({ sessionId }: FileTreePanelProps): JSX.Element {
               </p>
             ) : (
               <DirectoryChildren
+                sessionId={sessionId}
                 rootId={root.id}
                 state={state}
                 directories={directories}
@@ -195,6 +200,7 @@ export function FileTreePanel({ sessionId }: FileTreePanelProps): JSX.Element {
 }
 
 function DirectoryChildren({
+  sessionId,
   rootId,
   state,
   directories,
@@ -202,6 +208,7 @@ function DirectoryChildren({
   onOpen,
   tx,
 }: {
+  sessionId: string;
   rootId: FileTreeRootId;
   state: DirectoryState | undefined;
   directories: DirectoryStates;
@@ -220,6 +227,7 @@ function DirectoryChildren({
       {state.snapshot.entries.map((entry) => (
         <FileTreeEntryRow
           key={entry.relativePath}
+          sessionId={sessionId}
           rootId={rootId}
           entry={entry}
           state={directories[directoryKey(rootId, entry.relativePath)]}
@@ -242,6 +250,7 @@ function DirectoryChildren({
 }
 
 function FileTreeEntryRow({
+  sessionId,
   rootId,
   entry,
   state,
@@ -250,6 +259,7 @@ function FileTreeEntryRow({
   onOpen,
   tx,
 }: {
+  sessionId: string;
   rootId: FileTreeRootId;
   entry: FileTreeEntry;
   state: DirectoryState | undefined;
@@ -259,6 +269,50 @@ function FileTreeEntryRow({
   tx: (zh: string, en: string) => string;
 }): JSX.Element {
   const isDirectory = entry.kind === 'directory';
+  // 右键菜单依赖:每个 row 一个 hook 实例完全合法(React 按组件位置记忆)。
+  // 条目数量不会很大,换来的内聚性比层层透传 props 更可读。
+  const copyToClipboard = useCopyToClipboard();
+  const toast = useToast();
+
+  const buildContextMenu = (): ContextMenuItem[] => {
+    const items: ContextMenuItem[] = [];
+    // 主操作与左键一致:目录=展开/收起,文件=打开预览。
+    items.push({
+      label: isDirectory ? tx('展开/收起', 'Expand/Collapse') : tx('打开', 'Open'),
+      onSelect: () =>
+        isDirectory
+          ? onToggle(rootId, entry.relativePath)
+          : onOpen(rootId, entry.relativePath),
+    });
+    items.push(dividerItem());
+    // 复制相对路径(file-tree 不持有绝对路径,见 fileListRowContextMenu.ts 头注)。
+    // 对用户贴路径到 commit message / import / 文档里都很实用。
+    items.push({
+      label: tx('复制相对路径', 'Copy relative path'),
+      onSelect: () => copyToClipboard(entry.relativePath || '.', '相对路径'),
+    });
+    // 在系统文件管理器定位:走专用 reveal-path IPC,main 端做根包含校验后
+    // 调 shell.showItemInFolder。renderer 始终拿不到绝对路径。
+    items.push({
+      label: tx('在 Explorer 中显示', 'Reveal in Explorer'),
+      onSelect: () => {
+        window.api
+          .invoke(COMMAND_CHANNELS.FILE_TREE_REVEAL_PATH, {
+            sessionId,
+            rootId,
+            relativePath: entry.relativePath,
+          })
+          .catch((err: unknown) =>
+            toast.push({
+              kind: 'error',
+              message: `定位失败:${err instanceof Error ? err.message : String(err)}`,
+            }),
+          );
+      },
+    });
+    return items;
+  };
+
   return (
     <div className="file-tree-entry">
       {/* 重构后:条目本体走统一的 FileListRow(variant=list),为后续右键菜单与
@@ -273,6 +327,7 @@ function FileTreeEntryRow({
           isDirectory ? onToggle(rootId, entry.relativePath) : onOpen(rootId, entry.relativePath)
         }
         ariaExpanded={isDirectory ? !!state?.expanded : undefined}
+        buildContextMenu={buildContextMenu}
         leading={
           isDirectory ? (
             <Icon name={state?.expanded ? 'chevronDown' : 'chevronRight'} size={12} />
@@ -283,6 +338,7 @@ function FileTreeEntryRow({
       />
       {isDirectory && (
         <DirectoryChildren
+          sessionId={sessionId}
           rootId={rootId}
           state={state}
           directories={directories}

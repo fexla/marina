@@ -202,6 +202,10 @@ export const COMMAND_CHANNELS = {
   FILE_TREE_LIST_DIRECTORY: 'cmd:file-tree:list-directory',
   /** 受限校验后打开树中选择的文件，返回既有 FilePanel 快照。 */
   FILE_TREE_OPEN_FILE: 'cmd:file-tree:open-file',
+  /** 受限校验后在系统文件管理器中定位并选中树中选择的文件(v0.3.0)。
+   *  不返回绝对路径给 renderer，直接由 main 端在 realpath 根包含校验后调用
+   *  shell.showItemInFolder，避免 renderer 拿到任意文件路径。 */
+  FILE_TREE_REVEAL_PATH: 'cmd:file-tree:reveal-path',
 
   // Markdown 主题域 —— Typora 式可扩展:用户往 userData/markdown-themes/ 放 .css
   // 即多一个 markdown 面板风格(见 src/main/markdown-theme-manager.ts)。
@@ -1360,6 +1364,13 @@ export interface ListFileTreeDirectoryResponse {
 }
 
 export interface OpenFileTreeFilePayload {
+  sessionId: string;
+  rootId: FileTreeRootId;
+  relativePath: string;
+}
+
+/** cmd:file-tree:reveal-path payload(v0.3.0)。与 OpenFileTreeFilePayload 同形。 */
+export interface RevealFileTreePathPayload {
   sessionId: string;
   rootId: FileTreeRootId;
   relativePath: string;

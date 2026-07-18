@@ -72,6 +72,7 @@ import {
   type ListFileTreeDirectoryPayload,
   type ListFileTreeDirectoryResponse,
   type OpenFileTreeFilePayload,
+  type RevealFileTreePathPayload,
   type GetOpenFilesPayload,
   type ReadFilePayload,
   type ReadImagePayload,
@@ -1697,6 +1698,20 @@ function registerFileTreeHandlers(deps: IpcLayerDeps): void {
         envelope.payload.rootId,
         envelope.payload.relativePath,
       ),
+  );
+
+  // v0.3.0:在系统文件管理器中定位树中选择的文件。与 open-file 同根校验,
+  // 但不返回路径给 renderer —— 校验通过后由 main 端直接调 shell.showItemInFolder。
+  registerHandle(
+    COMMAND_CHANNELS.FILE_TREE_REVEAL_PATH,
+    async (_e, envelope: CommandEnvelope<RevealFileTreePathPayload>): Promise<void> => {
+      await fileTreeService.revealPath(
+        envelope.payload.sessionId,
+        envelope.windowId,
+        envelope.payload.rootId,
+        envelope.payload.relativePath,
+      );
+    },
   );
 }
 

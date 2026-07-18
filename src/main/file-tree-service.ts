@@ -22,6 +22,7 @@
  */
 import { promises as fs } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { shell } from 'electron';
 import type { FileTreeEntry, FileTreeRootId } from '@shared/types';
 import type { FilePanelSnapshot } from '@shared/protocol';
 import type { FilePanelService } from './file-panel-service';
@@ -232,6 +233,37 @@ export class FileTreeService {
     // target 是 canonical path；FilePanelService 二次 stat 后以它作为 opened-file
     // 主键，避免相同文件经过不同 symlink 路径重复打开。
     return this.filePanelService.openFile(sessionId, target);
+  }
+
+  /**
+   * 在系统文件管理器中定位并选中树中选择的文件(v0.3.0)。
+   *
+   * 与 openFile 同一套根包含校验，但不调 FilePanelService、不向 renderer 返回
+   * 绝对路径 —— 校验通过后直接由 main 端调 electron shell.showItemInFolder。
+   * 这样 renderer 始终拿不到受限根外的绝对路径，保持「不暴露任意路径」的安全面。
+   *
+   * @throws FileTreeError 与 openFile 同样语义(SessionMissing/NotOwner/RootUnavailable/
+   *   InvalidPath/OutsideAllowedRoot/NotFile/ReadFailed)。
+   */
+  async revealPath(
+    sessionId: string,
+    requesterId: string,
+    rootId: FileTreeRootId,
+    relativePath: string,
+  ): Promise<void> {
+    this.requireOwner(sessionId, requesterId);
+    const root = await this.resolveRoot(sessionId, rootId);
+    const target = await this.resolveInsideRoot(root, relativePath);
+    const stat = await this.statOrThrow(target, '文件定位');
+    if (!stat.isFile() && !stat.isDirectory()) {
+      throw new FileTreeError(
+        'NotFile',
+        '请求目标不是文件或目录，无法在文件管理器中定位。',
+      );
+    }
+    // showItemInFolder 对文件和目录都有效：文件会高亮选中，目录会打开该目录窗口。
+    // Electron 在 Win/macOS/Linux 上分别调用 explorer/Finder/xdg-open。
+    shell.showItemInFolder(target);
   }
 
   /** 每个请求均重新检查 owner，避免 session 被接管后旧窗口继续读取文件。 */

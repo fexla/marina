@@ -3,12 +3,18 @@
  * @purpose 验证 ADR-016 FileTreeService 的双根授权、owner 隔离、路径越界防护及
  *   与既有 FilePanelService 的可信打开衔接。所有文件系统操作均在临时目录。
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FilePanelService } from './file-panel-service';
 import { FileTreeService } from './file-tree-service';
+
+// file-tree-service 在 v0.3.0 起调 electron shell.showItemInFolder(revealPath)。
+// 测试环境不跑 electron,需 mock 出 spy 以断言「调过」且拿到 canonical 路径。
+// vi.mock 被 hoist 到模块顶部,工厂内不能引用外部变量 → 用 vi.hoisted 持有 spy。
+const { showItemInFolderMock } = vi.hoisted(() => ({ showItemInFolderMock: vi.fn() }));
+vi.mock('electron', () => ({ shell: { showItemInFolder: showItemInFolderMock } }));
 
 interface SessionEntry {
   pathId: string;
@@ -44,6 +50,7 @@ describe('FileTreeService', () => {
   });
 
   afterEach(async () => {
+    showItemInFolderMock.mockClear();
     await filePanelService.stop();
     await rm(baseDir, { recursive: true, force: true });
   });
@@ -144,5 +151,37 @@ describe('FileTreeService', () => {
       service.openFile('s1', 'owner-1', 'session-cwd', 'escaped-link/secret.txt'),
     ).rejects.toMatchObject({ code: 'OutsideAllowedRoot' });
     expect(filePanelService.getOpenFiles('s1').files).toHaveLength(0);
+  });
+
+  // ── v0.3.0:revealPath(右键菜单「在 Explorer 中显示」的后端) ─────────
+  it('revealPath 在根内校验通过后调 shell.showItemInFolder(canonical 路径)', async () => {
+    await writeFile(join(workspaceDir, 'generated.md'), '# generated');
+    const expected = await realpath(join(workspaceDir, 'generated.md'));
+
+    await service.revealPath('s1', 'owner-1', 'managed-workspace', 'generated.md');
+
+    expect(showItemInFolderMock).toHaveBeenCalledTimes(1);
+    // Windows 可能把 8.3 临时路径展开为长路径,因此用 realpath 后的 canonical 比较。
+    expect(showItemInFolderMock).toHaveBeenCalledWith(expected);
+  });
+
+  it('revealPath 拒绝非 owner、绝对路径、.. 与 symlink 越界(与 openFile 同一套校验)', async () => {
+    await writeFile(join(cwdDir, 'note.md'), 'x');
+    // 非 owner 不调 shell
+    await expect(service.revealPath('s1', 'other-window', 'session-cwd', 'note.md')).rejects.toMatchObject({
+      code: 'NotOwner',
+    });
+    expect(showItemInFolderMock).not.toHaveBeenCalled();
+
+    // 绝对路径拒绝(防 renderer 传任意路径通过 reveal 间接读)
+    await expect(
+      service.revealPath('s1', 'owner-1', 'session-cwd', join(externalDir, 'x.txt')),
+    ).rejects.toMatchObject({ code: 'InvalidPath' });
+
+    // .. 越界拒绝
+    await expect(
+      service.revealPath('s1', 'owner-1', 'session-cwd', '../external/anything.txt'),
+    ).rejects.toMatchObject({ code: 'OutsideAllowedRoot' });
+    expect(showItemInFolderMock).not.toHaveBeenCalled();
   });
 });
