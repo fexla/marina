@@ -124,8 +124,18 @@ const DOCK_LAYOUT_RULES: Readonly<Record<string, { minWidth: number; maxWidth: n
   right: { minWidth: 280, maxWidth: 900 },
 };
 
-/** 产品规则生成的浅层布局树。renderer 只读；拖拽改树没有 IPC 入口(ADR-016)。 */
-function createDefaultSessionLayoutTree(): LayoutNode {
+/**
+ * 产品规则生成的浅层布局树(v0.3.0 起动态化)。renderer 只读;拖拽改树没有 IPC 入口
+ * (ADR-016)。
+ *
+ * gitAvailable=true 时在 file-tree 与 file-panel 之间插入 git leaf;否则不出现
+ * Git tab。该值由 SessionManager 在 session 创建 + cwd 变更后调
+ * gitAvailabilityProvider 异步评估,flip 时重建 tree 并 emit state-changed。
+ */
+function createSessionLayoutTree(gitAvailable: boolean): LayoutNode {
+  const stackChildren: LayoutNode[] = [{ kind: 'leaf', panelId: 'file-tree' }];
+  if (gitAvailable) stackChildren.push({ kind: 'leaf', panelId: 'git' });
+  stackChildren.push({ kind: 'leaf', panelId: 'file-panel' });
   return {
     kind: 'split',
     direction: 'horizontal',
@@ -133,14 +143,18 @@ function createDefaultSessionLayoutTree(): LayoutNode {
       { kind: 'leaf', panelId: 'terminal' },
       {
         kind: 'stack',
+        // git 被移除时,LayoutHost 的 storedPanelId-not-in-panelIds 兑底
+        // 自动回退 file-tree,这里 defaultActivePanelId 保持稳定即可。
         defaultActivePanelId: 'file-tree',
-        children: [
-          { kind: 'leaf', panelId: 'file-tree' },
-          { kind: 'leaf', panelId: 'file-panel' },
-        ],
+        children: stackChildren,
       },
     ],
   };
+}
+
+/** 旧名保留:不带 git 的初始保守 tree(createSession 同步路径用)。 */
+function createDefaultSessionLayoutTree(): LayoutNode {
+  return createSessionLayoutTree(false);
 }
 
 const DEFAULT_DOCK_LAYOUTS: Readonly<Record<string, DockLayoutState>> = {
@@ -157,6 +171,10 @@ function createDefaultSessionUiLayout(): SessionUiLayout {
   };
 }
 const CWD_POLL_INTERVAL_MS = 5000;
+
+/** v0.3.0:cwd 变更 → Git 可用性重算的防抖窗口。OSC 1337 每条 prompt 触发,
+ *  防抖避免 realpath 风暴。200ms 对人类感知无影响。 */
+const GIT_RECOMPUTE_DEBOUNCE_MS = 200;
 
 /**
  * Resize quiet 窗口 (CP-3 勘误 #3 v2)。
@@ -608,6 +626,21 @@ export class SessionManager extends EventEmitter {
   /** session 临时展示工作区的生命周期管理器。 */
   private readonly workspaceManager: SessionWorkspaceSource | null;
   /**
+   * v0.3.0:Git tab 可用性判定回调,由 GitService 注入(见 attachGitAvailabilityProvider)。
+   * null = 未注入(测试 / Git 面板禁用)→ 永不生成 git leaf,行为与 v0.2.x 一致。
+   */
+  private gitAvailabilityProvider: ((
+    cwdReal: string,
+    pathKind: 'local' | 'ssh',
+  ) => Promise<{ available: boolean }>) | null = null;
+  /**
+   * v0.3.0:每个 session 上一次的 git 可用性,用于检测 flip(避免重复 emit)。
+   * 默认 false(createSession 同步路径用保守 tree)。
+   */
+  private readonly gitAvailabilityBySession = new Map<string, boolean>();
+  /** cwd 变更 → git 重算的防抖 timer(对齐 PRD §6.7 的 200ms 防抖)。 */
+  private readonly gitRecomputeTimers = new Map<string, NodeJS.Timeout>();
+  /**
    * 最近一次 createSession 的非阻塞警告(例如保存了密码但缺 sshpass)。
    * ipc 层在 createSession resolve 后立即读取并清空,传给 renderer 弹 toast。
    */
@@ -650,6 +683,36 @@ export class SessionManager extends EventEmitter {
     this.appVersion = options.appVersion ?? '';
     this.filePanelService = options.filePanelService ?? null;
     this.workspaceManager = options.workspaceManager ?? null;
+  }
+
+  /**
+   * v0.3.0:注入 Git 可用性判定回调。index.ts 组装期在 GitService 创建后调。
+   *
+   * 回调是纯函数(GitService.evaluateAvailability),只接受 cwdReal + pathKind,
+   * 不持有 session 引用 → 不形成循环依赖(SessionManager → GitService →
+   * SessionManager 的 lookup 已由 GitService 用接口解耦)。
+   *
+   * 调用后,所有现存 session 与后续新 session 都会异步评估并按需重建 LayoutNode。
+   */
+  attachGitAvailabilityProvider(
+    provider: (cwdReal: string, pathKind: 'local' | 'ssh') => Promise<{ available: boolean }>,
+  ): void {
+    this.gitAvailabilityProvider = provider;
+    // 对已存在的 session 补评估(顺序启动期:index.ts 先 new SessionManager
+    // 再 new GitService 再 attach,此时已有 session 需要 catch up)。
+    for (const sid of this.sessions.keys()) {
+      void this.scheduleGitRecompute(sid, { immediate: true });
+    }
+  }
+
+  /**
+   * v0.3.0:settings.enableGitPanel / gitBinaryPath 变化时由 SettingsManager 调,
+   * 批量重算所有 session 的 Git 可用性(开关翻转 → 全局 tab 出现/消失)。
+   */
+  recomputeGitAvailabilityForAllSessions(): void {
+    for (const sid of this.sessions.keys()) {
+      void this.scheduleGitRecompute(sid, { immediate: true });
+    }
   }
 
   // ──────────────────────────────────────────────────────────────────
@@ -1000,6 +1063,12 @@ export class SessionManager extends EventEmitter {
     this.emit('sessionCreated', { ...info });
     if (input.ownerWindowId) {
       this.releaseAllOwnedBy(input.ownerWindowId, { exceptSessionId: sessionId });
+    }
+    // v0.3.0:session 创建后异步评估 Git 可用性。createSession 同步路径用保守
+    // tree(gitAvailable=false,Git tab 暂不出现);评估完成后 flip 时重建 tree +
+    // emit。这样 cwd 预校验 / PTY spawn 不被 realpath 阻塞。
+    if (this.gitAvailabilityProvider) {
+      void this.scheduleGitRecompute(sessionId, { immediate: true });
     }
     return { ...info };
   }
@@ -1888,6 +1957,8 @@ export class SessionManager extends EventEmitter {
     if (next === managed.info.currentCwd) return; // 无变化
     managed.info.currentCwd = next;
     this.emitStateChanged(managed, { currentCwd: next });
+    // v0.3.0:cwd 变了 → 防抖重评估 Git 可用性(cd 进/出仓库 → Git tab 出现/消失)。
+    void this.scheduleGitRecompute(managed.info.id);
   }
 
   /**
@@ -1949,6 +2020,8 @@ export class SessionManager extends EventEmitter {
         if (next !== managed.info.currentCwd) {
           managed.info.currentCwd = next;
           this.emitStateChanged(managed, { currentCwd: next });
+          // v0.3.0:同 OSC 路径,触发 Git 可用性重评估。
+          void this.scheduleGitRecompute(managed.info.id);
         }
       }
     } catch (err) {
@@ -1978,6 +2051,13 @@ export class SessionManager extends EventEmitter {
       clearTimeout(managed.pendingEmitTimer);
       managed.pendingEmitTimer = null;
     }
+    // v0.3.0:清理 Git 可用性重算 timer + 移除缓存,防已销毁 session 的延迟 fire。
+    const gitTimer = this.gitRecomputeTimers.get(managed.info.id);
+    if (gitTimer) {
+      clearTimeout(gitTimer);
+      this.gitRecomputeTimers.delete(managed.info.id);
+    }
+    this.gitAvailabilityBySession.delete(managed.info.id);
   }
 
   private emitStateChanged(managed: ManagedSession, changes: Partial<SessionInfo>): void {
@@ -1987,6 +2067,84 @@ export class SessionManager extends EventEmitter {
       full: { ...managed.info },
     };
     this.emit('sessionStateChanged', payload);
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // v0.3.0:Git 可用性 → 动态 LayoutNode(评审裁决:非 git 仓库时 Git tab 不出现)
+  // ──────────────────────────────────────────────────────────────────
+
+  /**
+   * 防抖调度 Git 可用性重算。cwd 变更走默认 200ms 防抖(OSC 频繁触发时不会
+   * 产生 realpath 风暴);attach / settings 翻转走 immediate=true 立即评估。
+   */
+  private async scheduleGitRecompute(
+    sessionId: string,
+    opts: { immediate?: boolean } = {},
+  ): Promise<void> {
+    if (!this.gitAvailabilityProvider) return; // 未注入 → 行为与 v0.2.x 一致
+    const existing = this.gitRecomputeTimers.get(sessionId);
+    if (existing) clearTimeout(existing);
+    if (opts.immediate) {
+      await this.recomputeGitAvailability(sessionId);
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.gitRecomputeTimers.delete(sessionId);
+      void this.recomputeGitAvailability(sessionId);
+    }, GIT_RECOMPUTE_DEBOUNCE_MS);
+    this.gitRecomputeTimers.set(sessionId, timer);
+  }
+
+  /**
+   * 实际评估 + flip 时重建 tree + emit。不做 realpath 之外的 fs 操作,
+   * 因此即使每个 session 都跑一次也轻(provider 内部只 stat .git)。
+   */
+  private async recomputeGitAvailability(sessionId: string): Promise<void> {
+    if (!this.gitAvailabilityProvider) return;
+    const managed = this.sessions.get(sessionId);
+    if (!managed) return; // session 已销毁,静默
+    const pathKind: 'local' | 'ssh' = managed.info.pathId.startsWith('ssh:') ? 'ssh' : 'local';
+    if (pathKind === 'ssh') {
+      // SSH 永远不可用;直接确保 git leaf 不在(provider 也会判,这里提前短路)。
+      this.applyGitAvailability(managed, false);
+      return;
+    }
+    let cwdReal: string;
+    try {
+      const { realpath } = await import('node:fs/promises');
+      cwdReal = await realpath(managed.info.currentCwd);
+    } catch {
+      this.applyGitAvailability(managed, false);
+      return;
+    }
+    try {
+      const result = await this.gitAvailabilityProvider(cwdReal, pathKind);
+      this.applyGitAvailability(managed, result.available);
+    } catch (err) {
+      // provider 抛错不致命:保守认为不可用,与 createSession 初值一致。
+      logger.warn(
+        'SessionManager',
+        `git availability eval failed sid=${sessionId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      this.applyGitAvailability(managed, false);
+    }
+  }
+
+  /** 翻转 session 的 tree 并 emit(仅在 flip 时)。 */
+  private applyGitAvailability(managed: ManagedSession, available: boolean): void {
+    const prev = this.gitAvailabilityBySession.get(managed.info.id) ?? false;
+    if (prev === available) return; // 无变化,不 emit
+    this.gitAvailabilityBySession.set(managed.info.id, available);
+    const current = managed.info.uiLayout ?? createDefaultSessionUiLayout();
+    const next: SessionUiLayout = {
+      version: current.version,
+      tree: createSessionLayoutTree(available),
+      docks: current.docks, // 几何不变,只换 tree
+    };
+    managed.info.uiLayout = next;
+    this.emitStateChanged(managed, { uiLayout: next });
   }
 
   // ──────────────────────────────────────────────────────────────────

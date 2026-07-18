@@ -15,6 +15,9 @@
  * @对应文档章节: AGENTS.md 5.3 必测;CP-3 完成标志状态机模块覆盖率 > 80%
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, mkdir, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   SessionManager,
   SessionManagerError,
@@ -2424,5 +2427,115 @@ describe('SessionManager — file panel env 注入', () => {
     const env = FakePty.instances[0]!.options.env;
     expect(env.MARINA_SERVICE).toBeUndefined();
     expect(env.TERMINAL_ID).toBe(info.id);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────
+// v0.3.0:动态 LayoutNode —— Git tab 按 session.cwd 是否在仓库内出现/消失。
+// 评审裁决(2026-07-19):非 git 仓库时 Git tab 不出现(不是空状态)。
+// ──────────────────────────────────────────────────────────────────
+describe('SessionManager — dynamic Git LayoutNode (v0.3.0)', () => {
+  let baseDir: string;
+  let repoDir: string;
+  let nonRepoDir: string;
+
+  beforeEach(async () => {
+    baseDir = await mkdtemp(join(tmpdir(), 'marina-git-layout-'));
+    repoDir = join(baseDir, 'repo');
+    nonRepoDir = join(baseDir, 'plain');
+    await Promise.all([mkdir(repoDir), mkdir(nonRepoDir)]);
+    await mkdir(join(repoDir, '.git'));
+  });
+
+  afterEach(async () => {
+    await rm(baseDir, { recursive: true, force: true });
+  });
+
+  it('未注入 gitAvailabilityProvider 时 tree 不含 git leaf(行为与 v0.2.x 一致)', async () => {
+    const { mgr } = makeManager({});
+    const info = await mgr.createSession({
+      pathId: repoDir,
+      templateId: 'shell',
+      ownerWindowId: 'w1',
+      cols: 80,
+      rows: 24,
+    });
+    const tree = mgr.get(info.id)?.uiLayout?.tree;
+    const stack = (tree as { children: unknown[] }).children?.[1] as {
+      children: { panelId: string }[];
+    };
+    expect(stack.children.map((c) => c.panelId)).toEqual(['file-tree', 'file-panel']);
+  });
+
+  it('注入 provider 后,cwd 在仓库内的 session 异步出现 git leaf', async () => {
+    const { mgr } = makeManager({});
+    // provider 用真实 realpath + .git stat(与 GitService.evaluateAvailability 同构)。
+    mgr.attachGitAvailabilityProvider(async (cwdReal) => {
+      try {
+        await realpath(join(cwdReal, '.git'));
+        return { available: true };
+      } catch {
+        return { available: false };
+      }
+    });
+    const info = await mgr.createSession({
+      pathId: repoDir,
+      templateId: 'shell',
+      ownerWindowId: 'w1',
+      cols: 80,
+      rows: 24,
+    });
+    // createSession 同步返回时 tree 还是保守态(无 git);等待异步评估。
+    await vi.waitFor(() => {
+      const tree = mgr.get(info.id)?.uiLayout?.tree;
+      const stack = (tree as { children: unknown[] }).children?.[1] as {
+        children: { panelId: string }[];
+      };
+      expect(stack.children.map((c) => c.panelId)).toEqual(['file-tree', 'git', 'file-panel']);
+    });
+  });
+
+  it('cwd 不在仓库内的 session 不出现 git leaf', async () => {
+    const { mgr } = makeManager({});
+    mgr.attachGitAvailabilityProvider(async () => ({ available: false }));
+    const info = await mgr.createSession({
+      pathId: nonRepoDir,
+      templateId: 'shell',
+      ownerWindowId: 'w1',
+      cols: 80,
+      rows: 24,
+    });
+    await vi.waitFor(() => {
+      const tree = mgr.get(info.id)?.uiLayout?.tree;
+      const stack = (tree as { children: unknown[] }).children?.[1] as {
+        children: { panelId: string }[];
+      };
+      expect(stack.children.map((c) => c.panelId)).toEqual(['file-tree', 'file-panel']);
+    });
+  });
+
+  it('flip 时 emit sessionStateChanged 带 uiLayout 变化', async () => {
+    const { mgr } = makeManager({});
+    let available = false;
+    mgr.attachGitAvailabilityProvider(async () => ({ available }));
+    const info = await mgr.createSession({
+      pathId: repoDir,
+      templateId: 'shell',
+      ownerWindowId: 'w1',
+      cols: 80,
+      rows: 24,
+    });
+    // 等初次评估(available=false)完成。
+    await vi.waitFor(() => {
+      expect(mgr.get(info.id)?.uiLayout?.tree).toBeTruthy();
+    });
+    const changes: unknown[] = [];
+    mgr.on('sessionStateChanged', (e: { changes: unknown }) => changes.push(e.changes));
+    // provider 翻转为 available → recompute 后应 emit uiLayout 变化。
+    available = true;
+    mgr.recomputeGitAvailabilityForAllSessions();
+    await vi.waitFor(() => {
+      expect(changes.some((c) => (c as { uiLayout?: unknown }).uiLayout)).toBe(true);
+    });
   });
 });

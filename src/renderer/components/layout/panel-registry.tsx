@@ -13,8 +13,9 @@
 import type { ComponentType } from 'react';
 import { FilePanel } from '../file-panel/FilePanel';
 import { FileTreePanel } from '../file-tree/FileTreePanel';
+import { GitPanel } from '../git/GitPanel';
 
-export type RegisteredPanelId = 'file-tree' | 'file-panel';
+export type RegisteredPanelId = 'file-tree' | 'git' | 'file-panel';
 
 export interface RegisteredPanelProps {
   /** 当前窗口实际持有的 session；main 会拒绝非 owner 的请求。 */
@@ -36,6 +37,15 @@ export const PANEL_REGISTRY: Readonly<Record<RegisteredPanelId, PanelDefinition>
     trigger: 'product-rule',
     Component: FileTreePanel,
   },
+  git: {
+    id: 'git',
+    label: { zh: 'Git', en: 'Git' },
+    // v0.3.0:product-rule,但 LayoutNode 中是否出现 git leaf 由 main 端按
+    // session.cwd 是否在仓库内动态决定(见 SessionManager.buildSessionLayoutTree)。
+    // enableGitPanel=false 时 main 根本不生成 git leaf → tab 不出现。
+    trigger: 'product-rule',
+    Component: GitPanel,
+  },
   'file-panel': {
     id: 'file-panel',
     label: { zh: '已打开', en: 'Opened' },
@@ -44,7 +54,7 @@ export const PANEL_REGISTRY: Readonly<Record<RegisteredPanelId, PanelDefinition>
   },
 };
 
-/** LayoutNode 由 main 生成，非法/未知 leaf 在 renderer 直接忽略而不是猜测渲染。 */
+/** LayoutNode 由 main 生成,非法/未知 leaf 在 renderer 直接忽略而不是猜测渲染。 */
 export function isRegisteredPanelId(panelId: string): panelId is RegisteredPanelId {
-  return panelId === 'file-tree' || panelId === 'file-panel';
+  return panelId === 'file-tree' || panelId === 'git' || panelId === 'file-panel';
 }

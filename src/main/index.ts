@@ -460,6 +460,12 @@ function bootstrap(): void {
         logger.error('main', 'file-panel service start failed (degraded, app continues)', err);
       }
       filePanelService.attachSessionLookup(sessionManager);
+      // v0.3.0:注入 Git 可用性判定回调。GitService.evaluateAvailability 是纯函数
+      // (只接受 cwd + pathKind,不持 session 引用),避免循环依赖。注入后,
+      // 已存在 + 后续新 session 都会异步评估 → Git tab 出现/消失。
+      sessionManager.attachGitAvailabilityProvider((cwdReal, pathKind) =>
+        gitService.evaluateAvailability(cwdReal, pathKind).then((r) => ({ available: r.available })),
+      );
 
       // Typora 式 markdown 主题:扫 userData/markdown-themes/*.css,首次种入
       // 预置(README + sepia),fs.watch 自动发现增删。在 installIpcLayer 前
@@ -550,6 +556,18 @@ function bootstrap(): void {
         // M1-D:日志级别即改即生效
         if (e.changedKeys.includes('advanced.logLevel')) {
           logger.setLevel(e.settings.advanced.logLevel === 'DEBUG' ? 'debug' : 'info');
+        }
+        // v0.3.0:Git 面板开关 / gitBinaryPath 翻转 → 同步 GitService runtimeConfig
+        // + 批量重算所有 session 的 LayoutNode(Git tab 全局出现/消失)。
+        if (
+          e.changedKeys.includes('advanced.enableGitPanel') ||
+          e.changedKeys.includes('advanced.gitBinaryPath')
+        ) {
+          gitService.setRuntimeConfig({
+            enableGitPanel: e.settings.advanced.enableGitPanel,
+            gitBinaryPath: e.settings.advanced.gitBinaryPath,
+          });
+          sessionManager.recomputeGitAvailabilityForAllSessions();
         }
         // Explorer 右键集成不再走 settings — 它的开关由
         // cmd:explorer-integration:set-{classic,modern} 直接调用 platformAdapter,
