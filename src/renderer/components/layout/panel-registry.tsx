@@ -17,6 +17,7 @@ import { FileTreePanel } from '../file-tree/FileTreePanel';
 export type RegisteredPanelId = 'file-tree' | 'file-panel';
 
 export interface RegisteredPanelProps {
+  /** 当前窗口实际持有的 session；main 会拒绝非 owner 的请求。 */
   sessionId: string;
 }
 

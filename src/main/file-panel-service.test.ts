@@ -114,6 +114,90 @@ describe('FilePanelService - 状态机', () => {
   });
 });
 
+describe('FilePanelService - requestActivation (打开即激活)', () => {
+  let dir: string;
+  let svc: FilePanelService;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'marina-fp-act-'));
+    svc = new FilePanelService();
+    svc.attachSessionLookup(makeLookup({ s1: { currentCwd: dir, ownerWindowId: 'w1' } }));
+  });
+
+  afterEach(async () => {
+    await svc.stop();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * 收集所有 filePanelUpdated 事件，返回每件的 requestActivation 值。
+   * openFile 每次成功都应发 requestActivation=true；show/close/refresh 不发。
+   * 这是「重复调用打开文件接口时自动切到已打开面板」的根因修复的核心验证。
+   */
+  function captureActivations(): { events: Array<{ requestActivation?: boolean }> } {
+    const events: Array<{ requestActivation?: boolean }> = [];
+    svc.on('filePanelUpdated', (p) => events.push(p));
+    return { events };
+  }
+
+  it('openFile 首次打开 → requestActivation=true', async () => {
+    await writeFile(join(dir, 'a.txt'), 'x');
+    const { events } = captureActivations();
+    await svc.openFile('s1', 'a.txt');
+    expect(events).toHaveLength(1);
+    expect(events[0]!.requestActivation).toBe(true);
+  });
+
+  it('openFile 重复打开同一文件(已在列表)→ 仍 requestActivation=true', async () => {
+    await writeFile(join(dir, 'a.txt'), 'x');
+    await svc.openFile('s1', 'a.txt');
+    const { events } = captureActivations();
+    await svc.openFile('s1', 'a.txt');
+    expect(events).toHaveLength(1);
+    expect(events[0]!.requestActivation).toBe(true);
+  });
+
+  it('openFile 打开不同文件(列表已有文件)→ requestActivation=true', async () => {
+    await writeFile(join(dir, 'a.txt'), '1');
+    await writeFile(join(dir, 'b.txt'), '2');
+    await svc.openFile('s1', 'a.txt');
+    const { events } = captureActivations();
+    await svc.openFile('s1', 'b.txt');
+    expect(events).toHaveLength(1);
+    expect(events[0]!.requestActivation).toBe(true);
+  });
+
+  it('showFile → 不发 requestActivation(不抢用户焦点)', async () => {
+    await writeFile(join(dir, 'a.txt'), '1');
+    await writeFile(join(dir, 'b.txt'), '2');
+    await svc.openFile('s1', 'a.txt');
+    await svc.openFile('s1', 'b.txt');
+    const { events } = captureActivations();
+    svc.showFile('s1', 'a.txt');
+    expect(events).toHaveLength(1);
+    expect(events[0]!.requestActivation).toBe(false);
+  });
+
+  it('closeFile → 不发 requestActivation', async () => {
+    await writeFile(join(dir, 'a.txt'), '1');
+    await writeFile(join(dir, 'b.txt'), '2');
+    await svc.openFile('s1', 'a.txt');
+    await svc.openFile('s1', 'b.txt');
+    const { events } = captureActivations();
+    svc.closeFile('s1', 'a.txt');
+    expect(events).toHaveLength(1);
+    expect(events[0]!.requestActivation).toBe(false);
+  });
+
+  it('getOpenFiles 不发任何事件(纯读)', async () => {
+    await writeFile(join(dir, 'a.txt'), '1');
+    await svc.openFile('s1', 'a.txt');
+    const { events } = captureActivations();
+    svc.getOpenFiles('s1');
+    expect(events).toHaveLength(0);
+  });
+});
+
 describe('FilePanelService - readFile', () => {
   let dir: string;
   let svc: FilePanelService;

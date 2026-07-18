@@ -109,7 +109,8 @@ function snapshot(state: PanelState | undefined): FilePanelSnapshot {
 
 /**
  * 终端侧边文件预览面板服务。EventEmitter(沿用 SessionManager 模式):
- * emit 'filePanelUpdated' = { sessionId, files, activePath }。
+ * emit 'filePanelUpdated' = { sessionId, files, activePath, requestActivation }
+ * (requestActivation 仅 openFile 成功时为 true,见 emitUpdated)。
  */
 export class FilePanelService extends EventEmitter {
   private readonly panels = new Map<string, PanelState>();
@@ -246,7 +247,11 @@ export class FilePanelService extends EventEmitter {
     }
     state.activePath = abs;
     this.ensureWatcher(sessionId, state, abs);
-    this.emitUpdated(sessionId, state);
+    // requestActivation=true:无论新增还是重复打开(更新 mtime)，用户/终端程序都
+    // 期望侧边面板切到「已打开」。show/close/fs.watch 刷新走 false(见下)，不会抢
+    // 用户已手动切回「文件」的焦点。统一在此发出，HTTP /open-file、IPC
+    // cmd:file-panel:open、文件树点击三条入口都覆盖(它们最终都进 openFile)。
+    this.emitUpdated(sessionId, state, true);
     return snapshot(state);
   }
 
@@ -521,11 +526,16 @@ export class FilePanelService extends EventEmitter {
     }
   }
 
-  private emitUpdated(sessionId: string, state: PanelState): void {
+  /**
+   * emit 'filePanelUpdated'。openFile 调用方传 requestActivation=true；show / close /
+   * fs.watch 刷新用默认 false，不触发面板激活(不抢用户焦点)。
+   */
+  private emitUpdated(sessionId: string, state: PanelState, requestActivation = false): void {
     this.emit('filePanelUpdated', {
       sessionId,
       files: state.files,
       activePath: state.activePath,
+      requestActivation,
     });
   }
 

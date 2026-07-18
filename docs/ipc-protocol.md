@@ -6,8 +6,12 @@
 > 这份文档定义所有消息的 schema、语义、错误码、时序约束。
 > 实现代码必须严格遵循,不允许"自由发挥"。
 
-文档版本:2.2 · 最后更新:2026-07-12
+文档版本:2.3 · 最后更新:2026-07-18
 
+> **v2.3 变更**(2026-07-18,文件面板自动激活):
+> - `evt:file-panel:updated` payload 新增可选字段 `requestActivation?: boolean`(§6.6):仅 `FilePanelService.openFile` 成功时为 true(HTTP /open-file、cmd:file-panel:open、文件树点击三条入口)。show / close / fs.watch 自动刷新为 false。
+> - renderer 收到 `requestActivation=true` 时,由 `file-panel/updated` reducer 直接把该 session 的 active 面板设为 `file-panel`(本窗口私有 view state,不走组件 effect)。向后兼容:旧 renderer 忽略该可选字段。
+>
 > **v2.2 变更**(2026-07-12,内置 Skill 安装器):
 > - 新增 `cmd:skill:install-marina`：将受控的内置 `show-in-marina` skill 安装到所选本地收藏项目的 Pi / Claude Code / Codex 项目级发现目录
 > - overwrite=false 时仅返回全部冲突；renderer 必须展示覆盖确认后才可传 overwrite=true
@@ -1663,6 +1667,43 @@ interface TrayMenuActionPayload {
 ```
 
 V1 简化:大多数托盘动作 Main 自己处理,不需要通知 Renderer。这个事件用得少。
+
+### 6.6 File Panel
+
+#### `evt:file-panel:updated`
+某 session 的文件面板状态变化(已打开文件列表 / 当前 active 文件)。仅推给该 session
+的 owner 窗口(与 `evt:session:output` 同策略)。
+
+```typescript
+interface FilePanelUpdatedPayload {
+  sessionId: string;
+  files: OpenedFile[];
+  activePath: string | null;
+  /**
+   * 仅当本次更新源于一次成功的「打开文件」时为 true。
+   * 触发场景:HTTP /open-file、cmd:file-panel:open、文件树点击(open-file)
+   * —— 三者最终都进 FilePanelService.openFile。
+   * renderer 收到后由 store(file-panel/updated reducer)直接把该 session 的
+   * active 面板设为 file-panel —— 不依赖组件是否挂载,remount 不抢焦点、卸载
+   * 期间的新请求也不丢。show / close / fs.watch 自动刷新发送 false;字段缺失
+   * 也按 false 处理,不抢用户已手动切回的焦点。向后兼容:旧 renderer 忽略该
+   * 可选字段即可。
+   */
+  requestActivation?: boolean;
+}
+```
+
+**推送范围**:仅该 session 的 owner 窗口。
+
+**频率**:open / show / close 每次一个事件;fs.watch 防抖(200ms)后一个事件。
+
+**副作用 / renderer 处理**:
+- 覆盖该 session 的 `filePanels` 快照。
+- 若 `requestActivation=true`,reducer 直接把该 session 的 active 面板设为
+  `file-panel`(写入 `activePanels`,本窗口私有 view state)。LayoutHost 从 store
+  读 activePanelId 并校验它属于当前 stack,不属于则回退。用户手动切回「文件」
+  后,若没有新的 openFile 就不会被覆盖;PanelStack remount(进出设置页等)从
+  store 恢复,不会被历史请求抢回焦点。
 
 ---
 

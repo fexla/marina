@@ -1305,11 +1305,21 @@ export type ReadFileResponse =
   | { kind: 'image'; dataUrl: string; mime: string }
   | { kind: 'unknown'; message: string };
 
-/** evt:file-panel:updated payload。 */
+/**
+ * evt:file-panel:updated payload。
+ *
+ * `requestActivation=true` 表示本次更新源于一次成功的「打开文件」(HTTP
+ * /open-file、IPC cmd:file-panel:open、文件树点击三者最终都进
+ * FilePanelService.openFile)，renderer 应把已打开面板切到前台。show / close /
+ * fs.watch 刷新发送 false；字段缺失也按 false 处理，不会抢用户已手动切回的焦点。
+ * 向后兼容:旧 renderer 忽略该可选字段即可，不影响渲染。
+ */
 export interface FilePanelUpdatedPayload {
   sessionId: string;
   files: OpenedFile[];
   activePath: string | null;
+  /** 仅 openFile 成功时为 true，请求 renderer 激活「已打开」面板。 */
+  requestActivation?: boolean;
 }
 
 /** ReadFileResponse 的 kind 与 FileKind 的交集(排除 web,本轮不支持)。 */

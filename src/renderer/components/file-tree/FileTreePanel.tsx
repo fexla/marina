@@ -134,6 +134,10 @@ export function FileTreePanel({ sessionId }: FileTreePanelProps): JSX.Element {
   const openFile = (rootId: FileTreeRootId, relativePath: string): void => {
     window.api
       .invoke(COMMAND_CHANNELS.FILE_TREE_OPEN_FILE, { sessionId, rootId, relativePath })
+      // main 端 FileTreeService.openFile 成功后会进 FilePanelService.openFile，后者
+      // 发出带 requestActivation=true 的 evt:file-panel:updated，LayoutHost 据此切到
+      // 「已打开」面板。这里不再单独请求激活，避免两套激活机制(上一轮的错误补丁)。
+      // reject 时保留现有警告且不切换。
       .catch((err: unknown) => console.warn('[FileTreePanel] open file failed', err));
   };
 

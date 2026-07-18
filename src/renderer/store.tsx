@@ -62,6 +62,7 @@ import type {
   Template,
   WindowInfo,
 } from '@shared/types';
+import type { RegisteredPanelId } from './components/layout/panel-registry';
 
 // ──────────────────────────────────────────────────────────────────
 // State 定义
@@ -123,6 +124,15 @@ export interface AppState {
   filePanels: Map<string, FilePanelSnapshot>;
 
   /**
+   * 每个 session 在右侧 dock stack 里最后激活的面板(file-tree / file-panel)，
+   * 本窗口私有 view state(不上 main)。LayoutHost.PanelStack 的 activePanelId
+   * 完全由它驱动:用户点 tab、openFile 自动切换都写进这里，PanelStack remount
+   * (进出设置页 / 简易模式 / 开关 file panel)时从此恢复，避免重挂后被历史
+   * effect 再次抢回「已打开」、吞掉用户手动选择。session 销毁时清理。
+   */
+  activePanels: Map<string, RegisteredPanelId>;
+
+  /**
    * 自定义 markdown 面板主题列表(扫 userData/markdown-themes/*.css)。evt:md-
    * theme:list-updated 推来时整体替换;启动时 cmd:md-theme:list 拉一次。设置页
    * 下拉据此渲染选项;CSS 内容不存 state(按需 cmd:md-theme:get-css 注入)。
@@ -174,8 +184,15 @@ export type AppAction =
       sessionId: string;
       files: OpenedFile[];
       activePath: string | null;
+      /** openFile 成功时为 true，请求 LayoutHost 激活「已打开」面板。 */
+      requestActivation: boolean;
     }
   | { type: 'file-panel/clear'; sessionId: string }
+  | {
+      type: 'view/set-active-panel';
+      sessionId: string;
+      panelId: RegisteredPanelId;
+    }
   | { type: 'md-themes/update'; themes: MdTheme[] };
 
 // ──────────────────────────────────────────────────────────────────
@@ -320,10 +337,13 @@ function reducer(state: AppState, action: AppAction): AppState {
     case 'sessions/destroyed': {
       const sessions = new Map(state.sessions);
       sessions.delete(action.sessionId);
-      // 文件面板:session 没了,清掉它的快照(不再显示残留文件列表)
+      // 文件面板:session 没了,清掉它的快照(不再显示残留文件列表) + 活动面板
+      // 记录(防止 session 销毁后残留记录错误触发已不存在面板的激活)。
       const filePanels = new Map(state.filePanels);
       filePanels.delete(action.sessionId);
-      const next: AppState = { ...state, sessions, filePanels };
+      const activePanels = new Map(state.activePanels);
+      activePanels.delete(action.sessionId);
+      const next: AppState = { ...state, sessions, filePanels, activePanels };
       // 当前选中的 session 被销毁 → 取消选中
       if (state.selectedSessionId === action.sessionId) {
         next.selectedSessionId = null;
@@ -337,13 +357,39 @@ function reducer(state: AppState, action: AppAction): AppState {
         files: action.files,
         activePath: action.activePath,
       });
+      // requestActivation=true(openFile 成功)时把活动面板设为「已打开」。reducer
+      // 在事件到达时即写 activePanels,无论 PanelStack 是否挂载:remount 后从 store
+      // 读到正确值(不抢用户手动切回的焦点),PanelStack 卸载期间(设置页/简易模式)
+      // 发生的新请求也不丢。LayoutHost 解析时再校验 file-panel 是否属于当前 stack,
+      // 不属于则回退。幂等:已是 file-panel 则只更新 filePanels。
+      if (action.requestActivation && state.activePanels.get(action.sessionId) !== 'file-panel') {
+        const activePanels = new Map(state.activePanels);
+        activePanels.set(action.sessionId, 'file-panel');
+        return { ...state, filePanels, activePanels };
+      }
       return { ...state, filePanels };
     }
     case 'file-panel/clear': {
-      if (!state.filePanels.has(action.sessionId)) return state;
+      // filePanels / activePanels 两者都无记录才短路;任一有记录都继续统一清理,
+      // 保持 action 语义一致。
+      if (!state.filePanels.has(action.sessionId) && !state.activePanels.has(action.sessionId)) {
+        return state;
+      }
       const filePanels = new Map(state.filePanels);
       filePanels.delete(action.sessionId);
-      return { ...state, filePanels };
+      const activePanels = new Map(state.activePanels);
+      activePanels.delete(action.sessionId);
+      return { ...state, filePanels, activePanels };
+    }
+
+    case 'view/set-active-panel': {
+      // 用户点 tab 切换面板的唯一写入点(openFile 自动切换不走这里,而走
+      // file-panel/updated reducer 的 requestActivation 分支)。幂等:重复设同值
+      // 返回原 state(避免无谓 re-render)。
+      if (state.activePanels.get(action.sessionId) === action.panelId) return state;
+      const activePanels = new Map(state.activePanels);
+      activePanels.set(action.sessionId, action.panelId);
+      return { ...state, activePanels };
     }
 
     case 'md-themes/update':
@@ -502,6 +548,7 @@ export function makeDefaultState(myWindowId: string, myWindowNumber: number): Ap
     // BETA-027:默认普通页面;Explorer 简易模式打开时在 startup 显式 dispatch set
     simpleMode: false,
     filePanels: new Map(),
+    activePanels: new Map(),
     mdThemes: [],
   };
 }
@@ -683,6 +730,7 @@ export function useIpcSync(): {
               sessionId: p.sessionId,
               files: p.files,
               activePath: p.activePath,
+              requestActivation: p.requestActivation === true,
             }),
           ),
           window.api.on<MdThemeListUpdatedPayload>(EVENT_CHANNELS.MD_THEME_LIST_UPDATED, (p) =>

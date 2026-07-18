@@ -53,6 +53,8 @@ export function FilePanel({ sessionId }: FilePanelProps): JSX.Element {
           sessionId,
           files: snap.files,
           activePath: snap.activePath,
+          // 初始化拉取/同步已有快照，不是 openFile，不请求激活面板。
+          requestActivation: false,
         });
       })
       .catch((err: unknown) => console.warn('[FilePanel] get-open-files failed', err));

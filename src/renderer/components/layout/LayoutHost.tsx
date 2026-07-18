@@ -15,7 +15,7 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { COMMAND_CHANNELS } from '@shared/protocol';
 import type { LayoutNode, SessionInfo } from '@shared/types';
-import { useAppState } from '../../store';
+import { useAppDispatch, useAppState } from '../../store';
 import { Icon } from '../icons';
 import { useTranslation } from '../LanguageProvider';
 import { isRegisteredPanelId, PANEL_REGISTRY, type RegisteredPanelId } from './panel-registry';
@@ -93,18 +93,30 @@ function PanelStack({
 }): JSX.Element {
   const { tx } = useTranslation();
   const appState = useAppState();
+  const dispatch = useAppDispatch();
   const panelIds = panelIdsFromStack(node);
-  const defaultPanelId = isRegisteredPanelId(node.defaultActivePanelId)
+  // defaultPanelId 也要校验属于当前 stack:旧/损坏布局的 defaultActivePanelId
+  // 可能不在 panelIds 里,此时回退 panelIds[0],避免激活不存在的 tab。下面
+  // storedPanelId 的校验同理。
+  const rawDefault = isRegisteredPanelId(node.defaultActivePanelId)
     ? node.defaultActivePanelId
     : (panelIds[0] ?? 'file-tree');
-  const [activePanelId, setActivePanelId] = useState<RegisteredPanelId>(defaultPanelId);
+  const defaultPanelId = panelIds.includes(rawDefault) ? rawDefault : (panelIds[0] ?? 'file-tree');
+  // activePanelId 由 store(activePanels)驱动,并校验属于当前 stack:旧快照/布局
+  // 变化可能导致 store 记着 'file-panel' 但当前布局没有该面板,此时回退
+  // defaultPanelId,避免渲染 tab 列表里不存在的 active 面板。openFile 成功时
+  // reducer(file-panel/updated 的 requestActivation 分支)直接把 activePanels 设为
+  // 'file-panel',无论 PanelStack 是否挂载 — remount 不抢焦点、卸载期间请求也不
+  // 丢。用户手动点 tab 走 view/set-active-panel。
+  const storedPanelId = appState.activePanels.get(session.id);
+  const activePanelId =
+    storedPanelId && panelIds.includes(storedPanelId) ? storedPanelId : defaultPanelId;
   const activeDefinition = PANEL_REGISTRY[activePanelId];
   // 宽度与折叠态属于 right dock 本身，不属于 stack 中当前激活的页面。此前把
   // file-tree/file-panel 各自的 width 当 dock 宽度，导致点 tab 时几何跳变。
   const persisted = session.uiLayout?.docks.right ?? { width: 440, collapsed: false };
   const [pendingWidth, setPendingWidth] = useState<number | null>(null);
   const dragCleanupRef = useRef<(() => void) | null>(null);
-  const previousOpenedCountRef = useRef(0);
   const openedCount = appState.filePanels.get(session.id)?.files.length ?? 0;
   const width = pendingWidth ?? persisted.width;
 
@@ -114,22 +126,10 @@ function PanelStack({
     setPendingWidth(null);
   }, [session.id, persisted.width]);
   useEffect(() => () => dragCleanupRef.current?.(), []);
-  useEffect(() => {
-    setActivePanelId(defaultPanelId);
-  }, [session.id, defaultPanelId]);
-
-  // 程序第一次推入文件时自动切到“已打开”；之后用户手动切回“文件”不会被每次
-  // render 强制抢焦点。它是产品规则触发，不是用户改变布局树。
-  useEffect(() => {
-    if (
-      openedCount > 0 &&
-      previousOpenedCountRef.current === 0 &&
-      panelIds.includes('file-panel')
-    ) {
-      setActivePanelId('file-panel');
-    }
-    previousOpenedCountRef.current = openedCount;
-  }, [openedCount, panelIds]);
+  // 面板激活完全由 reducer 处理,这里不需要任何自动切换 effect:openFile 成功时
+  // reducer(file-panel/updated 的 requestActivation=true 分支)直接把 activePanels
+  // 设为 'file-panel',无论 PanelStack 是否挂载。remount 从 store 恢复(不抢
+  // 焦点),卸载期间(设置页/简易模式)发生的新请求也不丢。
 
   const updateLayout = (patch: { width?: number; collapsed?: boolean }): void => {
     window.api
@@ -214,7 +214,9 @@ function PanelStack({
                 role="tab"
                 aria-selected={active}
                 className={`panel-dock-tab${active ? ' active' : ''}`}
-                onClick={() => setActivePanelId(panelId)}
+                onClick={() =>
+                  dispatch({ type: 'view/set-active-panel', sessionId: session.id, panelId })
+                }
                 title={tx(definition.label.zh, definition.label.en)}
               >
                 {tx(definition.label.zh, definition.label.en)}
