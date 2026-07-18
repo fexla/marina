@@ -23,6 +23,7 @@ import {
   type ListFileTreeDirectoryResponse,
 } from '@shared/protocol';
 import type { FileTreeEntry, FileTreeRootId } from '@shared/types';
+import { FileListRow } from '../common/FileListRow';
 import { Icon } from '../icons';
 import { useTranslation } from '../LanguageProvider';
 
@@ -260,23 +261,26 @@ function FileTreeEntryRow({
   const isDirectory = entry.kind === 'directory';
   return (
     <div className="file-tree-entry">
-      <button
-        type="button"
-        className="file-tree-entry-button"
+      {/* 重构后:条目本体走统一的 FileListRow(variant=list),为后续右键菜单与
+          git/file-panel 三面板一致化打基础。leading 槽放 chevron/filler 以保留
+          原视觉对齐。目录展开的子树仍在本组件内递归渲染(不变)。 */}
+      <FileListRow
+        variant="list"
+        icon={isDirectory ? 'folder' : 'file'}
+        label={entry.name}
+        title={entry.name}
         onClick={() =>
           isDirectory ? onToggle(rootId, entry.relativePath) : onOpen(rootId, entry.relativePath)
         }
-        aria-expanded={isDirectory ? !!state?.expanded : undefined}
-        title={entry.name}
-      >
-        {isDirectory ? (
-          <Icon name={state?.expanded ? 'chevronDown' : 'chevronRight'} size={12} />
-        ) : (
-          <span className="file-tree-leaf-spacer" />
-        )}
-        <Icon name={isDirectory ? 'folder' : 'file'} size={14} />
-        <span className="file-tree-entry-name">{entry.name}</span>
-      </button>
+        ariaExpanded={isDirectory ? !!state?.expanded : undefined}
+        leading={
+          isDirectory ? (
+            <Icon name={state?.expanded ? 'chevronDown' : 'chevronRight'} size={12} />
+          ) : (
+            <span className="file-tree-leaf-spacer" />
+          )
+        }
+      />
       {isDirectory && (
         <DirectoryChildren
           rootId={rootId}

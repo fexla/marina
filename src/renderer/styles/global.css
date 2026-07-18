@@ -1877,6 +1877,149 @@ html[data-maximized='true'] .app-root.with-shell {
   color: var(--color-warning, #f0f);
 }
 
+/* ──────────────────────────────────────────────────────────────────
+ * FileListRow — file-tree / git / file-panel 三面板共用的文件条目抽象。
+ * variant=list 复刻原 .file-tree-entry-button 视觉(纵向列表项);
+ * variant=tab 复刻原 .file-tab 视觉(横向标签页)。
+ * 参见 src/renderer/components/common/FileListRow.tsx 与
+ * docs/方案-Git面板与文件条目统一-20260718.md §5.2。
+ * ────────────────────────────────────────────────────────────────── */
+.file-list-row {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.file-list-row.dimmed {
+  opacity: 0.55;
+}
+
+.file-list-row.disabled {
+  pointer-events: none;
+}
+
+/* variant=list:纵向列表项(file-tree 目录树 / git 变更列表) */
+.file-list-row-list {
+  display: flex;
+  align-items: center;
+}
+
+.file-list-row-button {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-primary, #f0f);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  padding: 3px 8px;
+}
+
+.file-list-row-button:hover:not(:disabled) {
+  background-color: var(--color-bg-elevated, #f0f);
+}
+
+.file-list-row-list.selected > .file-list-row-button {
+  background-color: var(--color-bg-active, #f0f);
+}
+
+.file-list-row-label-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* variant=tab:横向标签页(file-panel 已打开文件) */
+.file-list-row-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px 2px 8px;
+  border-radius: 4px;
+  background-color: var(--color-bg-elevated, #f0f);
+  max-width: 180px;
+}
+
+.file-list-row-tab.active {
+  background-color: var(--color-bg-active, #f0f);
+}
+
+.file-list-row-tab.active .file-list-row-label {
+  color: var(--color-text-primary, #f0f);
+}
+
+.file-list-row-tab .file-list-row-label {
+  border: none;
+  background: transparent;
+  color: var(--color-text-primary, #f0f);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 0;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-list-row-tab .file-list-row-label:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.file-list-row-tab-close {
+  color: var(--color-text-muted, #f0f);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  border-radius: 3px;
+}
+
+.file-list-row-tab-close:hover {
+  color: var(--color-text-primary, #f0f);
+  background-color: var(--color-bg-primary, #f0f);
+}
+
+/* 状态徽标(Git 面板的 M/A/D/?/C)。tab 与 list 共用。 */
+.file-list-row-badge {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 4px;
+  border-radius: 3px;
+  margin-left: auto;
+}
+
+.file-list-row-badge.tone-modified {
+  color: var(--color-warning, #f0f);
+}
+
+.file-list-row-badge.tone-added {
+  color: var(--color-success, #f0f);
+}
+
+.file-list-row-badge.tone-deleted {
+  color: var(--color-danger, #f0f);
+}
+
+.file-list-row-badge.tone-renamed {
+  color: var(--color-info, #f0f);
+}
+
+.file-list-row-badge.tone-untracked {
+  color: var(--color-text-muted, #f0f);
+}
+
+.file-list-row-badge.tone-conflict {
+  color: var(--color-danger, #f0f);
+  background-color: color-mix(in srgb, var(--color-danger, #f0f) 18%, transparent);
+}
+
 .file-panel-placeholder,
 .file-viewer-loading,
 .file-viewer-error {

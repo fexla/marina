@@ -20,6 +20,7 @@
 import { useEffect } from 'react';
 import { COMMAND_CHANNELS, type FilePanelSnapshot } from '@shared/protocol';
 import type { OpenedFile } from '@shared/types';
+import { FileListRow } from '../common/FileListRow';
 import { useAppDispatch, useAppState } from '../../store';
 import { useTranslation } from '../LanguageProvider';
 import { FileViewer } from './FileViewer';
@@ -92,31 +93,31 @@ export function FilePanel({ sessionId }: FilePanelProps): JSX.Element {
           snapshot.files.map((file) => {
             const isActive = file.path === snapshot.activePath;
             return (
-              <div
+              <FileListRow
                 key={file.path}
-                className={`file-tab${isActive ? ' active' : ''}`}
+                variant="tab"
+                icon="file"
+                label={file.name}
                 title={file.path}
-              >
-                <button
-                  type="button"
-                  className="file-tab-name"
-                  onClick={() => handleShow(file.path)}
-                >
-                  {file.name}
-                </button>
-                <span
-                  className="file-tab-close"
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => handleClose(file.path)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') handleClose(file.path);
-                  }}
-                  title={tx('关闭', 'Close')}
-                >
-                  ×
-                </span>
-              </div>
+                selected={isActive}
+                onClick={() => handleShow(file.path)}
+                /* × 关闭按钮保留原视觉与交互:点击不触发 onClick(切 tab),
+                   只调 close。trailing 槽挂在 row 容器上,与 button 分离。 */
+                trailing={
+                  <span
+                    className="file-list-row-tab-close"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => handleClose(file.path)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') handleClose(file.path);
+                    }}
+                    title={tx('关闭', 'Close')}
+                  >
+                    ×
+                  </span>
+                }
+              />
             );
           })
         )}
