@@ -4190,6 +4190,89 @@ select.settings-input option {
   color: var(--color-bg-primary, #f0f);
 }
 
+/* ────────────────────────────────────────────────────────────
+ * v0.3.1:共享搜索栏(.search-*)—— dock 面板 Ctrl+F + 终端搜索复用。
+ * 与 .terminal-search-* 并存:终端仍在用旧类名(后续切换)。这里是
+ * 通用版,位置由父容器决定(本身流式布局,不绝对定位)。
+ * ──────────────────────────────────────────────────────────── */
+.search-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background-color: var(--color-bg-secondary, #f0f);
+  border-bottom: 1px solid var(--color-bg-elevated, #f0f);
+  flex: 0 0 auto;
+}
+
+.search-bar-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background-color: var(--color-bg-primary, #f0f);
+  color: var(--color-text-primary, #f0f);
+  border: 1px solid var(--color-bg-elevated, #f0f);
+  padding: 3px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  border-radius: 3px;
+}
+
+.search-bar-input:focus {
+  outline: 1px solid var(--color-accent-special, #f0f);
+  outline-offset: -1px;
+  border-color: var(--color-accent-special, #f0f);
+}
+
+.search-bar-count {
+  display: inline-flex;
+  align-items: center;
+  min-width: 48px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-family: var(--terminal-font-family, monospace);
+  color: var(--color-text-muted, #f0f);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.search-bar-btn {
+  background: transparent;
+  border: 1px solid var(--color-bg-elevated, #f0f);
+  color: var(--color-text-primary, #f0f);
+  padding: 2px 6px;
+  font-size: 11px;
+  border-radius: 3px;
+  min-width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+.search-bar-btn:hover:not(:disabled) {
+  background-color: var(--color-bg-hover, #f0f);
+  border-color: var(--color-accent-special, #f0f);
+}
+
+.search-bar-btn.active {
+  background-color: var(--color-bg-active, #f0f);
+  border-color: var(--color-accent-special, #f0f);
+  color: var(--color-accent-special, #f0f);
+}
+
+.search-bar-btn.close:hover {
+  background-color: var(--color-danger, #f0f);
+  border-color: var(--color-danger, #f0f);
+  color: var(--color-bg-primary, #f0f);
+}
+
+.search-bar-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* ctx-menu disabled state (CP-3 加的菜单复用,CP-4 chunk 3 新加 disabled) */
 .ctx-menu-item:disabled {
   opacity: 0.45;

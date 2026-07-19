@@ -20,6 +20,7 @@
 import { useEffect } from 'react';
 import { COMMAND_CHANNELS, type FilePanelSnapshot } from '@shared/protocol';
 import type { OpenedFile } from '@shared/types';
+import type { PanelSearchProps } from '../layout/panel-registry';
 import {
   copyPathItems,
   dividerItem,
@@ -36,9 +37,13 @@ import { FileViewer } from './FileViewer';
 interface FilePanelProps {
   /** 绑定的终端 session id；父级按 session 切换重新挂载。 */
   sessionId: string;
+  /** v0.3.1:dock 级搜索状态(C2 tab 过滤 / C3 文件内查找)。 */
+  search: PanelSearchProps;
 }
 
-export function FilePanel({ sessionId }: FilePanelProps): JSX.Element {
+export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
+  // C1:搜索骨架已接入,过滤/查找 C2/C3 实现。
+  void search;
   const state = useAppState();
   const dispatch = useAppDispatch();
   const { tx } = useTranslation();

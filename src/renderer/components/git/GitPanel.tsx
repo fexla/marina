@@ -30,6 +30,7 @@ import {
   type GitUnavailableReason,
 } from '@shared/protocol';
 import { buildGitTree, type GitTreeNode } from '@shared/build-git-tree';
+import type { PanelSearchProps } from '../layout/panel-registry';
 import { dividerItem } from '../common/fileListRowContextMenu';
 import { FileListRow, type StatusBadge, type StatusTone } from '../common/FileListRow';
 import { Icon } from '../icons';
@@ -68,6 +69,8 @@ function writeViewMode(mode: GitViewMode): void {
 
 interface GitPanelProps {
   sessionId: string;
+  /** v0.3.1:dock 级搜索状态(C2 接入过滤)。 */
+  search: PanelSearchProps;
 }
 
 interface ViewState {
@@ -112,7 +115,9 @@ function toneLabel(tone: GitStatusTone, tx: (zh: string, en: string) => string):
   }
 }
 
-export function GitPanel({ sessionId }: GitPanelProps): JSX.Element {
+export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
+  // C1:搜索骨架已接入,过滤逻辑 C2 实现。
+  void search;
   const { tx } = useTranslation();
   const [viewMode, setViewMode] = useState<GitViewMode>(readViewMode);
   // mount 初始化:先读组件外缓存。命中 → loading:false + snapshot 秒显(零延迟);

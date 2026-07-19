@@ -17,9 +17,28 @@ import { GitPanel } from '../git/GitPanel';
 
 export type RegisteredPanelId = 'file-tree' | 'git' | 'file-panel';
 
+/**
+ * v0.3.1:面板搜索状态(dock 级共享 SearchBar 驱动)。LayoutHost 持有唯一一份,
+ * 按当前 active panel 传入。面板自己决定怎么用:
+ * - 列表型(file-tree / git / file-panel tab list):用 query 过滤
+ * - 查看器型(file-panel 内 FileViewer):文件内查找 + 跳转行
+ *
+ * visible=false 时面板不应执行搜索(清空过滤 / 清除高亮)。
+ */
+export interface PanelSearchProps {
+  /** 查询字符串(空串 = 无查询)。 */
+  query: string;
+  /** 大小写敏感开关。 */
+  caseSensitive: boolean;
+  /** 搜索栏是否打开。关闭时面板应回到无过滤态。 */
+  visible: boolean;
+}
+
 export interface RegisteredPanelProps {
   /** 当前窗口实际持有的 session；main 会拒绝非 owner 的请求。 */
   sessionId: string;
+  /** v0.3.1:dock 级搜索状态(见上)。面板可选地使用。 */
+  search: PanelSearchProps;
 }
 
 export interface PanelDefinition {

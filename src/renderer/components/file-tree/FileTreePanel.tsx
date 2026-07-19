@@ -23,6 +23,7 @@ import {
   type ListFileTreeDirectoryResponse,
 } from '@shared/protocol';
 import type { FileTreeEntry, FileTreeRootId } from '@shared/types';
+import type { PanelSearchProps } from '../layout/panel-registry';
 import { dividerItem } from '../common/fileListRowContextMenu';
 import { FileListRow } from '../common/FileListRow';
 import { Icon } from '../icons';
@@ -34,6 +35,8 @@ import type { ContextMenuItem } from '../ContextMenu';
 interface FileTreePanelProps {
   /** 当前窗口实际持有的 session；main 会拒绝非 owner 的请求。 */
   sessionId: string;
+  /** v0.3.1:dock 级搜索状态(C2 接入过滤)。 */
+  search: PanelSearchProps;
 }
 
 interface DirectoryState {
@@ -54,7 +57,9 @@ function directoryKey(rootId: FileTreeRootId, relativePath: string): string {
  * 文件系统真值与访问授权均在 FileTreeService，切 session 后本组件会被 LayoutHost
  * 按 sessionId 重挂，避免旧目录项闪到新终端。
  */
-export function FileTreePanel({ sessionId }: FileTreePanelProps): JSX.Element {
+export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.Element {
+  // C1:搜索骨架已接入,过滤逻辑 C2 实现。
+  void search;
   const { tx } = useTranslation();
   const [roots, setRoots] = useState<FileTreeRootInfo[] | null>(null);
   const [rootError, setRootError] = useState<string | null>(null);

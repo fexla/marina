@@ -12,12 +12,14 @@
  *
  * @对应文档章节:软件定义书.md ADR-016；docs/方案-主工作区布局架构-20260712.md。
  */
-import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { COMMAND_CHANNELS } from '@shared/protocol';
 import type { LayoutNode, SessionInfo } from '@shared/types';
 import { useAppDispatch, useAppState } from '../../store';
 import { Icon } from '../icons';
 import { useTranslation } from '../LanguageProvider';
+import { SearchBar } from '../common/SearchBar';
+import { usePanelSearchShortcut } from '../../hooks/usePanelSearchShortcut';
 import { isRegisteredPanelId, PANEL_REGISTRY, type RegisteredPanelId } from './panel-registry';
 
 const RIGHT_DOCK_MIN_WIDTH = 280;
@@ -120,6 +122,34 @@ function PanelStack({
   const openedCount = appState.filePanels.get(session.id)?.files.length ?? 0;
   const width = pendingWidth ?? persisted.width;
 
+  // v0.3.1:dock 级面板搜索(Ctrl+F 唤出)。状态在 PanelStack 持有,随 session
+  // 生命周期(切 session remount → 重置)。query 跨 panel 共享(切 tab 不清),
+  // active panel 自己决定怎么用(列表过滤 / 文件内查找)。
+  const [searchVisible, setSearchVisible] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const dockBodyRef = useRef<HTMLDivElement | null>(null);
+
+  const handleOpenSearch = useCallback((): void => {
+    setSearchVisible(true);
+    // setState 后立即 focus 太早,DOM 还没挂;用 raf 等下一帧
+    requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    });
+  }, []);
+  const handleCloseSearch = useCallback((): void => {
+    setSearchVisible(false);
+    setSearchQuery('');
+    // 关闭后焦点回到 dock body(下一个面板操作起点)
+    dockBodyRef.current?.focus();
+  }, []);
+
+  // Ctrl+F 全局快捷键(焦点非 input/terminal 时触发)。终端有焦点时 xterm
+  // attachCustomKeyEventHandler 吃掉,不冒泡,本 hook 收不到 —— 行为正确。
+  usePanelSearchShortcut(!persisted.collapsed, handleOpenSearch);
+
   // 换 session / 主端确认的 dock 宽度时撤销 drag 覆盖。切换 stack 页面不影响
   // 该 effect：页面不是布局容器，不能改变 right dock 的几何。
   useEffect(() => {
@@ -190,6 +220,9 @@ function PanelStack({
   }
 
   const ActivePanel = activeDefinition.Component;
+  // search props 对象(传给 ActivePanel)。每渲染重建,但面板用 useMemo 依赖
+  // query/caseSensitive/visible,不会过度重算。
+  const searchProps = { query: searchQuery, caseSensitive: searchCaseSensitive, visible: searchVisible };
   return (
     <aside className="panel-dock" style={{ width }}>
       <div
@@ -235,8 +268,22 @@ function PanelStack({
           <Icon name="chevronRight" size={14} />
         </button>
       </header>
-      <div className="panel-dock-body" role="tabpanel">
-        <ActivePanel key={`${activePanelId}-${session.id}`} sessionId={session.id} />
+      <div className="panel-dock-body" role="tabpanel" tabIndex={-1} ref={dockBodyRef}>
+        {searchVisible && (
+          <SearchBar
+            query={searchQuery}
+            onQueryChange={setSearchQuery}
+            onClose={handleCloseSearch}
+            caseSensitive={searchCaseSensitive}
+            onToggleCase={() => setSearchCaseSensitive((v) => !v)}
+            inputRef={searchInputRef}
+          />
+        )}
+        <ActivePanel
+          key={`${activePanelId}-${session.id}`}
+          sessionId={session.id}
+          search={searchProps}
+        />
       </div>
     </aside>
   );
