@@ -2200,6 +2200,32 @@ html[data-maximized='true'] .app-root.with-shell {
   color: var(--color-text-primary, #f0f);
   white-space: pre-wrap;
   word-break: break-all;
+
+  /* v0.3.1:改行级渲染后,滚动容器是 .file-text-viewer 本身 */
+  overflow: auto;
+  height: 100%;
+}
+
+/* v0.3.1:文件内查找(C3)。每行一个 div,支持 data-line 定位 + 跳转。 */
+.file-text-line {
+  padding: 0 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  min-height: 1.5em;
+}
+
+/* 当前聚焦匹配行:整行高亮(scrollIntoView 跳转到的行)。VS Code 同款视觉。 */
+.file-text-line.search-current,
+.diff-line.search-current {
+  background-color: color-mix(in srgb, var(--color-info, #9ccfd8) 22%, transparent);
+}
+
+/* 行内匹配片段高亮(<mark class=search-match>,比列表的 <mark> 更显眼)。 */
+.file-text-line mark.search-match {
+  background-color: color-mix(in srgb, var(--color-warning, #f6c177) 55%, transparent);
+  color: var(--color-bg-primary, #f0f);
+  border-radius: 2px;
+  padding: 0 1px;
 }
 
 .file-truncated-mark {

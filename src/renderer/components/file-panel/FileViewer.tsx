@@ -7,6 +7,7 @@
  *   不返回 'web',所以不会有文件走到那里。
  */
 import type { OpenedFile } from '@shared/types';
+import type { PanelSearchProps } from '../layout/panel-registry';
 import { useTranslation } from '../LanguageProvider';
 import { TextViewer } from './TextViewer';
 import { MarkdownViewer } from './MarkdownViewer';
@@ -16,18 +17,20 @@ import { DiffViewer } from './DiffViewer';
 interface FileViewerProps {
   sessionId: string;
   file: OpenedFile;
+  /** v0.3.1:dock 级搜索状态(C3 文件内查找)。 */
+  search: PanelSearchProps;
 }
 
-export function FileViewer({ sessionId, file }: FileViewerProps): JSX.Element {
+export function FileViewer({ sessionId, file, search }: FileViewerProps): JSX.Element {
   switch (file.kind) {
     case 'text':
-      return <TextViewer sessionId={sessionId} file={file} />;
+      return <TextViewer sessionId={sessionId} file={file} search={search} />;
     case 'markdown':
-      return <MarkdownViewer sessionId={sessionId} file={file} />;
+      return <MarkdownViewer sessionId={sessionId} file={file} search={search} />;
     case 'image':
       return <ImageViewer sessionId={sessionId} file={file} />;
     case 'diff':
-      return <DiffViewer sessionId={sessionId} file={file} />;
+      return <DiffViewer sessionId={sessionId} file={file} search={search} />;
     case 'unknown':
       return <UnknownView file={file} />;
     default:

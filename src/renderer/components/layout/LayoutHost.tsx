@@ -128,6 +128,10 @@ function PanelStack({
   const [searchVisible, setSearchVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
+  // v0.3.1 C3:文件内查找的命中数/当前序号由 FileViewer 算后汇报(事件),
+  // LayoutHost 只展示。导航(onNext/onPrev)反向 dispatch 事件给 FileViewer。
+  const [searchMatches, setSearchMatches] = useState(0);
+  const [searchCurrent, setSearchCurrent] = useState(0);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const dockBodyRef = useRef<HTMLDivElement | null>(null);
 
@@ -142,9 +146,37 @@ function PanelStack({
   const handleCloseSearch = useCallback((): void => {
     setSearchVisible(false);
     setSearchQuery('');
+    setSearchMatches(0);
+    setSearchCurrent(0);
     // 关闭后焦点回到 dock body(下一个面板操作起点)
     dockBodyRef.current?.focus();
   }, []);
+
+  // v0.3.1 C3:监听 FileViewer 汇报的文件内查找结果(matches/current)。
+  // 只收本 session 的事件(多窗口时其他窗口的 LayoutHost 不响应)。
+  useEffect(() => {
+    const onResult = (e: Event): void => {
+      const detail = (e as CustomEvent<{ sessionId: string; matches: number; current: number }>)
+        .detail;
+      if (!detail || detail.sessionId !== session.id) return;
+      setSearchMatches(detail.matches);
+      setSearchCurrent(detail.current);
+    };
+    window.addEventListener('marina:panel-search-result', onResult);
+    return () => window.removeEventListener('marina:panel-search-result', onResult);
+  }, [session.id]);
+
+  // 导航:dispatch 给当前 active panel 的 FileViewer(若在查找文件内容)。
+  const navigateSearch = useCallback(
+    (direction: 'next' | 'previous'): void => {
+      window.dispatchEvent(
+        new CustomEvent('marina:panel-search-navigate', {
+          detail: { sessionId: session.id, direction },
+        }),
+      );
+    },
+    [session.id],
+  );
 
   // Ctrl+F 全局快捷键(焦点非 input/terminal 时触发)。终端有焦点时 xterm
   // attachCustomKeyEventHandler 吃掉,不冒泡,本 hook 收不到 —— 行为正确。
@@ -277,6 +309,11 @@ function PanelStack({
             caseSensitive={searchCaseSensitive}
             onToggleCase={() => setSearchCaseSensitive((v) => !v)}
             inputRef={searchInputRef}
+            showNavigator={activePanelId === 'file-panel' && openedCount > 0}
+            matches={searchMatches}
+            current={searchCurrent}
+            onNext={() => navigateSearch('next')}
+            onPrev={() => navigateSearch('previous')}
           />
         )}
         <ActivePanel

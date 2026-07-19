@@ -38,7 +38,7 @@
  *
  * @对应文档:docs/方案-diff高亮-20260719.md(方案 B 双层高亮)、ADR-017
  */
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import hljs from 'highlight.js/lib/core';
 // 按需 import:core + diff(元数据行)+ 11 代码语言(内容行)。不全量,控包体积。
 import diffLanguage from 'highlight.js/lib/languages/diff';
@@ -54,7 +54,9 @@ import c from 'highlight.js/lib/languages/c';
 import cpp from 'highlight.js/lib/languages/cpp';
 import csharp from 'highlight.js/lib/languages/csharp';
 import type { OpenedFile } from '@shared/types';
+import type { PanelSearchProps } from '../layout/panel-registry';
 import { useFileContent } from './useFileContent';
+import { useContentSearch } from '../../hooks/useContentSearch';
 import { useTranslation } from '../LanguageProvider';
 
 // 模块级注册一次。registerLanguage 幂等,重复调用会被 hljs 去重。
@@ -202,6 +204,9 @@ interface DiffRow {
   text: string;
 }
 
+/** 空行数组常量(useContentSearch lines 引用稳定用)。 */
+const EMPTY: readonly string[] = [];
+
 /**
  * 把整段 diff 文本切成 DiffRow[]。逐行 highlight,跟踪当前块的语言(遇 +++ b/path 切换)。
  *
@@ -245,15 +250,38 @@ function buildRows(text: string): DiffRow[] {
   });
 }
 
-export function DiffViewer({ sessionId, file }: ViewerProps): JSX.Element {
+interface ViewerProps {
+  sessionId: string;
+  file: OpenedFile;
+  /** v0.3.1:dock 级搜索状态(C3 文件内查找)。 */
+  search: PanelSearchProps;
+}
+
+export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Element {
   const { tx } = useTranslation();
   const content = useFileContent(sessionId, file.path, file.mtimeMs);
+  const containerRef = useRef<HTMLPreElement | null>(null);
 
   // content 变化才重算。典型 diff < 500 行,逐行 highlight 总 < 50ms 无感。
   const rowsOrNull = useMemo(() => {
     if (!content || content.kind !== 'diff') return null;
     return buildRows(content.text);
   }, [content]);
+
+  // v0.3.1 C3:文件内查找(行级)。行内 <mark> 不做 —— hljs 输出的 HTML 已是 span
+  // 嵌套,叠加 mark 复杂度高收益低;查找主要诉求是"跳到哪一行变了",行级足够。
+  const rowsForSearch = useMemo(
+    () => (rowsOrNull ? rowsOrNull.map((r) => r.text) : EMPTY),
+    [rowsOrNull],
+  );
+  const { currentIndex } = useContentSearch({
+    sessionId,
+    containerRef,
+    lines: rowsForSearch,
+    query: search.query,
+    caseSensitive: search.caseSensitive,
+    active: search.visible,
+  });
 
   if (!content) {
     return <div className="file-viewer-loading">{tx('加载中…', 'Loading…')}</div>;
@@ -268,11 +296,17 @@ export function DiffViewer({ sessionId, file }: ViewerProps): JSX.Element {
     );
   }
   const rows = rowsOrNull as DiffRow[];
+  // currentLine:当前聚焦匹配行(0-based),用于给行加 search-current 高亮。
+  const currentLine = currentIndex >= 0 ? currentIndex : -1;
 
   return (
-    <pre className="diff-viewer">
-      {rows.map((row) => (
-        <div key={row.key} className={`diff-line diff-line-${row.kind}`}>
+    <pre className="diff-viewer" ref={containerRef}>
+      {rows.map((row, i) => (
+        <div
+          key={row.key}
+          data-line={i}
+          className={`diff-line diff-line-${row.kind}${i === currentLine ? ' search-current' : ''}`}
+        >
           <span className="diff-line-sign">{signFor(row.kind)}</span>
           {/* hljs 输出只含 class span,无脚本/事件,安全。来源是 GitService 受控文件。 */}
           <span

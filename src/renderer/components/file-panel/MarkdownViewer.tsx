@@ -25,6 +25,7 @@ import {
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { OpenedFile } from '@shared/types';
+import type { PanelSearchProps } from '../layout/panel-registry';
 import { COMMAND_CHANNELS, type ReadImagePayload, type ReadImageResponse } from '@shared/protocol';
 import { isRemoteUrl } from '@shared/url-scheme';
 import { useFileContent } from './useFileContent';
@@ -34,9 +35,13 @@ import { useAppState } from '../../store';
 interface ViewerProps {
   sessionId: string;
   file: OpenedFile;
+  /** v0.3.1:dock 级搜索状态(C4 markdown 查找)。 */
+  search: PanelSearchProps;
 }
 
-export function MarkdownViewer({ sessionId, file }: ViewerProps): JSX.Element {
+export function MarkdownViewer({ sessionId, file, search }: ViewerProps): JSX.Element {
+  // C4 实现 markdown 文件内查找(DOM 文本节点)。C3 先占位。
+  void search;
   const { tx } = useTranslation();
   // markdown 渲染风格(用户在设置页选):auto=marina 主题样式;github-*=GitHub 官方
   const mdStyle = useAppState().settings.filePanel?.markdownStyle ?? 'auto';

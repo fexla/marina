@@ -198,7 +198,7 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
       </div>
       <div className="file-panel-body">
         {activeFile ? (
-          <FileViewer sessionId={sessionId} file={activeFile} />
+          <FileViewer sessionId={sessionId} file={activeFile} search={search} />
         ) : (
           <div className="file-panel-placeholder">
             {tx('选择上方文件查看内容', 'Select a file above to view')}
