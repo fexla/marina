@@ -2171,6 +2171,14 @@ html[data-maximized='true'] .app-root.with-shell {
   padding-top: 2px;
 }
 
+/* v0.3.1:Git 面板搜索无匹配空态(与 file-tree-empty 一致的视觉语言)。 */
+.git-panel-empty {
+  color: var(--color-text-muted, #f0f);
+  font-size: 12px;
+  padding: 16px 12px;
+  text-align: center;
+}
+
 .file-panel-placeholder,
 .file-viewer-loading,
 .file-viewer-error {
@@ -4271,6 +4279,15 @@ select.settings-input option {
 .search-bar-btn:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+/* v0.3.1:列表过滤匹配高亮。<mark> 默认有黄色背景,这里用主题 accent 让它随主题。 */
+.file-list-row-label mark,
+.file-list-row-label-text mark {
+  background-color: color-mix(in srgb, var(--color-info, #9ccfd8) 35%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
 }
 
 /* ctx-menu disabled state (CP-3 加的菜单复用,CP-4 chunk 3 新加 disabled) */

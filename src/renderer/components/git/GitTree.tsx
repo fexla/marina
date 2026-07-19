@@ -19,6 +19,7 @@
 import { useState } from 'react';
 import type { GitStatusTone } from '@shared/protocol';
 import { FileListRow, type StatusBadge, type StatusTone } from '../common/FileListRow';
+import { HighlightedText } from '../common/HighlightedText';
 import type { ContextMenuItem } from '../ContextMenu';
 import { Icon } from '../icons';
 import type { GitTreeNode } from '@shared/build-git-tree';
@@ -29,6 +30,10 @@ interface GitTreeProps {
   onOpenDiff: (relativePath: string) => void;
   /** 文件节点右键菜单构建器(与 flat 模式共用)。 */
   buildEntryMenu: (relativePath: string) => ContextMenuItem[];
+  /** v0.3.1:搜索高亮查询(空串 = 不高亮)。 */
+  highlightQuery?: string;
+  /** v0.3.1:搜索高亮大小写敏感。 */
+  highlightCaseSensitive?: boolean;
 }
 
 /** tone → 字母(与 GitPanel.badgeFor 对齐)。 */
@@ -44,7 +49,13 @@ function badgeFor(tone: GitStatusTone): StatusBadge | null {
   return { letter: letter[tone], tone: tone as StatusTone };
 }
 
-export function GitTree({ nodes, onOpenDiff, buildEntryMenu }: GitTreeProps): JSX.Element {
+export function GitTree({
+  nodes,
+  onOpenDiff,
+  buildEntryMenu,
+  highlightQuery = '',
+  highlightCaseSensitive = false,
+}: GitTreeProps): JSX.Element {
   // 默认全展开:存「收起的目录集合」(空 = 全展开)。用户点目录 toggle 收起。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
@@ -69,7 +80,13 @@ export function GitTree({ nodes, onOpenDiff, buildEntryMenu }: GitTreeProps): JS
           key={`leaf:${node.relativePath}`}
           variant="list"
           icon="file"
-          label={shortName}
+          label={
+            <HighlightedText
+              text={shortName}
+              query={highlightQuery}
+              caseSensitive={highlightCaseSensitive}
+            />
+          }
           title={label}
           depth={depth}
           statusBadge={badgeFor(node.tone)}

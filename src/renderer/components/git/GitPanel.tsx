@@ -30,9 +30,11 @@ import {
   type GitUnavailableReason,
 } from '@shared/protocol';
 import { buildGitTree, type GitTreeNode } from '@shared/build-git-tree';
+import { matchText } from '@shared/text-search';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { dividerItem } from '../common/fileListRowContextMenu';
 import { FileListRow, type StatusBadge, type StatusTone } from '../common/FileListRow';
+import { HighlightedText } from '../common/HighlightedText';
 import { Icon } from '../icons';
 import { useTranslation } from '../LanguageProvider';
 import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
@@ -211,13 +213,32 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
 
   // tree 模式:把所有 groups 的 entries 打平后构建目录树。useMemo 只在 snapshot/viewMode
   // 变时重算。必须在所有 early return 之前调用(React hooks 规则)。
+  // v0.3.1 C2:搜索过滤。visible + 非空 query 时按 relativePath/oldPath 过滤
+  // entries。tree 模式用过滤后的 entries 构建(自然只含匹配路径的树);flat 模式
+  // 直接渲染过滤后的 groups。空 groups(全被过滤) 不渲染分组。
+  const isSearching = search.visible && search.query.length > 0;
+  const filteredGroups = useMemo<GitStatusGroup[]>(() => {
+    if (!state.snapshot) return [];
+    if (!isSearching) return state.snapshot.groups;
+    const q = search.query;
+    return state.snapshot.groups
+      .map((g) => ({
+        ...g,
+        entries: g.entries.filter(
+          (e) => matchText(e.relativePath, q, search.caseSensitive) ||
+            (e.oldPath !== undefined && matchText(e.oldPath, q, search.caseSensitive)),
+        ),
+      }))
+      .filter((g) => g.entries.length > 0);
+  }, [isSearching, search.query, search.caseSensitive, state.snapshot]);
+
   const treeNodes = useMemo<GitTreeNode[]>(() => {
     if (viewMode !== 'tree' || !state.snapshot) return [];
-    const allEntries = state.snapshot.groups.flatMap((g) =>
+    const allEntries = filteredGroups.flatMap((g) =>
       g.entries.map((e) => ({ relativePath: e.relativePath, oldPath: e.oldPath, tone: g.tone })),
     );
     return buildGitTree(allEntries);
-  }, [viewMode, state.snapshot]);
+  }, [viewMode, state.snapshot, filteredGroups]);
 
   const openDiff = (relativePath: string): void => {
     window.api
@@ -311,13 +332,24 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
         </button>
       </div>
       {viewMode === 'tree' ? (
-        <GitTree
-          nodes={treeNodes}
-          onOpenDiff={openDiff}
-          buildEntryMenu={buildEntryMenu}
-        />
+        treeNodes.length === 0 && isSearching ? (
+          <div className="git-panel-empty">{tx('无匹配文件', 'No matching files')}</div>
+        ) : (
+          <GitTree
+            nodes={treeNodes}
+            onOpenDiff={openDiff}
+            buildEntryMenu={buildEntryMenu}
+            highlightQuery={isSearching ? search.query : ''}
+            highlightCaseSensitive={search.caseSensitive}
+          />
+        )
       ) : (
-        state.snapshot.groups.map((group) => {
+        filteredGroups.length === 0 && isSearching ? (
+          <div className="git-panel-empty">
+            {tx('无匹配文件', 'No matching files')}
+          </div>
+        ) : (
+        filteredGroups.map((group) => {
           // untracked 默认折叠:node_modules / build 产物会污染列表。
           const isUntracked = group.tone === 'untracked';
           const expanded = !isUntracked || state.untrackedExpanded;
@@ -345,31 +377,35 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
               </button>
               {expanded && (
                 <div className="git-panel-group-entries">
-                  {group.entries.map((entry) => (
+                  {group.entries.map((entry) => {
+                    const labelText = entry.oldPath
+                      ? `${entry.oldPath} → ${entry.relativePath}`
+                      : entry.relativePath;
+                    return (
                     <FileListRow
                       key={entry.relativePath}
                       variant="list"
                       icon="file"
                       label={
-                        entry.oldPath
-                          ? `${entry.oldPath} → ${entry.relativePath}`
-                          : entry.relativePath
+                        <HighlightedText
+                          text={labelText}
+                          query={isSearching ? search.query : ''}
+                          caseSensitive={search.caseSensitive}
+                        />
                       }
-                      title={
-                        entry.oldPath
-                          ? `${entry.oldPath} → ${entry.relativePath}`
-                          : entry.relativePath
-                      }
+                      title={labelText}
                       statusBadge={badgeFor(group.tone)}
                       onClick={() => openDiff(entry.relativePath)}
                       buildContextMenu={() => buildEntryMenu(entry.relativePath)}
                     />
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </section>
           );
         })
+        )
       )}
       {state.snapshot.truncated && (
         <div className="git-panel-truncated">

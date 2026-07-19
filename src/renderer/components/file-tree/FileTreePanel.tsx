@@ -23,9 +23,11 @@ import {
   type ListFileTreeDirectoryResponse,
 } from '@shared/protocol';
 import type { FileTreeEntry, FileTreeRootId } from '@shared/types';
+import { matchText } from '@shared/text-search';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { dividerItem } from '../common/fileListRowContextMenu';
 import { FileListRow } from '../common/FileListRow';
+import { HighlightedText } from '../common/HighlightedText';
 import { Icon } from '../icons';
 import { useTranslation } from '../LanguageProvider';
 import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
@@ -53,13 +55,43 @@ function directoryKey(rootId: FileTreeRootId, relativePath: string): string {
 }
 
 /**
+ * v0.3.1:递归判断 entry 是否匹配搜索(或含匹配后代,仅限已加载子树)。
+ *
+ * - 叶子文件:name / relativePath 包含 query → 匹配
+ * - 目录:自身名匹配 → 匹配(整目录可见);否则递归已加载子 entries,
+ *   任一后代匹配 → 保留(让用户看到匹配的上下文路径)
+ *
+ * 懒加载限制:未展开(未加载 snapshot)的子目录无法递归,只看目录名是否匹配。
+ * 搜索模式下 DirectoryChildren 会强制展开已加载目录,匹配后代会浮现。
+ */
+function entryMatches(
+  entry: FileTreeEntry,
+  rootId: FileTreeRootId,
+  directories: DirectoryStates,
+  query: string,
+  caseSensitive: boolean,
+): boolean {
+  // 自身名匹配 → 保留(文件/目录都算)
+  if (matchText(entry.name, query, caseSensitive)) return true;
+  if (matchText(entry.relativePath, query, caseSensitive)) return true;
+  // 目录:递归已加载子树
+  if (entry.kind === 'directory') {
+    const childState = directories[directoryKey(rootId, entry.relativePath)];
+    if (childState?.snapshot) {
+      return childState.snapshot.entries.some((child) =>
+        entryMatches(child, rootId, directories, query, caseSensitive),
+      );
+    }
+  }
+  return false;
+}
+
+/**
  * FileTreePanel 只维护“哪些目录已展开/已请求”的纯 UI 临时态。
  * 文件系统真值与访问授权均在 FileTreeService，切 session 后本组件会被 LayoutHost
  * 按 sessionId 重挂，避免旧目录项闪到新终端。
  */
 export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.Element {
-  // C1:搜索骨架已接入,过滤逻辑 C2 实现。
-  void search;
   const { tx } = useTranslation();
   const [roots, setRoots] = useState<FileTreeRootInfo[] | null>(null);
   const [rootError, setRootError] = useState<string | null>(null);
@@ -195,6 +227,7 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
                 onToggle={toggleDirectory}
                 onOpen={openFile}
                 tx={tx}
+                search={search}
               />
             )}
           </section>
@@ -212,6 +245,7 @@ function DirectoryChildren({
   onToggle,
   onOpen,
   tx,
+  search,
 }: {
   sessionId: string;
   rootId: FileTreeRootId;
@@ -220,16 +254,27 @@ function DirectoryChildren({
   onToggle: (rootId: FileTreeRootId, relativePath: string) => void;
   onOpen: (rootId: FileTreeRootId, relativePath: string) => void;
   tx: (zh: string, en: string) => string;
+  search: PanelSearchProps;
 }): JSX.Element | null {
-  if (!state?.expanded) return null;
-  if (state.loading)
+  const isSearching = search.visible && search.query.length > 0;
+  // 搜索模式下强制展开所有已加载目录(让匹配可见)。未加载目录仍需用户手动展开
+  // (懒加载根本限制:没拉过的目录 renderer 无数据可过滤)。
+  if (!isSearching && !state?.expanded) return null;
+  if (state?.loading)
     return <div className="file-tree-loading file-tree-indent">{tx('读取中…', 'Loading…')}</div>;
-  if (state.error) return <div className="file-tree-error file-tree-indent">{state.error}</div>;
-  if (!state.snapshot) return null;
+  if (state?.error) return <div className="file-tree-error file-tree-indent">{state.error}</div>;
+  if (!state?.snapshot) return null;
+
+  // 搜索过滤:保留匹配叶子 + 含匹配后代的目录(递归已加载子树)。
+  const filteredEntries = isSearching
+    ? state.snapshot.entries.filter((entry) =>
+        entryMatches(entry, rootId, directories, search.query, search.caseSensitive),
+      )
+    : state.snapshot.entries;
 
   return (
     <div className="file-tree-children">
-      {state.snapshot.entries.map((entry) => (
+      {filteredEntries.map((entry) => (
         <FileTreeEntryRow
           key={entry.relativePath}
           sessionId={sessionId}
@@ -240,9 +285,13 @@ function DirectoryChildren({
           onToggle={onToggle}
           onOpen={onOpen}
           tx={tx}
+          search={search}
         />
       ))}
-      {state.snapshot.entries.length === 0 && (
+      {filteredEntries.length === 0 && isSearching && (
+        <div className="file-tree-empty file-tree-indent">{tx('无匹配', 'No match')}</div>
+      )}
+      {state.snapshot.entries.length === 0 && !isSearching && (
         <div className="file-tree-empty file-tree-indent">{tx('空目录', 'Empty directory')}</div>
       )}
       {state.snapshot.truncated && (
@@ -263,6 +312,7 @@ function FileTreeEntryRow({
   onToggle,
   onOpen,
   tx,
+  search,
 }: {
   sessionId: string;
   rootId: FileTreeRootId;
@@ -272,8 +322,10 @@ function FileTreeEntryRow({
   onToggle: (rootId: FileTreeRootId, relativePath: string) => void;
   onOpen: (rootId: FileTreeRootId, relativePath: string) => void;
   tx: (zh: string, en: string) => string;
+  search: PanelSearchProps;
 }): JSX.Element {
   const isDirectory = entry.kind === 'directory';
+  const isSearching = search.visible && search.query.length > 0;
   // 右键菜单依赖:每个 row 一个 hook 实例完全合法(React 按组件位置记忆)。
   // 条目数量不会很大,换来的内聚性比层层透传 props 更可读。
   const copyToClipboard = useCopyToClipboard();
@@ -326,16 +378,22 @@ function FileTreeEntryRow({
       <FileListRow
         variant="list"
         icon={isDirectory ? 'folder' : 'file'}
-        label={entry.name}
+        label={
+          <HighlightedText
+            text={entry.name}
+            query={isSearching ? search.query : ''}
+            caseSensitive={search.caseSensitive}
+          />
+        }
         title={entry.name}
         onClick={() =>
           isDirectory ? onToggle(rootId, entry.relativePath) : onOpen(rootId, entry.relativePath)
         }
-        ariaExpanded={isDirectory ? !!state?.expanded : undefined}
+        ariaExpanded={isDirectory ? !!state?.expanded || isSearching : undefined}
         buildContextMenu={buildContextMenu}
         leading={
           isDirectory ? (
-            <Icon name={state?.expanded ? 'chevronDown' : 'chevronRight'} size={12} />
+            <Icon name={state?.expanded || isSearching ? 'chevronDown' : 'chevronRight'} size={12} />
           ) : (
             <span className="file-tree-leaf-spacer" />
           )
@@ -350,6 +408,7 @@ function FileTreeEntryRow({
           onToggle={onToggle}
           onOpen={onOpen}
           tx={tx}
+          search={search}
         />
       )}
     </div>

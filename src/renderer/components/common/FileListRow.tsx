@@ -49,8 +49,8 @@ export interface FileListRowProps {
   variant: 'list' | 'tab';
   /** 主图标(folder / file / gitBranch 等)。null = 不渲染图标槽。 */
   icon: IconName | null;
-  /** 主标签(文件名 / tab 名)。 */
-  label: string;
+  /** 主标签(文件名 / tab 名)。可为 ReactNode(如搜索高亮 <mark> 片段)。 */
+  label: ReactNode;
   /** tooltip(完整路径等)。 */
   title?: string;
   /** 缩进层级(list variant 专用;tab 忽略)。每层 14px,对齐既有 file-tree 视觉。 */

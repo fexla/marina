@@ -17,10 +17,12 @@
  * - 不直接读本地文件系统；所有内容读取经 main IPC。
  * - 不保存 width/collapsed 等布局状态。
  */
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { COMMAND_CHANNELS, type FilePanelSnapshot } from '@shared/protocol';
 import type { OpenedFile } from '@shared/types';
 import type { PanelSearchProps } from '../layout/panel-registry';
+import { matchText } from '@shared/text-search';
+import { HighlightedText } from '../common/HighlightedText';
 import {
   copyPathItems,
   dividerItem,
@@ -42,8 +44,6 @@ interface FilePanelProps {
 }
 
 export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
-  // C1:搜索骨架已接入,过滤/查找 C2/C3 实现。
-  void search;
   const state = useAppState();
   const dispatch = useAppDispatch();
   const { tx } = useTranslation();
@@ -84,6 +84,14 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
   const activeFile: OpenedFile | null =
     snapshot.files.find((file) => file.path === snapshot.activePath) ?? null;
 
+  // v0.3.1 C2:tab 列表过滤(按文件名)。文件内容查找是 C3(在 FileViewer)。
+  // 过滤不影响 activeFile —— 搜索时仍显示当前内容,只是 tab 列表收窄。
+  const isSearchingTabs = search.visible && search.query.length > 0;
+  const filteredFiles = useMemo<OpenedFile[]>(() => {
+    if (!isSearchingTabs) return snapshot.files;
+    return snapshot.files.filter((f) => matchText(f.name, search.query, search.caseSensitive));
+  }, [isSearchingTabs, search.query, search.caseSensitive, snapshot.files]);
+
   const handleShow = (path: string): void => {
     window.api
       .invoke(COMMAND_CHANNELS.FILE_PANEL_SHOW, { sessionId, path })
@@ -120,8 +128,12 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
               'Select a file from Files, or let a terminal program open one through MARINA_SERVICE.',
             )}
           </span>
+        ) : filteredFiles.length === 0 && isSearchingTabs ? (
+          <span className="file-panel-empty-hint">
+            {tx('无匹配文件', 'No matching files')}
+          </span>
         ) : (
-          snapshot.files.map((file) => {
+          filteredFiles.map((file) => {
             const isActive = file.path === snapshot.activePath;
             const buildContextMenu = (): ContextMenuItem[] => {
               const items: ContextMenuItem[] = [];
@@ -152,7 +164,13 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
                 key={file.path}
                 variant="tab"
                 icon="file"
-                label={file.name}
+                label={
+                  <HighlightedText
+                    text={file.name}
+                    query={isSearchingTabs ? search.query : ''}
+                    caseSensitive={search.caseSensitive}
+                  />
+                }
                 title={file.path}
                 selected={isActive}
                 onClick={() => handleShow(file.path)}
