@@ -18,6 +18,7 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type AnchorHTMLAttributes,
   type ImgHTMLAttributes,
@@ -26,6 +27,7 @@ import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { OpenedFile } from '@shared/types';
 import type { PanelSearchProps } from '../layout/panel-registry';
+import { useMarkdownSearch } from '../../hooks/useMarkdownSearch';
 import { COMMAND_CHANNELS, type ReadImagePayload, type ReadImageResponse } from '@shared/protocol';
 import { isRemoteUrl } from '@shared/url-scheme';
 import { useFileContent } from './useFileContent';
@@ -40,9 +42,8 @@ interface ViewerProps {
 }
 
 export function MarkdownViewer({ sessionId, file, search }: ViewerProps): JSX.Element {
-  // C4 实现 markdown 文件内查找(DOM 文本节点)。C3 先占位。
-  void search;
   const { tx } = useTranslation();
+  const containerRef = useRef<HTMLDivElement | null>(null);
   // markdown 渲染风格(用户在设置页选):auto=marina 主题样式;github-*=GitHub 官方
   const mdStyle = useAppState().settings.filePanel?.markdownStyle ?? 'auto';
   const content = useFileContent(sessionId, file.path, file.mtimeMs);
@@ -76,6 +77,17 @@ export function MarkdownViewer({ sessionId, file, search }: ViewerProps): JSX.El
     [content],
   );
 
+  // v0.3.1 C4:markdown 文件内查找(DOM 文本节点 + CSS Custom Highlight)。
+  // contentVersion = normalizedText(内容变化时重算匹配)。useEffect 依赖它。
+  useMarkdownSearch({
+    sessionId,
+    containerRef,
+    query: search.query,
+    caseSensitive: search.caseSensitive,
+    active: search.visible,
+    contentVersion: normalizedText,
+  });
+
   if (!content) {
     return <div className="file-viewer-loading">{tx('加载中…', 'Loading…')}</div>;
   }
@@ -103,7 +115,7 @@ export function MarkdownViewer({ sessionId, file, search }: ViewerProps): JSX.El
     wrapClass = 'file-markdown-viewer';
   }
   return (
-    <div className={wrapClass}>
+    <div className={wrapClass} ref={containerRef}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {normalizedText}
       </ReactMarkdown>

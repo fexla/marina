@@ -2214,6 +2214,16 @@ html[data-maximized='true'] .app-root.with-shell {
   min-height: 1.5em;
 }
 
+/* v0.3.1 C4:markdown 渲染后查找高亮(CSS Custom Highlight API,不改 DOM)。 */
+::highlight(marina-md-search) {
+  background-color: color-mix(in srgb, var(--color-info, #9ccfd8) 35%, transparent);
+}
+
+::highlight(marina-md-search-current) {
+  background-color: color-mix(in srgb, var(--color-warning, #f6c177) 55%, transparent);
+  color: var(--color-bg-primary, #f0f);
+}
+
 /* 当前聚焦匹配行:整行高亮(scrollIntoView 跳转到的行)。VS Code 同款视觉。 */
 .file-text-line.search-current,
 .diff-line.search-current {
