@@ -4,8 +4,10 @@
 > 你正在 YOLO 模式下工作,大部分时间不需要打扰开发者。但有少数情况你必须立刻停下来。
 > 仔细读完整份文件再开始工作。
 
-文档版本:1.3 · 最后更新:2026-05-16
+文档版本:1.4 · 最后更新:2026-07-19
 
+> **v1.4 变更**:新增附录 D「构建与打包速查」—— 固化 portable/nsis 构建命令、产物路径、icon 依赖、验收清单、失败排查顺序。避免每次重新 grep `electron-builder.yml` 与 `package.json` scripts。
+>
 > **v1.3 变更**:与软件定义书 v1.6 / ADR-013 对齐 — 附录 C "关闭弹确认"硬规则增加 Linux 例外脚注:仅当 `lifecycleModel === 'no-persistence'` + 最后一个窗口 + 仍有非 exited session 时,允许弹 `<LastSessionConfirm />`。1.2 节边界 3 例子同步加例外注脚。
 > **v1.2 变更**:产品改名 EasyTerm → **Marina**(对齐软件定义书 v1.5,ADR-012)。所有"产品现状"维度的 EasyTerm 字样替换为 Marina;commit message 示例等"历史/惯例"维度的 EasyTerm 保留作为风格参考。`%APPDATA%\EasyTerm\` 全部改为 `%APPDATA%\Marina\`(Electron 由 `productName` 自动派生)。
 > **v1.1 变更**:与软件定义书 v1.3 / CP-4 勘误回合对齐 — CP-4 完成标志改 7 套主题;附录 D 新增"勘误回合工作纪律";4.5 章明确"勘误回合修复"也是检查点工作流的一部分。
@@ -869,6 +871,42 @@ E. 检查点之间想"顺手"重构 / 加新功能
   * **唯一例外(v1.6,软件定义书 ADR-013)**:Linux 上当**最后一个窗口**关闭且**仍有非 exited session**时,弹同一个 `<LastSessionConfirm />` modal。Windows 关窗 / macOS 关窗 / 任何非最后窗口的关闭 / 全 exited session 的最后窗口关闭 —— **仍然永远不弹**。
 * "我能不能 force push"(永远不,除非开发者明确叫你做)
 * "我能不能为了过测试 mock 掉这个核心模块"(永远不,这是自欺欺人)
+
+## 附录 D:构建与打包速查(v1.4 固化,避免每次重新摸配置)
+
+**要什么 → 跑什么**(配置全在 `electron-builder.yml`,不要每次重新 grep):
+
+| 需求 | 命令 | 产物 |
+|---|---|---|
+| **Windows 安装器(nsis)+ portable** | `npm run build` | `release/{ver}/Marina-Setup-{ver}-x64.exe` + `Marina-Portable-{ver}-x64.exe` |
+| 只要 portable(快) | `npx electron-builder --win portable --x64` | 只产 portable(跳过 nsis) |
+| 只打包不制安装器(调试) | `npm run build:unpack` | `release/{ver}/win-unpacked/`(直接可跑的目录) |
+| Linux deb/rpm/AppImage | `npm run build:linux` | (V1 不发布,社区贡献者用) |
+
+**关键事实(不用每次查)**:
+- `win.target` 在 `electron-builder.yml` 已配 `nsis` + `portable` 双目标。`npm run build` 一次性产两个 exe。
+- `portable` 块的 `artifactName: ${productName}-Portable-${version}-${arch}.${ext}` → 文件名固定 `Marina-Portable-{ver}-x64.exe`。
+- 版本号取自 `package.json` 的 `version`(当前 0.2.6),产物在 `release/{version}/`。
+- icon:`build/icon.ico`(三处复用:win 主图标 / nsis 安装&卸载器)。**没有 .ico 时 portable 用默认 electron 图标,不报错但难看** —— icon 由 `scripts/generate-icon.cjs` 从 svg 离线生成,别在 build 流程里现造。
+- `asar: true` + `asarUnpack: node_modules/node-pty/**`(native 模块不能进 asar)。
+- shell-hooks / skills / context-menu MSIX 通过 `extraResources` 放 app.asar 旁(外部进程读不了 asar)。
+- `node-pty` 在 build 前 rebuild(`postinstall: electron-builder install-app-deps` 已挂;首次 build 会自动 rebuild native)。
+
+**耗时**:首次 1-3 分钟(electron-builder 下载/缓存 + native rebuild);增量 < 1 分钟。
+
+**portable 验收检查清单**(交付前必看):
+- [ ] 双击 exe 能启动(不释放安装,直接跑)
+- [ ] userData 走 portable 旁的 `Marina/` 目录(portable 模式 %APPDATA% 行为见 electron-builder 文档,实测确认)
+- [ ] 托盘图标 + 右键菜单正常
+- [ ] 终端能起来(PowerShell 提示符可见)
+- [ ] 文件 / Git 面板能拉真值(非 SSH 本地 session)
+
+**遇到打包失败别猜,按顺序查**:
+1. `npm run typecheck && npm run lint && npm test` 全过没?代码错别打进包。
+2. `build/icon.ico` 在不在?损坏/过小(<10KB)多是占位,用 `scripts/generate-icon.cjs` 重生。
+3. native rebuild 失败 → `rm -rf node_modules && npm install`(重建 node-pty 二进制)。
+4. electron-builder 下载不动 → 检查 `.npmrc` 的 `electron_mirror` / `ELECTRON_BUILDER_BINARIES_MIRROR`(国内镜像)。
+5. 超过 10 轮没搞定 → BLOCKED(见第 3 章)。
 
 ---
 
