@@ -266,6 +266,35 @@ export class FileTreeService {
     shell.showItemInFolder(target);
   }
 
+  /**
+   * v0.3.2:用系统默认应用打开 file-tree 节点(右键「用默认应用打开」)。
+   *
+   * 对称 revealPath,保持 rootId 抽象 —— renderer 始终不持绝对路径,由 main 端
+   * resolve + openPath。校验同 revealPath(owner + root 包含 + 存在性)。
+   *
+   * 文件用关联程序打开(.png → 图片查看器 / .pdf → 阅读器);
+   * 目录用资源管理器打开(与 reveal 语义重叠但用户预期不同:reveal 是"定位选中",
+   * open 是"进去")。file-tree 前端只对文件节点暴露此能力。
+   */
+  async openPath(
+    sessionId: string,
+    requesterId: string,
+    rootId: FileTreeRootId,
+    relativePath: string,
+  ): Promise<void> {
+    this.requireOwner(sessionId, requesterId);
+    const root = await this.resolveRoot(sessionId, rootId);
+    const target = await this.resolveInsideRoot(root, relativePath);
+    const stat = await this.statOrThrow(target, '文件打开');
+    if (!stat.isFile() && !stat.isDirectory()) {
+      throw new FileTreeError(
+        'NotFile',
+        '请求目标不是文件或目录，无法打开。',
+      );
+    }
+    await shell.openPath(target);
+  }
+
   /** 每个请求均重新检查 owner，避免 session 被接管后旧窗口继续读取文件。 */
   private requireOwner(sessionId: string, requesterId: string): void {
     const session = this.sessionLookup.get(sessionId);

@@ -17,7 +17,7 @@
  *   不强制统一实现。file-tree 走 rootId 抽象(不暴露绝对路径),git 走 repoRoot IPC,
  *   file-panel 直接持有绝对路径 —— 三套路径来源本质不同,硬统一会引入不必要的抽象层。
  * - 菜单顺序统一(对所有面板):
- *     操作族(primary / openFile / close) → divider → 路径族(copyRelative / copyAbsolute / reveal)
+ *     操作族(primary / openFile / close) → divider → 路径族(copyRelative / copyAbsolute / reveal / openExternal)
  *   两组都非空才插 divider,尾部不插。
  * - 文案统一(label 由 deps.tx 双语),消除了之前三面板各写各的"复制路径"/"复制相对路径"等。
  *
@@ -90,6 +90,15 @@ export interface FileEntryContext {
    */
   reveal?: () => void;
 
+  /**
+   * v0.3.2:用系统默认应用打开文件本身(.png → 图片查看器 / .pdf → 阅读器)。
+   *
+   * 与 openFile(在 Marina 内预览)语义不同 —— 本项调系统关联程序打开。
+   * 实现同 reveal,各面板注入(file-tree 走 file-tree:open-path 保 rootId 抽象;
+   * git/file-panel 走 system:open-path)。只对文件节点提供(目录无意义)。
+   */
+  openExternal?: () => void;
+
   /** 关闭族(file-panel tab 语义;其他面板无此能力)。 */
   close?: {
     close: () => void;
@@ -120,6 +129,7 @@ export function dividerItem(): ContextMenuItem {
  *   relativePath       → "复制相对路径"
  *   resolveAbsolutePath→ "复制绝对路径"
  *   reveal             → "在 Explorer 中显示"
+ *   openExternal       → "用默认应用打开"
  */
 export function buildFileEntryMenu(ctx: FileEntryContext, deps: FileMenuDeps): ContextMenuItem[] {
   const { tx, copyToClipboard, toastError } = deps;
@@ -180,6 +190,13 @@ export function buildFileEntryMenu(ctx: FileEntryContext, deps: FileMenuDeps): C
     pathItems.push({
       label: tx('在 Explorer 中显示', 'Reveal in Explorer'),
       onSelect: ctx.reveal,
+    });
+  }
+  // v0.3.2:用系统默认应用打开(放 reveal 后 —— 同属「调系统对文件做事」一组)。
+  if (ctx.openExternal) {
+    pathItems.push({
+      label: tx('用默认应用打开', 'Open with default app'),
+      onSelect: ctx.openExternal,
     });
   }
 

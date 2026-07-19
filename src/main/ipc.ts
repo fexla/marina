@@ -36,7 +36,7 @@ import {
 } from './explorer-integration';
 import type { ClientRegistry, ClientTransport } from './client-registry';
 import { promises as fs } from 'node:fs';
-import { join as joinPath } from 'node:path';
+import { join as joinPath, isAbsolute as isAbsolutePath } from 'node:path';
 import {
   COMMAND_CHANNELS,
   EVENT_CHANNELS,
@@ -146,6 +146,8 @@ import {
   type SessionStateChangedPayload,
   type SetDefaultTemplateForBookmarkPayload,
   type SettingsChangedPayload,
+  type OpenPathPayload,
+  type OpenFileTreePathPayload,
   type SshProfilesUpdatedPayload,
   type ShowInExplorerPayload,
   type TemplateListUpdatedPayload,
@@ -1197,6 +1199,23 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     },
   );
 
+  // v0.3.2:用系统默认应用打开本地文件/目录(右键「用默认应用打开」)。
+  // 与 SYSTEM_OPEN_EXTERNAL(只 http/https/mailto)不同 —— 本通道开本地路径,
+  // renderer 必须先 resolve 到绝对路径(git:resolve-path / file-panel 已持 / 等)。
+  // file-tree 因 rootId 抽象走专用 FILE_TREE_OPEN_PATH,不经此通道。
+  registerHandle(
+    COMMAND_CHANNELS.SYSTEM_OPEN_PATH,
+    async (_e, envelope: CommandEnvelope<OpenPathPayload>): Promise<void> => {
+      const p = envelope.payload.path;
+      // 防御:必须是绝对路径(阻止相对路径 / UNC 越界尝试)。openPath 对不存在路径
+      // 返回错误串而不报异常,这里不额外校验存在性 —— 文件刚删等竞态由系统提示。
+      if (!p || !isAbsolutePath(p)) {
+        throw makeIpcError('InvalidPath', `SYSTEM_OPEN_PATH 要求绝对路径,收到: "${p}"`);
+      }
+      await shell.openPath(p);
+    },
+  );
+
   registerHandle(
     COMMAND_CHANNELS.SYSTEM_OPEN_DATA_DIR,
     async (_e, _envelope: CommandEnvelope<undefined>): Promise<void> => {
@@ -1720,6 +1739,19 @@ function registerFileTreeHandlers(deps: IpcLayerDeps): void {
     COMMAND_CHANNELS.FILE_TREE_REVEAL_PATH,
     async (_e, envelope: CommandEnvelope<RevealFileTreePathPayload>): Promise<void> => {
       await fileTreeService.revealPath(
+        envelope.payload.sessionId,
+        envelope.windowId,
+        envelope.payload.rootId,
+        envelope.payload.relativePath,
+      );
+    },
+  );
+
+  // v0.3.2:用系统默认应用打开 file-tree 节点(对称 reveal-path,保持 rootId 抽象)。
+  registerHandle(
+    COMMAND_CHANNELS.FILE_TREE_OPEN_PATH,
+    async (_e, envelope: CommandEnvelope<OpenFileTreePathPayload>): Promise<void> => {
+      await fileTreeService.openPath(
         envelope.payload.sessionId,
         envelope.windowId,
         envelope.payload.rootId,

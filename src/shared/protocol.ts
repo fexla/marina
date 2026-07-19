@@ -143,6 +143,10 @@ export const COMMAND_CHANNELS = {
 
   // System 域
   SYSTEM_SHOW_IN_EXPLORER: 'cmd:system:show-in-explorer',
+  /** v0.3.2:用系统默认应用打开文件/目录(shell.openPath)。与 SYSTEM_OPEN_EXTERNAL
+   *  (只允许 http/https/mailto)不同 —— 本通道专开本地路径,renderer 需先 resolve
+   *  到绝对路径。file-tree 因 rootId 抽象走专用 FILE_TREE_OPEN_PATH。 */
+  SYSTEM_OPEN_PATH: 'cmd:system:open-path',
   SYSTEM_OPEN_DATA_DIR: 'cmd:system:open-data-dir',
   SYSTEM_OPEN_LOGS_DIR: 'cmd:system:open-logs-dir',
   SYSTEM_OPEN_EXTERNAL: 'cmd:system:open-external',
@@ -206,6 +210,8 @@ export const COMMAND_CHANNELS = {
    *  不返回绝对路径给 renderer，直接由 main 端在 realpath 根包含校验后调用
    *  shell.showItemInFolder，避免 renderer 拿到任意文件路径。 */
   FILE_TREE_REVEAL_PATH: 'cmd:file-tree:reveal-path',
+  /** v0.3.2:用系统默认应用打开 file-tree 节点(对称 reveal-path,保持 rootId 抽象)。 */
+  FILE_TREE_OPEN_PATH: 'cmd:file-tree:open-path',
 
   // Git 域 —— active owner session 的只读变更浏览与 diff 预览(v0.3.0,ADR-017)。
   // 与 file-tree 同构的安全模式:owner 校验 + SSH 拒绝 + repoRoot 包含校验。
@@ -1051,6 +1057,11 @@ export interface ShowInExplorerPayload {
   path: string;
 }
 
+/** v0.3.2:用系统默认应用打开本地路径(shell.openPath)。 */
+export interface OpenPathPayload {
+  path: string;
+}
+
 export interface OpenExternalPayload {
   /** http(s) URL — 文件 / file:// 协议拒绝 (安全) */
   url: string;
@@ -1390,6 +1401,13 @@ export interface OpenFileTreeFilePayload {
 
 /** cmd:file-tree:reveal-path payload(v0.3.0)。与 OpenFileTreeFilePayload 同形。 */
 export interface RevealFileTreePathPayload {
+  sessionId: string;
+  rootId: FileTreeRootId;
+  relativePath: string;
+}
+
+/** v0.3.2:用系统默认应用打开 file-tree 节点(对称 reveal)。 */
+export interface OpenFileTreePathPayload {
   sessionId: string;
   rootId: FileTreeRootId;
   relativePath: string;

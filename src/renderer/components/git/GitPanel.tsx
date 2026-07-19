@@ -289,28 +289,41 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
         },
         relativePath,
         resolveAbsolutePath: () => resolveAbsPath(relativePath),
-        reveal: () => {
-          resolveAbsPath(relativePath)
-            .then((abs) =>
-              window.api
-                .invoke(COMMAND_CHANNELS.SYSTEM_SHOW_IN_EXPLORER, { path: abs })
-                .catch((err: unknown) =>
-                  toast.push({
-                    kind: 'error',
-                    message: `打开 Explorer 失败:${err instanceof Error ? err.message : String(err)}`,
-                  }),
-                ),
-            )
-            .catch((err: unknown) =>
-              toast.push({
-                kind: 'error',
-                message: `解析路径失败:${err instanceof Error ? err.message : String(err)}`,
-              }),
-            );
-        },
+        // reveal / openExternal 都先 resolve 到绝对路径再调系统 IPC。抽个局部 helper
+        // 避免两处重复 then/catch ladder。
+        reveal: () => withAbsPath(relativePath, (abs) => onSystemOp(abs, 'show')),
+        // v0.3.2:用系统默认应用打开(deleted 文件工作区已删,让系统报错即可)。
+        openExternal: () => withAbsPath(relativePath, (abs) => onSystemOp(abs, 'open')),
       },
       { copyToClipboard, toastError: (m) => toast.push({ kind: 'error', message: m }), tx },
     );
+
+  /** resolve 相对路径为绝对路径后执行 op;解析失败 / 系统调用失败都 toast。 */
+  function withAbsPath(relativePath: string, op: (abs: string) => void): void {
+    resolveAbsPath(relativePath)
+      .then(op)
+      .catch((err: unknown) =>
+        toast.push({
+          kind: 'error',
+          message: `解析路径失败:${err instanceof Error ? err.message : String(err)}`,
+        }),
+      );
+  }
+
+  /** 对绝对路径调系统 show-in-explorer / open-path 二选一。 */
+  function onSystemOp(abs: string, op: 'show' | 'open'): void {
+    const channel =
+      op === 'show' ? COMMAND_CHANNELS.SYSTEM_SHOW_IN_EXPLORER : COMMAND_CHANNELS.SYSTEM_OPEN_PATH;
+    const failLabel = op === 'show' ? '打开 Explorer 失败' : '打开失败';
+    window.api
+      .invoke(channel, { path: abs })
+      .catch((err: unknown) =>
+        toast.push({
+          kind: 'error',
+          message: `${failLabel}:${err instanceof Error ? err.message : String(err)}`,
+        }),
+      );
+  }
 
   // ── 状态分支:loading / error / unavailable / 正常 ──
   // 有缓存(snapshot/unavailable)时优先显示旧值,不回 loading 占位(避免闪烁)。

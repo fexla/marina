@@ -91,8 +91,37 @@ describe('buildFileEntryMenu', () => {
   it('只有路径族(无操作族) → 不插前置 divider', () => {
     const ctx: FileEntryContext = { relativePath: 'a', reveal: vi.fn() };
     const items = buildFileEntryMenu(ctx, makeDeps());
-    expect(labels(items)).toEqual(['复制相对路径', '在 Explorer 中显示']);
+    expect(labels(items)).toEqual([
+      '复制相对路径',
+      '在 Explorer 中显示',
+    ]);
     expect(items.some((i) => i.divider)).toBe(false);
+  });
+
+  it('openExternal 能力 → 路径族尾部生成「用默认应用打开」(reveal 后)', () => {
+    const openExternal = vi.fn();
+    const ctx: FileEntryContext = { openExternal };
+    const items = buildFileEntryMenu(ctx, makeDeps());
+    expect(labels(items)).toEqual(['用默认应用打开']);
+    items[0]?.onSelect?.();
+    expect(openExternal).toHaveBeenCalledOnce();
+  });
+
+  it('openExternal 在 reveal 之后(顺序校验)', () => {
+    const ctx: FileEntryContext = {
+      primary: { label: '打开', run: vi.fn() },
+      relativePath: 'a',
+      reveal: vi.fn(),
+      openExternal: vi.fn(),
+    };
+    const items = buildFileEntryMenu(ctx, makeDeps());
+    expect(labels(items)).toEqual([
+      '打开',
+      '---',
+      '复制相对路径',
+      '在 Explorer 中显示',
+      '用默认应用打开',
+    ]);
   });
 
   it('close 族 disabled 传播(closeOthers / closeAll)', () => {

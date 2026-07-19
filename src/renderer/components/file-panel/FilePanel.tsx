@@ -155,6 +155,17 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
                         }),
                       );
                   },
+                  // v0.3.2:用系统默认应用打开(调关联程序,如图片/PDF)。
+                  openExternal: () => {
+                    window.api
+                      .invoke(COMMAND_CHANNELS.SYSTEM_OPEN_PATH, { path: file.path })
+                      .catch((err: unknown) =>
+                        toast.push({
+                          kind: 'error',
+                          message: `打开失败:${err instanceof Error ? err.message : String(err)}`,
+                        }),
+                      );
+                  },
                 },
                 { copyToClipboard, toastError: (m) => toast.push({ kind: 'error', message: m }), tx },
               );

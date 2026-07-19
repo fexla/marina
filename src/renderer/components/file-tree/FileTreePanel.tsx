@@ -361,6 +361,26 @@ function FileTreeEntryRow({
               }),
             );
         },
+        // v0.3.2:用系统默认应用打开(只对文件,目录无意义)。走对称的
+        // file-tree:open-path IPC(main 端 resolve + openPath,保 rootId 抽象)。
+        ...(isDirectory
+          ? {}
+          : {
+              openExternal: () => {
+                window.api
+                  .invoke(COMMAND_CHANNELS.FILE_TREE_OPEN_PATH, {
+                    sessionId,
+                    rootId,
+                    relativePath: entry.relativePath,
+                  })
+                  .catch((err: unknown) =>
+                    toast.push({
+                      kind: 'error',
+                      message: `打开失败:${err instanceof Error ? err.message : String(err)}`,
+                    }),
+                  );
+              },
+            }),
       },
       { copyToClipboard, toastError: (m) => toast.push({ kind: 'error', message: m }), tx },
     );
