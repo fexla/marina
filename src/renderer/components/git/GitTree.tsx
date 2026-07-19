@@ -29,7 +29,7 @@ interface GitTreeProps {
   /** 文件节点点击 → 打开 diff。 */
   onOpenDiff: (relativePath: string) => void;
   /** 文件节点右键菜单构建器(与 flat 模式共用)。 */
-  buildEntryMenu: (relativePath: string) => ContextMenuItem[];
+  buildEntryMenu: (relativePath: string, tone?: GitStatusTone) => ContextMenuItem[];
   /** v0.3.1:搜索高亮查询(空串 = 不高亮)。 */
   highlightQuery?: string;
   /** v0.3.1:搜索高亮大小写敏感。 */
@@ -91,7 +91,7 @@ export function GitTree({
           depth={depth}
           statusBadge={badgeFor(node.tone)}
           onClick={() => onOpenDiff(node.relativePath)}
-          buildContextMenu={() => buildEntryMenu(node.relativePath)}
+          buildContextMenu={() => buildEntryMenu(node.relativePath, node.tone)}
         />
       );
     }

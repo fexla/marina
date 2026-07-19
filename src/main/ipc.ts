@@ -78,6 +78,8 @@ import {
   type GetGitStatusResponse,
   type GitStatusUpdatedPayload,
   type OpenGitDiffPayload,
+  type OpenGitFilePayload,
+  type ResolveGitPathResponse,
   type GetOpenFilesPayload,
   type ReadFilePayload,
   type ReadImagePayload,
@@ -1759,6 +1761,35 @@ function registerGitHandlers(deps: IpcLayerDeps): void {
         envelope.windowId,
         envelope.payload.relativePath,
       ),
+  );
+
+  // v0.3.1 勘误:Git 面板右键「打开文件本身」+「复制绝对路径 / 在 Explorer 显示」。
+  registerHandle(
+    COMMAND_CHANNELS.GIT_OPEN_FILE,
+    async (
+      _e,
+      envelope: CommandEnvelope<OpenGitFilePayload>,
+    ): Promise<FilePanelSnapshot> =>
+      gitService.openFile(
+        envelope.payload.sessionId,
+        envelope.windowId,
+        envelope.payload.relativePath,
+      ),
+  );
+
+  registerHandle(
+    COMMAND_CHANNELS.GIT_RESOLVE_PATH,
+    async (
+      _e,
+      envelope: CommandEnvelope<OpenGitFilePayload>,
+    ): Promise<ResolveGitPathResponse> => {
+      const absolutePath = await gitService.resolvePath(
+        envelope.payload.sessionId,
+        envelope.windowId,
+        envelope.payload.relativePath,
+      );
+      return { absolutePath };
+    },
   );
 }
 

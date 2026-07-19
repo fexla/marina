@@ -194,6 +194,50 @@ describe('GitService', () => {
     });
   });
 
+  // ── v0.3.1 openFile:打开文件本身(不走 diff) ──────────────────────
+  it('openFile:resolve 越界后成功打开(返回 snapshot,不走 diff 临时文件)', async () => {
+    // openFile 读真实工作区文件(不同于 openDiff 走临时文件),需造实体文件
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(join(repoDir, 'modified.txt'), 'hello world\n');
+    const snap = await service.openFile('s1', 'owner-1', 'modified.txt');
+    // 返回 FilePanelSnapshot:activePath 是工作区真实路径(非 __marina_diff__)
+    expect(snap.activePath).toBeTruthy();
+    expect(snap.activePath).not.toContain('__marina_diff__');
+    expect(snap.activePath?.endsWith('modified.txt')).toBe(true);
+  });
+
+  it('openFile:拒绝 .. 路径(防越界)', async () => {
+    await expect(service.openFile('s1', 'owner-1', '../external/secret.txt')).rejects.toMatchObject({
+      code: 'OutsideRepoRoot',
+    });
+  });
+
+  it('openFile:SSH 拒绝', async () => {
+    await expect(service.openFile('ssh1', 'owner-ssh', 'x.txt')).rejects.toMatchObject({
+      code: 'SshUnsupported',
+    });
+  });
+
+  // ── v0.3.1 resolvePath:相对路径 → 绝对路径 ───────────────────────
+  it('resolvePath:返回 repoRoot + relativePath 的绝对路径', async () => {
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(join(repoDir, 'resolve-target.txt'), 'x');
+    const abs = await service.resolvePath('s1', 'owner-1', 'resolve-target.txt');
+    expect(abs.endsWith('resolve-target.txt')).toBe(true);
+  });
+
+  it('resolvePath:拒绝 .. 路径', async () => {
+    await expect(service.resolvePath('s1', 'owner-1', '../x.txt')).rejects.toMatchObject({
+      code: 'OutsideRepoRoot',
+    });
+  });
+
+  it('resolvePath:SSH 拒绝', async () => {
+    await expect(service.resolvePath('ssh1', 'owner-ssh', 'x.txt')).rejects.toMatchObject({
+      code: 'SshUnsupported',
+    });
+  });
+
   // ── onSessionDestroyed:不抛、幂等 ─────────────────────────────────
   it('onSessionDestroyed:对无 watcher 的 session 调用也不抛', () => {
     expect(() => service.onSessionDestroyed('never-existed')).not.toThrow();

@@ -254,17 +254,84 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
       });
   };
 
-  const buildEntryMenu = (relativePath: string): ContextMenuItem[] => {
+  // v0.3.1 勘误:打开文件本身(不走 diff)。deleted 文件工作区已不存在 → 禁用此项。
+  const openFile = (relativePath: string): void => {
+    window.api
+      .invoke(COMMAND_CHANNELS.GIT_OPEN_FILE, { sessionId, relativePath })
+      .catch((err: unknown) => {
+        console.warn('[GitPanel] open-file failed', err);
+        toast.push({
+          kind: 'error',
+          message: `打开文件失败:${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+  };
+
+  // v0.3.1 勘误:resolve 相对路径 → 绝对路径(供复制绝对路径 / reveal)。复用 fileListRowContextMenu
+  // 的 copyPathItems / revealInExplorerItem,与 file-tree/file-panel 菜单一致。
+  const resolveAbsPath = async (relativePath: string): Promise<string> => {
+    const res = await window.api.invoke<
+      { sessionId: string; relativePath: string },
+      { absolutePath: string }
+    >(COMMAND_CHANNELS.GIT_RESOLVE_PATH, { sessionId, relativePath });
+    return res.absolutePath;
+  };
+
+  // v0.3.1 勘误:扩充右键菜单 — 加「打开文件」(用户要) + 复制绝对路径 + 在 Explorer 显示,
+  // 与 file-tree/file-panel 菜单一致。deleted 文件工作区已删 → 「打开文件」禁用。
+  const buildEntryMenu = (relativePath: string, tone?: GitStatusTone): ContextMenuItem[] => {
+    const isDeleted = tone === 'deleted';
     const items: ContextMenuItem[] = [
       {
         label: tx('打开 diff', 'Open diff'),
         onSelect: () => openDiff(relativePath),
+      },
+      {
+        label: tx('打开文件', 'Open file'),
+        // deleted 文件工作区已不存在,打开会失败 → 菜单禁用
+        disabled: isDeleted,
+        onSelect: () => openFile(relativePath),
       },
       dividerItem(),
       {
         // 相对仓库根的路径,对 commit message / 引用最实用。
         label: tx('复制相对路径', 'Copy relative path'),
         onSelect: () => copyToClipboard(relativePath, '相对路径'),
+      },
+      {
+        label: tx('复制绝对路径', 'Copy absolute path'),
+        onSelect: () => {
+          resolveAbsPath(relativePath)
+            .then((abs) => copyToClipboard(abs, '绝对路径'))
+            .catch((err: unknown) =>
+              toast.push({
+                kind: 'error',
+                message: `解析路径失败:${err instanceof Error ? err.message : String(err)}`,
+              }),
+            );
+        },
+      },
+      {
+        label: tx('在 Explorer 中显示', 'Reveal in Explorer'),
+        onSelect: () => {
+          resolveAbsPath(relativePath)
+            .then((abs) =>
+              window.api
+                .invoke(COMMAND_CHANNELS.SYSTEM_SHOW_IN_EXPLORER, { path: abs })
+                .catch((err: unknown) =>
+                  toast.push({
+                    kind: 'error',
+                    message: `打开 Explorer 失败:${err instanceof Error ? err.message : String(err)}`,
+                  }),
+                ),
+            )
+            .catch((err: unknown) =>
+              toast.push({
+                kind: 'error',
+                message: `解析路径失败:${err instanceof Error ? err.message : String(err)}`,
+              }),
+            );
+        },
       },
     ];
     return items;
@@ -396,7 +463,7 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
                       title={labelText}
                       statusBadge={badgeFor(group.tone)}
                       onClick={() => openDiff(entry.relativePath)}
-                      buildContextMenu={() => buildEntryMenu(entry.relativePath)}
+                      buildContextMenu={() => buildEntryMenu(entry.relativePath, group.tone)}
                     />
                     );
                   })}

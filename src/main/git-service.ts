@@ -388,6 +388,63 @@ export class GitService extends EventEmitter {
     return this.filePanelService.openFile(sessionId, tempPath);
   }
 
+  /**
+   * v0.3.1 勘误:直接打开文件本身(相对仓库根的路径 → 绝对路径 → FilePanelService)。
+   *
+   * 与 openDiff 的区别:不走 git diff,直接读工作区当前内容(用户要"看文件本身"而非
+   * "看改了什么")。复用 resolveInsideRepo 的越界校验(防 ../ 逃逸),复用
+   * FilePanelService.openFile 的 tab/watcher/close 机制。
+   *
+   * @param relativePath 相对 repoRoot
+   * @throws GitError NotARepo / 越界 / SSH / disabled;fs 读失败由 FilePanelService 抛
+   */
+  async openFile(
+    sessionId: string,
+    requesterId: string,
+    relativePath: string,
+  ): Promise<FilePanelSnapshot> {
+    const session = this.requireOwnerSession(sessionId, requesterId);
+    if (pathKindFromPathId(session.pathId) === 'ssh') {
+      throw new GitError('SshUnsupported', 'SSH 会话不支持 Git 面板。');
+    }
+    if (!this.runtimeConfig.enableGitPanel) {
+      throw new GitError('GitFailed', 'Git 面板已在设置中禁用。');
+    }
+    const cwdReal = await this.realpathOrThrow(session.currentCwd);
+    const repoRoot = await findRepoRoot(cwdReal);
+    if (!repoRoot) {
+      throw new GitError('NotARepo', '当前目录不在 Git 仓库内。');
+    }
+    // resolveInsideRepo:realpath + isWithinRoot 越界校验,返回 canonical 绝对路径。
+    const absolutePath = await this.resolveInsideRepo(repoRoot, relativePath);
+    return this.filePanelService.openFile(sessionId, absolutePath);
+  }
+
+  /**
+   * v0.3.1 勘误:解析相对路径为绝对路径(供 renderer 复制 / reveal-in-explorer)。
+   *
+   * 单文件绝对路径不算泄露(repoRoot 全貌未暴露;且用户自己选的文件,路径本就从终端
+   * 可得)。越界校验同 openFile。
+   *
+   * @returns canonical 绝对路径
+   */
+  async resolvePath(
+    sessionId: string,
+    requesterId: string,
+    relativePath: string,
+  ): Promise<string> {
+    const session = this.requireOwnerSession(sessionId, requesterId);
+    if (pathKindFromPathId(session.pathId) === 'ssh') {
+      throw new GitError('SshUnsupported', 'SSH 会话不支持 Git 面板。');
+    }
+    const cwdReal = await this.realpathOrThrow(session.currentCwd);
+    const repoRoot = await findRepoRoot(cwdReal);
+    if (!repoRoot) {
+      throw new GitError('NotARepo', '当前目录不在 Git 仓库内。');
+    }
+    return this.resolveInsideRepo(repoRoot, relativePath);
+  }
+
   /** session 销毁:清 watcher + 防抖 timer(ipc wireEventBroadcasts 调)。 */
   onSessionDestroyed(sessionId: string): void {
     this.stopWatcher(sessionId);

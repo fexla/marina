@@ -214,6 +214,10 @@ export const COMMAND_CHANNELS = {
   GIT_GET_STATUS: 'cmd:git:get-status',
   /** 产出某文件的 unified diff,写入受管临时文件后交给 FilePanelService 打开。 */
   GIT_OPEN_DIFF: 'cmd:git:open-diff',
+  /** v0.3.1 勘误:直接打开文件本身(不走 diff),跳「已打开」面板。 */
+  GIT_OPEN_FILE: 'cmd:git:open-file',
+  /** v0.3.1 勘误:解析相对路径 → 绝对路径(供 renderer 复制 / reveal)。 */
+  GIT_RESOLVE_PATH: 'cmd:git:resolve-path',
 
   // Markdown 主题域 —— Typora 式可扩展:用户往 userData/markdown-themes/ 放 .css
   // 即多一个 markdown 面板风格(见 src/main/markdown-theme-manager.ts)。
@@ -1444,6 +1448,18 @@ export type GetGitStatusResponse =
 export interface OpenGitDiffPayload {
   sessionId: string;
   relativePath: string;
+}
+
+/** v0.3.1 cmd:git:open-file payload(与 open-diff 同形,语义不同)。 */
+export interface OpenGitFilePayload {
+  sessionId: string;
+  relativePath: string;
+}
+
+/** v0.3.1 cmd:git:resolve-path 返回。 */
+export interface ResolveGitPathResponse {
+  /** 绝对路径(repoRoot + relativePath,越界校验后)。 */
+  absolutePath: string;
 }
 
 /** evt:git:status-updated payload。
