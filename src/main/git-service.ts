@@ -224,6 +224,33 @@ export class GitService extends EventEmitter {
   }
 
   /**
+   * 内部:拉一次 status 并 emit(预取 + watcher 复用)。跳过 owner 校验(可信
+   * 内部调用)。session 不存在 / 错误时静默不 emit。
+   */
+  private async emitCurrentStatus(sessionId: string): Promise<void> {
+    if (!this.sessionLookup.get(sessionId)) return; // 销毁竞态
+    let stripped:
+      | { groups: GitStatusGroup[]; truncated: boolean }
+      | { unavailable: GitUnavailableReason };
+    try {
+      const result = await this.getStatusInternal(sessionId);
+      stripped =
+        'unavailable' in result
+          ? { unavailable: result.unavailable }
+          : { groups: result.groups, truncated: result.truncated };
+    } catch (err) {
+      logger.warn(
+        'GitService',
+        `emitCurrentStatus failed sid=${sessionId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return;
+    }
+    this.emit('gitStatusUpdated', { sessionId, ...stripped });
+  }
+
+  /**
    * 预取 status 并 emit gitStatusUpdated 事件(供 renderer 缓存)。
    *
    * 由 SessionManager 在检测到 cwd 进仓库(flip 到 available)时调用,目的是让
@@ -236,30 +263,31 @@ export class GitService extends EventEmitter {
    * - 不 throw:预取失败(SSH / 非 repo / disable / git 报错)静默转为 unavailable
    *   或不 emit,避免预取扊住 session 创建/cd 流程。
    *
-   * emit 的 payload 是「已 strip repoRoot」的形状(与 IPC getStatus handler 一致),
-   * renderer 收到后直接写 git-status-cache,零额外 IPC。
+   * 副作用:成功(拿到 snapshot,非 unavailable)→ 启动 watcher 持续推更新;
+   *   unavailable → 停 watcher(不在仓库 / SSH / disable 不需轮询)。
    */
   async prefetchStatus(sessionId: string): Promise<void> {
-    // session 已销毁(预取与 destroy 竞态)→ 不 emit。sessionManager.get 也找不到,
-    // ipc wire 会 return,emit 了也白 emit,还污染 EventEmitter。静默退出。
-    if (!this.sessionLookup.get(sessionId)) return;
-    let stripped: { groups: GitStatusGroup[]; truncated: boolean } | { unavailable: GitUnavailableReason };
-    try {
-      const result = await this.getStatusInternal(sessionId);
-      stripped =
-        'unavailable' in result
-          ? { unavailable: result.unavailable }
-          : { groups: result.groups, truncated: result.truncated };
-    } catch (err) {
-      // 预取不应 throw 扊主流程(session 创建/cd)。记日志,不 emit(renderer
-      // 会在用户点 Git tab 时走常规 getStatus 拉到错误)。
-      logger.warn(
-        'GitService',
-        `prefetchStatus failed sid=${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
-      );
+    await this.emitCurrentStatus(sessionId);
+    // 根据当前状态启停 watcher。拿不到 session 说明已销毁,确保停。
+    const session = this.sessionLookup.get(sessionId);
+    if (!session) {
+      this.stopWatcher(sessionId);
       return;
     }
-    this.emit('gitStatusUpdated', { sessionId, ...stripped });
+    // 判是否需要 watcher:SSH / disable / 非仓尩 → 不需要。用 evaluateAvailability
+    // 快速判(不 spawn git,只 realpath + stat .git)。
+    const pathKind: PathKind = pathKindFromPathId(session.pathId);
+    const cwdReal = await this.realpathOrThrow(session.currentCwd).catch(() => null);
+    if (!cwdReal) {
+      this.stopWatcher(sessionId);
+      return;
+    }
+    const avail = await this.evaluateAvailability(cwdReal, pathKind);
+    if (avail.available) {
+      this.startWatcher(sessionId);
+    } else {
+      this.stopWatcher(sessionId);
+    }
   }
 
   /**
@@ -692,8 +720,47 @@ export class GitService extends EventEmitter {
   }
 
   // ────────────────────────────────────────────────────────────────
-  // 内部:watcher(本期最小实现,getStatus 每次主动拉;watcher 留扩展位)
+  // 内部:watcher(v0.3.0 轮询实现)
   // ────────────────────────────────────────────────────────────────
+
+  /** 轮询间隔(ms)。3s 平衡及时性与 CPU:git status 在已索引仓库 <50ms,3s 一次可忽略。 */
+  private static readonly WATCHER_POLL_MS = 3000;
+
+  /**
+   * 启动轮询 watcher:每 3s 拉一次 status 并 emit,让 renderer 缓存持续新鲜。
+   * 幂等:已存在则不重复启动。session 销毁 / cd 出仓库时由 stopWatcher / prefetchStatus 停。
+   *
+   * 为什么用轮询而非 fs.watch:
+   * - fs.watch 递归 watch 工作区会捕获 node_modules 噪声 + Windows/Linux/macOS
+   *   行为不一致 + 高频变更会压爆。
+   * - 只 watch .git/index 只捕获 staged,遗漏工作区 modified/untracked。
+   * - 轮询一次 git status 捕获所有变化,逻辑简单,3s 间隔 CPU 可忽略。
+   * 未来若需要更低延迟,可加 .git/index 的 fs.watch 即时触发(补充轮询)。
+   */
+  private startWatcher(sessionId: string): void {
+    if (this.watchers.has(sessionId)) return; // 已启动,幂等
+    const poll = async (): Promise<void> => {
+      try {
+        await this.emitCurrentStatus(sessionId);
+      } catch (err) {
+        logger.warn(
+          'GitService',
+          `watcher poll error sid=${sessionId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    };
+    const handle = setInterval(() => {
+      void poll();
+    }, GitService.WATCHER_POLL_MS);
+    // unref:不阻止进程退出(session 都关了进程应能退)。
+    handle.unref?.();
+    this.watchers.set(sessionId, {
+      close: () => clearInterval(handle),
+    });
+    logger.debug('GitService', `watcher started sid=${sessionId} interval=${GitService.WATCHER_POLL_MS}ms`);
+  }
 
   private stopWatcher(sessionId: string): void {
     const w = this.watchers.get(sessionId);
