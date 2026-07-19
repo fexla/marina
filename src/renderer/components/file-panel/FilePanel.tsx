@@ -23,11 +23,7 @@ import type { OpenedFile } from '@shared/types';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { matchText } from '@shared/text-search';
 import { HighlightedText } from '../common/HighlightedText';
-import {
-  copyPathItems,
-  dividerItem,
-  revealInExplorerItem,
-} from '../common/fileListRowContextMenu';
+import { buildFileEntryMenu } from '../common/fileListRowContextMenu';
 import { FileListRow } from '../common/FileListRow';
 import { useAppDispatch, useAppState } from '../../store';
 import { useTranslation } from '../LanguageProvider';
@@ -135,30 +131,33 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
         ) : (
           filteredFiles.map((file) => {
             const isActive = file.path === snapshot.activePath;
-            const buildContextMenu = (): ContextMenuItem[] => {
-              const items: ContextMenuItem[] = [];
-              items.push({
-                label: tx('关闭', 'Close'),
-                onSelect: () => handleClose(file.path),
-              });
-              items.push({
-                label: tx('关闭其他', 'Close others'),
-                disabled: snapshot.files.length <= 1,
-                onSelect: () => handleCloseOthers(file.path),
-              });
-              items.push({
-                label: tx('关闭所有', 'Close all'),
-                disabled: snapshot.files.length === 0,
-                onSelect: () => handleCloseAll(),
-              });
-              items.push(dividerItem());
-              // file-panel 的 OpenedFile.path 是 main 端规范化的绝对路径,
-              // 且 file-panel HTTP 机制在 SSH 上架构性失效(SSH session files 为空),
-              // 因此这里不必担心 SSH 灰显 —— 能看到 tab 就一定是本地路径。
-              items.push(...copyPathItems(file.path, null, { copyToClipboard, toastError: (m) => toast.push({ kind: 'error', message: m }) }));
-              items.push(revealInExplorerItem(file.path, { copyToClipboard, toastError: (m) => toast.push({ kind: 'error', message: m }) }));
-              return items;
-            };
+            const buildContextMenu = (): ContextMenuItem[] =>
+              buildFileEntryMenu(
+                {
+                  // file-panel tab 无强主操作(左键已切 active),不提供 primary。
+                  close: {
+                    close: () => handleClose(file.path),
+                    closeOthers: () => handleCloseOthers(file.path),
+                    closeAll: () => handleCloseAll(),
+                    closeOthersDisabled: snapshot.files.length <= 1,
+                    closeAllDisabled: snapshot.files.length === 0,
+                  },
+                  // OpenedFile.path 是 main 端规范化的绝对路径(file-panel HTTP
+                  // 在 SSH 上架构性失效 → 能看到 tab 一定是本地路径,不担心 SSH 灰显)。
+                  resolveAbsolutePath: async () => file.path,
+                  reveal: () => {
+                    window.api
+                      .invoke(COMMAND_CHANNELS.SYSTEM_SHOW_IN_EXPLORER, { path: file.path })
+                      .catch((err: unknown) =>
+                        toast.push({
+                          kind: 'error',
+                          message: `打开 Explorer 失败:${err instanceof Error ? err.message : String(err)}`,
+                        }),
+                      );
+                  },
+                },
+                { copyToClipboard, toastError: (m) => toast.push({ kind: 'error', message: m }), tx },
+              );
             return (
               <FileListRow
                 key={file.path}

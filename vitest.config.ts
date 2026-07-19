@@ -5,8 +5,8 @@
  *
  * @关键设计:
  * - 默认 environment: 'node' — main process 测试不需要 DOM
- * - include 默认限定 src/main / src/shared / src/preload;仅额外纳入 renderer store
- *   纯 reducer 测试,用于覆盖远程 owner 身份这类非 UI 状态机逻辑。
+ * - include 默认限定 src/main / src/shared / src/preload;额外纳入 renderer 侧「纯逻辑」
+ *   (UI 不测,见 AGENTS.md §5.1):store(reducer)+ common(菜单生成器等纯函数)。
  * - alias 与 electron.vite.config.ts 保持一致,测试代码用同样的 import 风格
  *
  * @对应文档章节: AGENTS.md 第 5 章 (自动化测试要求)、软件定义书.md 5.2 节
@@ -33,7 +33,10 @@ export default defineConfig({
       'src/main/**/*.{test,spec}.ts',
       'src/shared/**/*.{test,spec}.ts',
       'src/preload/**/*.{test,spec}.ts',
+      // renderer 侧只纳入「纯逻辑」(UI 不测,见 AGENTS.md §5.1):
+      // store(reducer/selector)+ common(菜单生成器等纯函数)。
       'src/renderer/store.test.ts',
+      'src/renderer/components/common/**/*.test.ts',
     ],
     exclude: ['node_modules', 'out', 'dist', 'release'],
     coverage: {

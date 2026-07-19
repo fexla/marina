@@ -32,7 +32,7 @@ import {
 import { buildGitTree, type GitTreeNode } from '@shared/build-git-tree';
 import { matchText } from '@shared/text-search';
 import type { PanelSearchProps } from '../layout/panel-registry';
-import { dividerItem } from '../common/fileListRowContextMenu';
+import { buildFileEntryMenu } from '../common/fileListRowContextMenu';
 import { FileListRow, type StatusBadge, type StatusTone } from '../common/FileListRow';
 import { HighlightedText } from '../common/HighlightedText';
 import { Icon } from '../icons';
@@ -277,43 +277,19 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
     return res.absolutePath;
   };
 
-  // v0.3.1 勘误:扩充右键菜单 — 加「打开文件」(用户要) + 复制绝对路径 + 在 Explorer 显示,
-  // 与 file-tree/file-panel 菜单一致。deleted 文件工作区已删 → 「打开文件」禁用。
-  const buildEntryMenu = (relativePath: string, tone?: GitStatusTone): ContextMenuItem[] => {
-    const isDeleted = tone === 'deleted';
-    const items: ContextMenuItem[] = [
+  // v0.3.1 ADR-018:右键菜单改用统一生成器 buildFileEntryMenu。
+  // tree + flat 都用它,形态与其他面板一致。deleted 文件 → openFile 禁用。
+  const buildEntryMenu = (relativePath: string, tone?: GitStatusTone): ContextMenuItem[] =>
+    buildFileEntryMenu(
       {
-        label: tx('打开 diff', 'Open diff'),
-        onSelect: () => openDiff(relativePath),
-      },
-      {
-        label: tx('打开文件', 'Open file'),
-        // deleted 文件工作区已不存在,打开会失败 → 菜单禁用
-        disabled: isDeleted,
-        onSelect: () => openFile(relativePath),
-      },
-      dividerItem(),
-      {
-        // 相对仓库根的路径,对 commit message / 引用最实用。
-        label: tx('复制相对路径', 'Copy relative path'),
-        onSelect: () => copyToClipboard(relativePath, '相对路径'),
-      },
-      {
-        label: tx('复制绝对路径', 'Copy absolute path'),
-        onSelect: () => {
-          resolveAbsPath(relativePath)
-            .then((abs) => copyToClipboard(abs, '绝对路径'))
-            .catch((err: unknown) =>
-              toast.push({
-                kind: 'error',
-                message: `解析路径失败:${err instanceof Error ? err.message : String(err)}`,
-              }),
-            );
+        primary: { label: tx('打开 diff', 'Open diff'), run: () => openDiff(relativePath) },
+        openFile: {
+          run: () => openFile(relativePath),
+          disabled: tone === 'deleted',
         },
-      },
-      {
-        label: tx('在 Explorer 中显示', 'Reveal in Explorer'),
-        onSelect: () => {
+        relativePath,
+        resolveAbsolutePath: () => resolveAbsPath(relativePath),
+        reveal: () => {
           resolveAbsPath(relativePath)
             .then((abs) =>
               window.api
@@ -333,9 +309,8 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
             );
         },
       },
-    ];
-    return items;
-  };
+      { copyToClipboard, toastError: (m) => toast.push({ kind: 'error', message: m }), tx },
+    );
 
   // ── 状态分支:loading / error / unavailable / 正常 ──
   // 有缓存(snapshot/unavailable)时优先显示旧值,不回 loading 占位(避免闪烁)。

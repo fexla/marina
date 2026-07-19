@@ -9,6 +9,7 @@
 - **面板 Ctrl+F 搜索(VS Code 风格)。** 右 dock 顶部共享搜索栏,Ctrl+F 唤出(焦点在终端时 xterm 拦截走终端搜索,不冲突)。两种形态按当前活动面板自动切换:
   - **列表过滤型(Files / Git / Opened)**:输入即收窄,匹配片段 `<mark>` 高亮。Files 递归保留匹配文件的祖先目录 + 搜索时自动展开已加载目录;Git 的树形/平铺视图都支持;Opened 只收窄 tab 列表(不影响当前内容)。
   - **文件内查找型(TextViewer / DiffViewer / MarkdownViewer)**:行级跳转,显示命中数 `x/N`,Enter 下一个 / Shift+Enter 上一个 / Esc 关闭 / Aa 大小写。TextViewer 改行级渲染 + 行内匹配高亮 + 当前匹配行整行高亮 + `scrollIntoView`;DiffViewer 行级跳转(行内 mark 不做,hljs HTML 叠加复杂度高);MarkdownViewer 用 CSS Custom Highlight API(`::highlight`,Chromium 105+)在渲染后 DOM 文本节点上高亮,不改 DOM 避免和 React 冲突。大小写默认不敏感,可切换。交互对齐终端搜索栏(CP-4 勘误),后续可一起调。
+- **文件条目右键菜单能力驱动统一(ADR-018)。** `<FileListRow>`(渲染统一,v0.3.0) + 新的 `buildFileEntryMenu(FileEntryContext)`(菜单统一) = 文件条目完整抽象。面板只填能力(primary / openFile / copyRelative / copyAbsolute / reveal / close),菜单形态/顺序/文案自动统一,**新增面板零拼装**。Git 面板右键扩充:「打开文件」(打开文件本身,非 diff;deleted 文件自动禁用) / 「复制绝对路径」 / 「在 Explorer 显示」(后者两面板早有,git 补齐)。新增 `git:open-file` / `git:resolve-path` IPC。路径解析保持各面板特色(file-tree rootId 抽象 / git repoRoot 在 main / file-panel 绝对路径),不强制统一实现。
 
 ## [0.3.0] — 2026-07-19
 

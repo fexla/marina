@@ -25,7 +25,7 @@ import {
 import type { FileTreeEntry, FileTreeRootId } from '@shared/types';
 import { matchText } from '@shared/text-search';
 import type { PanelSearchProps } from '../layout/panel-registry';
-import { dividerItem } from '../common/fileListRowContextMenu';
+import { buildFileEntryMenu } from '../common/fileListRowContextMenu';
 import { FileListRow } from '../common/FileListRow';
 import { HighlightedText } from '../common/HighlightedText';
 import { Icon } from '../icons';
@@ -331,44 +331,39 @@ function FileTreeEntryRow({
   const copyToClipboard = useCopyToClipboard();
   const toast = useToast();
 
-  const buildContextMenu = (): ContextMenuItem[] => {
-    const items: ContextMenuItem[] = [];
-    // 主操作与左键一致:目录=展开/收起,文件=打开预览。
-    items.push({
-      label: isDirectory ? tx('展开/收起', 'Expand/Collapse') : tx('打开', 'Open'),
-      onSelect: () =>
-        isDirectory
-          ? onToggle(rootId, entry.relativePath)
-          : onOpen(rootId, entry.relativePath),
-    });
-    items.push(dividerItem());
-    // 复制相对路径(file-tree 不持有绝对路径,见 fileListRowContextMenu.ts 头注)。
-    // 对用户贴路径到 commit message / import / 文档里都很实用。
-    items.push({
-      label: tx('复制相对路径', 'Copy relative path'),
-      onSelect: () => copyToClipboard(entry.relativePath || '.', '相对路径'),
-    });
-    // 在系统文件管理器定位:走专用 reveal-path IPC,main 端做根包含校验后
-    // 调 shell.showItemInFolder。renderer 始终拿不到绝对路径。
-    items.push({
-      label: tx('在 Explorer 中显示', 'Reveal in Explorer'),
-      onSelect: () => {
-        window.api
-          .invoke(COMMAND_CHANNELS.FILE_TREE_REVEAL_PATH, {
-            sessionId,
-            rootId,
-            relativePath: entry.relativePath,
-          })
-          .catch((err: unknown) =>
-            toast.push({
-              kind: 'error',
-              message: `定位失败:${err instanceof Error ? err.message : String(err)}`,
-            }),
-          );
+  const buildContextMenu = (): ContextMenuItem[] =>
+    buildFileEntryMenu(
+      {
+        // 主操作与左键一致:目录=展开/收起,文件=打开预览。
+        primary: {
+          label: isDirectory ? tx('展开/收起', 'Expand/Collapse') : tx('打开', 'Open'),
+          run: () =>
+            isDirectory
+              ? onToggle(rootId, entry.relativePath)
+              : onOpen(rootId, entry.relativePath),
+        },
+        // file-tree 不提供 openFile(primary 已是"打开");不提供 resolveAbsolutePath
+        // (保持 rootId 抽象,不向 renderer 暴露绝对路径)。
+        relativePath: entry.relativePath || '.',
+        // reveal 走专用 reveal-path IPC:main 端做根包含校验后调
+        // shell.showItemInFolder。renderer 始终拿不到绝对路径。
+        reveal: () => {
+          window.api
+            .invoke(COMMAND_CHANNELS.FILE_TREE_REVEAL_PATH, {
+              sessionId,
+              rootId,
+              relativePath: entry.relativePath,
+            })
+            .catch((err: unknown) =>
+              toast.push({
+                kind: 'error',
+                message: `定位失败:${err instanceof Error ? err.message : String(err)}`,
+              }),
+            );
+        },
       },
-    });
-    return items;
-  };
+      { copyToClipboard, toastError: (m) => toast.push({ kind: 'error', message: m }), tx },
+    );
 
   return (
     <div className="file-tree-entry">
