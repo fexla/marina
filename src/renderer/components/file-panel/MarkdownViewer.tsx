@@ -27,7 +27,7 @@ import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { OpenedFile } from '@shared/types';
 import type { PanelSearchProps } from '../layout/panel-registry';
-import { useMarkdownSearch } from '../../hooks/useMarkdownSearch';
+import { useDomTextHighlight } from '../../hooks/useDomTextHighlight';
 import { COMMAND_CHANNELS, type ReadImagePayload, type ReadImageResponse } from '@shared/protocol';
 import { isRemoteUrl } from '@shared/url-scheme';
 import { useFileContent } from './useFileContent';
@@ -79,7 +79,9 @@ export function MarkdownViewer({ sessionId, file, search }: ViewerProps): JSX.El
 
   // v0.3.1 C4:markdown 文件内查找(DOM 文本节点 + CSS Custom Highlight)。
   // contentVersion = normalizedText(内容变化时重算匹配)。useEffect 依赖它。
-  useMarkdownSearch({
+  // v0.3.2:统一改用 useDomTextHighlight(text/diff/markdown 三 viewer 共一套
+  // CSS Custom Highlight overlay,highlight name 统一 marina-viewer-search)。
+  useDomTextHighlight({
     sessionId,
     containerRef,
     query: search.query,

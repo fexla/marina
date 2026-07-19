@@ -88,6 +88,16 @@ interface ViewState {
  * tone → StatusBadge 字母映射(与 GitService.toneToLetter 对齐,但 renderer
  * 不依赖 main 的内部函数,自行定义避免跨进程耦合)。
  */
+/** D1:变更计数 chip 的文案与顺序(与 badgeFor 的字母对齐)。 */
+const STATUS_TONE_LABELS: Array<{ tone: GitStatusTone; zh: string; en: string }> = [
+  { tone: 'conflict', zh: '冲突', en: 'conflict' },
+  { tone: 'modified', zh: '修改', en: 'modified' },
+  { tone: 'added', zh: '新增', en: 'added' },
+  { tone: 'deleted', zh: '删除', en: 'deleted' },
+  { tone: 'renamed', zh: '重命名', en: 'renamed' },
+  { tone: 'untracked', zh: '未跟踪', en: 'untracked' },
+];
+
 function badgeFor(tone: GitStatusTone): StatusBadge | null {
   const letter: Record<GitStatusTone, string> = {
     conflict: 'C',
@@ -240,6 +250,21 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
     return buildGitTree(allEntries);
   }, [viewMode, state.snapshot, filteredGroups]);
 
+  // D1 变更计数:全量变更数(非过滤后),显示在面板顶部 summary bar。只算 total +
+  // 按 tone 分类,让用户一眼看到「3 modified · 1 added · 2 untracked」。
+  const counts = useMemo(() => {
+    const map = new Map<GitStatusTone, number>();
+    let total = 0;
+    for (const g of state.snapshot?.groups ?? []) {
+      const n = g.entries.length;
+      if (n > 0) {
+        map.set(g.tone, (map.get(g.tone) ?? 0) + n);
+        total += n;
+      }
+    }
+    return { map, total };
+  }, [state.snapshot]);
+
   const openDiff = (relativePath: string): void => {
     window.api
       .invoke(COMMAND_CHANNELS.GIT_OPEN_DIFF, { sessionId, relativePath })
@@ -325,6 +350,25 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
       );
   }
 
+  /** v0.3.2 B1:目录节点右键菜单(与 file-tree 目录菜单对称)。primary=展开/收起
+   *  (onToggle 由 GitTree 注入,访问其内部 collapsed state);路径族同文件(resolvePath
+   *  对目录也工作,reveal/openExternal 用资源管理器打开目录)。 */
+  const buildDirMenu = (
+    dirPath: string,
+    _tone: GitStatusTone,
+    onToggle: () => void,
+  ): ContextMenuItem[] =>
+    buildFileEntryMenu(
+      {
+        primary: { label: tx('展开/收起', 'Expand/Collapse'), run: onToggle },
+        relativePath: dirPath,
+        resolveAbsolutePath: () => resolveAbsPath(dirPath),
+        reveal: () => withAbsPath(dirPath, (abs) => onSystemOp(abs, 'show')),
+        openExternal: () => withAbsPath(dirPath, (abs) => onSystemOp(abs, 'open')),
+      },
+      { copyToClipboard, toastError: (m) => toast.push({ kind: 'error', message: m }), tx },
+    );
+
   // ── 状态分支:loading / error / unavailable / 正常 ──
   // 有缓存(snapshot/unavailable)时优先显示旧值,不回 loading 占位(避免闪烁)。
   // 只有"首次进入且无缓存"才显示 loading。
@@ -366,6 +410,25 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
 
   return (
     <div className="git-panel" aria-label={tx('Git', 'Git')}>
+      {counts.total > 0 && (
+        <div className="git-panel-summary" role="status">
+          {STATUS_TONE_LABELS.map(({ tone, zh, en }) => {
+            const n = counts.map.get(tone);
+            if (!n) return null;
+            return (
+              <span key={tone} className={`git-summary-chip git-summary-${tone}`}>
+                <span className="git-summary-num">{n}</span>
+                {tx(zh, en)}
+              </span>
+            );
+          })}
+          {state.snapshot?.truncated && (
+            <span className="git-summary-truncated">
+              {tx('(变更过多,已截断)', '(too many changes, truncated)')}
+            </span>
+          )}
+        </div>
+      )}
       <div className="git-panel-toolbar" role="group" aria-label={tx('视图模式', 'View mode')}>
         <button
           type="button"
@@ -394,6 +457,7 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
             nodes={treeNodes}
             onOpenDiff={openDiff}
             buildEntryMenu={buildEntryMenu}
+            buildDirMenu={buildDirMenu}
             highlightQuery={isSearching ? search.query : ''}
             highlightCaseSensitive={search.caseSensitive}
           />

@@ -2136,6 +2136,45 @@ html[data-maximized='true'] .app-root.with-shell {
 }
 
 /* v0.3.0:视图模式 toggle(tree/flat)。面板顶部右侧的图标按钮组。 */
+
+/* D1:变更计数 chip 条(面板顶部)。展示「N modified · M added」分类统计。 */
+.git-panel-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--color-bg-elevated, transparent);
+  flex: 0 0 auto;
+}
+
+.git-summary-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--color-text-muted, #908caa);
+}
+
+.git-summary-num {
+  font-weight: 600;
+  color: var(--color-text-primary, #e0def4);
+}
+
+/* chip 颜色按 tone(与 status badge 字母色一致)。 */
+.git-summary-modified .git-summary-num { color: var(--color-warning, #f6c177); }
+.git-summary-added .git-summary-num { color: var(--color-success, #3e8fb0); }
+.git-summary-deleted .git-summary-num { color: var(--color-danger, #eb6f92); }
+.git-summary-renamed .git-summary-num { color: var(--color-info, #9ccfd8); }
+.git-summary-untracked .git-summary-num { color: var(--color-accent, #c4a7e7); }
+.git-summary-conflict .git-summary-num { color: var(--color-danger, #eb6f92); }
+
+.git-summary-truncated {
+  font-size: 10px;
+  color: var(--color-text-muted, #908caa);
+  font-style: italic;
+}
+
 .git-panel-toolbar {
   display: flex;
   gap: 2px;
@@ -2214,12 +2253,14 @@ html[data-maximized='true'] .app-root.with-shell {
   min-height: 1.5em;
 }
 
-/* v0.3.1 C4:markdown 渲染后查找高亮(CSS Custom Highlight API,不改 DOM)。 */
-::highlight(marina-md-search) {
+/* 查找高亮(CSS Custom Highlight API,不改 DOM)。text/diff/markdown 三 viewer 共用
+ * marina-viewer-search(由 useDomTextHighlight 统一注册),避开 hljs span 嵦套与
+ * 行内 <mark> 冲突的难题。Chromium 105+ 支持(Electron 31 / Chromium 126 ✅)。 */
+::highlight(marina-viewer-search) {
   background-color: color-mix(in srgb, var(--color-info, #9ccfd8) 35%, transparent);
 }
 
-::highlight(marina-md-search-current) {
+::highlight(marina-viewer-search-current) {
   background-color: color-mix(in srgb, var(--color-warning, #f6c177) 55%, transparent);
   color: var(--color-bg-primary, #f0f);
 }
@@ -2230,12 +2271,63 @@ html[data-maximized='true'] .app-root.with-shell {
   background-color: color-mix(in srgb, var(--color-info, #9ccfd8) 22%, transparent);
 }
 
-/* 行内匹配片段高亮(<mark class=search-match>,比列表的 <mark> 更显眼)。 */
-.file-text-line mark.search-match {
-  background-color: color-mix(in srgb, var(--color-warning, #f6c177) 55%, transparent);
-  color: var(--color-bg-primary, #f0f);
-  border-radius: 2px;
-  padding: 0 1px;
+/* 行号槽(v0.3.2 A4):TextViewer / DiffViewer 行首固定宽行号,user-select:none
+ * 避免复制时带进行号。颜色弱化不干扰正文。 */
+.file-line-number {
+  display: inline-block;
+  min-width: 3.5em;
+  padding-right: 12px;
+  text-align: right;
+  color: var(--color-text-muted, #f0f);
+  user-select: none;
+  -webkit-user-select: none;
+  white-space: pre;
+}
+
+/* hljs token 颜色(v0.3.2 A1):TextViewer 的代码语法高亮。变量 + 主题色 fallback。
+ * 与 DiffViewer 的 .diff-line-body .hljs-* 同一套规则(此处为 TextViewer 的平铺)。 */
+.file-text-line-content .hljs-keyword,
+.file-text-line-content .hljs-selector-tag {
+  color: var(--color-accent, #c4a7e7);
+}
+
+.file-text-line-content .hljs-string,
+.file-text-line-content .hljs-attr,
+.file-text-line-content .hljs-template-string,
+.file-text-line-content .hljs-regexp {
+  color: var(--color-success, #3e8fb0);
+}
+
+.file-text-line-content .hljs-number,
+.file-text-line-content .hljs-literal,
+.file-text-line-content .hljs-symbol {
+  color: var(--color-warning, #f6c177);
+}
+
+.file-text-line-content .hljs-comment {
+  color: var(--color-text-muted, #908caa);
+  font-style: italic;
+}
+
+.file-text-line-content .hljs-title,
+.file-text-line-content .hljs-section,
+.file-text-line-content .hljs-function .hljs-title {
+  color: var(--color-info, #9ccfd8);
+}
+
+.file-text-line-content .hljs-built_in,
+.file-text-line-content .hljs-type {
+  color: var(--color-info, #9ccfd8);
+}
+
+.file-text-line-content .hljs-attr,
+.file-text-line-content .hljs-variable,
+.file-text-line-content .hljs-property {
+  color: var(--color-text-primary, #e0def4);
+}
+
+.file-text-line-content .hljs-meta {
+  color: var(--color-text-muted, #908caa);
 }
 
 .file-truncated-mark {

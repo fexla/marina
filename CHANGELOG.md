@@ -2,6 +2,39 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [0.3.2] — 2026-07-20
+
+### 新增
+
+- **TextViewer 语法高亮 + 行号。** 打开代码文件(.ts/.py/.json/.yml/.sh…）现在有语法着色
+  了 —— 此前 DiffViewer 有高亮、打开文件本身反而黑白，体验割裂(开发者反馈“文本高亮没做”)。
+  hljs 栈抽到共享 `highlight.ts`(TextViewer/DiffViewer 复用)，按扩展名选语言逐行高亮。
+  行首加行号槽(`user-select:none` 不参与复制)。
+- **查看器搜索行内字符高亮。** 此前 DiffViewer 搜索只跳行不亮字。统一改用
+  `useDomTextHighlight`(CSS Custom Highlight API overlay)：text/diff/markdown 三 viewer
+  一套机制，**不改 DOM** → 天然适配 hljs 的 span 嵦套，绕过了此前“行内 mark 不做”
+  的难题。统一 highlight name `marina-viewer-search`(废弃 `marina-md-search`)。
+  废弃 useContentSearch / useMarkdownSearch 两个 hook。
+- **Git 树目录节点右键菜单(B1)。** 此前 Git 树文件夹右键完全无反应。现在与
+  file-tree 目录菜单对称：展开/收起 + 复制相对路径 + 复制绝对路径 + 在 Explorer 显示 +
+  用默认应用打开。能力驱动统一生成器 `buildFileEntryMenu` 加 `openExternal` 能力。
+- **用默认应用打开(B4)。** 三面板文件右键统一加「用默认应用打开」(.png→图片查看器 /
+  .pdf→阅读器)。新通道 `system:open-path`(`shell.openPath`，校验绝对路径，与只允许
+  http/https/mailto 的 `system:open-external` 分离)；file-tree 走对称的
+  `file-tree:open-path`(保 rootId 抽象，main 端 resolve + openPath)。
+- **Git 变更计数(D1)。** Git 面板顶部 chip 条：「3 修改 · 1 新增 · 2 未跟踪」，按 tone
+  分类着色，一眼看到工作区状态。变更过多被截断时显示提示。
+- **大文件保护(A6)。** main 端字节截断(2MB)之外，renderer 端加行数兜底(5万行)：
+  超阈值只渲染头部 + 截断提示，避免卡死。
+
+### 重构
+
+- **共享 hljs 模块。** DiffViewer 的 hljs 栈(注册 + EXT_TO_HLJS + detectFromPathLine +
+  highlightLine)抽到 `highlight.ts`，TextViewer 复用。消除重复，包体积不增(hljs 仍按需注册)。
+- **统一搜索 hook。** `useDomTextHighlight` 取代 useContentSearch(行级) +
+  useMarkdownSearch(DOM)两套实现。TreeWalker 遍历渲染后 DOM 文本节点，`skipSelector`
+  跳过行号槽/diff 符号等非内容文本。
+
 ## [0.3.1] — 2026-07-19
 
 ### 新增

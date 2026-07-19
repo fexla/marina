@@ -30,6 +30,14 @@ interface GitTreeProps {
   onOpenDiff: (relativePath: string) => void;
   /** 文件节点右键菜单构建器(与 flat 模式共用)。 */
   buildEntryMenu: (relativePath: string, tone?: GitStatusTone) => ContextMenuItem[];
+  /** v0.3.2 B1:目录节点右键菜单构建器。onToggle 由 GitTree 传入(访问内部 collapsed
+   * state),其余能力(relativePath/resolveAbsolutePath/reveal/openExternal)由
+   * GitPanel 注入 —— 与 file-tree 目录菜单对称。 */
+  buildDirMenu: (
+    dirPath: string,
+    tone: GitStatusTone,
+    onToggle: () => void,
+  ) => ContextMenuItem[];
   /** v0.3.1:搜索高亮查询(空串 = 不高亮)。 */
   highlightQuery?: string;
   /** v0.3.1:搜索高亮大小写敏感。 */
@@ -53,6 +61,7 @@ export function GitTree({
   nodes,
   onOpenDiff,
   buildEntryMenu,
+  buildDirMenu,
   highlightQuery = '',
   highlightCaseSensitive = false,
 }: GitTreeProps): JSX.Element {
@@ -111,6 +120,9 @@ export function GitTree({
           ariaExpanded={!isCollapsed}
           leading={<Icon name={isCollapsed ? 'chevronRight' : 'chevronDown'} size={12} />}
           onClick={() => toggle(node.dirPath)}
+          buildContextMenu={() =>
+            buildDirMenu(node.dirPath, node.tone, () => toggle(node.dirPath))
+          }
         />
         {!isCollapsed &&
           node.children.map((child) => renderNode(child, depth + 1))}
