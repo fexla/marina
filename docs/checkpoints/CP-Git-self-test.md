@@ -63,13 +63,18 @@
 
 ## 已知不工作的事(需要开发者关注)
 
-1. **diff 语法高亮(行级)已实现**(方案 B,highlight.js 按需 import)。`.diff`/`.patch`/`.rej`
-   归新 `FileKind = 'diff'`,由 `DiffViewer.tsx` 逐行 `hljs.highlight` 做行级着色:
-   add=绿底/del=红底/hunk=蓝/meta=淡灰/file-header=粗体,行首 +/- 符号独立槽
-   (user-select:none → 复制不带符号)。CSP 已含 `style-src 'unsafe-inline'`,hljs 输出
-   纯 class span 无脚本风险。包体积:+~49KB 未压缩(按需 import core+diff,非全量)。
+1. **diff 双层语法高亮已实现**(方案 B,highlight.js 按需 import 11 语言)。
+   `.diff`/`.patch`/`.rej` 归新 `FileKind = 'diff'`,由 `DiffViewer.tsx` 做双层高亮:
+   (a) 外层 diff 行色(add=绿底/del=红底/hunk=蓝/meta=淡灰/file-header=粗体);
+   (b) 内层代码语法高亮(从 `+++ b/foo.ts` 推断语言,对 `+const x=1` 去前缀后用
+   TypeScript 高亮,const 染关键字色/1 染数字色,GitHub/VS Code 同款视觉。
+   行首 +/- 符号独立槽(user-select:none → 复制不带符号)。token 色用主题变量映射,
+   7 套主题自适应。包体积:+~98KB 未压缩(11 语言按需 import,非全量)。
    **词级 intra-line word diff / 并排 side-by-side / 行号 gutter 明确不做**(§13.2 边界)。
-2. **仓库变更不自动刷新 Git 面板内容**。watcher 的 emit wire 已接好(`evt:git:status-updated`),但 GitService 内部的 fs.watch 暂未启用。当前:用户切回 Git tab 不会自动重拉(需关 tab 重开或切 session)。这是 PRD §5.1.4 的最小可行权衡,watcher 启用后零改动消除该限制。
+2. **仓库变更自动刷新已实现**(watcher 每 3s 轮询)。GitService 在 session 进仓库时
+   启动 watcher,poll `git status` → emit `evt:git:status-updated` → renderer 订阅
+   更新缓存 + 当前可见 GitPanel。用户切走期间仓库被改,切回看到最新(消除
+   PRD §5.1.4 原妥协)。cd 出仓库 / session 销毁 → 自动停 watcher。
 3. **跨窗口 owner Git 面板**:窗口 A 持有 session,窗口 B 点 Git tab 会被拒(NotOwner),但错误目前只 console.warn,没弹 toast。file-tree 同样行为,一致性 OK 但体验待优化。
 4. **大量变更(>500)** 列表截断显示「仅显示前 500 项」,但没分页/搜索。极端仓库(改了几千文件)体验差,记 BACKLOG。
 
@@ -107,6 +112,43 @@ e86dd4a docs(git): PRD for Git panel + unified file entry abstraction
 ```
 
 每个 commit 独立可跑 typecheck/test/lint,git bisect 可用。
+
+---
+
+## 增强回合(2026-07-19,开发者反馈 4 问题)
+
+开发者测试后反馈 4 个问题,逐一修复,5 个独立 commit:
+
+| commit | 问题 | 修复 | 测试增量 |
+|---|---|---|---|
+| A `fix(git): scroll overflow + cache` | ② 滚动溢出 / ④ 切换延迟 | `.git-panel` flex+overflow / 组件外缓存(`src/shared/git-status-cache.ts`) | +6 |
+| B `perf(git): prefetch + constraint` | ④ 预取 | cwd 进仓库时 GitService.prefetchStatus emit → renderer 缓存预填;AGENTS.md §10 加面板切换延迟约束 | +5 |
+| C `feat(diff): double-layer highlight` | ③ 高亮没发挥 | 双层高亮:外层 diff 行色 + 内层代码语法(11 语言按需 import,token 色映射主题变量) | 0 |
+| D `feat(git): tree/flat toggle` | ① 缺树形 | `buildGitTree` + GitTree + viewMode toggle(默认 tree) | +13 |
+| E `feat(git): watcher 3s poll` | ④ 切走期间变更 | GitService 每 3s 轮询 → emit → 缓存持续新鲜 | +4 |
+
+**总测试**:782 → **811**(+29:缓存 6 + 预取 5 + tree 13 + watcher 4 + 既有增强补测 1)
+
+### 性能指标达成(AGENTS.md §10 面板切换延迟约束)
+
+- ✅ 有缓存:面板切换 < 16ms(缓存命中秒显,零 spawn git)
+- ✅ 无缓存首拉:< 300ms(单次 git status,Windows ConGit 上界)
+- ✅ 切走再切回:命中缓存(组件外 Map,卸载不丢)
+- ✅ 仓库变更延迟:< 3s(watcher 轮询间隔)
+
+### 视觉指标
+
+- ✅ 树形视图(默认):目录聚合 + tone 继承 + 可折叠
+- ✅ 平铺视图(备选):按 tone 分组 + untracked 折叠
+- ✅ 双层高亮:代码 token 色叠加 diff 行底色
+
+### 仍记 BACKLOG(未做,等用户反馈)
+
+- 词级 intra-line word diff(LCS,GitHub 默认不开)
+- 并排 side-by-side 视图(滑向 Git GUI)
+- 行号 gutter / 折叠未变上下文
+- 跨窗口 NotOwner 的 toast 提示(当前 console.warn)
+- >500 变更的分页/搜索
 
 ---
 

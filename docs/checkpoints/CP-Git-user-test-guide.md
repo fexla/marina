@@ -31,19 +31,38 @@
 
 ---
 
-## 测试 2:看 diff(预计 2 分钟)
+## 测试 1b:树形/平铺切换 + 滚动(预计 2 分钟)★ 新增
 
-1. 在 Git tab 点一个变更文件(比如改过的 README.md)
+1. 在 Git tab 顶部应看到两个图标按钮(树形 / 平铺),默认激活树形
+2. **预期(树形)**:变更按目录层级聚合,如 `src (3)` → 点开看子文件;目录名带
+   tone badge(显示子树最严重变更状态)
+3. 点目录行 → 展开收起(默认全展开)
+4. 点「平铺」按钮 → 切换回按 tone 分组的原视图(conflict/modified/added...)
+5. 切换后刷新应用 → **视图模式应记住**(localStorage 持久化)
+6. 造 50+ 变更文件(`for i in $(seq 1 60); do touch bulk_$i.ts; done`):
+   - **预期**:Git tab 出现滚动条,不溢出 dock 高度,可上下滚
+   - 清理:`rm bulk_*.ts`
+
+**失败现象**:toggle 不切换 / 滚动溢出撑爆布局 / 模式不持久化
+**失败时**:DevTools 看元素结构,搜 `git-panel-toolbar` / `git-tree`
+
+---
+
+## 测试 2:看 diff + 双层高亮(预计 3 分钟)
+
+1. 在 Git tab 点一个变更的代码文件(比如 `src/foo.ts`)
 2. **预期**:自动切到「已打开」tab,渲染出 unified diff
-   - `---` / `+++` 头
-   - `-` 开头的行(删除)
-   - `+` 开头的行(新增)
-   - `@@` hunk header
-3. 点「Git」tab 切回,再点另一个文件
-4. **预期**:「已打开」tab 累积多个 diff 文件,可切换
+3. **双层高亮验证**(关键):
+   - 外层 diff 行色:`+` 行绿底 / `-` 行红底 / `@@` 蓝底粗体 / `diff --git` 粗体
+   - **内层代码语法**:行内的 `const`/`import`/`function` 等关键字应显示为蓝色,
+     `"..."` 字符串绿色,数字橙色,`// ...` 注释灰色
+   - 例:`+const x = "hello";` → 绿底 + `const` 蓝 + `"hello"` 绿 + `;` 默认色
+4. 点一个 `.json` 变更文件 → 应看到 JSON 语法高亮(key/string 着色)
+5. 点一个 `.md` 变更文件 → 应看到 Markdown 着色
+6. 点「Git」tab 切回,点另一个文件,「已打开」tab 累积多个 diff
 
-**失败现象**:点文件无反应 / diff 不显示 / 切不过去
-**失败时**:看 main.log 搜 `openDiff` / `runGit`
+**失败现象**:只有行底色无 token 色 / 语言推断错(如 .py 文件没高亮)
+**失败时**:看 DevTools console,搜 hljs 报错
 
 ---
 
@@ -114,6 +133,22 @@
 2. 点「Git」tab,展开「未跟踪」组
 3. **预期**:列表截断,显示「变更过多,仅显示前 500 项」
 4. 清理:`rm bulk_*.txt`
+
+---
+
+## 测试 7:面板切换延迟(预计 2 分钟)★ 性能
+
+1. 在一个有变更的 git 仓库 session,切到 Git tab(首次,冷拉)
+2. **预期**:首拉 < 300ms(可能看到短暂 loading,正常)
+3. 切到「文件」tab,再快速切回「Git」
+4. **预期**:**零延迟**(缓存命中,<16ms,无 loading 闪烁,直接显示列表)
+5. 连续快速点 文件 → Git → 文件 → Git 多次
+6. **预期**:Git tab 每次都秒显,无卡顿(缓存生效)
+7. 在外部改个文件(等 3s 让 watcher 轮询),切回 Git tab
+8. **预期**:列表已含新变更(watcher 已推送到缓存,无需手动刷新)
+
+**失败现象**:切回 Git 总是 loading 几百 ms / watcher 不刷新
+**失败时**:看 main.log 搜 `watcher` / `prefetchStatus` / `gitStatusUpdated`
 
 ---
 
