@@ -2,7 +2,10 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/),版本号遵循 [SemVer](https://semver.org/)。
 
-## [0.3.1] — 2026-07-20
+## [Unreleased]
+
+> 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
+> 等攒够一批或正式发布时,把本段折成一个版本号(并加日期)。
 
 ### 修复
 
