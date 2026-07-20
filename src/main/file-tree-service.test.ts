@@ -153,6 +153,54 @@ describe('FileTreeService', () => {
     expect(filePanelService.getOpenFiles('s1').files).toHaveLength(0);
   });
 
+  // ── v0.3.2:listRecursive(搜索时全量递归扫描) ──────────────
+  it('listRecursive 递归列出所有后代(扁平含全路径 relativePath)', async () => {
+    await mkdir(join(cwdDir, 'src', 'sub'), { recursive: true });
+    await writeFile(join(cwdDir, 'a.txt'), 'a');
+    await writeFile(join(cwdDir, 'src', 'b.ts'), 'b');
+    await writeFile(join(cwdDir, 'src', 'sub', 'c.ts'), 'c');
+
+    const res = await service.listRecursive('s1', 'owner-1', 'session-cwd');
+
+    expect(res.rootId).toBe('session-cwd');
+    expect(res.truncated).toBe(false);
+    // 三个文件 + 两个目录(src, src/sub)
+    const paths = res.entries.map((e) => e.relativePath).sort();
+    expect(paths).toEqual(['a.txt', 'src', 'src/b.ts', 'src/sub', 'src/sub/c.ts']);
+    // 扫了 3 个目录(root + src + src/sub)
+    expect(res.dirCount).toBe(3);
+  });
+
+  it('listRecursive 拒绝非 owner 与 SSH session(同 listDirectory 安全模式)', async () => {
+    await expect(service.listRecursive('s1', 'other-window', 'session-cwd')).rejects.toMatchObject({
+      code: 'NotOwner',
+    });
+    sessions.ssh = {
+      pathId: 'ssh:profile-1:%2Fremote%2Frepo',
+      currentCwd: cwdDir,
+      ownerWindowId: 'owner-1',
+    };
+    await expect(service.listRecursive('ssh', 'owner-1', 'session-cwd')).rejects.toMatchObject({
+      code: 'RootUnavailable',
+    });
+  });
+
+  it('listRecursive 跳过 symlink/junction 越界项(不暴露根外文件)', async () => {
+    await mkdir(join(cwdDir, 'src'), { recursive: true });
+    await writeFile(join(cwdDir, 'src', 'real.ts'), 'x');
+    await symlink(
+      externalDir,
+      join(cwdDir, 'escaped-link'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+
+    const res = await service.listRecursive('s1', 'owner-1', 'session-cwd');
+
+    const paths = res.entries.map((e) => e.relativePath);
+    expect(paths).toContain('src/real.ts');
+    expect(paths.some((p) => p.startsWith('escaped-link'))).toBe(false);
+  });
+
   // ── v0.3.0:revealPath(右键菜单「在 Explorer 中显示」的后端) ─────────
   it('revealPath 在根内校验通过后调 shell.showItemInFolder(canonical 路径)', async () => {
     await writeFile(join(workspaceDir, 'generated.md'), '# generated');

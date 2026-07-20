@@ -148,6 +148,8 @@ import {
   type SettingsChangedPayload,
   type OpenPathPayload,
   type OpenFileTreePathPayload,
+  type ListFileTreeRecursivePayload,
+  type ListFileTreeRecursiveResponse,
   type SshProfilesUpdatedPayload,
   type ShowInExplorerPayload,
   type TemplateListUpdatedPayload,
@@ -1756,6 +1758,21 @@ function registerFileTreeHandlers(deps: IpcLayerDeps): void {
         envelope.windowId,
         envelope.payload.rootId,
         envelope.payload.relativePath,
+      );
+    },
+  );
+
+  // v0.3.2:递归列全量 entries(扁平),供 renderer 搜索懒加载未展开的目录。
+  registerHandle(
+    COMMAND_CHANNELS.FILE_TREE_LIST_RECURSIVE,
+    async (
+      _e,
+      envelope: CommandEnvelope<ListFileTreeRecursivePayload>,
+    ): Promise<ListFileTreeRecursiveResponse> => {
+      return fileTreeService.listRecursive(
+        envelope.payload.sessionId,
+        envelope.windowId,
+        envelope.payload.rootId,
       );
     },
   );

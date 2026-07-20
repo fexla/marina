@@ -204,6 +204,9 @@ export const COMMAND_CHANNELS = {
   FILE_TREE_GET_ROOTS: 'cmd:file-tree:get-roots',
   /** 懒加载一个受限根下的直接子项；不递归、不接受绝对路径。 */
   FILE_TREE_LIST_DIRECTORY: 'cmd:file-tree:list-directory',
+  /** v0.3.2:递归列出整个 root 的全量 entries(扁平),供 renderer 搜索时本地过滤。
+   * 解决懒加载搜索限制:未展开目录的内容搜不到。一次拉取 + 本地过滤,query 变化不重拉。 */
+  FILE_TREE_LIST_RECURSIVE: 'cmd:file-tree:list-recursive',
   /** 受限校验后打开树中选择的文件，返回既有 FilePanel 快照。 */
   FILE_TREE_OPEN_FILE: 'cmd:file-tree:open-file',
   /** 受限校验后在系统文件管理器中定位并选中树中选择的文件(v0.3.0)。
@@ -1391,6 +1394,22 @@ export interface ListFileTreeDirectoryResponse {
   entries: FileTreeEntry[];
   /** true 表示为避免大目录撑爆 IPC，本次仅返回前 500 个可访问直接子项。 */
   truncated: boolean;
+}
+
+/** v0.3.2:递归列出 root 全量 entries(扁平)。payload 只需 rootId,返回所有后代。 */
+export interface ListFileTreeRecursivePayload {
+  sessionId: string;
+  rootId: FileTreeRootId;
+}
+
+/** list-recursive 响应:扁平 entries(含全路径 relativePath)+ 截断标志。
+ * 上限保护(总数 5000 / 深度 15)防止巨型仓库(如 node_modules) 撑爆 IPC。 */
+export interface ListFileTreeRecursiveResponse {
+  rootId: FileTreeRootId;
+  entries: FileTreeEntry[];
+  truncated: boolean;
+  /** 扫描的目录数(诊断用,让 renderer 显示“扫了 N 个目录”)。 */
+  dirCount: number;
 }
 
 export interface OpenFileTreeFilePayload {

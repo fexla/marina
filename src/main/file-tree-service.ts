@@ -24,7 +24,7 @@ import { promises as fs } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { shell } from 'electron';
 import type { FileTreeEntry, FileTreeRootId } from '@shared/types';
-import type { FilePanelSnapshot } from '@shared/protocol';
+import type { FilePanelSnapshot, ListFileTreeRecursiveResponse } from '@shared/protocol';
 import type { FilePanelService } from './file-panel-service';
 import { pathRefFromId } from './path-manager';
 import { logger } from './logger';
@@ -32,6 +32,10 @@ import { logger } from './logger';
 const MODULE = 'FileTreeService';
 /** 单次目录请求最多返回的直接子项，避免 node_modules 等目录撑爆 IPC。 */
 const MAX_DIRECTORY_ENTRIES = 500;
+/** v0.3.2:list-recursive 全量递归扫描的上限(防止巨型仓库 撑爆 IPC + renderer)。 */
+const MAX_RECURSIVE_ENTRIES = 5000;
+/** 递归最大深度(防止符号链接环 / 无限嵌套)。 */
+const MAX_RECURSIVE_DEPTH = 15;
 
 export interface FileTreeSessionLookup {
   get(sessionId: string): {
@@ -209,6 +213,108 @@ export class FileTreeService {
       entries,
       truncated,
     };
+  }
+
+  /**
+   * v0.3.2:递归列出 root 下全量后代 entries(扁平),供 renderer 搜索时本地过滤。
+   *
+   * 为什么需要:file-tree 懒加载(展开才拉子目录),搜索时未展开目录的内容不在
+   * renderer state 里 → 搜不到。本方法一次拉全量,renderer 缓存后多次过滤(query
+   * 变化不重拉),搜索体验即时。
+   *
+   * 算法:BFS(广度优先)—— 先扫完当前层再下一层,保证同名文件浅层优先出现,比 DFS
+   * 更符合搜索直觉(常见文件在浅层)。
+   *
+   * 上限保护:MAX_RECURSIVE_ENTRIES(总数 5000) + MAX_RECURSIVE_DEPTH(深度 15),
+   * 防 node_modules 等巨型目录撑爆。超限 truncated=true,renderer 显示提示。
+   *
+   * 安全:同 listDirectory —— 每项 realpath + isWithinRoot 校验,符号链接/junction
+   * 越界的完全跳过(不暴露根外文件)。
+   */
+  async listRecursive(
+    sessionId: string,
+    requesterId: string,
+    rootId: FileTreeRootId,
+  ): Promise<ListFileTreeRecursiveResponse> {
+    this.requireOwner(sessionId, requesterId);
+    const root = await this.resolveRoot(sessionId, rootId);
+    // BFS:queue 存 {absPath, depth}。从 root 开始。
+    const queue: Array<{ absPath: string; depth: number }> = [
+      { absPath: root.realPath, depth: 0 },
+    ];
+    const entries: FileTreeEntry[] = [];
+    let dirCount = 0;
+    let truncated = false;
+
+    while (queue.length > 0) {
+      if (entries.length >= MAX_RECURSIVE_ENTRIES) {
+        truncated = true;
+        break;
+      }
+      const { absPath, depth } = queue.shift() as { absPath: string; depth: number };
+      dirCount++;
+      try {
+        const directory = await fs.opendir(absPath);
+        for await (const dirent of directory) {
+          if (entries.length >= MAX_RECURSIVE_ENTRIES) {
+            truncated = true;
+            break;
+          }
+          const childLexical = resolve(absPath, dirent.name);
+          let childReal: string;
+          let childStat: Awaited<ReturnType<typeof fs.stat>>;
+          try {
+            // 同 listDirectory:每项 canonicalize,符号链接/junction 越界则跳过。
+            childReal = await fs.realpath(childLexical);
+            if (!isWithinRoot(root.realPath, childReal)) {
+              logger.debug(
+                MODULE,
+                `listRecursive: omitted escaped link root=${rootId} entry=${dirent.name}`,
+              );
+              continue;
+            }
+            childStat = await fs.stat(childReal);
+          } catch (err) {
+            logger.debug(
+              MODULE,
+              `listRecursive: skipped unreadable entry root=${rootId} name=${dirent.name} reason=${
+                err instanceof Error
+                  ? ((err as NodeJS.ErrnoException).code ?? err.message)
+                  : String(err)
+              }`,
+            );
+            continue;
+          }
+          if (!childStat.isFile() && !childStat.isDirectory()) continue;
+          const isDir = childStat.isDirectory();
+          entries.push({
+            relativePath: toProtocolRelativePath(root.realPath, childReal),
+            name: dirent.name,
+            kind: isDir ? 'directory' : 'file',
+            size: childStat.size,
+            mtimeMs: childStat.mtimeMs,
+          });
+          // 子目录且未超深度 → 入队继续扫。
+          if (isDir && depth + 1 < MAX_RECURSIVE_DEPTH) {
+            queue.push({ absPath: childReal, depth: depth + 1 });
+          } else if (isDir) {
+            truncated = true; // 深度超限:该子目录的内容无法包含,提示
+          }
+        }
+      } catch (err) {
+        // 单个目录读失败(权限/已删)不阻断整体,跳过继续扫其他目录。
+        logger.debug(
+          MODULE,
+          `listRecursive: skipped unreadable dir root=${rootId} path=${absPath} reason=${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
+    // 同 listDirectory 的稳定排序:文件夹在前、同类按名排序。
+    entries.sort((a, b) => a.kind.localeCompare(b.kind) || a.relativePath.localeCompare(b.relativePath));
+    return { rootId, entries, truncated, dirCount };
   }
 
   /**

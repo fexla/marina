@@ -15,12 +15,13 @@
  * - 不做文件编辑、创建、删除、重命名、上传或下载。
  * - 不显示任意目录、SSH/SFTP 远端目录或 Project/Workspace 容器。
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   COMMAND_CHANNELS,
   type FileTreeRootInfo,
   type GetFileTreeRootsResponse,
   type ListFileTreeDirectoryResponse,
+  type ListFileTreeRecursiveResponse,
 } from '@shared/protocol';
 import type { FileTreeEntry, FileTreeRootId } from '@shared/types';
 import { matchText } from '@shared/text-search';
@@ -96,6 +97,12 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
   const [roots, setRoots] = useState<FileTreeRootInfo[] | null>(null);
   const [rootError, setRootError] = useState<string | null>(null);
   const [directories, setDirectories] = useState<DirectoryStates>({});
+  /** v0.3.2:搜索用的全量扁平缓存(按 rootId)。query 变化不重拉,只在进入搜索态/
+   * session 变化时拉一次,让本地过滤即时(无 IPC 延迟)。 */
+  const [recursiveResults, setRecursiveResults] = useState<
+    Partial<Record<FileTreeRootId, ListFileTreeRecursiveResponse>>
+  >({});
+  const isSearching = search.visible && search.query.length > 0;
 
   const loadDirectory = useCallback(
     async (rootId: FileTreeRootId, relativePath: string): Promise<void> => {
@@ -135,6 +142,7 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
     setRoots(null);
     setRootError(null);
     setDirectories({});
+    setRecursiveResults({});
     window.api
       .invoke<{ sessionId: string }, GetFileTreeRootsResponse>(
         COMMAND_CHANNELS.FILE_TREE_GET_ROOTS,
@@ -160,6 +168,44 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
     };
   }, [sessionId, loadDirectory]);
 
+  // v0.3.2:进入搜索态时拉一次全量递归(每个 available root),供本地过滤。
+  // 只在「开始搜索且某 root 未缓存」时拉;query 变化不重拉(本地过滤快)。
+  // session 变化时 recursiveResults 被 roots effect 清空(下面 setRecursiveResults({}))。
+  useEffect(() => {
+    if (!isSearching || !roots) return;
+    let cancelled = false;
+    const missing = roots.filter(
+      (r) => r.available && !recursiveResults[r.id],
+    );
+    if (missing.length === 0) return;
+    Promise.all(
+      missing.map((r) =>
+        window.api.invoke<
+          { sessionId: string; rootId: FileTreeRootId },
+          ListFileTreeRecursiveResponse
+        >(COMMAND_CHANNELS.FILE_TREE_LIST_RECURSIVE, { sessionId, rootId: r.id })
+          .then((res) => [r.id, res] as const)
+          .catch((err: unknown) => {
+            console.warn('[FileTreePanel] list-recursive failed', r.id, err);
+            return null;
+          }),
+      ),
+    ).then((results) => {
+      if (cancelled) return;
+      setRecursiveResults((prev) => {
+        const next = { ...prev };
+        for (const row of results) {
+          if (!row) continue;
+          next[row[0]] = row[1];
+        }
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isSearching, roots, recursiveResults, sessionId]);
+
   const toggleDirectory = (rootId: FileTreeRootId, relativePath: string): void => {
     const key = directoryKey(rootId, relativePath);
     const state = directories[key];
@@ -183,6 +229,40 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
       .catch((err: unknown) => console.warn('[FileTreePanel] open file failed', err));
   };
 
+  // v0.3.2:搜索态用全量递归缓存做本地过滤,得扁平匹配列表(跨所有 root 合并)。
+  // 匹配 name 或 relativePath(后者让用户能按路径片段搜)。按 relativePath 排序稳定。
+  const searchMatches = useMemo(() => {
+    if (!isSearching) return { items: [], truncated: false, dirCount: 0 };
+    const q = search.query;
+    const cs = search.caseSensitive;
+    const out: Array<{
+      rootId: FileTreeRootId;
+      entry: FileTreeEntry;
+      truncated: boolean;
+      dirCount: number;
+    }> = [];
+    let anyTruncated = false;
+    let totalDirCount = 0;
+    for (const root of roots ?? []) {
+      if (!root.available) continue;
+      const res = recursiveResults[root.id];
+      if (!res) continue;
+      if (res.truncated) anyTruncated = true;
+      totalDirCount += res.dirCount;
+      for (const entry of res.entries) {
+        if (
+          matchText(entry.name, q, cs) ||
+          matchText(entry.relativePath, q, cs)
+        ) {
+          out.push({ rootId: root.id, entry, truncated: res.truncated, dirCount: res.dirCount });
+        }
+      }
+    }
+    // 相对路径稳定排序(文件/目录不强制分组,按路径字典序更符合搜索直觉)。
+    out.sort((a, b) => a.entry.relativePath.localeCompare(b.entry.relativePath));
+    return { items: out, truncated: anyTruncated, dirCount: totalDirCount };
+  }, [isSearching, search.query, search.caseSensitive, roots, recursiveResults]);
+
   if (rootError) {
     return (
       <div className="file-tree-error">
@@ -198,41 +278,180 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
 
   return (
     <div className="file-tree-panel" aria-label={tx('文件', 'Files')}>
-      {roots.map((root) => {
-        const state = directories[directoryKey(root.id, '')];
-        return (
-          <section key={root.id} className="file-tree-root">
-            <button
-              type="button"
-              className="file-tree-root-button"
-              disabled={!root.available}
-              onClick={() => toggleDirectory(root.id, '')}
-              aria-expanded={root.available ? !!state?.expanded : undefined}
-              title={root.available ? root.label : root.reason}
-            >
-              <Icon name={state?.expanded ? 'chevronDown' : 'chevronRight'} size={12} />
-              <Icon name="folder" size={14} />
-              <span>{root.label}</span>
-            </button>
-            {!root.available ? (
-              <p className="file-tree-unavailable">
-                {root.reason ?? tx('目录不可用', 'Unavailable')}
-              </p>
-            ) : (
-              <DirectoryChildren
-                sessionId={sessionId}
-                rootId={root.id}
-                state={state}
-                directories={directories}
-                onToggle={toggleDirectory}
-                onOpen={openFile}
-                tx={tx}
-                search={search}
-              />
-            )}
-          </section>
-        );
-      })}
+      {isSearching ? (
+        <SearchResultsList
+          sessionId={sessionId}
+          matches={searchMatches}
+          search={search}
+          roots={roots}
+          recursiveResults={recursiveResults}
+          onOpen={openFile}
+          tx={tx}
+        />
+      ) : (
+        roots.map((root) => {
+          const state = directories[directoryKey(root.id, '')];
+          return (
+            <section key={root.id} className="file-tree-root">
+              <button
+                type="button"
+                className="file-tree-root-button"
+                disabled={!root.available}
+                onClick={() => toggleDirectory(root.id, '')}
+                aria-expanded={root.available ? !!state?.expanded : undefined}
+                title={root.available ? root.label : root.reason}
+              >
+                <Icon name={state?.expanded ? 'chevronDown' : 'chevronRight'} size={12} />
+                <Icon name="folder" size={14} />
+                <span>{root.label}</span>
+              </button>
+              {!root.available ? (
+                <p className="file-tree-unavailable">
+                  {root.reason ?? tx('目录不可用', 'Unavailable')}
+                </p>
+              ) : (
+                <DirectoryChildren
+                  sessionId={sessionId}
+                  rootId={root.id}
+                  state={state}
+                  directories={directories}
+                  onToggle={toggleDirectory}
+                  onOpen={openFile}
+                  tx={tx}
+                  search={search}
+                />
+              )}
+            </section>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+/** searchMatches useMemo 的返回型。 */
+interface SearchMatches {
+  items: Array<{ rootId: FileTreeRootId; entry: FileTreeEntry; truncated: boolean; dirCount: number }>;
+  truncated: boolean;
+  dirCount: number;
+}
+
+/**
+ * v0.3.2:搜索态的全量扁平结果列表。跨所有 available root 合并后按 relativePath 排序。
+ *
+ * 这是“树过滤 → 扁平全量过滤”的切换:懒加载时未展开目录搜不到,本组件用 main 端
+ * list-recursive 一次拉全量缓存,本地过滤即时响应。label 显示完整 relativePath
+ * (高亮匹配片段),让用户能按路径片段搜(如「src/foo」)。
+ *
+ * 性能:main 端 5000 entry 上限 + BFS,renderer 仅渲染匹配项(过滤后通常 ≤ 几十)。
+ */
+function SearchResultsList({
+  sessionId,
+  matches,
+  search,
+  roots,
+  recursiveResults,
+  onOpen,
+  tx,
+}: {
+  sessionId: string;
+  matches: SearchMatches;
+  search: PanelSearchProps;
+  roots: FileTreeRootInfo[];
+  recursiveResults: Partial<Record<FileTreeRootId, ListFileTreeRecursiveResponse>>;
+  onOpen: (rootId: FileTreeRootId, relativePath: string) => void;
+  tx: (zh: string, en: string) => string;
+}): JSX.Element {
+  const copyToClipboard = useCopyToClipboard();
+  const toast = useToast();
+  const q = search.query;
+  const cs = search.caseSensitive;
+
+  // 某个 available root 还没拉到递归缓存 → 显示 loading(通常很快,一次 IPC)。
+  const stillLoading = roots.some(
+    (r) => r.available && !recursiveResults[r.id],
+  );
+
+  if (stillLoading) {
+    return <div className="file-tree-loading">{tx('正在扫描全目录…', 'Scanning all directories…')}</div>;
+  }
+
+  if (matches.items.length === 0) {
+    return <div className="file-tree-empty">{tx('无匹配', 'No match')}</div>;
+  }
+
+  return (
+    <div className="file-tree-search-results">
+      {matches.items.map(({ rootId, entry }) => (
+        <FileListRow
+          key={`${rootId}:${entry.relativePath}`}
+          variant="list"
+          icon={entry.kind === 'directory' ? 'folder' : 'file'}
+          label={
+            <HighlightedText text={entry.relativePath} query={q} caseSensitive={cs} />
+          }
+          title={entry.relativePath}
+          {...(entry.kind === 'file'
+            ? { onClick: () => onOpen(rootId, entry.relativePath) }
+            : {})}
+          buildContextMenu={() =>
+            buildFileEntryMenu(
+              {
+                ...(entry.kind === 'file'
+                  ? {
+                      primary: {
+                        label: tx('打开', 'Open'),
+                        run: () => onOpen(rootId, entry.relativePath),
+                      } as const,
+                    }
+                  : {}),
+                relativePath: entry.relativePath || '.',
+                reveal: () => {
+                  window.api
+                    .invoke(COMMAND_CHANNELS.FILE_TREE_REVEAL_PATH, {
+                      sessionId,
+                      rootId,
+                      relativePath: entry.relativePath,
+                    })
+                    .catch((err: unknown) =>
+                      toast.push({
+                        kind: 'error',
+                        message: `定位失败:${err instanceof Error ? err.message : String(err)}`,
+                      }),
+                    );
+                },
+                ...(entry.kind === 'file'
+                  ? {
+                      openExternal: () => {
+                        window.api
+                          .invoke(COMMAND_CHANNELS.FILE_TREE_OPEN_PATH, {
+                            sessionId,
+                            rootId,
+                            relativePath: entry.relativePath,
+                          })
+                          .catch((err: unknown) =>
+                            toast.push({
+                              kind: 'error',
+                              message: `打开失败:${err instanceof Error ? err.message : String(err)}`,
+                            }),
+                          );
+                      },
+                    }
+                  : {}),
+              },
+              { copyToClipboard, toastError: (m) => toast.push({ kind: 'error', message: m }), tx },
+            )
+          }
+        />
+      ))}
+      {matches.truncated && (
+        <div className="file-tree-truncated">
+          {tx(
+            '目录过大，仅扫描了部分内容（上限 5000 项 / 深度 15）。',
+            'Directory too large; only partial contents scanned (limit 5000 entries / depth 15).',
+          )}
+        </div>
+      )}
     </div>
   );
 }
