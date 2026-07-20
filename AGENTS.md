@@ -4,8 +4,10 @@
 > 你正在 YOLO 模式下工作,大部分时间不需要打扰开发者。但有少数情况你必须立刻停下来。
 > 仔细读完整份文件再开始工作。
 
-文档版本:1.4 · 最后更新:2026-07-19
+文档版本:1.5 · 最后更新:2026-07-20
 
+> **v1.5 变更**:新增附录 E「版本号规则」—— 定义 MINOR/PATCH 的 bump 标准 + 四条硬纪律(不为小更新单独发版、一次批量只 bump 一次、构建前同步 package.json ↔ CHANGELOG、一个版本一个条目)。纠偏此前 0.3.0/0.3.1/0.3.2 连 bump 的失误。附录 D 验收清单加「version 同步」第 1 项。
+>
 > **v1.4 变更**:新增附录 D「构建与打包速查」—— 固化 portable/nsis 构建命令、产物路径、icon 依赖、验收清单、失败排查顺序。避免每次重新 grep `electron-builder.yml` 与 `package.json` scripts。
 >
 > **v1.3 变更**:与软件定义书 v1.6 / ADR-013 对齐 — 附录 C "关闭弹确认"硬规则增加 Linux 例外脚注:仅当 `lifecycleModel === 'no-persistence'` + 最后一个窗口 + 仍有非 exited session 时,允许弹 `<LastSessionConfirm />`。1.2 节边界 3 例子同步加例外注脚。
@@ -895,6 +897,7 @@ E. 检查点之间想"顺手"重构 / 加新功能
 **耗时**:首次 1-3 分钟(electron-builder 下载/缓存 + native rebuild);增量 < 1 分钟。
 
 **portable 验收检查清单**(交付前必看):
+- [ ] **package.json version == CHANGELOG 最新版本号**(附录 E 纪律 3;不一致先同步再构建)
 - [ ] 双击 exe 能启动(不释放安装,直接跑)
 - [ ] userData 走 portable 旁的 `Marina/` 目录(portable 模式 %APPDATA% 行为见 electron-builder 文档,实测确认)
 - [ ] 托盘图标 + 右键菜单正常
@@ -907,6 +910,34 @@ E. 检查点之间想"顺手"重构 / 加新功能
 3. native rebuild 失败 → `rm -rf node_modules && npm install`(重建 node-pty 二进制)。
 4. electron-builder 下载不动 → 检查 `.npmrc` 的 `electron_mirror` / `ELECTRON_BUILDER_BINARIES_MIRROR`(国内镜像)。
 5. 超过 10 轮没搞定 → BLOCKED(见第 3 章)。
+
+## 附录 E:版本号规则(v1.5 固化,别一个小更新就 bump)
+
+**格式**:MAJOR.MINOR.PATCH(SemVer)。
+
+**pre-1.0 阶段(当前 0.x.y)**:
+
+| 改动类型 | bump | 例子 |
+|---|---|---|
+| **MINOR** — 独立的新功能模块/子系统(跨多文件的新能力) | 0.X.0 | Git 面板、SSH 远程模式、面板 Ctrl+F 搜索、主工作区受控面板架构 |
+| **PATCH** — bug 修复 / 已有功能的小增强 / UI 微调 / 性能优化 / 重构 / 勘误 | 0.x.Y | 右键加一项菜单、加设置项、语法高亮优化、主题颜色调 |
+| **不发版** — 纯文档 / 注释 / 格式化 | 不 bump | 改 README、补注释 |
+
+**判断口诀**:问自己“**这是开了一个新能力,还是在打磨已有东西?**”。新能力 → MINOR;打磨 → PATCH。
+
+**1.0+(产品正式发布后)**:
+- MAJOR:破坏性变更(数据格式不兼容、产品改名、核心交互重构)
+- MINOR:向下兼容的新功能
+- PATCH:向下兼容的 bug 修复
+
+**四条硬纪律(违反即问题)**:
+
+1. **不单独为小修小补发版**。bug fix / 小增强**攒着**,随下一个 patch 或里程碑一起发。禁止 `0.3.1 → 0.3.2 → 0.3.3` 这种“每次提交都 bump”。(v1.5 起纠偏:此前 0.3.0/0.3.1/0.3.2 连着三个 minor 是失误,语法高亮那批本应是 0.3.1 的 patch。)
+2. **一次批量改动只 bump 一次**。一个会话里做多件事(既有 bug fix 又有小增强),取最高类别(通常就是 PATCH),不因做了 N 件事就 bump N 次。
+3. **构建前必须同步 package.json version ↔ CHANGELOG**(见附录 D 验收清单第 1 项)。二者不一致 = 构建阻塞。package.json 的 `version` 是“当前版本”的唯一真相源。
+4. **一个版本号 = 一个 CHANGELOG 条目**。patch 版本把多条小改动合并到同一条目下,不拆成多个版本。
+
+**当前版本状态**:0.3.2(2026-07-20)。下一个版本如果只是小修小补 → 0.3.3;如果是新功能里程碑 → 0.4.0。
 
 ---
 
