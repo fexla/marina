@@ -2,66 +2,38 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/),版本号遵循 [SemVer](https://semver.org/)。
 
-## [0.3.2] — 2026-07-20
+## [0.3.0] — 2026-07-20
+
+> **版本号规则生效后的首个版本**(AGENTS.md 附录 E)。此前 0.3.0/0.3.1/0.3.2 连着三个 minor 是失误,本版合并规整为一个 0.3.0(MINOR bump,含 Git 面板 + 面板搜索两个新功能模块)。
 
 ### 新增
 
-- **TextViewer 语法高亮 + 行号。** 打开代码文件(.ts/.py/.json/.yml/.sh…）现在有语法着色
-  了 —— 此前 DiffViewer 有高亮、打开文件本身反而黑白，体验割裂(开发者反馈“文本高亮没做”)。
-  hljs 栈抽到共享 `highlight.ts`(TextViewer/DiffViewer 复用)，按扩展名选语言逐行高亮。
-  行首加行号槽(`user-select:none` 不参与复制)。
-- **查看器搜索行内字符高亮。** 此前 DiffViewer 搜索只跳行不亮字。统一改用
-  `useDomTextHighlight`(CSS Custom Highlight API overlay)：text/diff/markdown 三 viewer
-  一套机制，**不改 DOM** → 天然适配 hljs 的 span 嵦套，绕过了此前“行内 mark 不做”
-  的难题。统一 highlight name `marina-viewer-search`(废弃 `marina-md-search`)。
-  废弃 useContentSearch / useMarkdownSearch 两个 hook。
-- **Git 树目录节点右键菜单(B1)。** 此前 Git 树文件夹右键完全无反应。现在与
-  file-tree 目录菜单对称：展开/收起 + 复制相对路径 + 复制绝对路径 + 在 Explorer 显示 +
-  用默认应用打开。能力驱动统一生成器 `buildFileEntryMenu` 加 `openExternal` 能力。
-- **用默认应用打开(B4)。** 三面板文件右键统一加「用默认应用打开」(.png→图片查看器 /
-  .pdf→阅读器)。新通道 `system:open-path`(`shell.openPath`，校验绝对路径，与只允许
-  http/https/mailto 的 `system:open-external` 分离)；file-tree 走对称的
-  `file-tree:open-path`(保 rootId 抽象，main 端 resolve + openPath)。
-- **Git 变更计数(D1)。** Git 面板顶部 chip 条：「3 修改 · 1 新增 · 2 未跟踪」，按 tone
-  分类着色，一眼看到工作区状态。变更过多被截断时显示提示。
-- **大文件保护(A6)。** main 端字节截断(2MB)之外，renderer 端加行数兜底(5万行)：
-  超阈值只渲染头部 + 截断提示，避免卡死。
+- **Git 变更浏览面板(ADR-017)。** 当前终端 session 的 cwd 在 Git 仓库内时,右侧 dock 自动出现「Git」tab,列出工作区变更(modified / added / deleted / renamed / untracked / conflict),点文件跳「已打开」面板查看 unified diff。**动态 LayoutNode**:cd 进/出仓库时该 tab 自动出现/消失,非仓库 cwd 不显示空状态文案——评审裁决直接不渲染 tab。严格**只读**:只调 `git status` / `git diff`,**永远不做** stage / commit / push / pull / fetch / merge / rebase / stash / branch / checkout / log / blame 等 Git 管理操作(§13.2 / §14.6)。SSH session 不支持;`advanced.enableGitPanel = false` 时 tab 永不出现(视野守护)。
+- **面板 Ctrl+F 搜索(VS Code 风格)。** 右 dock 顶部共享搜索栏,Ctrl+F 唤出(焦点在终端时 xterm 拦截走终端搜索,不冲突)。两种形态按当前活动面板自动切换:
+  - **列表过滤型(Files / Git / Opened)**:输入即收窄,匹配片段高亮。Files 进入搜索态时调 `file-tree:list-recursive` 一次拉全量递归扁平 entries 缓存,本地过滤(此前懒加载只能搜已展开目录);Git 树形/平铺都支持;Opened 只收窄 tab 列表。
+  - **文件内查找型(TextViewer / DiffViewer / MarkdownViewer)**:行级跳转 + 命中数 `x/N`,Enter 下一个 / Shift+Enter 上一个 / Esc 关闭 / Aa 大小写。统一用 CSS Custom Highlight API(`::highlight`,Chromium 105+)在渲染后 DOM 文本节点上 overlay 高亮,**不改 DOM** → 避开 hljs span 嵦套冲突,三 viewer 一套机制。交互对齐终端搜索栏。
+- **文件条目统一抽象(ADR-017 + ADR-018)。** 右 dock 三面板的文件条目代码层统一:`<FileListRow>`(渲染统一) + `buildFileEntryMenu(FileEntryContext)`(菜单统一,能力驱动)。面板只填能力(primary / openFile / copyRelative / copyAbsolute / reveal / openExternal / close),菜单形态/顺序/文案自动统一,**新增面板零拼装**。路径解析保持各面板特色(file-tree rootId 抽象 / git repoRoot 在 main / file-panel 绝对路径),不强制统一实现。
+- **diff 双层语法高亮。** `DiffViewer` 用 highlight.js 做双层高亮:(1) 外层 diff 行色——新增行绿底、删除行红底、hunk header 蓝底粗体;(2) 内层代码语法高亮——从 `+++ b/foo.ts` 推断语言,对 `+const x = 1` 行去掉 `+` 后用 TypeScript 高亮。按需 import core + 11 高频语言(ts/js/py/json/bash/yaml/markdown/xml/c/cpp/cs,未命中回退 diff 语言)。token 色用主题变量映射,7 套主题自适应。
+- **TextViewer 语法高亮 + 行号。** 打开代码文件现在有语法着色(此前 DiffViewer 有高亮、打开文件本身反而黑白)。hljs 栈抽到共享 `highlight.ts` 复用。行首行号槽(`user-select:none` 不参与复制)。
+- **文件右键菜单扩充。** 三面板统一加「用默认应用打开」(.png→图片查看器 / .pdf→阅读器,新通道 `system:open-path` + `file-tree:open-path`)。Git 文件节点加「打开文件」(打开文件本身,非 diff;deleted 自动禁用) / 「复制绝对路径」(`git:resolve-path`)。Git 树**目录节点**右键此前无反应,现与 file-tree 目录对称(展开/收起 + 复制路径 + reveal + openExternal)。
+- **Git 变更计数。** Git 面板顶部 chip 条:「3 修改 · 1 新增 · 2 未跟踪」,按 tone 分类着色。变更过多被截断时显示提示。
+- **大文件保护。** main 端字节截断(2MB)之外,renderer 端加行数兜底(5万行):超阈值只渲染头部 + 截断提示。
+- **设置项。** 「高级」分类新增「启用 Git 面板」开关(默认开)与「Git 二进制路径」(空 = PATH 查找),即改即生效。
 
 ### 重构
 
-- **共享 hljs 模块。** DiffViewer 的 hljs 栈(注册 + EXT_TO_HLJS + detectFromPathLine +
-  highlightLine)抽到 `highlight.ts`，TextViewer 复用。消除重复，包体积不增(hljs 仍按需注册)。
-- **统一搜索 hook。** `useDomTextHighlight` 取代 useContentSearch(行级) +
-  useMarkdownSearch(DOM)两套实现。TreeWalker 遍历渲染后 DOM 文本节点，`skipSelector`
-  跳过行号槽/diff 符号等非内容文本。
-
-## [0.3.1] — 2026-07-19
-
-### 新增
-
-- **面板 Ctrl+F 搜索(VS Code 风格)。** 右 dock 顶部共享搜索栏,Ctrl+F 唤出(焦点在终端时 xterm 拦截走终端搜索,不冲突)。两种形态按当前活动面板自动切换:
-  - **列表过滤型(Files / Git / Opened)**:输入即收窄,匹配片段 `<mark>` 高亮。Files 递归保留匹配文件的祖先目录 + 搜索时自动展开已加载目录;Git 的树形/平铺视图都支持;Opened 只收窄 tab 列表(不影响当前内容)。
-  - **文件内查找型(TextViewer / DiffViewer / MarkdownViewer)**:行级跳转,显示命中数 `x/N`,Enter 下一个 / Shift+Enter 上一个 / Esc 关闭 / Aa 大小写。TextViewer 改行级渲染 + 行内匹配高亮 + 当前匹配行整行高亮 + `scrollIntoView`;DiffViewer 行级跳转(行内 mark 不做,hljs HTML 叠加复杂度高);MarkdownViewer 用 CSS Custom Highlight API(`::highlight`,Chromium 105+)在渲染后 DOM 文本节点上高亮,不改 DOM 避免和 React 冲突。大小写默认不敏感,可切换。交互对齐终端搜索栏(CP-4 勘误),后续可一起调。
-- **文件条目右键菜单能力驱动统一(ADR-018)。** `<FileListRow>`(渲染统一,v0.3.0) + 新的 `buildFileEntryMenu(FileEntryContext)`(菜单统一) = 文件条目完整抽象。面板只填能力(primary / openFile / copyRelative / copyAbsolute / reveal / close),菜单形态/顺序/文案自动统一,**新增面板零拼装**。Git 面板右键扩充:「打开文件」(打开文件本身,非 diff;deleted 文件自动禁用) / 「复制绝对路径」 / 「在 Explorer 显示」(后者两面板早有,git 补齐)。新增 `git:open-file` / `git:resolve-path` IPC。路径解析保持各面板特色(file-tree rootId 抽象 / git repoRoot 在 main / file-panel 绝对路径),不强制统一实现。
-
-## [0.3.0] — 2026-07-19
-
-### 新增
-
-- **Git 变更浏览面板（ADR-017）。** 当前终端 session 的 cwd 在 Git 仓库内时，右侧 dock 自动出现「Git」tab，列出工作区变更（modified / added / deleted / renamed / untracked / conflict），点文件跳「已打开」面板查看 unified diff。**动态 LayoutNode**：cd 进/出仓库时该 tab 自动出现/消失，非仓库 cwd 不会显示空状态文案——评审裁决直接不渲染 tab。严格**只读**：只调 `git status` / `git diff`，**永远不做** stage / commit / push / pull / fetch / merge / rebase / stash / branch / checkout / log / blame 等 Git 管理操作（§13.2 / §14.6）。SSH session 不支持（不引入远端 git 协议）；`advanced.enableGitPanel = false` 时 tab 永不出现（视野守护，与 `advanced.enableRemote` 同构）。
-- **文件条目统一抽象。** 右 dock 三面板（文件 / Git / 已打开）的文件条目在代码层统一为 `<FileListRow>`：左键行为由所在面板注入（展开目录 / 打开 diff / 切 tab），右键菜单统一走既有 `ContextMenu`（打开 / 复制路径 / 在 Explorer 中显示 / 关闭其他 / 关闭所有 等）。diff 临时文件入 `MARINA_WORKSPACE/__marina_diff__/`，随 session 回收。
-- **diff 双层语法高亮（方案 B）。** 新增 `FileKind = 'diff'` 与 `DiffViewer` 组件,用 highlight.js 做双层高亮:(1) 外层 diff 行色——新增行绿底、删除行红底、hunk header 蓝底粗体、file header 粗体、meta 行淡灰;(2) 内层代码语法高亮——从 `+++ b/foo.ts` 推断语言,对 `+const x = 1` 行去掉 `+` 后用 TypeScript 高亮(`const` 染关键字色、`1` 染数字色),两层正交共存,GitHub/VS Code 同款视觉。按需 import core + 11 高频语言(ts/js/py/json/bash/yaml/markdown/xml/c/cpp/cs,未命中回退 diff 语言),避免全量 ~600KB。行首 `+`/`-` 符号独立槽 + `user-select: none`。token 色用主题变量映射,7 套主题(rose-pine / dawn / moon / cutie / business / ubuntu / windows-terminal)自适应。明确**不做**词级 intra-line word diff、并排 side-by-side、行号 gutter(§13.2 边界)。
-- **设置项。** 「高级」分类新增「启用 Git 面板」开关（默认开）与「Git 二进制路径」（空 = PATH 查找），即改即生效。
+- **共享 hljs 模块。** DiffViewer 的 hljs 栈抽到 `highlight.ts`,TextViewer 复用,消除重复。
+- **统一搜索 hook。** `useDomTextHighlight` 取代 useContentSearch(行级) + useMarkdownSearch(DOM)两套实现。TreeWalker 遍历渲染后 DOM 文本节点,`skipSelector` 跳过行号槽/diff 符号等非内容文本。
 
 ### 安全
 
-- `GitService` 与 `FileTreeService` 同构：每次请求校验 `ownerWindowId === requesterId` + SSH 拒绝 + realpath + repoRoot 包含校验；`runGit` spawn 限 5s 超时 + 8MB stdout 上限防恶意大输出。`cmd:git:get-status` 不回传 `repoRoot` 绝对路径给 renderer。
-- 「在 Explorer 中显示」对 file-tree 条目走专用 `cmd:file-tree:reveal-path` IPC，main 端做与 `open-file` 同一套根包含校验后调 `shell.showItemInFolder`，renderer 始终拿不到受限根外的绝对路径。
+- `GitService` 与 `FileTreeService` 同构:每次请求校验 `ownerWindowId === requesterId` + SSH 拒绝 + realpath + repoRoot 包含校验;`runGit` spawn 限 5s 超时 + 8MB stdout 上限防恶意大输出。`cmd:git:get-status` 不回传 `repoRoot` 绝对路径给 renderer。
+- 「在 Explorer 中显示」对 file-tree 条目走专用 `cmd:file-tree:reveal-path` IPC,main 端做与 `open-file` 同一套根包含校验后调 `shell.showItemInFolder`,renderer 始终拿不到受限根外的绝对路径。
 
 ### 设计哲学
 
-- 维持「终端管理器」边界：Git 面板只取 JetBrains 同类的**浏览**能力，明确不取**管理**能力，避免滑向 Git GUI（§13.2 / ADR-017）。
-- 维持 ADR-016 不变：`LayoutNode` 仍由 main 端产品规则维护，renderer 无修改布局树的 IPC；只是规则从静态模板变为按 session 能力（cwd 是否在仓库）动态生成。
+- 维持「终端管理器」边界:Git 面板只取 JetBrains 同类的**浏览**能力,明确不取**管理**能力,避免滑向 Git GUI(§13.2 / ADR-017)。
+- 维持 ADR-016 不变:`LayoutNode` 仍由 main 端产品规则维护,renderer 无修改布局树的 IPC;只是规则从静态模板变为按 session 能力(cwd 是否在仓库)动态生成。
 
 ## [0.2.6] — 2026-07-12
 
