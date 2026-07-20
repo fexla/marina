@@ -9,7 +9,12 @@
  *   - 文件内查找改用 useDomTextHighlight(CSS Custom Highlight overlay)——补上 v0.3.1
  *     刻意没做的「行内字符高亮」。overlay 不改 DOM,与 hljs span 嵌套互不干扰,
  *     是绕过当初难题的正确方案。详见 useDomTextHighlight.ts 头注。
- *   - 加行号槽(代码行按 hunk 内行号;元数据行无行号)。
+ *
+ * @v0.3.3 布局对齐 TextViewer(行号槽 + grid 双列 + 水平滚动):
+ *   - 加行号槽:从 hunk header @@ -a,b +c,d @@ 解析行号(ctx 用 new-side、del 用
+ *     old-side、add 用 new-side),对齐 GitHub/VS Code。v0.3.2 时刻意没加,本批补齐。
+ *   - DOM 改三段:gutter(行号+符号,sticky left:0 水平滚动钉住)+ body(white-space:pre)。
+ *   - 行号 background:inherit 跟随行底色(add 绿/del 红/hunk 蓝),挡住横向滚过来的代码。
  *
  * @双层高亮原理(对齐 GitHub / VS Code / GitLab):
  *   diff --git a/foo.ts b/foo.ts      ← header(diff 元数据,diff 语言着色)
@@ -38,6 +43,7 @@ import type { OpenedFile } from '@shared/types';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { useFileContent } from './useFileContent';
 import { useDomTextHighlight } from '../../hooks/useDomTextHighlight';
+import { useMiddleClickPan } from '../../hooks/useMiddleClickPan';
 import { useTranslation } from '../LanguageProvider';
 import { highlightLine, detectLanguageFromPathLine } from './highlight';
 
@@ -93,16 +99,27 @@ const MAX_RENDER_ROWS = 50000;
 interface DiffRow {
   key: number;
   kind: DiffRowKind;
+  /** 文件行号(v0.3.3):代码行按 hunk 行号计数;元数据/header/hunk/nl 行为 null(不显示)。
+   * ctx 行用 new-side 行号,del 行用 old-side 行号(add 用 new-side),对齐 GitHub/VS Code。 */
+  lineNum: number | null;
   /** 行内 HTML(hljs 产出),仅供 dangerouslySetInnerHTML 消费。 */
   html: string;
 }
 
 /**
- * 把整段 diff 文本切成 DiffRow[]。逐行 highlight,跟踪当前块的语言(遇 +++ b/path 切换)。
+ * 把整段 diff 文本切成 DiffRow[]。逐行 highlight,跟踪当前块的语言(遇 +++ b/path 切换),
+ * 并按 hunk header @@ -a,b +c,d @@ 维护 old/new 双侧行号计数器(v0.3.3 行号槽)。
  *
  * 语言选择规则:
  * - header / hunk / meta / nl 行:用 'diff' 语言(它们是 diff 元数据,不是代码)
  * - add / del / ctx 行:用当前块推断的代码语言(未推断出则回退 'diff')
+ *
+ * 行号规则(unified diff):
+ * - 遇 @@ -oldStart,oldLen +newStart,newLen @@:oldLn=oldStart,newLn=newStart
+ * - ctx 行(行首空格):显示 newLn,然后 oldLn++、newLn++
+ * - del 行(-):显示 oldLn,然后 oldLn++
+ * - add 行(+):显示 newLn,然后 newLn++
+ * - header/hunk/meta/nl:无行号(null)
  *
  * 单文件 diff:开头一个 +++ b/foo.ts 设定全块语言。
  * 多文件 diff:每个 diff --git 块重新解析 +++ b/... 切换。
@@ -110,10 +127,19 @@ interface DiffRow {
 function buildRows(text: string): DiffRow[] {
   const lines = text.split('\n');
   let currentLang = 'diff'; // 默认 diff 语言(纯行级,无 token)
+  // hunk 行号计数器(null = 还没进第一个 hunk,此时代码行不该出现,但防御性给 null)
+  let oldLn: number | null = null;
+  let newLn: number | null = null;
   const rows: DiffRow[] = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] as string;
     const kind = classifyLine(line);
+    // 遇 hunk header @@ -a,b +c,d @@:重置双侧计数器。
+    if (kind === 'hunk') {
+      const parsed = parseHunkHeader(line);
+      oldLn = parsed?.oldStart ?? null;
+      newLn = parsed?.newStart ?? null;
+    }
     // 遇文件头行(+++ b/path 或 --- a/path)更新当前语言。
     if (kind === 'header') {
       const detected = detectLanguageFromPathLine(line);
@@ -127,9 +153,38 @@ function buildRows(text: string): DiffRow[] {
     const lang = kind === 'add' || kind === 'del' || kind === 'ctx' ? currentLang : 'diff';
     const stripped =
       kind === 'add' || kind === 'del' || kind === 'ctx' ? line.replace(/^[+\-\\ ]/, '') : line;
-    rows.push({ key: i, kind, html: highlightLine(stripped, lang) });
+
+    // 行号:ctx 显示 newLn,del 显示 oldLn,add 显示 newLn;计数后递增。
+    let lineNum: number | null = null;
+    if (kind === 'ctx' && newLn != null) {
+      lineNum = newLn;
+      oldLn = oldLn != null ? oldLn + 1 : null;
+      newLn = newLn + 1;
+    } else if (kind === 'del' && oldLn != null) {
+      lineNum = oldLn;
+      oldLn = oldLn + 1;
+    } else if (kind === 'add' && newLn != null) {
+      lineNum = newLn;
+      newLn = newLn + 1;
+    }
+
+    rows.push({ key: i, kind, lineNum, html: highlightLine(stripped, lang) });
   }
   return rows;
+}
+
+/**
+ * 解析 hunk header `@@ -oldStart,oldLen +newStart,newLen @@` 的 old/new 起始行号。
+ * len 省略时默认 1(如 `@@ -5 +5 @@`)。解析失败返回 null(行号计数器保持不变)。
+ */
+function parseHunkHeader(line: string): { oldStart: number; newStart: number } | null {
+  // 形如 @@ -10,7 +10,9 @@ 或 @@ -1 +1 @@(省略 len)。只取首组 -a 和 +c。
+  const m = line.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/);
+  if (!m || m[1] == null || m[2] == null) return null;
+  const oldStart = Number(m[1]);
+  const newStart = Number(m[2]);
+  if (!Number.isFinite(oldStart) || !Number.isFinite(newStart)) return null;
+  return { oldStart, newStart };
 }
 
 interface ViewerProps {
@@ -165,6 +220,9 @@ export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
     skipSelector: '.diff-line-sign, .file-line-number',
   });
 
+  // 中键拖动平移(v0.3.3):与 TextViewer 一致,上下左右自动滚动。
+  useMiddleClickPan(containerRef);
+
   if (!content) {
     return <div className="file-viewer-loading">{tx('加载中…', 'Loading…')}</div>;
   }
@@ -183,7 +241,14 @@ export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
     <pre className="diff-viewer" ref={containerRef}>
       {displayRows.map((row) => (
         <div key={row.key} data-line={row.key} className={`diff-line diff-line-${row.kind}`}>
-          <span className="diff-line-sign">{signFor(row.kind)}</span>
+          {/* gutter(行号 + 行首符号):sticky left:0 水平滚动时钉住。background:inherit
+           * 取所在 .diff-line-* 行底色,挡住横向滚过来的代码。 */}
+          <span className="diff-line-gutter">
+            {row.lineNum != null && (
+              <span className="file-line-number">{row.lineNum}</span>
+            )}
+            <span className="diff-line-sign">{signFor(row.kind)}</span>
+          </span>
           {/* hljs 输出只含 class span,无脚本/事件,安全。来源是 GitService 受控文件。 */}
           <span
             className="diff-line-body"

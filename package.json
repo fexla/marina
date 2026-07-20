@@ -1,6 +1,6 @@
 {
   "name": "marina-app",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Marina — path-centric, AI-agent-friendly terminal manager for Windows (formerly EasyTerm)",
   "license": "MIT",

@@ -11,8 +11,10 @@
  *   - highlightLine(text, lang) 统一单行高亮(返回 HTML,供 dangerouslySetInnerHTML)
  *
  * @按需 import(包体积控制):
- *   core + diff(元数据行)+ 11 代码语言(ts/js/py/json/bash/yaml/markdown/xml/c/cpp/cs)。
- *   每个语言 ~3-8KB,共 ~50KB(gzip ~18KB),覆盖 ~95% 代码;未注册语言回退 'diff'。
+ *   core + diff(元数据行)+ 18 代码语言(ts/js/py/json/bash/yaml/markdown/xml/c/cpp/cs/
+ *   go/rust/java/kotlin/ruby/php/sql)。每个语言 ~4-8KB,共 ~80KB(gzip ~28KB),覆盖
+ *   ~98% 代码;未注册语言回退 'diff'。v0.3.3 由 11 扩到 18(补 go/rust/java/kotlin/
+ *   ruby/php/sql,开发者反馈这些 diff 看起来“没高亮”)。
  *
  * @逐行 highlight(非整段):
  *   对每行单独 hljs.highlight,产出独立 HTML(无跨行 span),可安全包进 <div>。
@@ -26,7 +28,7 @@
  * @对应文档:docs/方案-面板待办-20260719.md A1、docs/方案-diff高亮-20260719.md
  */
 import hljs from 'highlight.js/lib/core';
-// 按需 import:core + diff(元数据行)+ 11 代码语言(内容行)。不全量,控包体积。
+// 按需 import:core + diff(元数据行)+ 代码语言(内容行)。不全量,控包体积。
 import diffLanguage from 'highlight.js/lib/languages/diff';
 import typescript from 'highlight.js/lib/languages/typescript';
 import javascript from 'highlight.js/lib/languages/javascript';
@@ -39,6 +41,15 @@ import xml from 'highlight.js/lib/languages/xml';
 import c from 'highlight.js/lib/languages/c';
 import cpp from 'highlight.js/lib/languages/cpp';
 import csharp from 'highlight.js/lib/languages/csharp';
+// v0.3.3 扩展(开发者反馈 diff 打开这些语言文件看起来“没高亮”):补 go/rust/java/
+// kotlin/ruby/php/sql。每个 ~4-8KB,覆盖更多主流后端/DB 场景。
+import go from 'highlight.js/lib/languages/go';
+import rust from 'highlight.js/lib/languages/rust';
+import java from 'highlight.js/lib/languages/java';
+import kotlin from 'highlight.js/lib/languages/kotlin';
+import ruby from 'highlight.js/lib/languages/ruby';
+import php from 'highlight.js/lib/languages/php';
+import sql from 'highlight.js/lib/languages/sql';
 
 // 模块级注册一次(整个 renderer 进程共享)。registerLanguage 幂等。
 hljs.registerLanguage('diff', diffLanguage);
@@ -53,6 +64,13 @@ hljs.registerLanguage('xml', xml);
 hljs.registerLanguage('c', c);
 hljs.registerLanguage('cpp', cpp);
 hljs.registerLanguage('csharp', csharp);
+hljs.registerLanguage('go', go);
+hljs.registerLanguage('rust', rust);
+hljs.registerLanguage('java', java);
+hljs.registerLanguage('kotlin', kotlin);
+hljs.registerLanguage('ruby', ruby);
+hljs.registerLanguage('php', php);
+hljs.registerLanguage('sql', sql);
 
 /**
  * 扩展名(小写)→ hljs 语言名。未命中 → undefined → 调用方回退 'diff'。
@@ -103,6 +121,18 @@ const EXT_TO_HLJS: Record<string, string> = {
   hpp: 'cpp',
   hh: 'cpp',
   cs: 'csharp',
+  // Go / Rust(v0.3.3 扩展)
+  go: 'go',
+  rs: 'rust',
+  // JVM(v0.3.3 扩展)
+  java: 'java',
+  kt: 'kotlin',
+  kts: 'kotlin',
+  // Ruby / PHP(v0.3.3 扩展)
+  rb: 'ruby',
+  php: 'php',
+  // SQL(v0.3.3 扩展)
+  sql: 'sql',
   // 日志 / 纯文本(不查表 → 回退,保持纯黑白也可,但给个合理着色)
   log: 'bash', // 日志里常有 [INFO] 这种,bash 的 comment/variable 风格近似
 };

@@ -28,6 +28,7 @@ import remarkGfm from 'remark-gfm';
 import type { OpenedFile } from '@shared/types';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { useDomTextHighlight } from '../../hooks/useDomTextHighlight';
+import { useMiddleClickPan } from '../../hooks/useMiddleClickPan';
 import { COMMAND_CHANNELS, type ReadImagePayload, type ReadImageResponse } from '@shared/protocol';
 import { isRemoteUrl } from '@shared/url-scheme';
 import { useFileContent } from './useFileContent';
@@ -89,6 +90,9 @@ export function MarkdownViewer({ sessionId, file, search }: ViewerProps): JSX.El
     active: search.visible,
     contentVersion: normalizedText,
   });
+
+  // 中键拖动平移(v0.3.3):与 text/diff viewer 一致。
+  useMiddleClickPan(containerRef);
 
   if (!content) {
     return <div className="file-viewer-loading">{tx('加载中…', 'Loading…')}</div>;

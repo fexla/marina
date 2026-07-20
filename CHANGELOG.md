@@ -2,6 +2,18 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/),版本号遵循 [SemVer](https://semver.org/)。
 
+## [0.3.1] — 2026-07-20
+
+### 修复
+
+- **代码查看器布局:行号栏与代码栏分离(TextViewer + DiffViewer)。** 此前 TextViewer 用 `white-space: pre-wrap` + `word-break: break-all` + `inline-block` 行号,长行换行时换行文字从容器的 `x=0` 开始,**盖住行号栏**(开发者反馈)。改为 grid 双列:`[行号 sticky left:0][代码 white-space:pre]`。代码**不换行**,超宽出水平滚动条;行号 `position:sticky` 钉住左侧,横向滚动时不跟着移;行号 `background:inherit` 取所在行底色(含 search-current 高亮),挡住滚过来的代码。与 VS Code / 一般编辑器一致。
+- **DiffViewer 补行号槽。** 此前 diff 没有行号(v0.3.2 时刻意没加)。本批从 hunk header `@@ -a,b +c,d @@` 解析行号:ctx 用 new-side、del 用 old-side、add 用 new-side(对齐 GitHub / VS Code)。DOM 改为 `[gutter(行号+符号) sticky][body pre]` 三段,gutter `background:inherit` 跟随行底色(add 绿/del 红/hunk 蓝)。
+- **中键拖动平移(手型工具)。** 新 `useMiddleClickPan` hook:按住鼠标中键上下/左右拖动自动滚动(浏览器 / VS Code / Acrobat 同款)。阻止原生中键自动滚动光标(Windows 默认那个圆形滚动图标)。TextViewer / DiffViewer / MarkdownViewer 三个滚动容器都接入。此前无法用中键拖动面板。
+
+### 新增
+
+- **diff/代码语法高亮语言表扩到 18 种。** 开发者反馈打开 go/rust/java 等文件的 diff “看起来没高亮”——其实是这些扩展名不在按需注册表里,回退纯 diff 语言(只有行底色)。补 go / rust / java / kotlin / ruby / php / sql 共 7 种(+~58KB)。现覆盖 ts/js/py/json/bash/yaml/markdown/xml/c/cpp/cs/go/rust/java/kotlin/ruby/php/sql。
+
 ## [0.3.0] — 2026-07-20
 
 > **版本号规则生效后的首个版本**(AGENTS.md 附录 E)。此前 0.3.0/0.3.1/0.3.2 连着三个 minor 是失误,本版合并规整为一个 0.3.0(MINOR bump,含 Git 面板 + 面板搜索两个新功能模块)。

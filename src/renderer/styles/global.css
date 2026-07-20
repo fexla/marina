@@ -2230,27 +2230,32 @@ html[data-maximized='true'] .app-root.with-shell {
   color: var(--color-danger, #f0f);
 }
 
-/* 文本 viewer:等宽 + wrap,顶部对齐。长行不出现水平滚动条(pre-wrap)。 */
+/* 文本 viewer:v0.3.1 起行级渲染。v0.3.3(本批)改 grid 双列(行号 | 代码),
+ * 行号 sticky left:0 水平滚动时钉住,代码 white-space:pre 不换行 → 超宽出水平滚动条。
+ * 解决此前 pre-wrap + inline-block 行号导致换行文字盖住行号栏的问题。 */
 .file-text-viewer {
   margin: 0;
   font-family: ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
   font-size: 12px;
   line-height: 1.5;
   color: var(--color-text-primary, #f0f);
-  white-space: pre-wrap;
-  word-break: break-all;
 
-  /* v0.3.1:改行级渲染后,滚动容器是 .file-text-viewer 本身 */
+  /* 双向滚动容器:纵向正常滚,横向供长代码行。 */
   overflow: auto;
   height: 100%;
 }
 
-/* v0.3.1:文件内查找(C3)。每行一个 div,支持 data-line 定位 + 跳转。 */
+/* v0.3.1:文件内查找(C3)。每行一个 div,支持 data-line 定位 + 跳转。
+ * v0.3.3:改 grid 两列(行号 | 代码)。给行设不透明底色,供行号 background:inherit 跟随。 */
 .file-text-line {
-  padding: 0 8px;
-  white-space: pre-wrap;
-  word-break: break-all;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
   min-height: 1.5em;
+
+  /* 不透明底:行号 sticky 时 background:inherit 取这个色,挡住横向滚过来的代码。
+   * search-current 时下方规则覆盖此色,inherit 自动跟随。 */
+  background-color: var(--color-bg-primary, #f0f);
 }
 
 /* 查找高亮(CSS Custom Highlight API,不改 DOM)。text/diff/markdown 三 viewer 共用
@@ -2271,17 +2276,27 @@ html[data-maximized='true'] .app-root.with-shell {
   background-color: color-mix(in srgb, var(--color-info, #9ccfd8) 22%, transparent);
 }
 
-/* 行号槽(v0.3.2 A4):TextViewer / DiffViewer 行首固定宽行号,user-select:none
- * 避免复制时带进行号。颜色弱化不干扰正文。 */
+/* 行号槽(v0.3.2 A4):固定宽行号,user-select:none 避免复制时带进行号。
+ * v0.3.3:position:sticky left:0 水平滚动时钉住;background:inherit 取所在行底色
+ * (含 search-current 高亮),挡住横向滚过来的代码。 */
 .file-line-number {
-  display: inline-block;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: inherit;
   min-width: 3.5em;
-  padding-right: 12px;
+  padding: 0 12px 0 8px;
   text-align: right;
   color: var(--color-text-muted, #f0f);
   user-select: none;
   -webkit-user-select: none;
   white-space: pre;
+}
+
+/* 代码内容:v0.3.3 改 white-space:pre(不换行),超宽走容器水平滚动。 */
+.file-text-line-content {
+  white-space: pre;
+  padding-right: 8px;
 }
 
 /* hljs token 颜色(v0.3.2 A1):TextViewer 的代码语法高亮。变量 + 主题色 fallback。
@@ -2340,19 +2355,39 @@ html[data-maximized='true'] .app-root.with-shell {
  * 行级底色用 color-mix + 主题色变量,7 套主题(rose-pine/dawn/moon/cutie/
  * business/ubuntu/windows-terminal)自适应。浓度 16%:深浅主题都不刺眼。
  * ───────────────────────────────────────────────────────────────── */
+
+/* v0.3.3:改 grid 双列(gutter | body)。gutter 含行号+符号,sticky left:0
+ * 水平滚动时钉住;background:inherit 取所在行底色(add 绿/del 红/hunk 蓝)。
+ * body white-space:pre 不换行 → 超宽出水平滚动条(与 TextViewer 同构)。 */
 .diff-viewer {
   margin: 0;
   font-family: ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
   font-size: 12px;
   line-height: 1.5;
   color: var(--color-text-primary, #f0f);
-  white-space: pre-wrap;
-  word-break: break-all;
+  overflow: auto;
+  height: 100%;
 }
 
 .diff-line {
-  display: block;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
   min-height: 1.5em; /* 空行也占高,保对齐 */
+
+  /* 基础不透明底:供 gutter background:inherit。各 diff-line-* 下游覆盖。 */
+  background-color: var(--color-bg-primary, #f0f);
+}
+
+/* gutter(行号 + 行首符号):sticky left:0 水平滚动时钉住。background:inherit 跟随
+ * 行底色(add 绿/del 红/hunk 蓝/search-current),挡住横向滚过来的代码。 */
+.diff-line-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: inherit;
+  display: inline-flex;
+  align-items: baseline;
   padding-left: 0.5ch;
 }
 
@@ -2360,15 +2395,14 @@ html[data-maximized='true'] .app-root.with-shell {
 .diff-line-sign {
   display: inline-block;
   width: 1.5ch;
-  flex: 0 0 1.5ch;
   color: var(--color-text-muted, #f0f);
   user-select: none;
   opacity: 0.55; /* 信息已在行底色,符号弱化避免刺眼 */
 }
 
 .diff-line-body {
-  white-space: pre-wrap;
-  word-break: break-all;
+  white-space: pre;
+  padding-right: 8px;
 }
 
 /* add:绿底(复用 --color-success) */

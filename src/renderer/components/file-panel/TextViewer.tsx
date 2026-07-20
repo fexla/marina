@@ -20,6 +20,7 @@ import type { OpenedFile } from '@shared/types';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { useFileContent } from './useFileContent';
 import { useDomTextHighlight } from '../../hooks/useDomTextHighlight';
+import { useMiddleClickPan } from '../../hooks/useMiddleClickPan';
 import { useTranslation } from '../LanguageProvider';
 import { highlightLine, detectLanguageByExt } from './highlight';
 
@@ -74,6 +75,9 @@ export function TextViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
     contentVersion: content,
     skipSelector: '.file-line-number',
   });
+
+  // 中键拖动平移(v0.3.3):与浏览器/VS Code 手型工具一致,上下左右自动滚动。
+  useMiddleClickPan(containerRef);
 
   if (!content) {
     return <div className="file-viewer-loading">{tx('加载中…', 'Loading…')}</div>;
