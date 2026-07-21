@@ -421,6 +421,7 @@ Marina 的开发被切分成 **N 个检查点**,与 `软件定义书.md` 第 15 
 - [ ] 数据导出 / 导入工作 — **导入走 in-memory replace**(Manager.replaceAll + emit),不调 `app.relaunch`,运行中 PTY 不被关(ADR-009)
 - [ ] CSP 通过 main 进程 `webRequest.onHeadersReceived` 注入(dev 含 unsafe-eval 给 React Refresh,prod 严格);移除 `index.html` 的 meta CSP
 - [ ] 终端状态机有兜底:`createSession` 末尾立即 `scheduleIdleCheck()`,首波 PTY 数据是纯 OSC 时不会卡 active(CP-4 勘误 #5)
+- [ ] Git 面板的 `git status` 调用全部带 `--no-optional-locks` — 不抢 `.git/index.lock`、不干扰用户在 Marina 外部跑的 `git commit`/`add`,且真正符合「永不写 `.git`」契约(回归断言在 `git-service.test.ts`)(CP-4 勘误 #6,2026-07-21)
 - [ ] 应用打包(`npm run build`)产生 Windows 安装包(.exe / .msi)
 - [ ] 在干净的 Windows 11 虚拟机或机器上,安装该包,能正常启动并运行
 - [ ] 后端整体测试覆盖率 > 75%

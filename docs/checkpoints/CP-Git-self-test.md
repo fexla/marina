@@ -152,6 +152,26 @@ e86dd4a docs(git): PRD for Git panel + unified file entry abstraction
 
 ---
 
+## 勘误回合修复 #6 — 后台轮询抢 `.git/index.lock`(2026-07-21)
+
+**触发**:开发者反馈外部调查 `04_index-lock-investigation.md` —— 用户在另一个项目跑自动化 `git_commit.py`(编译→单测→add→commit)时,`git add`/`commit` 间歇性报
+`Unable to create '.git/index.lock': File exists`,撞锁概率 ~15-20%。调查定位到根因是 **Marina 的 GitService 后台 watcher 每 3s 跑一次 `git status`**,而 `git status` 默认会做 index refresh 优化、写回 `.git/index` 并短暂持锁 `~0.4s`。
+
+**根因**:`git status` 不带 `--no-optional-locks` 时**实际会写 `.git/index`**(就是这造成了 lock)——这同时是 Marina 自家「永不写 `.git`」契约(§13.2 / §14.6 / ADR-017 安全边界)的**无意违规**:修复前每次 status 都在「偷偷写 `.git/index`」,只是写完即释放、没造成数据损坏。
+
+**修复**:`git-service.ts` 全部 3 处 `git status` 调用(`getStatus` / `getStatusInternal` 后台轮询路径 / `produceDiff` 单文件查)加 `--no-optional-locks` flag。git 跳过需锁的可选操作,状态结果对只读展示完全不变(仍扫工作区检测改动),只是不持久化 index 缓存刷新。不再创建 `.git/index.lock` → 不再干扰外部 git 写操作;同时严格符合「永不写 `.git`」契约。
+
+**验证**:
+- ✅ `npm run typecheck` 通过
+- ✅ `npm test`:857/857 全绿(新增回归断言:status 调用 args 必含 `--no-optional-locks`)
+- ✅ `npm run lint` 零告警
+
+**暂缓(资源优化,非正确性)**:watcher 绑定 Git 面板可见性(面板不可见时不轮询)。现状 watcher 生命周期完全在 main 端驱动,与面板可见性解耦,门控需新增 renderer→main IPC + 多窗口聚合,属跨层新能力(MINOR 级),不塞进本次勘误。详见 `docs/issues/git-1-background-status-poll-lock-contention.md`。
+
+**文档同步**:CHANGELOG `[Unreleased]` / 软件定义书 ADR-017 安全边界(增「实现纪律」注)/ AGENTS.md CP-4 完成标志(增勘误 #6 条)。
+
+---
+
 ## 结论
 
 v0.3.0 Git 面板 + 文件条目统一抽象已落地,核心评审裁决(非仓库不显示 tab / 动态 LayoutNode / 只读边界)全部按 PRD 实现。自动化测试 782 全绿,手动验证核心流程通过。

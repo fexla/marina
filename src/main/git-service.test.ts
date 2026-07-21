@@ -134,6 +134,17 @@ describe('GitService', () => {
       .mockResolvedValue({ stdout: Buffer.from(sample, 'utf8'), stderr: '', exitCode: 0 });
     const r = (await service.getStatus('s1', 'owner-1')) as GitStatusSnapshot;
     expect(spy).toHaveBeenCalled();
+    // 回归保护:--no-optional-locks 必须始终带上。git status 默认会刷新并写回 .git/index
+    //   (持 index.lock ~0.4s),会干扰用户在终端外部跑的 git 写操作(commit/add)。
+    //   详见 git-service.ts getStatus 处的注释。此 flag 一旦被误删,后台轮询会重新
+    //   抢锁,故在此钉死。(CP-4 勘误:2026-07-21 index.lock 干扰外部 git 提交)
+    //   spy 的类型是 (...a:never[]),mock.calls 索引不安全,故先转成具体元组数组。
+    const calls = spy.mock.calls as unknown as Array<[string, string[]]>;
+    const statusCalls = calls.filter(([, args]) => args.includes('status'));
+    expect(statusCalls.length).toBeGreaterThan(0);
+    for (const [, args] of statusCalls) {
+      expect(args.includes('--no-optional-locks')).toBe(true);
+    }
     const tones = r.groups.map((g) => g.tone);
     expect(tones).toContain('modified');
     expect(tones).toContain('added');

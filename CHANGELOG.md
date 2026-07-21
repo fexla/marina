@@ -7,6 +7,10 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+### 修复
+
+- **Git 面板后台轮询不再抢 `.git/index.lock`。** 此前 `GitService` 后台 watcher 每 3s 对 session cwd 所在仓库跑一次 `git status --porcelain=v2 -z --untracked-files=all`,而 `git status` 默认会做 index refresh 优化、**写回 `.git/index` 并短暂持锁 `~0.4s`**。用户反馈在 Marina 外部跑的自动化 `git commit` / `git add` 间歇性报 `Unable to create '.git/index.lock': File exists`(撞锁概率 ~15-20%)。现 `getStatus` / `getStatusInternal`(后台轮询路径)/ `produceDiff`(单文件查)三处 `git status` 全部加 `--no-optional-locks` flag——git 跳过需锁的可选操作,状态结果对只读展示完全不变(仍扫工作区检测改动),只是不持久化 index 缓存刷新。这也让 `GitService` 真正符合其「**永不写 `.git`**」的设计契约(§13.2 / §14.6):修复前每次 status 都在“偷偷写 `.git/index`”,只是写完即释放没造成数据损坏。回归断言已加进 `git-service.test.ts`。资源优化(watcher 绑定 Git 面板可见性、面板不可见时不轮询)暂缓,见 `docs/issues/git-1-background-status-poll-lock-contention.md`。
+
 ## [0.3.1-dev.1] — 2026-07-21
 
 > **开发构建**(AGENTS.md 附录 F)。0.3.0 发布后积累的 viewer 子系统修复批,改动量是 PATCH 级(打磨 0.3.0 已有的 diff / 代码查看能力,无新能力模块),故预告版本号取 `0.3.1`,dev 构建标识 `-dev.1`。SemVer 上 `0.3.0 < 0.3.1-dev.1 < 0.3.1`,装此包相对 0.3.0 是升级、不触发降级拦截;相对未来正式 0.3.1 仍是预发布。产物 `Marina-Portable-0.3.1-dev.1-x64.exe`。

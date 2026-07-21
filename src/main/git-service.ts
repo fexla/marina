@@ -203,11 +203,18 @@ export class GitService extends EventEmitter {
 
     // porcelain=v2 机器友好,字段稳定。-z 用 NUL 分隔(文件名可含空格/特殊字符)。
     // --untracked-files=all 列全部未跟踪文件(包括未跟踪目录里的文件)。
+    // --no-optional-locks:git status 默认会做 index refresh 优化,会写回 .git/index
+    //   并短暂持有 .git/index.lock(~0.4s),会干扰用户在终端外部跑的 git 写操作
+    //   (commit/add/reset 等,撞上即 "Unable to create '.git/index.lock'")。加此 flag
+    //   让 git 跳过需要锁的可选操作——状态结果对只读展示完全不变(仍会扫描工作区
+    //   检测改动),只是不持久化 index 缓存刷新。这也让 Marina 严格符合 GitService
+    //   「永不写 .git」的设计契约(见 软件定义书 §13.2 / AGENTS.md)。
     const { stdout } = await this.runGit(repoRoot, [
       'status',
       '--porcelain=v2',
       '-z',
       '--untracked-files=all',
+      '--no-optional-locks',
     ]);
     const groups = parsePorcelainV2(stdout.toString('utf8'));
     let truncated = false;
@@ -311,11 +318,15 @@ export class GitService extends EventEmitter {
     const cwdReal = await this.realpathOrThrow(session.currentCwd);
     const repoRoot = await findRepoRoot(cwdReal);
     if (!repoRoot) return { unavailable: 'not-a-repo' };
+    // --no-optional-locks:同 getStatus,避免后台轮询持有 index.lock 干扰外部 git 写
+    //   操作(详见 getStatus 处注释)。后台 watcher 每 3s 调一次本方法,这是 historically
+    //   造成用户 "index.lock" 提交失败的根因,故此处务必带此 flag。
     const { stdout } = await this.runGit(repoRoot, [
       'status',
       '--porcelain=v2',
       '-z',
       '--untracked-files=all',
+      '--no-optional-locks',
     ]);
     const groups = parsePorcelainV2(stdout.toString('utf8'));
     let truncated = false;
@@ -638,12 +649,14 @@ export class GitService extends EventEmitter {
   private async produceDiff(repoRoot: string, relativePath: string): Promise<string> {
     // 用 porcelain v2 单文件查状态(比 `git status` 文本解析稳)。
     // 注意:对 untracked 文件 porcelain v2 仍会列出 `? <path>`。
+    // --no-optional-locks:同 getStatus,避免持有 index.lock 干扰外部 git 写操作。
     let statusLetter = 'M'; // 兜底按 modified 处理
     try {
       const { stdout } = await this.runGit(repoRoot, [
         'status',
         '--porcelain=v2',
         '-z',
+        '--no-optional-locks',
         '--',
         relativePath,
       ]);
