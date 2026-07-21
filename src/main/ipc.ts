@@ -1985,16 +1985,18 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   });
 
   // 终端侧边文件面板状态变化(REST open/show/close 或 fs.watch 自动刷新触发)
-  // → 仅推给该 session 的 owner 窗口(与 session output 同策略,见上)。
+  // → 广播给所有窗口。
+  //
+  // 为什么广播而不是「仅推 owner」(与 session output 不同):面板状态是
+  // per-session 元数据,用户切到别的终端时该 session 会变 orphan
+  // (ownerWindowId=null,见 SessionManager.claimOwner → releaseAllOwnedBy),
+  // 但它的面板状态变更必须持续更新 —— 否则 orphan 期间的更新被「无 owner
+  // 即丢弃」吞掉,用户下次切回该终端看到的还是旧面板(开发者反馈)。PTY
+  // 字节流(session output)才需要定向给 owner:数据量大且只有 owner 的 xterm
+  // 渲染它。面板/git 这类小元数据广播给所有窗口无副作用(各自存进 per-session
+  // map,不显示就不读)。
   filePanelService.on('filePanelUpdated', (p: FilePanelUpdatedPayload) => {
-    const session = sessionManager.get(p.sessionId);
-    if (!session?.ownerWindowId) return;
-    // 定向发 owner(sendTo 找不到 client 静默,等价原 destroyed guard)。
-    sendEventTo<FilePanelUpdatedPayload>(
-      session.ownerWindowId,
-      EVENT_CHANNELS.FILE_PANEL_UPDATED,
-      p,
-    );
+    broadcastEvent<FilePanelUpdatedPayload>(EVENT_CHANNELS.FILE_PANEL_UPDATED, p);
   });
 
   // v0.3.0:Git 面板状态变化。两路触发:
@@ -2002,11 +2004,10 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   //      → 拉 status → emit(填 renderer 缓存,消除面板切换延迟)
   //  (2) watcher(commit E):仓库变更 debounce → 重拉 status → emit
   // payload 带 snapshot(已 strip repoRoot),renderer 收到零额外 IPC 直填缓存。
-  // 策略与 file-panel 同:仅推 owner 窗口。
+  // 策略与 file-panel 同:广播给所有窗口(非 owner 定向)。理由见上 file-panel 注释
+  // —— orphan 期间的 git 状态变更也必须送达,否则切回终端看到旧 diff 计数/列表。
   gitService.on('gitStatusUpdated', (p: GitStatusUpdatedPayload) => {
-    const session = sessionManager.get(p.sessionId);
-    if (!session?.ownerWindowId) return;
-    sendEventTo(EVENT_CHANNELS.GIT_STATUS_UPDATED, session.ownerWindowId, p);
+    broadcastEvent<GitStatusUpdatedPayload>(EVENT_CHANNELS.GIT_STATUS_UPDATED, p);
   });
 
   // 自定义 markdown 主题列表变化(用户往 markdown-themes/ 增删 .css)→ 广播给

@@ -5,13 +5,18 @@
 ## [Unreleased]
 
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
-> 等攒够一批或正式发布时,把本段折成一个版本号(并加日期)。
+> 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
+
+## [0.3.1-dev.1] — 2026-07-21
+
+> **开发构建**(AGENTS.md 附录 F)。0.3.0 发布后积累的 viewer 子系统修复批,改动量是 PATCH 级(打磨 0.3.0 已有的 diff / 代码查看能力,无新能力模块),故预告版本号取 `0.3.1`,dev 构建标识 `-dev.1`。SemVer 上 `0.3.0 < 0.3.1-dev.1 < 0.3.1`,装此包相对 0.3.0 是升级、不触发降级拦截;相对未来正式 0.3.1 仍是预发布。产物 `Marina-Portable-0.3.1-dev.1-x64.exe`。
 
 ### 修复
 
 - **代码查看器布局:行号栏与代码栏分离(TextViewer + DiffViewer)。** 此前 TextViewer 用 `white-space: pre-wrap` + `word-break: break-all` + `inline-block` 行号,长行换行时换行文字从容器的 `x=0` 开始,**盖住行号栏**(开发者反馈)。改为 grid 双列:`[行号 sticky left:0][代码 white-space:pre]`。代码**不换行**,超宽出水平滚动条;行号 `position:sticky` 钉住左侧,横向滚动时不跟着移;行号 `background:inherit` 取所在行底色(含 search-current 高亮),挡住滚过来的代码。与 VS Code / 一般编辑器一致。
 - **DiffViewer 补行号槽。** 此前 diff 没有行号(v0.3.2 时刻意没加)。本批从 hunk header `@@ -a,b +c,d @@` 解析行号:ctx 用 new-side、del 用 old-side、add 用 new-side(对齐 GitHub / VS Code)。DOM 改为 `[gutter(行号+符号) sticky][body pre]` 三段,gutter `background:inherit` 跟随行底色(add 绿/del 红/hunk 蓝)。
 - **中键拖动平移(手型工具)。** 新 `useMiddleClickPan` hook:按住鼠标中键上下/左右拖动自动滚动(浏览器 / VS Code / Acrobat 同款)。阻止原生中键自动滚动光标(Windows 默认那个圆形滚动图标)。TextViewer / DiffViewer / MarkdownViewer 三个滚动容器都接入。此前无法用中键拖动面板。
+- **后台终端的面板状态现在能持续更新。** 此前用户切去看终端 B 时,终端 A 变 orphan(`ownerWindowId=null`,见 `SessionManager.claimOwner` → `releaseAllOwnedBy`),而 `filePanelUpdated` / `gitStatusUpdated` 事件照搬了 PTY 字节流「仅推 owner 窗口」的策略,带 `if (!session?.ownerWindowId) return` 守卫 → orphan 期间的事件被直接丢弃,A 的面板状态在 renderer 里停在旧值,**下次切回 A 看到的还是旧文件列表 / 旧 diff**。现这两个事件改为 `broadcastEvent`(广播给所有窗口);PTY 字节流保持「定向 owner」不变(只有 owner 的 xterm 渲染它)。修复开发者反馈的「A 就不会发生面板切换,我下次换到 A 前台,面板依然是旧的」——不抢前台,只保证状态持续同步。
 
 ### 新增
 

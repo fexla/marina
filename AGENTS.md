@@ -4,8 +4,10 @@
 > 你正在 YOLO 模式下工作,大部分时间不需要打扰开发者。但有少数情况你必须立刻停下来。
 > 仔细读完整份文件再开始工作。
 
-文档版本:1.5 · 最后更新:2026-07-20
+文档版本:1.6 · 最后更新:2026-07-21
 
+> **v1.6 变更**:新增附录 F「开发构建版本号规则」—— 定义 `0.3.1-dev.N` 格式(SemVer 预发布后缀,`0.3.0 < 0.3.1-dev.N < 0.3.1`,装包是升级不降级),用于"需要产出可测试 portable 但改动量未到正式 bump"的中间态。dev 版本号 = 按附录 E 预判的正式 bump 目标 + `-dev.N`;CHANGELOG 与 version 严格同步(附录 E 纪律 3 零豁免)。附录 D 验收清单加「dev 构建文件名 + CHANGELOG 同步」校验项。
+>
 > **v1.5 变更**:新增附录 E「版本号规则」—— 定义 MINOR/PATCH 的 bump 标准 + 四条硬纪律(不为小更新单独发版、一次批量只 bump 一次、构建前同步 package.json ↔ CHANGELOG、一个版本一个条目)。纠偏此前 0.3.0/0.3.1/0.3.2 连 bump 的失误。附录 D 验收清单加「version 同步」第 1 项。
 >
 > **v1.4 变更**:新增附录 D「构建与打包速查」—— 固化 portable/nsis 构建命令、产物路径、icon 依赖、验收清单、失败排查顺序。避免每次重新 grep `electron-builder.yml` 与 `package.json` scripts。
@@ -898,6 +900,7 @@ E. 检查点之间想"顺手"重构 / 加新功能
 
 **portable 验收检查清单**(交付前必看):
 - [ ] **package.json version == CHANGELOG 最新版本号**(附录 E 纪律 3;不一致先同步再构建)
+- [ ] **dev 构建额外校验**(若本次是 dev 构建,见附录 F):version 形如 `0.3.1-dev.N`(SemVer 预发布,N 从 1 起递增);CHANGELOG 必须有对应 `## [0.3.1-dev.N]` 条目且与 package.json version 严格同步(附录 E 纪律 3 不豁免,同正式版一样要求 version↔CHANGELOG 对齐);产物文件名 / 目录名 / latest.yml 都应含 `-dev.N`
 - [ ] 双击 exe 能启动(不释放安装,直接跑)
 - [ ] userData 走 portable 旁的 `Marina/` 目录(portable 模式 %APPDATA% 行为见 electron-builder 文档,实测确认)
 - [ ] 托盘图标 + 右键菜单正常
@@ -941,7 +944,87 @@ E. 检查点之间想"顺手"重构 / 加新功能
 3. **构建前必须同步 package.json version ↔ CHANGELOG**(见附录 D 验收清单第 1 项)。二者不一致 = 构建阻塞。package.json 的 `version` 是“当前版本”的唯一真相源。
 4. **一个版本号 = 一个 CHANGELOG 条目**。patch 版本把多条小改动合并到同一条目下,不拆成多个版本。
 
-**当前版本状态**:0.3.0(2026-07-20,版本号规则生效后首个版本)。[Unreleased] 段有 viewer 布局修复 + 中键 pan + 语言表扩展(未分发,未 bump)。等攒够一批或正式发布时折成 0.3.1。
+**当前版本状态**:0.3.0(2026-07-20,版本号规则生效后首个版本)。其后积累的 viewer 子系统修复批(viewer 布局 / 中键 pan / diff 行号槽 / 后台面板状态 / 语言表扩展)已按附录 F 折成 `0.3.1-dev.1`(2026-07-21 首个开发构建)。正式 `0.3.1` 待攒够一批或正式发布时从 dev 条目升格。
+
+---
+
+## 附录 F:开发构建版本号规则(v1.6 新增)
+
+**场景**:需要产出可测试的 portable exe(给开发者本地验证 / agent 自测 / 少量内测),但改动量还没到附录 E 定义的"正式 bump"触发条件。这是介于"未 bump([Unreleased])"和"已 bump(正式版)"之间的**中间态** —— 代码动了、要出包给人跑,但主体版本号还不到正式 bump 的时候。
+
+**格式**:用 SemVer 的 **预发布后缀(连字符 `-`)**:把按附录 E 预判的"这批改动最终会 bump 到的版本号"提前写上,加 `-dev.N` 标记第 N 次开发构建。
+
+```
+0.3.1-dev.1   ✅ 预告下一个 PATCH(0.3.1) + 第 1 次开发构建
+0.3.1-dev.2
+0.3.1-dev.3
+0.4.0-dev.1   ✅ 若是 MINOR 级新功能,预告 0.4.0
+```
+
+> 注意是 `-dev.1`(连字符 + 点号分隔标识符),不是 `+dev.1`(加号 build 元数据)。理由见下"工具链实测"。
+
+**为什么是预发布 `-dev.N` 而不是 build 元数据 `+dev.N`(关键 + 工具链实测)**:
+- **SemVer 比较语义完美贴合需求**。SemVer 先比 core(`MAJOR.MINOR.PATCH`),core 相同才比 prerelease:
+  - `0.3.1-dev.1` vs `0.3.0` → core `0.3.1 > 0.3.0` → **dev 版是升级** ✅(已装 0.3.0 的机器装 dev 版不会被判降级)
+  - `0.3.1-dev.1` vs `0.3.1` → core 相同,有 prerelease 的更低 → **还没到正式 0.3.1** ✅
+  - 所以 `0.3.0 < 0.3.1-dev.1 < 0.3.1`,精确表达"比上个正式版新、但还不是下个正式版"。
+- **语义正确**:`0.3.0` 已正式发布,它不该再有 prerelease;`0.3.1` 还没发布,`-dev.1` 正是它通往正式版的开发预发布 —— 这是 SemVer 预发布版本的标准用法。
+- **🚨 工具链实测(踩坑教训)**:electron-builder 24.x **丢弃** build 元数据 `+dev.N`(产物目录、文件名、latest.yml 全部退化成纯 `0.3.0`,与正式版无法区分);但**保留**预发布后缀 `-dev.N`(目录 `release/0.3.1-dev.1/`、文件名 `Marina-Portable-0.3.1-dev.1-x64.exe`、latest.yml `version: 0.3.1-dev.1`,全带标识)。历史上 `release/0.2.4-remote-test.3` ~ `.6` 也是这个机制。所以 `+` 方案在工具链层根本不工作,`-` 方案原生支持、零额外配置。
+
+**版本号怎么定(dev 号 = 预判的正式 bump 目标 + `-dev.N`)**:
+- 先按附录 E 判断这批改动最终是 PATCH 还是 MINOR:打磨已有能力(viewer 修复、加菜单项、主题调色等)→ PATCH;开了新能力模块(如 Git 面板那种)→ MINOR
+- dev 版本号 = 那个预判目标 + `-dev.N`。例:当前批是 PATCH → `0.3.1-dev.1`;若以后加新功能模块 → `0.4.0-dev.1`
+- 这让 dev 版本号天然"预告"了正式发版时会变成什么,正式 bump 时只需去后缀
+
+**递增 & 重置规则**:
+- **起步**:`dev.1`(不是 dev.2 / dev.0)
+- **递增**:同一次预判目标下,每次产出新的 dev 构建 N + 1(`dev.1` → `dev.2` → `dev.3`)
+- **重置 / 升格**:正式 bump 去掉 `-dev.N` 后缀即可(`0.3.1-dev.N` → `0.3.1`);新一批积累重新预判目标,从 `0.3.2-dev.1` / `0.4.0-dev.1` 起。dev 号**绑定到具体的预判目标版本号**,不跨目标延续
+
+**package.json 的 version 字段怎么写**:
+- 平时(未产 dev 构建):version 保持上一个正式版,如 `0.3.0`
+- 产出 dev 构建时:version 改为 `0.3.1-dev.1`,构建后**保留**这个值(它代表"当前代码对应的最近构建快照")
+- 继续开发积累期间:version 保持 `0.3.1-dev.N` 不动,直到下次 dev 构建(递增)或正式 bump(去后缀)
+
+**与附录 E 的关系(分工,不冲突,零豁免)**:
+- **附录 E** 管"什么时候正式 bump 主体版本号" —— 正式发版纪律,**不动**
+- **附录 F** 管"正式 bump 之前,如何用预发布版本号标记开发构建" —— 本附录
+- **CHANGELOG 与 version 严格同步,无豁免**:产出 dev 构建时,把 `[Unreleased]` 段折成 `## [0.3.1-dev.1] — 日期` 条目(附录 E 纪律 3、4 对 dev 版本同样适用,dev 是真实 SemVer 版本号,不是构建标识)。附录 E 纪律 3"构建前同步 package.json version ↔ CHANGELOG"在 dev 构建场景**不需要豁免** —— 这正是 `+dev.N`(build 元数据,豁免)被 `-dev.N`(预发布版本,同步)取代的关键原因:后者让纪律 3 保持统一适用
+- 正式升格时:`0.3.1-dev.N` 条目合并升格为 `## [0.3.1] — 日期`(附录 E 纪律 4 的"一个版本一个条目"可把多个 dev 条目合成一个正式条目),version 去掉后缀,顶部新增空 `[Unreleased]`
+
+**dev 构建的用途边界**:
+- ✅ agent 自测产出 portable 验证
+- ✅ 给开发者本地测试未发版的积累改动
+- ✅ 给少量内测用户试用
+- ❌ **不**作为正式 GitHub Release 对外发布(那是 `[Unreleased]` 折成正式 PATCH/MINOR 的事,走附录 E)
+
+**不做什么**(与附录 E 攒批精神一致):
+- 不每个小 commit 都产 dev 构建。dev 构建也是"攒到需要测试 / 交付时"才产,避免 `0.3.1-dev.1` → `0.3.1-dev.2` → `0.3.1-dev.3` … 无意义的连发(同样的纠偏精神:此前 0.3.0/0.3.1/0.3.2 连 bump 是失误,dev 连发同理)
+- 不用 dev 构建绕过正式发版纪律。dev 构建是测试载体,**不替代**正式 bump
+
+**实操示例**(一次完整周期):
+
+```
+当前:0.3.0 已发布,[Unreleased] 攒了 5 条更新(判断为 PATCH 级)
+  ↓ 开发者想本地测这批改动,产出 dev 构建
+package.json: "version": "0.3.1-dev.1"
+CHANGELOG: [Unreleased] 折成 ## [0.3.1-dev.1] — 2026-xx-xx,顶部新增空 [Unreleased]
+产物:release/0.3.1-dev.1/Marina-Portable-0.3.1-dev.1-x64.exe
+  ↓ 又攒了 3 条 PATCH 级更新,再产一次 dev 构建给内测
+package.json: "version": "0.3.1-dev.2"
+CHANGELOG: ## [0.3.1-dev.2] — 2026-xx-xx(新条目,记新增 3 条)
+产物:release/0.3.1-dev.2/Marina-Portable-0.3.1-dev.2-x64.exe
+  ↓ 攒够了,正式发版
+package.json: "version": "0.3.1"(去后缀)
+CHANGELOG: dev 条目合并升格为 ## [0.3.1] — 2026-xx-xx,顶部空 [Unreleased]
+  ↓ 0.3.1 后又开始积累,暂时不构建
+package.json: "version": "0.3.1"(保持,直到下次 dev 构建或正式 bump)
+```
+
+**实现注记(工具链实测结论)**:
+- electron-builder 24.x 对 `-dev.N`(预发布)**完整保留**:目录名、文件名、latest.yml 都带。`artifactName` 默认 `${productName}-${version}-${arch}.${ext}`,无需改配置。
+- electron-builder 对 `+dev.N`(build 元数据)**全部丢弃**(实测,2026-07-21):目录退化成 `0.3.0/`、文件名 `Marina-Portable-0.3.0-x64.exe`、latest.yml `version: 0.3.0`,与正式版无法区分。这是本附录最终选 `-` 不选 `+` 的决定性原因。
+- npm `semver` / electron-updater 对预发布版本标准支持:`0.3.1-dev.1 > 0.3.0`(升级),装 dev 包不会被降级拦截。
 
 ---
 
