@@ -7,6 +7,17 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+## [0.3.2-dev.2] — 2026-07-23
+
+> **开发构建**(AGENTS.md 附录 F)。0.3.2-dev.1 后增补 PTY 吞吐/背压诊断与独立报告
+> 分析工具。仍预告版本号 `0.3.2`,dev 构建标识递增为 `-dev.2`。SemVer 上
+> `0.3.2-dev.1 < 0.3.2-dev.2 < 0.3.2`。产物 `Marina-Portable-0.3.2-dev.2-x64.exe`。
+
+### 新增
+
+- **PTY 吞吐与背压诊断(ADR-020 增补)。** 此前性能报告只记 `pty.outputBytes` 总量,远程/重负载场景(远程编译、tail 日志、cat 大文件)看不出是平稳流还是突发流,且 stall 全标“活跃操作:无”,无法判断是否由背压引起。现报告新增:每采样窗口的 bytes/s、chunks/s(从 counter delta 推导,零热路径开销);全程峰值速率与突发窗口计数(阈值固定 1 MiB/s);sessionOutput IPC 发送耗时分布(`pty.sessionOutputDispatch`,背压信号——renderer 跟不上时该调用变慢);8ms 合并窗口吸收字节峰值(`pty.peakPendingEmitBytes`);stall 记录携带近窗口 PTY 速率,能区分 stall 由流量突发/背压引起还是无关抖动。报告 Markdown 新增「PTY 数据吞吐与背压」段,stall 表新增「近 PTY 速率」列。
+- **独立报告分析工具** `scripts/analyze-performance-report.mjs`。传入报告 JSON 路径(或省略自动找最新)即可输出六维诊断:吞吐健康(总量/峰值/平均/突发)、背压事件(慢 dispatch)、stall↔流量相关性、瓶颈定位(operation heatmap)、内存健康、隐私自检。纯 Node 内置模块,零新依赖。
+
 ## [0.3.2-dev.1] — 2026-07-22
 
 > **开发构建**(AGENTS.md 附录 F)。0.3.1 发布后积累的性能诊断子系统 + 需求感知
