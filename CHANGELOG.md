@@ -7,22 +7,56 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+## [0.3.2-dev.1] — 2026-07-22
+
+> **开发构建**(AGENTS.md 附录 F)。0.3.1 发布后积累的性能诊断子系统 + 需求感知
+> 后台调度属 MINOR 级新能力模块,故预告版本号取 `0.3.2`,dev 构建标识 `-dev.1`。
+> SemVer 上 `0.3.1 < 0.3.2-dev.1 < 0.3.2`,装此包相对 0.3.1 是升级、不触发降级拦截;
+> 相对未来正式 0.3.2 仍是预发布。产物 `Marina-Portable-0.3.2-dev.1-x64.exe`。
+
+### 新增
+
+- **性能飞行记录器。** 每次运行自动在 `performance-reports/` 生成一份有界 JSON + Markdown：10 秒采样 main event-loop delay/utilization（100ms histogram resolution）、CPU/RSS/heap、active resource 类型、Electron Browser/Tab/GPU/Utility 进程 CPU/内存、window/session/Git watcher gauges；250ms timer 统计 >=100/250/1000ms stall；固定名称 operation heatmap 汇总 IPC、Git、session/PTY 生命周期。平时 5 分钟原子刷新，>=1 秒严重 stall 至多每 60 秒额外落盘；异常退出保留 `finalized:false` 最近现场，最多保留 30 次运行。自动报告不记录路径、命令、终端内容、IPC payload 或 stack trace。
+- **按需 15 秒 V8 CPU Profile。** 设置 -> 高级可显式捕获 main 进程 `.cpuprofile`；操作前提示函数名/本地源码路径隐私风险，服务端限制 5-30 秒、禁止并发采集且每 run 最多保留 5 份，从不因 stall 自动启动。
+- **性能报告入口。** 设置 -> 高级显示本次采样/stall/RSS 摘要，并提供“立即刷新报告”“打开报告目录”。
+- **0.3.2 性能飞行记录器条目重命名。** 上述三条为本批次飞行记录器能力（ADR-020）。
+- **需求感知后台任务调度器（ADR-021）。** 新增 main 端 `BackgroundWorkScheduler`，昂贵周期任务统一使用 recursive timeout、全局并发预算、HOT/WARM/NONE demand、多窗口最高需求合并、pre-registration demand 和 generation 竞态防护；窗口关闭、远程断线、owner/Session 生命周期统一清理。
+
+### 性能
+
+- **关键路径统一埋点。** IPC 注册中间件按固定 channel 统计 duration/error/in-flight；Git status/diff、poll skip、watcher/in-flight gauges 与 session/PTY counters 接入同一有界 registry。metric name 有 200 项硬上限，拒绝路径/动态高基数字符串。
+- **Git 扫描按真实 UI 需求降频。** 当前聚焦窗口的当前 Git 面板为 HOT：立即刷新、完成后 3 秒再扫；当前 Session 显示其他面板、dock 折叠或窗口失焦为 WARM：60 秒；切换 Session、owner 释放、退出/离仓/零窗口为 NONE：完全停止。所有自动 Git status 全局最多一个并发，同 session+cwd 的 mount 拉取/prefetch/HOT immediate 合并为一个子进程。
+
+## [0.3.1] — 2026-07-22
+
+> **正式 PATCH 版**。合并 `0.3.1-dev.1` / `0.3.1-dev.2` 两轮开发构建：集中完成
+> viewer 与面板体验修复、面板状态/图标/缩进基础设施、`show-in-marina` 路径查询、
+> Git 只读契约修正，以及长期运行后台轮询资源退化修复。
+
+### 新增
+
+- **文件条目图标按后缀名细分(ADR-019)。** 此前 file-tree / git / file-panel 三面板的文件条目清一色通用 `file` 图标。新增 `src/shared/file-icon.ts`(`fileIconFor`),按扩展名映射 9 类图标(文档 / 代码 / 配置 / 资产如 Unity 的 `.prefab`/`.asset`/`.meta` / 可执行 / 图片 / 压缩 / 锁文件 / 默认),复用既有扩展名判定思路;`icons.tsx` 注册对应 lucide 图标。目录仍用 `folder`。
+- **文件面板顶部「当前目录 / 临时工作区」切换(ADR-019)。** 此前双根并排为两个 section,现改为顶部 toolbar 按钮切换(常态双按钮;单/零根为 SSH 会话等异常兜底),活跃根跨重启记忆。
+- **面板 UI 状态分层基础设施(ADR-019)。** 新增 `src/shared/panel-ui-cache.ts`(L1,组件外缓存,切面板再切回不丢展开目录)+ `src/shared/panel-preferences.ts`(L2,localStorage,统一 key 规范 `marina.panel.<panelId>.<key>`,收编散落的裸 key 并惰性迁移)。file-tree / git-tree 展开态、git viewMode、file-tree activeRootId 接入对应层;新面板按决策树选层。
+
+### 变更
+
+- **树形缩进统一到单一真相源(ADR-019)。** 此前 file-tree 用 CSS 层叠缩进(`.file-tree-entry .file-tree-entry { margin-left:14px }`),git/file-panel 用 inline style(`depth*14`),14px 三处硬编码。现统一为 CSS 变量 `--tree-indent-unit` + `FileListRow` 的 `depth` prop 唯一渲染入口,file-tree 改走 depth 递归传递,两面板视觉/机制一致,新面板用 `FileListRow`+`depth` 即得正确缩进。
+
 ### 修复
 
-- **Git 面板后台轮询不再抢 `.git/index.lock`。** 此前 `GitService` 后台 watcher 每 3s 对 session cwd 所在仓库跑一次 `git status --porcelain=v2 -z --untracked-files=all`,而 `git status` 默认会做 index refresh 优化、**写回 `.git/index` 并短暂持锁 `~0.4s`**。用户反馈在 Marina 外部跑的自动化 `git commit` / `git add` 间歇性报 `Unable to create '.git/index.lock': File exists`(撞锁概率 ~15-20%)。现 `getStatus` / `getStatusInternal`(后台轮询路径)/ `produceDiff`(单文件查)三处 `git status` 全部加 `--no-optional-locks` flag——git 跳过需锁的可选操作,状态结果对只读展示完全不变(仍扫工作区检测改动),只是不持久化 index 缓存刷新。这也让 `GitService` 真正符合其「**永不写 `.git`**」的设计契约(§13.2 / §14.6):修复前每次 status 都在“偷偷写 `.git/index`”,只是写完即释放没造成数据损坏。回归断言已加进 `git-service.test.ts`。资源优化(watcher 绑定 Git 面板可见性、面板不可见时不轮询)暂缓,见 `docs/issues/git-1-background-status-poll-lock-contention.md`。
+- **长期运行不再因退出 session 的 Git 轮询累积而拖慢系统。** 此前每个 Git 仓库 session 都有 3 秒 `git status` poller；PTY 自然退出只进入 `exited`、不会 `sessionDestroyed`，因此关掉终端程序甚至所有窗口后 poller 仍永久 spawn `git.exe`，多个历史 session 会造成低平均 CPU 但明显的磁盘/Defender/游戏帧时间尖峰。现 exited/destroyed、cd 出仓库、运行时禁用 Git 四条路径都显式停止 watcher；慢 poll 加 per-session in-flight guard，禁止 3 秒 interval 与 5 秒 timeout 重叠；prefetch 在异步边界后重查 session state，防退出竞态“复活” watcher。新增 5 组生命周期/反压回归测试。
+- **`show-in-marina` 不再把 `$MARINA_WORKSPACE` 当作字面目录。** 内置 skill 旧规则要求始终使用变量符号,但 `write`/`edit`/Python/Node 等非 shell 工具不会展开 `$MARINA_WORKSPACE` 或 `$env:MARINA_WORKSPACE`,会在当前项目下错误创建同名字面目录。CLI 新增 `marina workspace`,输出当前 session 受管临时目录的绝对路径;skill 强制 AI 先执行该命令、取得具体路径后再传给写文件工具,并禁止构造 `<cwd>/$MARINA_WORKSPACE/...`。新增成功/未注入/目录不存在/多余参数集成测试。
+- **Git 面板既不抢 `.git/index.lock`,也不再误报“工作区干净”。** `git status` 默认会为 index refresh 写回 `.git/index` 并短暂持锁,会干扰外部 `git commit`/`add`。0.3.1-dev.1 尝试给三处 status 加 `--no-optional-locks`,但它是 git **全局选项**,旧实现却把它放在 `status` 子命令参数末尾(`git status ... --no-optional-locks`)→ status 报 unknown option、exit 129;真实有大量改动的 Unity 仓库因此被面板误报为“干净”。现 `runGit` 对所有 git 子进程统一注入 env `GIT_OPTIONAL_LOCKS=0`——无参数位置问题、状态结果不变、仍不写 index/不持锁。真实 Git 2.49.0.windows.1 仓库验证 status exit 0;`git-service.test.ts` 同时守护“命令行不带错误 flag + env 注入为 0”。资源优化(watcher 绑定面板可见性)仍暂缓。
 
-## [0.3.1-dev.1] — 2026-07-21
-
-> **开发构建**(AGENTS.md 附录 F)。0.3.0 发布后积累的 viewer 子系统修复批,改动量是 PATCH 级(打磨 0.3.0 已有的 diff / 代码查看能力,无新能力模块),故预告版本号取 `0.3.1`,dev 构建标识 `-dev.1`。SemVer 上 `0.3.0 < 0.3.1-dev.1 < 0.3.1`,装此包相对 0.3.0 是升级、不触发降级拦截;相对未来正式 0.3.1 仍是预发布。产物 `Marina-Portable-0.3.1-dev.1-x64.exe`。
-
-### 修复
+### 修复（dev.1 阶段）
 
 - **代码查看器布局:行号栏与代码栏分离(TextViewer + DiffViewer)。** 此前 TextViewer 用 `white-space: pre-wrap` + `word-break: break-all` + `inline-block` 行号,长行换行时换行文字从容器的 `x=0` 开始,**盖住行号栏**(开发者反馈)。改为 grid 双列:`[行号 sticky left:0][代码 white-space:pre]`。代码**不换行**,超宽出水平滚动条;行号 `position:sticky` 钉住左侧,横向滚动时不跟着移;行号 `background:inherit` 取所在行底色(含 search-current 高亮),挡住滚过来的代码。与 VS Code / 一般编辑器一致。
 - **DiffViewer 补行号槽。** 此前 diff 没有行号(v0.3.2 时刻意没加)。本批从 hunk header `@@ -a,b +c,d @@` 解析行号:ctx 用 new-side、del 用 old-side、add 用 new-side(对齐 GitHub / VS Code)。DOM 改为 `[gutter(行号+符号) sticky][body pre]` 三段,gutter `background:inherit` 跟随行底色(add 绿/del 红/hunk 蓝)。
 - **中键拖动平移(手型工具)。** 新 `useMiddleClickPan` hook:按住鼠标中键上下/左右拖动自动滚动(浏览器 / VS Code / Acrobat 同款)。阻止原生中键自动滚动光标(Windows 默认那个圆形滚动图标)。TextViewer / DiffViewer / MarkdownViewer 三个滚动容器都接入。此前无法用中键拖动面板。
 - **后台终端的面板状态现在能持续更新。** 此前用户切去看终端 B 时,终端 A 变 orphan(`ownerWindowId=null`,见 `SessionManager.claimOwner` → `releaseAllOwnedBy`),而 `filePanelUpdated` / `gitStatusUpdated` 事件照搬了 PTY 字节流「仅推 owner 窗口」的策略,带 `if (!session?.ownerWindowId) return` 守卫 → orphan 期间的事件被直接丢弃,A 的面板状态在 renderer 里停在旧值,**下次切回 A 看到的还是旧文件列表 / 旧 diff**。现这两个事件改为 `broadcastEvent`(广播给所有窗口);PTY 字节流保持「定向 owner」不变(只有 owner 的 xterm 渲染它)。修复开发者反馈的「A 就不会发生面板切换,我下次换到 A 前台,面板依然是旧的」——不抢前台,只保证状态持续同步。
 
-### 新增
+### 新增（dev.1 阶段）
 
 - **diff/代码语法高亮语言表扩到 18 种。** 开发者反馈打开 go/rust/java 等文件的 diff “看起来没高亮”——其实是这些扩展名不在按需注册表里,回退纯 diff 语言(只有行底色)。补 go / rust / java / kotlin / ruby / php / sql 共 7 种(+~58KB)。现覆盖 ts/js/py/json/bash/yaml/markdown/xml/c/cpp/cs/go/rust/java/kotlin/ruby/php/sql。
 
