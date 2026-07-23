@@ -10,7 +10,14 @@
  *   ipc-protocol.md 第 4 章 handshake
  */
 import { useEffect, useState } from 'react';
-import { COMMAND_CHANNELS, PROTOCOL_VERSION } from '@shared/protocol';
+import {
+  COMMAND_CHANNELS,
+  EVENT_CHANNELS,
+  PROTOCOL_VERSION,
+  type GitStatusUpdatedPayload,
+  type SessionDestroyedPayload,
+} from '@shared/protocol';
+import { clearCachedStatus, setCachedStatus } from '@shared/git-status-cache';
 import { AppStateProvider, useAppDispatch, useAppState, useIpcSync } from './store';
 import { Sidebar } from './components/Sidebar';
 import { MainPane } from './components/MainPane';
@@ -107,7 +114,10 @@ export function App(): JSX.Element {
         // 远程窗口连不上 daemon 时,getProtocolVersion()→invoke()→ensureTransport()
         // 会 throw ConnectError(带 code)。提取 code 供错误页给针对性诊断。
         const errorCode =
-          err !== null && typeof err === 'object' && 'code' in err && typeof (err as { code?: unknown }).code === 'string'
+          err !== null &&
+          typeof err === 'object' &&
+          'code' in err &&
+          typeof (err as { code?: unknown }).code === 'string'
             ? (err as { code: string }).code
             : null;
         setHandshake({
@@ -151,10 +161,7 @@ export function App(): JSX.Element {
       // (不调 useIpcSync),settings 保持空默认值 → theme fallback 'rose-pine',
       // WindowChrome / LanguageProvider 读默认 context 正常渲染,不崩溃。
       return (
-        <AppStateProvider
-          myWindowId={window.api.windowId}
-          myWindowNumber={window.api.windowNumber}
-        >
+        <AppStateProvider myWindowId={window.api.windowId} myWindowNumber={window.api.windowNumber}>
           <RemoteConnectionErrorScreen
             errorMessage={handshake.message}
             errorCode={handshake.errorCode}
@@ -192,6 +199,33 @@ function ConnectedShell({
   const sync = useIpcSync();
   const state = useAppState();
   const dispatch = useAppDispatch();
+
+  // ADR-021:GitPanel 在 WARM（其他面板/折叠/失焦）时会卸载，但 60s 后台结果仍
+  // 必须写组件外缓存。根层 bridge 常驻；GitPanel 自己的 listener 只负责 live state。
+  useEffect(() => {
+    const offStatus = window.api.on<GitStatusUpdatedPayload>(
+      EVENT_CHANNELS.GIT_STATUS_UPDATED,
+      (payload) => {
+        if ('unavailable' in payload && payload.unavailable !== undefined) {
+          setCachedStatus(payload.sessionId, { unavailable: payload.unavailable, at: Date.now() });
+          return;
+        }
+        setCachedStatus(payload.sessionId, {
+          groups: payload.groups ?? [],
+          truncated: payload.truncated ?? false,
+          at: Date.now(),
+        });
+      },
+    );
+    const offDestroyed = window.api.on<SessionDestroyedPayload>(
+      EVENT_CHANNELS.SESSION_DESTROYED,
+      ({ sessionId }) => clearCachedStatus(sessionId),
+    );
+    return () => {
+      offStatus();
+      offDestroyed();
+    };
+  }, []);
 
   const currentTheme = state.settings.appearance?.theme ?? 'rose-pine';
   const windowStyle = state.settings.appearance?.windowStyle ?? 'windows';
@@ -420,9 +454,7 @@ function getRemoteErrorDiagnosis(errorCode: string | null): {
     case 'PROFILE_INCOMPLETE':
       return {
         title: '这台远程电脑配置不完整',
-        checklist: [
-          '去 设置 → 远程连接 → 连接到其他电脑,把 IP 和连接密码都填上。',
-        ],
+        checklist: ['去 设置 → 远程连接 → 连接到其他电脑,把 IP 和连接密码都填上。'],
       };
     default:
       return {
@@ -491,11 +523,7 @@ function RemoteConnectionErrorScreen({
   // 包完整 Provider 树(与主界面一致),确保 WindowChrome / CSS 变量 / portal 容器正常。
   return (
     <LanguageProvider>
-      <div
-        className="app-root with-shell"
-        data-theme={currentTheme}
-        data-window-style="windows"
-      >
+      <div className="app-root with-shell" data-theme={currentTheme} data-window-style="windows">
         <WindowChrome windowStyle="windows" buildVersion={buildVersion} buildType={buildType} />
         <div className="remote-error-screen">
           <div className="remote-error-card">
@@ -513,7 +541,14 @@ function RemoteConnectionErrorScreen({
             {/* 详细错误默认展开(不用 details 折叠),确保始终可见 + 可选中复制 */}
             <div className="remote-error-detail">
               <div className="remote-error-detail-label">详细错误(可选中,或点按钮复制)</div>
-              <pre className="remote-error-pre" ref={(el) => { /* 允许直接选中 */ void el; }}>{errorMessage}</pre>
+              <pre
+                className="remote-error-pre"
+                ref={(el) => {
+                  /* 允许直接选中 */ void el;
+                }}
+              >
+                {errorMessage}
+              </pre>
               <button
                 type="button"
                 className="settings-button remote-error-copy"

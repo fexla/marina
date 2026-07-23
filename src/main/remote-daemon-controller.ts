@@ -36,6 +36,8 @@ export interface RemoteDaemonControllerDeps {
   getCredentialsToken: () => string | null;
   /** 持久化新密码(index 注入:setDaemonPassword 落盘)。空字符串拒。 */
   persistPassword: (plaintext: string) => Promise<void>;
+  /** client 断线即时副作用（如撤销 demand）；Session owner 仍遵循 RemoteDaemon 宽限期。 */
+  onClientGone?: (clientId: string) => void;
 }
 
 /** 服务端运行状态(推给 renderer UI 展示)。 */
@@ -114,7 +116,10 @@ export class RemoteDaemonController {
       token,
       dispatch: this.deps.dispatch,
       onClientAuthenticated: () => this.emitStatus(),
-      onClientGone: () => this.emitStatus(),
+      onClientGone: (clientId) => {
+        this.deps.onClientGone?.(clientId);
+        this.emitStatus();
+      },
     });
     remoteDaemon.install();
     // start 可能抛端口占用;抛前不提交状态(保持 wsServer=null)

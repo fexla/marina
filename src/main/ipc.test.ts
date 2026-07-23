@@ -18,6 +18,9 @@
  * 不在这里覆盖:大部分 handler 走 manager 内部逻辑,manager 自己有完整单测;
  * ipc.ts 是薄编排层,只测那些"编排本身就能错"的命令。
  */
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { COMMAND_CHANNELS, EVENT_CHANNELS } from '@shared/protocol';
 import type { CommandEnvelope, CreateSessionPayload } from '@shared/protocol';
@@ -64,9 +67,9 @@ const { handlers, mockApp, mockBrowserWindow, mockClipboard, mockDialog, mockShe
       showOpenDialog: (): Promise<unknown> => Promise.resolve({ canceled: true }),
     };
     const mockShell = {
-      openExternal: (): Promise<void> => Promise.resolve(),
-      openPath: (): Promise<string> => Promise.resolve(''),
-      showItemInFolder: (): void => {},
+      openExternal: vi.fn((): Promise<void> => Promise.resolve()),
+      openPath: vi.fn((): Promise<string> => Promise.resolve('')),
+      showItemInFolder: vi.fn(),
     };
     return {
       handlers,
@@ -234,6 +237,31 @@ function makeStubs() {
     on: vi.fn(),
   };
 
+  const performanceStatus = {
+    runId: 'run-test',
+    startedAt: '2026-01-01T00:00:00.000Z',
+    enabled: true,
+    finalized: false,
+    sampleCount: 2,
+    stallCount100Ms: 0,
+    stallCount250Ms: 0,
+    stallCount1000Ms: 0,
+    maxStallMs: 0,
+    latestMainCpuPercent: 1,
+    latestRssBytes: 1024,
+    reportFileName: 'run-test.md',
+    cpuProfileRunning: false,
+  };
+  const performanceDiagnostics = {
+    getStatus: vi.fn(() => performanceStatus),
+    writeReportNow: vi.fn(async () => performanceStatus),
+    getReportDir: vi.fn(() => '/tmp/marina-test/performance-reports'),
+    captureCpuProfile: vi.fn(async (durationSeconds: number) => ({
+      path: '/tmp/marina-test/performance-reports/test.cpuprofile',
+      durationSeconds,
+    })),
+  };
+
   const fileTreeService = {
     getRoots: vi.fn(async () => []),
     listDirectory: vi.fn(async () => ({
@@ -268,6 +296,7 @@ function makeStubs() {
         { getPathForSession: () => null },
         new FilePanelService(),
       ),
+      performanceDiagnostics: performanceDiagnostics as unknown,
       skillInstaller: {
         install: vi.fn(async () => ({ installed: [], conflicts: [] })),
       } as unknown,
@@ -285,6 +314,7 @@ function makeStubs() {
       windowManager,
       sshProfileManager,
       fileTreeService,
+      performanceDiagnostics,
     },
   };
 }
@@ -516,6 +546,96 @@ describe('IPC SESSION_FOCUS_OWNER', () => {
         payload: { reason: 'session-click', selectSessionId: session.id },
       }),
     );
+  });
+});
+
+describe('IPC GIT demand lifecycle wiring', () => {
+  it('owner change 与本地窗口关闭分别清 task demand / consumer', async () => {
+    const { installIpcLayer } = await freshIpc();
+    const { deps, stubs } = makeStubs();
+    const ownerChanged = vi.spyOn(deps.gitService, 'onSessionOwnerChanged');
+    const removeConsumer = vi.spyOn(deps.gitService, 'removePollingConsumer');
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    const ownerRegistration = stubs.sessionManager.on.mock.calls.find(
+      ([event]) => event === 'sessionOwnerChanged',
+    );
+    expect(ownerRegistration).toBeTruthy();
+    const ownerHandler = ownerRegistration![1] as (payload: unknown) => void;
+    ownerHandler({
+      sessionId: 'session-1',
+      oldOwnerWindowId: 'window-old',
+      newOwnerWindowId: 'window-new',
+    });
+    expect(ownerChanged).toHaveBeenCalledWith('session-1');
+
+    const closedHandler = stubs.windowManager.onWindowClosed.mock.calls.at(-1)![0] as (
+      windowId: string,
+    ) => void;
+    closedHandler('window-closed');
+    expect(removeConsumer).toHaveBeenCalledWith('window-closed');
+    expect(stubs.sessionManager.handleWindowClosed).toHaveBeenCalledWith('window-closed');
+  });
+});
+
+describe('IPC GIT polling demand', () => {
+  it('只用可信 envelope.windowId 作为 consumerId 透传 HOT/WARM/NONE', async () => {
+    const { installIpcLayer } = await freshIpc();
+    const { deps } = makeStubs();
+    const setDemand = vi.spyOn(deps.gitService, 'setPollingDemand').mockImplementation(() => {});
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    const handler = handlers.get(COMMAND_CHANNELS.GIT_SET_POLLING_DEMAND);
+    expect(handler).toBeTruthy();
+    await handler!(
+      {},
+      {
+        windowId: 'trusted-client-id',
+        requestId: 'git-demand-1',
+        payload: { sessionId: 'session-1', level: 'hot', consumerId: 'spoofed' },
+      },
+    );
+
+    expect(setDemand).toHaveBeenCalledWith('session-1', 'trusted-client-id', 'hot');
+  });
+});
+
+describe('IPC PERFORMANCE', () => {
+  it('status/write/profile 四条本地命令透传到诊断器且 profile 缺省为 15 秒', async () => {
+    const { installIpcLayer } = await freshIpc();
+    const { deps, stubs } = makeStubs();
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+    const envelope = { windowId: 'local', requestId: 'perf-1', payload: {} };
+
+    expect(handlers.get(COMMAND_CHANNELS.PERFORMANCE_GET_STATUS)!({}, envelope)).toBe(
+      stubs.performanceDiagnostics.getStatus(),
+    );
+    await expect(
+      handlers.get(COMMAND_CHANNELS.PERFORMANCE_WRITE_REPORT)!({}, envelope),
+    ).resolves.toBe(stubs.performanceDiagnostics.getStatus());
+    await expect(
+      handlers.get(COMMAND_CHANNELS.PERFORMANCE_CAPTURE_CPU_PROFILE)!({}, envelope),
+    ).resolves.toMatchObject({ durationSeconds: 15 });
+    expect(stubs.performanceDiagnostics.writeReportNow).toHaveBeenCalledOnce();
+    expect(stubs.performanceDiagnostics.captureCpuProfile).toHaveBeenCalledWith(15);
+  });
+
+  it('打开报告目录时传播 shell.openPath 的错误字符串', async () => {
+    const reportDir = await mkdtemp(join(tmpdir(), 'marina-ipc-performance-'));
+    try {
+      const { installIpcLayer } = await freshIpc();
+      const { deps, stubs } = makeStubs();
+      stubs.performanceDiagnostics.getReportDir.mockReturnValue(reportDir);
+      mockShell.openPath.mockResolvedValueOnce('Explorer unavailable');
+      installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+      const envelope = { windowId: 'local', requestId: 'perf-open', payload: {} };
+      await expect(
+        handlers.get(COMMAND_CHANNELS.PERFORMANCE_OPEN_REPORTS_DIR)!({}, envelope),
+      ).rejects.toThrow('Explorer unavailable');
+    } finally {
+      await rm(reportDir, { recursive: true, force: true });
+    }
   });
 });
 

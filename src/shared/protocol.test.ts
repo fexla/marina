@@ -84,6 +84,15 @@ describe('command routing (每窗口后端架构边界)', () => {
     expect(getCommandRouting(COMMAND_CHANNELS.REMOTE_DAEMON_SET_PASSWORD)).toBe('local-control');
   });
 
+  it('性能诊断路由为 local-control(分析当前客户端 main 进程)', () => {
+    expect(getCommandRouting(COMMAND_CHANNELS.PERFORMANCE_GET_STATUS)).toBe('local-control');
+    expect(getCommandRouting(COMMAND_CHANNELS.PERFORMANCE_WRITE_REPORT)).toBe('local-control');
+    expect(getCommandRouting(COMMAND_CHANNELS.PERFORMANCE_OPEN_REPORTS_DIR)).toBe('local-control');
+    expect(getCommandRouting(COMMAND_CHANNELS.PERFORMANCE_CAPTURE_CPU_PROFILE)).toBe(
+      'local-control',
+    );
+  });
+
   it('APP_QUIT 路由为 local-control(退出当前客户端进程)', () => {
     expect(getCommandRouting(COMMAND_CHANNELS.APP_QUIT)).toBe('local-control');
   });
@@ -97,6 +106,8 @@ describe('command routing (每窗口后端架构边界)', () => {
     expect(getCommandRouting(COMMAND_CHANNELS.BOOKMARK_ADD)).toBe('backend-data');
     expect(getCommandRouting(COMMAND_CHANNELS.SETTINGS_GET)).toBe('backend-data');
     expect(getCommandRouting(COMMAND_CHANNELS.APP_GET_SNAPSHOT)).toBe('backend-data');
+    // Git task 在当前 backend 执行；远程窗口必须把 demand 发给 daemon。
+    expect(getCommandRouting(COMMAND_CHANNELS.GIT_SET_POLLING_DEMAND)).toBe('backend-data');
   });
 
   it('文件面板/文件树命令路由为 backend-data(session 与受限文件根均在 daemon 上)', () => {

@@ -124,6 +124,26 @@ describe('WsServer — 连接生命周期', () => {
     expect(disconnectedId).toBe(seenClientId);
   });
 
+  it('server.stop 强制断开时仍触发 disconnected（供 demand/session 清理）', async () => {
+    const { server, port } = await startServer();
+    let connectedId = '';
+    const connected = new Promise<void>((resolve) =>
+      server.onClientConnected((transport) => {
+        connectedId = transport.clientId;
+        resolve();
+      }),
+    );
+    await connect(port);
+    await connected;
+    const disconnected = new Promise<string>((resolve) =>
+      server.onClientDisconnected((clientId) => resolve(clientId)),
+    );
+
+    await server.stop();
+    await expect(disconnected).resolves.toBe(connectedId);
+    expect(server.clientCount()).toBe(0);
+  });
+
   it('clientCount 随连接/断开增减', async () => {
     const { server, port } = await startServer();
     expect(server.clientCount()).toBe(0);

@@ -41,6 +41,7 @@ import {
 import { FilePanelService } from './file-panel-service';
 import { FileTreeService } from './file-tree-service';
 import { GitService } from './git-service';
+import { BackgroundWorkScheduler } from './background-work-scheduler';
 import { SessionWorkspaceManager } from './session-workspace-manager';
 import { SkillInstaller } from './skill-installer';
 import { MarkdownThemeManager } from './markdown-theme-manager';
@@ -55,6 +56,7 @@ import {
 } from './argv-utils';
 import { getBuildType } from './build-type';
 import { logger } from './logger';
+import { PerformanceDiagnostics } from './performance-diagnostics';
 import type {
   BookmarksFile,
   RecentFile,
@@ -249,16 +251,38 @@ function bootstrap(): void {
   // + filePanelService 依赖)。runtimeConfig(enableGitPanel / gitBinaryPath)由
   // settings 驱动,启动后与 SettingsManager.change 事件同步,这样设置页改开关
   // 立即生效(SessionManager 据此重算所有 session 的 LayoutNode,Git tab 出现/消失)。
+  // ADR-021:昂贵周期任务共享全局并发预算。当前先迁移 Git status；调度器本身
+  // 不承载 idle/debounce/performance stall 等语义 timer。
+  const backgroundWorkScheduler = new BackgroundWorkScheduler({ maxConcurrent: 1 });
   const gitService = new GitService(
     sessionManager,
     sessionWorkspaceManager,
     filePanelService,
+    backgroundWorkScheduler,
   );
   gitService.setRuntimeConfig({
     enableGitPanel: settingsManager.get().advanced.enableGitPanel,
     gitBinaryPath: settingsManager.get().advanced.gitBinaryPath,
   });
   const trayManager = new TrayManager(windowManager, sessionManager, settingsManager);
+  // 0.3.2 性能飞行记录器独立于 BrowserWindow 生命周期。关闭全部窗口后仍采样
+  // main/GPU/utility 进程、event-loop stall 与固定业务操作；自动报告不含路径/
+  // 命令/终端内容。对象在 ready 前构造,start 在 app.whenReady 内调用。
+  const performanceDiagnostics = new PerformanceDiagnostics({
+    reportDir: join(dataDir, 'performance-reports'),
+    appVersion: app.getVersion(),
+    getAppMetrics: () => app.getAppMetrics(),
+    getRuntimeContext: () => {
+      const sessions = sessionManager.list();
+      const exited = sessions.filter((item) => item.state === 'exited').length;
+      return {
+        windows: windowManager.count(),
+        sessionsTotal: sessions.length,
+        sessionsLive: sessions.length - exited,
+        sessionsExited: exited,
+      };
+    },
+  });
 
   // M1-G:WindowManager 工厂注入 — 把 settings.windowDefaults 包成
   // initialBounds + onBeforeClose,所有 createWindow 入口共用。
@@ -348,8 +372,40 @@ function bootstrap(): void {
     }
   });
 
-  app.on('before-quit', () => {
+  let quitFinalizationState: 'idle' | 'flushing' | 'ready' = 'idle';
+  app.on('before-quit', (event) => {
     isQuitting = true;
+    if (quitFinalizationState === 'ready') return;
+    // Electron 不等待 async event listener。第一次退出必须 preventDefault，显式等
+    // report/store 的 1 秒预算后再 app.quit；否则 finalized=true 只写在内存里。
+    event.preventDefault();
+    if (quitFinalizationState === 'flushing') return;
+    quitFinalizationState = 'flushing';
+    sessionManager.shutdown();
+    gitService.shutdownPolling();
+    backgroundWorkScheduler.shutdown();
+    void (async () => {
+      logger.info('main', 'before-quit: shutting down session manager + flushing stores');
+      try {
+        const flushAll = Promise.all([
+          settingsManager.flush(),
+          pathManager.flush(),
+          sshProfileManager.flush(),
+          remoteProfileManager.flush(),
+          knownHostsManager.flush(),
+          templatesManager.flush(),
+          sessionWorkspaceManager.flush(),
+          performanceDiagnostics.stop(),
+          logger.flush(),
+        ]);
+        await Promise.race([flushAll, new Promise<void>((resolve) => setTimeout(resolve, 1000))]);
+      } catch (err) {
+        logger.warn('main', 'flush during quit failed', err);
+      } finally {
+        quitFinalizationState = 'ready';
+        app.quit();
+      }
+    })();
   });
 
   app.whenReady().then(async () => {
@@ -359,6 +415,16 @@ function bootstrap(): void {
       // 仍保留 webContents.before-input-event 拦截 F12 / Ctrl+Shift+I 开 DevTools
       // (在 window-manager.ts 内单独注册,与 menu 是否存在无关)。
       Menu.setApplicationMenu(null);
+
+      // 每次成功进入 Electron ready 的 run 立即落一份 finalized=false skeleton。
+      // 后续即使 main native crash 来不及跑 will-quit,仍有最近周期现场；>=1s
+      // 严重 stall 还会按 60 秒限频额外刷新。
+      try {
+        await performanceDiagnostics.start();
+      } catch (error) {
+        // 诊断工具绝不能反过来阻止终端启动。目录无权限/磁盘满时降级为日志告警。
+        logger.warn('main', 'performance diagnostics start failed (app continues)', error);
+      }
 
       // CP-4 勘误 #3:自动放行 'local-fonts' 权限 — 让 renderer 可以调用
       // navigator.fonts.query() / window.queryLocalFonts() 枚举系统字体,
@@ -464,7 +530,9 @@ function bootstrap(): void {
       // (只接受 cwd + pathKind,不持 session 引用),避免循环依赖。注入后,
       // 已存在 + 后续新 session 都会异步评估 → Git tab 出现/消失。
       sessionManager.attachGitAvailabilityProvider((cwdReal, pathKind) =>
-        gitService.evaluateAvailability(cwdReal, pathKind).then((r) => ({ available: r.available })),
+        gitService
+          .evaluateAvailability(cwdReal, pathKind)
+          .then((r) => ({ available: r.available })),
       );
       // v0.3.0 预取:cwd 进仓库时让 GitService 后台拉 status 推给 renderer 填缓存,
       // 消除面板切换延迟(AGENTS.md §10)。
@@ -512,6 +580,9 @@ function bootstrap(): void {
           await setDaemonPassword(app.getPath('userData'), safeStorage, plaintext);
           currentDaemonToken = plaintext;
         },
+        // 网络断开立刻撤 demand，避免重连宽限期内继续 HOT poll；Session owner
+        // 仍由 RemoteDaemon 原有 10 秒宽限期管理，两套生命周期互不混淆。
+        onClientGone: (clientId) => gitService.removePollingConsumer(clientId),
       });
 
       installIpcLayer({
@@ -527,6 +598,7 @@ function bootstrap(): void {
         filePanelService,
         fileTreeService,
         gitService,
+        performanceDiagnostics,
         skillInstaller,
         markdownThemeManager,
         aiClient,
@@ -767,27 +839,9 @@ function bootstrap(): void {
     }
   });
 
-  // 真退出前:杀 PTY、刷盘、销毁托盘
-  app.on('will-quit', async () => {
-    if (!isQuitting) return; // 防御性:不该走到这,因为 before-quit 已 set
-    logger.info('main', 'will-quit: shutting down session manager + flushing stores');
-    sessionManager.shutdown();
-    try {
-      // 等数据落盘最多 1 秒,避免无限 block
-      const flushAll = Promise.all([
-        settingsManager.flush(),
-        pathManager.flush(),
-        sshProfileManager.flush(),
-        remoteProfileManager.flush(),
-        knownHostsManager.flush(),
-        templatesManager.flush(),
-        sessionWorkspaceManager.flush(),
-        logger.flush(),
-      ]);
-      await Promise.race([flushAll, new Promise<void>((resolve) => setTimeout(resolve, 1000))]);
-    } catch (err) {
-      logger.warn('main', 'flush during quit failed', err);
-    }
+  // 异步 flush 已由 before-quit 显式阻塞完成；will-quit 只能做同步收尾。
+  app.on('will-quit', () => {
+    if (!isQuitting) return;
     trayManager.destroy();
   });
 

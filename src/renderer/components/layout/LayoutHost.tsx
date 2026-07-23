@@ -20,6 +20,7 @@ import { Icon } from '../icons';
 import { useTranslation } from '../LanguageProvider';
 import { SearchBar } from '../common/SearchBar';
 import { usePanelSearchShortcut } from '../../hooks/usePanelSearchShortcut';
+import { useGitPollingDemand } from '../../hooks/useGitPollingDemand';
 import { isRegisteredPanelId, PANEL_REGISTRY, type RegisteredPanelId } from './panel-registry';
 
 const RIGHT_DOCK_MIN_WIDTH = 280;
@@ -121,6 +122,15 @@ function PanelStack({
   const dragCleanupRef = useRef<(() => void) | null>(null);
   const openedCount = appState.filePanels.get(session.id)?.files.length ?? 0;
   const width = pendingWidth ?? persisted.width;
+
+  // ADR-021:PanelStack 是“当前 Session + 当前面板”的 UI 真值源。Git 可见且本窗口
+  // 聚焦时 HOT(3s)，显示其他面板/失焦时 WARM(60s)，非 owner/unmount 时 NONE。
+  useGitPollingDemand({
+    sessionId: session.id,
+    gitAvailable: panelIds.includes('git'),
+    gitVisible: activePanelId === 'git' && !persisted.collapsed,
+    isOwner: session.ownerWindowId === appState.myWindowId,
+  });
 
   // v0.3.1:dock 级面板搜索(Ctrl+F 唤出)。状态在 PanelStack 持有,随 session
   // 生命周期(切 session remount → 重置)。query 跨 panel 共享(切 tab 不清),
@@ -254,7 +264,11 @@ function PanelStack({
   const ActivePanel = activeDefinition.Component;
   // search props 对象(传给 ActivePanel)。每渲染重建,但面板用 useMemo 依赖
   // query/caseSensitive/visible,不会过度重算。
-  const searchProps = { query: searchQuery, caseSensitive: searchCaseSensitive, visible: searchVisible };
+  const searchProps = {
+    query: searchQuery,
+    caseSensitive: searchCaseSensitive,
+    visible: searchVisible,
+  };
   return (
     <aside className="panel-dock" style={{ width }}>
       <div

@@ -159,16 +159,54 @@ e86dd4a docs(git): PRD for Git panel + unified file entry abstraction
 
 **根因**:`git status` 不带 `--no-optional-locks` 时**实际会写 `.git/index`**(就是这造成了 lock)——这同时是 Marina 自家「永不写 `.git`」契约(§13.2 / §14.6 / ADR-017 安全边界)的**无意违规**:修复前每次 status 都在「偷偷写 `.git/index`」,只是写完即释放、没造成数据损坏。
 
-**修复**:`git-service.ts` 全部 3 处 `git status` 调用(`getStatus` / `getStatusInternal` 后台轮询路径 / `produceDiff` 单文件查)加 `--no-optional-locks` flag。git 跳过需锁的可选操作,状态结果对只读展示完全不变(仍扫工作区检测改动),只是不持久化 index 缓存刷新。不再创建 `.git/index.lock` → 不再干扰外部 git 写操作;同时严格符合「永不写 `.git`」契约。
+**修复(含兼容性修正)**:`git-service.ts` 对所有 git 子进程统一注入 env `GIT_OPTIONAL_LOCKS=0`,等价于正确位置的全局选项 `git --no-optional-locks ...`,既跳过需锁的 index refresh、又没有参数位置问题。0.3.1-dev.1 曾把全局选项错放成 `git status ... --no-optional-locks` → status exit 129 → 面板误报“干净”;现明确禁止恢复该写法。
 
 **验证**:
 - ✅ `npm run typecheck` 通过
-- ✅ `npm test`:857/857 全绿(新增回归断言:status 调用 args 必含 `--no-optional-locks`)
+- ✅ `git-service.test.ts`:36/36 全绿(命令行不含错误 flag + env 继承父环境并注入 `GIT_OPTIONAL_LOCKS=0`)
 - ✅ `npm run lint` 零告警
 
 **暂缓(资源优化,非正确性)**:watcher 绑定 Git 面板可见性(面板不可见时不轮询)。现状 watcher 生命周期完全在 main 端驱动,与面板可见性解耦,门控需新增 renderer→main IPC + 多窗口聚合,属跨层新能力(MINOR 级),不塞进本次勘误。详见 `docs/issues/git-1-background-status-poll-lock-contention.md`。
 
 **文档同步**:CHANGELOG `[Unreleased]` / 软件定义书 ADR-017 安全边界(增「实现纪律」注)/ AGENTS.md CP-4 完成标志(增勘误 #6 条)。
+
+---
+
+## 0.3.1 正式版修复 — 长期运行后台 poller 退化(2026-07-22)
+
+**触发**:用户反馈 Marina 长时间运行后出现系统级间歇卡顿与游戏掉帧；即使关闭全部窗口、终端程序自然退出，任务管理器平均 CPU 仍不明显。
+
+**修复**:
+- PTY `exited` / session destroyed / cwd 离开仓库 / 禁用 Git 四条路径都停止 watcher；
+- 每 session 增加 in-flight guard，慢 `git status` 未完成时跳过下一轮；
+- `prefetchStatus()` 在异步边界后重新检查 session state，防退出竞态复活 watcher；
+- exited session 保留 Git 最后快照，但不继续扫描仓库。
+
+**验证**:
+- ✅ `npm run typecheck`
+- ✅ `npm test`:57 files / 899 tests
+- ✅ `npm run lint`
+- ✅ `npm run lint:css`
+- ✅ 本次涉及文件 Prettier + `git diff --check`
+- ✅ `npm run build`:生成 `Marina-Setup-0.3.1-x64.exe` + `Marina-Portable-0.3.1-x64.exe`
+
+详细根因与竞态说明见 `docs/issues/git-2-background-poll-lifecycle.md`。
+
+---
+
+## 0.3.2 ADR-021 — Git 扫描按 UI 需求调度（2026-07-22）
+
+固定 3 秒 watcher 已迁移到共享 `BackgroundWorkScheduler`：聚焦可见 Git 面板 HOT
+（立即+3秒）、当前 Session 其他面板/折叠/失焦 WARM（60秒）、切 Session/非 owner/
+零窗口 NONE（停止）。调度器用 recursive timeout、全局并发 1、物理有界 FIFO Set 和
+record identity 防旧任务复活；本地窗口关闭与远程断线统一撤 consumer demand。
+
+`prefetchStatus` 不再为所有 available Session 无条件 spawn；GitPanel mount 与 HOT immediate
+共享 session+cwd in-flight。WARM 更新由 App 根层常驻 cache bridge 接收，切回面板仍秒显。
+
+**验证**：60 files / 943 tests、typecheck/lint/lint:css/build 全过；隔离 Electron runtime
+实测 Git 可见 `hotTasks=1`，切“文件”后 `warmTasks=1/hotTasks=0`，正常退出最终 tasks=0。
+详细报告见 `docs/checkpoints/CP-BackgroundScheduler-self-test.md`。
 
 ---
 

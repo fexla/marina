@@ -30,6 +30,11 @@ import type {
   WindowInfo,
 } from './types';
 import type { DeepPartial } from './types-helpers';
+export type {
+  CaptureCpuProfilePayload,
+  CaptureCpuProfileResponse,
+  PerformanceStatus,
+} from './performance-types';
 
 /**
  * 协议版本号。Main 与 Renderer 不匹配时拒绝 handshake。
@@ -184,6 +189,12 @@ export const COMMAND_CHANNELS = {
    */
   LOGGER_IME_DUMP: 'cmd:logger:ime-dump',
 
+  // 0.3.2 性能诊断域 —— 当前客户端本机 main 的飞行记录器,永远 local-control。
+  PERFORMANCE_GET_STATUS: 'cmd:performance:get-status',
+  PERFORMANCE_WRITE_REPORT: 'cmd:performance:write-report',
+  PERFORMANCE_OPEN_REPORTS_DIR: 'cmd:performance:open-reports-dir',
+  PERFORMANCE_CAPTURE_CPU_PROFILE: 'cmd:performance:capture-cpu-profile',
+
   // File panel 域 —— 终端侧边文件预览面板(renderer 主动查询 / UI 操作;
   // REST 侧 open/show/close 由终端内程序经 HTTP 调,不走这些 IPC)
   /** 拉某 session 当前已打开的文件列表 + active(接管/claim 后初始化面板用) */
@@ -221,6 +232,8 @@ export const COMMAND_CHANNELS = {
   // 只调 git status / git diff;永不调写 .git 的命令(见 §13.2/§14.6)。
   /** 拉当前仓库工作区变更分组(SSH/非 repo/disable 返回 unavailable)。 */
   GIT_GET_STATUS: 'cmd:git:get-status',
+  /** v0.3.2 ADR-021:renderer 上报当前 Git 后台轮询需求(HOT/WARM/NONE)。 */
+  GIT_SET_POLLING_DEMAND: 'cmd:git:set-polling-demand',
   /** 产出某文件的 unified diff,写入受管临时文件后交给 FilePanelService 打开。 */
   GIT_OPEN_DIFF: 'cmd:git:open-diff',
   /** v0.3.1 勘误:直接打开文件本身(不走 diff),跳「已打开」面板。 */
@@ -304,6 +317,10 @@ const LOCAL_CONTROL_COMMANDS_SET: ReadonlySet<string> = new Set<CommandChannel>(
   COMMAND_CHANNELS.REMOTE_DAEMON_SET_PASSWORD,
   COMMAND_CHANNELS.SYSTEM_CLIPBOARD_READ_TEXT,
   COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT,
+  COMMAND_CHANNELS.PERFORMANCE_GET_STATUS,
+  COMMAND_CHANNELS.PERFORMANCE_WRITE_REPORT,
+  COMMAND_CHANNELS.PERFORMANCE_OPEN_REPORTS_DIR,
+  COMMAND_CHANNELS.PERFORMANCE_CAPTURE_CPU_PROFILE,
   // 用户点击链接时应在当前桌面打开浏览器，不能在 headless daemon 主机打开。
   COMMAND_CHANNELS.SYSTEM_OPEN_EXTERNAL,
 ]);
@@ -363,8 +380,8 @@ export const EVENT_CHANNELS = {
   FILE_PANEL_UPDATED: 'evt:file-panel:updated',
 
   /**
-   * v0.3.0:Git 面板仓库变更状态更新。广播给 owner 窗口,renderer 重拉
-   * cmd:git:get-status。本期为预留位(watcher 暂未启用,getStatus 主动拉取)。
+   * Git 面板仓库变更状态更新。main 预取或 ADR-021 demand-aware task 已附带脱敏
+   * snapshot 广播，renderer 直接更新组件外缓存，不需再拉一次 get-status。
    */
   GIT_STATUS_UPDATED: 'evt:git:status-updated',
 
@@ -1438,13 +1455,7 @@ export interface OpenFileTreePathPayload {
 // ──────────────────────────────────────────────────────────────────
 
 /** Git 变更分组语义色。与 FileListRow 的 statusBadge tone 对齐。 */
-export type GitStatusTone =
-  | 'conflict'
-  | 'modified'
-  | 'added'
-  | 'deleted'
-  | 'renamed'
-  | 'untracked';
+export type GitStatusTone = 'conflict' | 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked';
 
 export interface GitStatusEntry {
   /** 相对 repoRoot 的 POSIX 风格路径(renamed 时是新路径)。 */
@@ -1474,6 +1485,15 @@ export interface GitStatusSnapshot {
 /** cmd:git:get-status payload。 */
 export interface GetGitStatusPayload {
   sessionId: string;
+}
+
+/** 昂贵后台任务需求等级；当前仅 Git status 使用。 */
+export type BackgroundDemandLevel = 'none' | 'warm' | 'hot';
+
+/** cmd:git:set-polling-demand payload。consumerId 只能取 envelope.windowId。 */
+export interface SetGitPollingDemandPayload {
+  sessionId: string;
+  level: BackgroundDemandLevel;
 }
 
 /** cmd:git:get-status 返回。available=false 时 renderer 不渲染 Git tab。 */

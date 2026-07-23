@@ -81,6 +81,7 @@ import { pathRefFromId } from './path-manager';
 import { getPlatformAdapter, type PlatformAdapter, type ShellInfo } from './platform';
 import { buildSpawnEnv, injectTerminalHintEnv, validateDimensions } from './pty-utils';
 import { logger } from './logger';
+import { performanceMetrics } from './performance-metrics';
 import { activateMarinaUnicodeWidth } from '@shared/terminal-unicode-width';
 
 // Marina 注入给终端子进程的标识类变量,子进程(可能是另一个 Marina / 测试 /
@@ -629,10 +630,9 @@ export class SessionManager extends EventEmitter {
    * v0.3.0:Git tab 可用性判定回调,由 GitService 注入(见 attachGitAvailabilityProvider)。
    * null = 未注入(测试 / Git 面板禁用)→ 永不生成 git leaf,行为与 v0.2.x 一致。
    */
-  private gitAvailabilityProvider: ((
-    cwdReal: string,
-    pathKind: 'local' | 'ssh',
-  ) => Promise<{ available: boolean }>) | null = null;
+  private gitAvailabilityProvider:
+    | ((cwdReal: string, pathKind: 'local' | 'ssh') => Promise<{ available: boolean }>)
+    | null = null;
   /**
    * v0.3.0:Git status 预取回调。cwd 进仓库(flip 到 available)时触发,让
    * GitService 在后台拉一次 status 并 emit 事件,renderer 预填缓存,消除面板
@@ -712,9 +712,9 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * v0.3.0:注入 Git status 预取回调(GitService.prefetchStatus)。在 cwd 进仓库
-   * (flip 到 available)时触发,让 renderer 提前拿到的 status 填缓存。
-   * 与 attachGitAvailabilityProvider 同构,依赖注入避免循环依赖。
+   * v0.3.0:注入 Git status 同步回调(GitService.prefetchStatus)。Git 可用性每次
+   * flip 都触发:available=true 时预取并启动 watcher；false 时推 unavailable 并
+   * 停 watcher。与 attachGitAvailabilityProvider 同构,依赖注入避免循环依赖。
    */
   attachGitStatusPrefetcher(prefetcher: (sessionId: string) => Promise<void>): void {
     this.gitStatusPrefetcher = prefetcher;
@@ -1042,6 +1042,7 @@ export class SessionManager extends EventEmitter {
     managed.headlessTerm!.loadAddon(serializeAddon);
     managed.serializeAddon = serializeAddon;
     this.sessions.set(sessionId, managed);
+    performanceMetrics.increment('session.created');
 
     disposables.push(
       pty.onData((data) => this.handlePtyData(managed, data)),
@@ -1629,6 +1630,8 @@ export class SessionManager extends EventEmitter {
       // scrollback buffer 内容始终 == (已 emit 的字节累计);
       // pendingEmit 中尚未 flush 的字节对 renderer 不可见。
       const seq = managed.outputSeq++;
+      performanceMetrics.increment('pty.outputChunks');
+      performanceMetrics.increment('pty.outputBytes', parsed.passthrough.byteLength);
       this.queueEmit(managed, parsed.passthrough, seq);
 
       // BETA-006 v2:同步喂给 headless terminal — write 是异步的(内部
@@ -1749,6 +1752,7 @@ export class SessionManager extends EventEmitter {
   ): void {
     if (!this.sessions.has(managed.info.id)) return; // 已被 closeSession 清理过
     if (managed.info.state === 'exited') return; // 防御性:不双发
+    performanceMetrics.increment('session.exited');
 
     // STM-1:在 emit sessionExited 之前把 pending 字节段先 flush 出去,
     // 保证 renderer 看到的因果序是"最后一段输出 → exited",而不是相反。
@@ -1825,6 +1829,7 @@ export class SessionManager extends EventEmitter {
     // (它跟着 terminal 生命周期),这里只清字段引用,避免悬空指向
     managed.serializeAddon = null;
     this.sessions.delete(sid);
+    performanceMetrics.increment('session.destroyed');
     this.pathManager.detachSession(sid);
     // 目录保留期从 session 被销毁时开始，而不是 PTY exited 时开始：已退出 tab
     // 仍可在面板里查看生成文档，符合 exited 无时限保留的状态机语义。
@@ -2159,12 +2164,13 @@ export class SessionManager extends EventEmitter {
       docks: current.docks, // 几何不变,只换 tree
     };
     managed.info.uiLayout = next;
-    // v0.3.0 预取:刚检测到 cwd 进仓库(flip 到 available)时,后台拉一次 status
-    // 推给 renderer 填缓存。用户点 Git tab 时缓存命中,零延迟。fire-and-forget,
-    // 不 await(不阻塞 LayoutNode emit / UI 响应)。失败由 prefetchStatus 内部 catch。
-    if (available && this.gitStatusPrefetcher) {
+    // Git 可用性每次 flip 都同步给 GitService:
+    // - true:后台预取 status + 启动 watcher,用户点 Git tab 时缓存命中
+    // - false:推 unavailable + 停 watcher,避免 cd 出仓库或关闭功能后 interval 泄漏
+    // fire-and-forget,不阻塞 LayoutNode emit / UI 响应。
+    if (this.gitStatusPrefetcher) {
       void this.gitStatusPrefetcher(managed.info.id).catch(() => {
-        /* prefetchStatus 已内部 catch;这里兑底防 unhandledrejection */
+        /* prefetchStatus 已内部 catch;这里兜底防 unhandledRejection */
       });
     }
     this.emitStateChanged(managed, { uiLayout: next });

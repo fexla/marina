@@ -11,12 +11,11 @@
  * 后台再静默刷新(loading 态不覆盖已有 snapshot,避免闪烁)。这是"stale-while-
  * revalidate"模式的最小实现。
  *
- * @缓存失效来源(三路,任一覆盖即刷新):
+ * @缓存刷新来源:
  * 1. GitPanel mount 后的 loadStatus() 成功 → setCached
- * 2. main 端预取(session 创建/cwd 进仓库时 applyGitAvailability 顺带 getStatus)
- *    → emit evt:git:status-updated → renderer 订阅 → setCached
- * 3. main 竌 watcher(仓库变更 debounce 500ms)→ emit evt:git:status-updated
- *    → renderer 订阅 → setCached
+ * 2. ADR-021 main demand-aware task(HOT 3s / WARM 60s)→ evt:git:status-updated
+ *    → App 根层常驻 bridge 写缓存（GitPanel 卸载时也不会丢 WARM 结果）
+ * 3. Session 销毁事件由根层 bridge clearCachedStatus，避免历史 session 泄漏
  *
  * @不在这里做的事:
  * - 不做 TTL 自动过期:Git 是外部状态,失效只能由 main 端事件告知,时间过期会误清。

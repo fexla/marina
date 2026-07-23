@@ -16,8 +16,9 @@
  * - 不做目录级右键菜单(折叠/全部展开等),保持简单;用户手动点目录展开/收起。
  * - 不做懒加载(变更通常 < 500,全展开渲染无压力)。
  */
-import { useState } from 'react';
 import type { GitStatusTone } from '@shared/protocol';
+import { fileIconFor } from '@shared/file-icon';
+import { usePanelUiState } from '../../hooks/usePanelUiState';
 import { FileListRow, type StatusBadge, type StatusTone } from '../common/FileListRow';
 import { HighlightedText } from '../common/HighlightedText';
 import type { ContextMenuItem } from '../ContextMenu';
@@ -25,6 +26,8 @@ import { Icon } from '../icons';
 import type { GitTreeNode } from '@shared/build-git-tree';
 
 interface GitTreeProps {
+  /** 当前 session(用于展开态缓存隔离,ADR-019 L1)。 */
+  sessionId: string;
   nodes: GitTreeNode[];
   /** 文件节点点击 → 打开 diff。 */
   onOpenDiff: (relativePath: string) => void;
@@ -58,6 +61,7 @@ function badgeFor(tone: GitStatusTone): StatusBadge | null {
 }
 
 export function GitTree({
+  sessionId,
   nodes,
   onOpenDiff,
   buildEntryMenu,
@@ -66,7 +70,12 @@ export function GitTree({
   highlightCaseSensitive = false,
 }: GitTreeProps): JSX.Element {
   // 默认全展开:存「收起的目录集合」(空 = 全展开)。用户点目录 toggle 收起。
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  // 需求3(ADR-019 L1):走组件外缓存,切面板再切回保留收起态。
+  const [collapsed, setCollapsed] = usePanelUiState<Set<string>>(
+    sessionId,
+    'git-tree-collapsed',
+    () => new Set(),
+  );
 
   const toggle = (dirPath: string): void => {
     setCollapsed((prev) => {
@@ -88,7 +97,7 @@ export function GitTree({
         <FileListRow
           key={`leaf:${node.relativePath}`}
           variant="list"
-          icon="file"
+          icon={fileIconFor(node.name)}
           label={
             <HighlightedText
               text={shortName}

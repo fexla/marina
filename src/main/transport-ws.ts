@@ -207,10 +207,14 @@ export class WsServer {
     const wss = this.wss;
     if (!wss) return Promise.resolve();
     this.wss = null;
+    // stop/restart 是服务端主动关闭，不能依赖每个 socket 的异步 close 回调。
+    // 先对当前认证 identity 显式发 disconnected，再 clear；随后 close handler
+    // 因 identity guard 不会重复通知，demand/session 清理必达。
+    const disconnectedClientIds = [...this.wsByClient.keys()];
     this.wsByClient.clear();
+    for (const clientId of disconnectedClientIds) this.notifyDisconnected(clientId);
     return new Promise((resolve) => {
-      // 先强制断开所有现有连接(避免 wss.close 等待它们而挂起;测试/daemon
-      // 关闭时不应被僵死 client 拖住),再关 server。
+      // 强制断开所有现有连接(避免 wss.close 被僵死 client 拖住),再关 server。
       wss.clients.forEach((c) => {
         try {
           c.terminate();
@@ -297,16 +301,7 @@ export class WsServer {
       // 会从 registry 丢失 → session 被误 release。只有映射里仍是当前关闭的 ws 才删。
       if (this.wsByClient.get(clientId) !== ws) return;
       this.wsByClient.delete(clientId);
-      for (const h of this.disconnectedHandlers) {
-        try {
-          h(clientId);
-        } catch (err) {
-          console.warn(
-            `[transport-ws] disconnected handler 抛错 clientId="${clientId}"(已忽略):`,
-            err,
-          );
-        }
-      }
+      this.notifyDisconnected(clientId);
     });
 
     ws.on('error', (err) => {
@@ -365,5 +360,18 @@ export class WsServer {
       this.registerClient(ws, result.clientId);
     };
     ws.on('message', onFirst);
+  }
+
+  private notifyDisconnected(clientId: string): void {
+    for (const handler of this.disconnectedHandlers) {
+      try {
+        handler(clientId);
+      } catch (error) {
+        console.warn(
+          `[transport-ws] disconnected handler 抛错 clientId="${clientId}"(已忽略):`,
+          error,
+        );
+      }
+    }
   }
 }

@@ -26,6 +26,7 @@ import { getBuildType } from './build-type';
 import type { FilePanelService } from './file-panel-service';
 import type { FileTreeService } from './file-tree-service';
 import type { GitService } from './git-service';
+import type { PerformanceDiagnostics } from './performance-diagnostics';
 import type { SkillInstaller } from './skill-installer';
 import type { MarkdownThemeManager } from './markdown-theme-manager';
 import {
@@ -76,6 +77,7 @@ import {
   type RevealFileTreePathPayload,
   type GetGitStatusPayload,
   type GetGitStatusResponse,
+  type SetGitPollingDemandPayload,
   type GitStatusUpdatedPayload,
   type OpenGitDiffPayload,
   type OpenGitFilePayload,
@@ -167,6 +169,7 @@ import {
   type InstallMarinaSkillResponse,
 } from '@shared/protocol';
 import type { AppSnapshot, MdTheme, RemoteDaemonProfile, Settings, Template } from '@shared/types';
+import type { CaptureCpuProfilePayload } from '@shared/performance-types';
 import type { WindowManager } from './window-manager';
 import type { PathManager } from './path-manager';
 import { pathRefFromId } from './path-manager';
@@ -182,6 +185,7 @@ import type { KnownHostsManager } from './known-hosts-manager';
 import { parseSshConfig } from './ssh-config-parser';
 import { detectSshAgent } from './ssh-agent';
 import { logger } from './logger';
+import { performanceMetrics } from './performance-metrics';
 import { setQuitting } from './index';
 
 export interface IpcLayerDeps {
@@ -210,6 +214,8 @@ export interface IpcLayerDeps {
    * git-service.test.ts(本层仅转发)。
    */
   gitService: GitService;
+  /** 0.3.2 常驻性能飞行记录器 + 用户显式 V8 CPU profile。 */
+  performanceDiagnostics: PerformanceDiagnostics;
   /** 内置 show-in-marina skill 的项目级安装服务。 */
   skillInstaller: SkillInstaller;
   /**
@@ -314,8 +320,45 @@ function registerHandle<P = unknown>(
   channel: string,
   handler: (e: Electron.IpcMainInvokeEvent, envelope: CommandEnvelope<P>) => unknown,
 ): void {
-  rawHandlers.set(channel, handler as RawHandler);
-  ipcMain.handle(channel, (e, envelope) => handler(e, envelope as CommandEnvelope<P>));
+  // 0.3.2 性能飞行记录器:统一在 transport 入口按固定 channel 名计时。
+  // 不记录 envelope/payload,因此不会把路径、命令或终端内容写进自动报告。
+  const measuredHandler = (
+    e: Electron.IpcMainInvokeEvent,
+    envelope: CommandEnvelope<P>,
+  ): unknown => {
+    const finish = performanceMetrics.begin(`ipc.${channel}`);
+    try {
+      const result = handler(e, envelope);
+      if (isPromiseLike(result)) {
+        return Promise.resolve(result).then(
+          (value) => {
+            finish();
+            return value;
+          },
+          (error) => {
+            finish(error);
+            throw error;
+          },
+        );
+      }
+      finish();
+      return result;
+    } catch (error) {
+      finish(error);
+      throw error;
+    }
+  };
+  rawHandlers.set(channel, measuredHandler as RawHandler);
+  ipcMain.handle(channel, (e, envelope) => measuredHandler(e, envelope as CommandEnvelope<P>));
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'then' in value &&
+    typeof (value as { then?: unknown }).then === 'function'
+  );
 }
 
 /**
@@ -364,6 +407,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     knownHostsManager,
     templatesManager,
     remoteDaemonController,
+    performanceDiagnostics,
   } = deps;
 
   // REMOTE_DAEMON_* 是客户端本地控制面。controller 停止时内部 currentPort=null，
@@ -1218,6 +1262,36 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     },
   );
 
+  // 0.3.2 性能诊断命令全是当前客户端本机 control-plane；protocol.ts 已把
+  // channel 列入 LOCAL_CONTROL_COMMANDS_SET，远程窗口不会误发给 daemon。
+  registerHandle(
+    COMMAND_CHANNELS.PERFORMANCE_GET_STATUS,
+    (): ReturnType<PerformanceDiagnostics['getStatus']> => performanceDiagnostics.getStatus(),
+  );
+
+  registerHandle(
+    COMMAND_CHANNELS.PERFORMANCE_WRITE_REPORT,
+    async (): Promise<ReturnType<PerformanceDiagnostics['getStatus']>> =>
+      performanceDiagnostics.writeReportNow(),
+  );
+
+  registerHandle(COMMAND_CHANNELS.PERFORMANCE_OPEN_REPORTS_DIR, async (): Promise<void> => {
+    await fs.mkdir(performanceDiagnostics.getReportDir(), { recursive: true });
+    const openError = await shell.openPath(performanceDiagnostics.getReportDir());
+    if (openError) {
+      throw new Error(
+        `[IPC] Failed to open performance report directory. ` +
+          `Possible causes: Explorer unavailable, directory permission denied, or shell integration failure. ${openError}`,
+      );
+    }
+  });
+
+  registerHandle<CaptureCpuProfilePayload>(
+    COMMAND_CHANNELS.PERFORMANCE_CAPTURE_CPU_PROFILE,
+    async (_e, envelope) =>
+      performanceDiagnostics.captureCpuProfile(envelope.payload.durationSeconds ?? 15),
+  );
+
   registerHandle(
     COMMAND_CHANNELS.SYSTEM_OPEN_DATA_DIR,
     async (_e, _envelope: CommandEnvelope<undefined>): Promise<void> => {
@@ -1786,11 +1860,20 @@ function registerGitHandlers(deps: IpcLayerDeps): void {
   const { gitService } = deps;
 
   registerHandle(
+    COMMAND_CHANNELS.GIT_SET_POLLING_DEMAND,
+    (_e, envelope: CommandEnvelope<SetGitPollingDemandPayload>): void => {
+      // consumerId 只能取可信 envelope.windowId；绝不接受 renderer 自报 clientId。
+      gitService.setPollingDemand(
+        envelope.payload.sessionId,
+        envelope.windowId,
+        envelope.payload.level,
+      );
+    },
+  );
+
+  registerHandle(
     COMMAND_CHANNELS.GIT_GET_STATUS,
-    async (
-      _e,
-      envelope: CommandEnvelope<GetGitStatusPayload>,
-    ): Promise<GetGitStatusResponse> => {
+    async (_e, envelope: CommandEnvelope<GetGitStatusPayload>): Promise<GetGitStatusResponse> => {
       const result = await gitService.getStatus(envelope.payload.sessionId, envelope.windowId);
       // GitService 返回 {repoRoot, groups, truncated} 或 {unavailable}。
       // protocol 层不回传 repoRoot(避免泄露绝对路径给 renderer)。
@@ -1801,10 +1884,7 @@ function registerGitHandlers(deps: IpcLayerDeps): void {
 
   registerHandle(
     COMMAND_CHANNELS.GIT_OPEN_DIFF,
-    async (
-      _e,
-      envelope: CommandEnvelope<OpenGitDiffPayload>,
-    ): Promise<FilePanelSnapshot> =>
+    async (_e, envelope: CommandEnvelope<OpenGitDiffPayload>): Promise<FilePanelSnapshot> =>
       gitService.openDiff(
         envelope.payload.sessionId,
         envelope.windowId,
@@ -1815,10 +1895,7 @@ function registerGitHandlers(deps: IpcLayerDeps): void {
   // v0.3.1 勘误:Git 面板右键「打开文件本身」+「复制绝对路径 / 在 Explorer 显示」。
   registerHandle(
     COMMAND_CHANNELS.GIT_OPEN_FILE,
-    async (
-      _e,
-      envelope: CommandEnvelope<OpenGitFilePayload>,
-    ): Promise<FilePanelSnapshot> =>
+    async (_e, envelope: CommandEnvelope<OpenGitFilePayload>): Promise<FilePanelSnapshot> =>
       gitService.openFile(
         envelope.payload.sessionId,
         envelope.windowId,
@@ -1828,10 +1905,7 @@ function registerGitHandlers(deps: IpcLayerDeps): void {
 
   registerHandle(
     COMMAND_CHANNELS.GIT_RESOLVE_PATH,
-    async (
-      _e,
-      envelope: CommandEnvelope<OpenGitFilePayload>,
-    ): Promise<ResolveGitPathResponse> => {
+    async (_e, envelope: CommandEnvelope<OpenGitFilePayload>): Promise<ResolveGitPathResponse> => {
       const absolutePath = await gitService.resolvePath(
         envelope.payload.sessionId,
         envelope.windowId,
@@ -1951,7 +2025,10 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     broadcastAppState(deps);
   });
 
-  sessionManager.on('sessionOwnerChanged', (e) => {
+  sessionManager.on('sessionOwnerChanged', (e: SessionOwnerChangedPayload) => {
+    // owner 切换时旧 renderer 可能保持 PanelStack mount；先清旧 demand，新的 owner
+    // 收到事件后按绝对 UI 状态重新上报 HOT/WARM。
+    gitService.onSessionOwnerChanged(e.sessionId);
     broadcastEvent<SessionOwnerChangedPayload>(EVENT_CHANNELS.SESSION_OWNER_CHANGED, e);
   });
 
@@ -1964,6 +2041,10 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   });
 
   sessionManager.on('sessionExited', (e: SessionExitedPayload) => {
+    // ADR-008 只保留 exited session 的 UI 快照/scrollback,不应继续每 3 秒扫描 Git。
+    // 显式停 watcher,否则用户在 shell 内 exit 后即使关掉所有窗口,main 进程仍会
+    // 永久 spawn git.exe,造成低平均 CPU 但明显 frametime / I/O 尖峰。
+    gitService.onSessionExited(e.sessionId);
     broadcastEvent<SessionExitedPayload>(EVENT_CHANNELS.SESSION_EXITED, e);
   });
 
@@ -2002,7 +2083,7 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   // v0.3.0:Git 面板状态变化。两路触发:
   //  (1) 预取:SessionManager 检测到 cwd 进仓库(flip available)→ GitService.prefetchStatus
   //      → 拉 status → emit(填 renderer 缓存,消除面板切换延迟)
-  //  (2) watcher(commit E):仓库变更 debounce → 重拉 status → emit
+  //  (2) ADR-021 demand-aware task:HOT 3s / WARM 60s → 重拉 status → emit
   // payload 带 snapshot(已 strip repoRoot),renderer 收到零额外 IPC 直填缓存。
   // 策略与 file-panel 同:广播给所有窗口(非 owner 定向)。理由见上 file-panel 注释
   // —— orphan 期间的 git 状态变更也必须送达,否则切回终端看到旧 diff 计数/列表。
@@ -2037,6 +2118,8 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   });
 
   windowManager.onWindowClosed((windowId) => {
+    // 先撤销该 consumer 的全部 demand，再 release owner；两条路径都幂等。
+    gitService.removePollingConsumer(windowId);
     sessionManager.handleWindowClosed(windowId);
     broadcastEvent<WindowListUpdatedPayload>(EVENT_CHANNELS.WINDOW_LIST_UPDATED, {
       windows: windowManager.list(),

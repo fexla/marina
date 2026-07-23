@@ -31,6 +31,8 @@ import {
 } from '@shared/protocol';
 import { buildGitTree, type GitTreeNode } from '@shared/build-git-tree';
 import { matchText } from '@shared/text-search';
+import { fileIconFor } from '@shared/file-icon';
+import { usePanelPreference } from '../../hooks/usePanelPreference';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { buildFileEntryMenu } from '../common/fileListRowContextMenu';
 import { FileListRow, type StatusBadge, type StatusTone } from '../common/FileListRow';
@@ -49,25 +51,10 @@ import { GitTree } from './GitTree';
 
 /** v0.3.0:树形/平铺视图模式。默认 tree(对齐 VS Code Source Control)。 */
 type GitViewMode = 'tree' | 'flat';
-const VIEW_MODE_STORAGE_KEY = 'marina.git.viewMode';
 const DEFAULT_VIEW_MODE: GitViewMode = 'tree';
-
-function readViewMode(): GitViewMode {
-  try {
-    const v = localStorage.getItem(VIEW_MODE_STORAGE_KEY);
-    return v === 'flat' || v === 'tree' ? v : DEFAULT_VIEW_MODE;
-  } catch {
-    return DEFAULT_VIEW_MODE;
-  }
-}
-
-function writeViewMode(mode: GitViewMode): void {
-  try {
-    localStorage.setItem(VIEW_MODE_STORAGE_KEY, mode);
-  } catch {
-    /* localStorage 不可用(隐私模式等)→ 静默,仅本次会话生效 */
-  }
-}
+// viewMode 持久化改走 usePanelPreference(L2,ADR-019);老 key marina.git.viewMode
+// 由 panel-preferences 的惰性迁移自动收编到 marina.panel.git.viewMode。原
+// readViewMode/writeViewMode(裸 localStorage)已删除。
 
 interface GitPanelProps {
   sessionId: string;
@@ -131,7 +118,12 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
   // C1:搜索骨架已接入,过滤逻辑 C2 实现。
   void search;
   const { tx } = useTranslation();
-  const [viewMode, setViewMode] = useState<GitViewMode>(readViewMode);
+  // 需求3(ADR-019 L2):viewMode 走面板偏好(跨重启),老 key 自动迁移。
+  const [viewMode, setViewMode] = usePanelPreference<GitViewMode>(
+    'git',
+    'viewMode',
+    DEFAULT_VIEW_MODE,
+  );
   // mount 初始化:先读组件外缓存。命中 → loading:false + snapshot 秒显(零延迟);
   // 未命中 → loading:true 走首次拉取。这是 stale-while-revalidate 的核心。
   const [state, setState] = useState<ViewState>(() => {
@@ -163,7 +155,12 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
         { sessionId },
       );
       if ('unavailable' in resp) {
-        setState((s) => ({ ...s, loading: false, unavailable: resp.unavailable, snapshot: undefined }));
+        setState((s) => ({
+          ...s,
+          loading: false,
+          unavailable: resp.unavailable,
+          snapshot: undefined,
+        }));
         setCachedStatus(sessionId, { unavailable: resp.unavailable, at: Date.now() });
       } else {
         setState((s) => ({
@@ -187,13 +184,13 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
   }, [sessionId]);
 
   // mount / sessionId 变化时拉一次(后台刷新)。有缓存时 UI 已秒显旧值,这里拉
-  // 新值是为了同步"切走期间仓库被改"的最新状态。watcher(commit E)启用后,仓库
-  // 变更会主动 evt:git:status-updated 推过来,本 effect 仍保留作为 mount 兑底。
+  // 新值是为了同步切走期间的变化。ADR-021 同时把可见 demand 切 HOT；main 端
+  // session+cwd in-flight coalescer 保证本 mount 拉取与 HOT immediate 只 spawn 一次。
   useEffect(() => {
     void loadStatus();
   }, [loadStatus]);
 
-  // v0.3.0 预取/watcher 订阅:main 端在 cwd 进仓库(预取)或仓库变更(watcher)时
+  // main 端在 cwd 进仓库(预取)或 demand-aware 周期刷新时
   // emit evt:git:status-updated 带 snapshot。过滤本 session → 直接用 payload 更新
   // state + 缓存,不走二次 IPC。这是"零延迟面板切换"的关键:用户点 tab 之前
   // 预取已把缓存填好,切过来秒显最新值。
@@ -203,7 +200,12 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
       (payload) => {
         if (payload.sessionId !== sessionId) return;
         if ('unavailable' in payload && payload.unavailable !== undefined) {
-          setState((s) => ({ ...s, loading: false, unavailable: payload.unavailable, snapshot: undefined }));
+          setState((s) => ({
+            ...s,
+            loading: false,
+            unavailable: payload.unavailable,
+            snapshot: undefined,
+          }));
           setCachedStatus(sessionId, { unavailable: payload.unavailable, at: Date.now() });
         } else {
           const groups = payload.groups ?? [];
@@ -235,7 +237,8 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
       .map((g) => ({
         ...g,
         entries: g.entries.filter(
-          (e) => matchText(e.relativePath, q, search.caseSensitive) ||
+          (e) =>
+            matchText(e.relativePath, q, search.caseSensitive) ||
             (e.oldPath !== undefined && matchText(e.oldPath, q, search.caseSensitive)),
         ),
       }))
@@ -340,14 +343,12 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
     const channel =
       op === 'show' ? COMMAND_CHANNELS.SYSTEM_SHOW_IN_EXPLORER : COMMAND_CHANNELS.SYSTEM_OPEN_PATH;
     const failLabel = op === 'show' ? '打开 Explorer 失败' : '打开失败';
-    window.api
-      .invoke(channel, { path: abs })
-      .catch((err: unknown) =>
-        toast.push({
-          kind: 'error',
-          message: `${failLabel}:${err instanceof Error ? err.message : String(err)}`,
-        }),
-      );
+    window.api.invoke(channel, { path: abs }).catch((err: unknown) =>
+      toast.push({
+        kind: 'error',
+        message: `${failLabel}:${err instanceof Error ? err.message : String(err)}`,
+      }),
+    );
   }
 
   /** v0.3.2 B1:目录节点右键菜单(与 file-tree 目录菜单对称)。primary=展开/收起
@@ -387,8 +388,14 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
     // 走到这里说明:用户看着 Git tab 时仓库被删 / cd 出仓库 / 设置关了。
     // 给一个明确但克制的提示,不弹错误。
     const msg: Record<GitUnavailableReason, string> = {
-      'not-a-repo': tx('当前目录已不在 Git 仓库内', 'Current directory is no longer a Git repository'),
-      'ssh-unsupported': tx('SSH 会话不支持 Git 面板', 'Git panel is not supported for SSH sessions'),
+      'not-a-repo': tx(
+        '当前目录已不在 Git 仓库内',
+        'Current directory is no longer a Git repository',
+      ),
+      'ssh-unsupported': tx(
+        'SSH 会话不支持 Git 面板',
+        'Git panel is not supported for SSH sessions',
+      ),
       disabled: tx('Git 面板已在设置中关闭', 'Git panel is disabled in settings'),
       'git-binary-missing': tx('未找到 git 二进制', 'Git binary not found'),
     };
@@ -403,9 +410,9 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
     );
   }
 
+  // usePanelPreference 的 setter 已自动持久化,无需再手动 writeViewMode。
   const switchViewMode = (mode: GitViewMode): void => {
     setViewMode(mode);
-    writeViewMode(mode);
   };
 
   return (
@@ -454,6 +461,7 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
           <div className="git-panel-empty">{tx('无匹配文件', 'No matching files')}</div>
         ) : (
           <GitTree
+            sessionId={sessionId}
             nodes={treeNodes}
             onOpenDiff={openDiff}
             buildEntryMenu={buildEntryMenu}
@@ -462,12 +470,9 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
             highlightCaseSensitive={search.caseSensitive}
           />
         )
+      ) : filteredGroups.length === 0 && isSearching ? (
+        <div className="git-panel-empty">{tx('无匹配文件', 'No matching files')}</div>
       ) : (
-        filteredGroups.length === 0 && isSearching ? (
-          <div className="git-panel-empty">
-            {tx('无匹配文件', 'No matching files')}
-          </div>
-        ) : (
         filteredGroups.map((group) => {
           // untracked 默认折叠:node_modules / build 产物会污染列表。
           const isUntracked = group.tone === 'untracked';
@@ -501,22 +506,22 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
                       ? `${entry.oldPath} → ${entry.relativePath}`
                       : entry.relativePath;
                     return (
-                    <FileListRow
-                      key={entry.relativePath}
-                      variant="list"
-                      icon="file"
-                      label={
-                        <HighlightedText
-                          text={labelText}
-                          query={isSearching ? search.query : ''}
-                          caseSensitive={search.caseSensitive}
-                        />
-                      }
-                      title={labelText}
-                      statusBadge={badgeFor(group.tone)}
-                      onClick={() => openDiff(entry.relativePath)}
-                      buildContextMenu={() => buildEntryMenu(entry.relativePath, group.tone)}
-                    />
+                      <FileListRow
+                        key={entry.relativePath}
+                        variant="list"
+                        icon={fileIconFor(entry.relativePath)}
+                        label={
+                          <HighlightedText
+                            text={labelText}
+                            query={isSearching ? search.query : ''}
+                            caseSensitive={search.caseSensitive}
+                          />
+                        }
+                        title={labelText}
+                        statusBadge={badgeFor(group.tone)}
+                        onClick={() => openDiff(entry.relativePath)}
+                        buildContextMenu={() => buildEntryMenu(entry.relativePath, group.tone)}
+                      />
                     );
                   })}
                 </div>
@@ -524,7 +529,6 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
             </section>
           );
         })
-        )
       )}
       {state.snapshot.truncated && (
         <div className="git-panel-truncated">

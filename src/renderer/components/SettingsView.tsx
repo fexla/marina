@@ -43,6 +43,8 @@ import {
   type ListShellsResponse,
   type ExportSettingsResponse,
   type PickSshKeyFileResponse,
+  type PerformanceStatus,
+  type CaptureCpuProfileResponse,
   type SetExplorerIntegrationResponse,
   type SshAgentStatusResponse,
   type SshConfigEntryDto,
@@ -3135,12 +3137,73 @@ function AdvancedPanel({ setError }: { setError: (msg: string | null) => void })
   const enableRemote = adv?.enableRemote === true;
 
   const [confirmingReset, setConfirmingReset] = useState(false);
+  const [performanceStatus, setPerformanceStatus] = useState<PerformanceStatus | null>(null);
+  const [performanceBusy, setPerformanceBusy] = useState<'report' | 'profile' | null>(null);
+
+  const refreshPerformanceStatus = useCallback((): void => {
+    window.api
+      .invoke<unknown, PerformanceStatus>(COMMAND_CHANNELS.PERFORMANCE_GET_STATUS, {})
+      .then(setPerformanceStatus)
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+  }, [setError]);
+
+  useEffect(() => {
+    refreshPerformanceStatus();
+  }, [refreshPerformanceStatus]);
 
   const handleOpenLogs = (): void => {
     setError(null);
     window.api.invoke(COMMAND_CHANNELS.SYSTEM_OPEN_LOGS_DIR, {}).catch((err: unknown) => {
       setError(err instanceof Error ? err.message : String(err));
     });
+  };
+
+  const handleOpenPerformanceReports = (): void => {
+    setError(null);
+    window.api
+      .invoke(COMMAND_CHANNELS.PERFORMANCE_OPEN_REPORTS_DIR, {})
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+  };
+
+  const handleWritePerformanceReport = async (): Promise<void> => {
+    setError(null);
+    setPerformanceBusy('report');
+    try {
+      const status = await window.api.invoke<unknown, PerformanceStatus>(
+        COMMAND_CHANNELS.PERFORMANCE_WRITE_REPORT,
+        {},
+      );
+      setPerformanceStatus(status);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPerformanceBusy(null);
+    }
+  };
+
+  const handleCaptureCpuProfile = async (): Promise<void> => {
+    const confirmed = window.confirm(
+      tx(
+        '深度 CPU Profile 会采集 15 秒 main 进程函数调用。文件可能包含函数名、本地源码路径和模块结构，仅保存在本机；采集本身也会带来少量性能开销。继续吗？',
+        'A deep CPU Profile samples main-process functions for 15 seconds. The local file may contain function names, source paths, and module structure, and profiling itself adds some overhead. Continue?',
+      ),
+    );
+    if (!confirmed) return;
+    setError(null);
+    setPerformanceBusy('profile');
+    try {
+      const result = await window.api.invoke<
+        { durationSeconds: number },
+        CaptureCpuProfileResponse
+      >(COMMAND_CHANNELS.PERFORMANCE_CAPTURE_CPU_PROFILE, { durationSeconds: 15 });
+      refreshPerformanceStatus();
+      await window.api.invoke(COMMAND_CHANNELS.PERFORMANCE_OPEN_REPORTS_DIR, {});
+      window.alert(tx(`CPU Profile 已生成：${result.path}`, `CPU Profile created: ${result.path}`));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPerformanceBusy(null);
+    }
   };
 
   const handleReset = (): void => {
@@ -3197,6 +3260,48 @@ function AdvancedPanel({ setError }: { setError: (msg: string | null) => void })
         <button type="button" className="settings-button" onClick={handleOpenLogs}>
           {tx('打开日志目录', 'Open log directory')}
         </button>
+      </SettingRow>
+
+      <SettingRow
+        label={tx('性能飞行记录器', 'Performance flight recorder')}
+        hint={tx(
+          '0.3.2 起每次运行自动生成一份隐私安全的 JSON + Markdown：统计 main event-loop stall、CPU/内存、Electron 子进程、资源数量与固定业务操作热力图。无窗口托盘态也继续记录；不采集路径、命令、终端内容或 IPC payload。',
+          'Since 0.3.2 every run automatically creates privacy-safe JSON + Markdown reports with main event-loop stalls, CPU/memory, Electron subprocesses, resources, and a fixed operation heatmap. Tray-only mode is included; paths, commands, terminal content, and IPC payloads are never recorded.',
+        )}
+      >
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <button type="button" className="settings-button" onClick={handleOpenPerformanceReports}>
+            {tx('打开报告目录', 'Open reports directory')}
+          </button>
+          <button
+            type="button"
+            className="settings-button"
+            disabled={performanceBusy !== null}
+            onClick={() => void handleWritePerformanceReport()}
+          >
+            {performanceBusy === 'report'
+              ? tx('正在刷新…', 'Refreshing…')
+              : tx('立即刷新报告', 'Refresh report now')}
+          </button>
+          <button
+            type="button"
+            className="settings-button"
+            disabled={performanceBusy !== null || performanceStatus?.cpuProfileRunning === true}
+            onClick={() => void handleCaptureCpuProfile()}
+          >
+            {performanceBusy === 'profile'
+              ? tx('采集中（15 秒）…', 'Capturing (15s)…')
+              : tx('捕获 15 秒 CPU Profile…', 'Capture 15s CPU Profile…')}
+          </button>
+        </div>
+        {performanceStatus && (
+          <div className="settings-hint" style={{ marginTop: 6 }}>
+            {tx(
+              `本次运行：采样 ${performanceStatus.sampleCount} 次；stall >=100ms ${performanceStatus.stallCount100Ms} 次，>=250ms ${performanceStatus.stallCount250Ms} 次，最大 ${performanceStatus.maxStallMs.toFixed(0)}ms；RSS ${(performanceStatus.latestRssBytes / 1024 / 1024).toFixed(1)} MiB。`,
+              `This run: ${performanceStatus.sampleCount} samples; stalls >=100ms ${performanceStatus.stallCount100Ms}, >=250ms ${performanceStatus.stallCount250Ms}, max ${performanceStatus.maxStallMs.toFixed(0)}ms; RSS ${(performanceStatus.latestRssBytes / 1024 / 1024).toFixed(1)} MiB.`,
+            )}
+          </div>
+        )}
       </SettingRow>
 
       <SettingRow
@@ -3258,10 +3363,7 @@ function AdvancedPanel({ setError }: { setError: (msg: string | null) => void })
             type="checkbox"
             checked={adv?.enableGitPanel === true}
             onChange={(e) =>
-              void updateSettings(
-                { advanced: { enableGitPanel: e.target.checked } },
-                setError,
-              )
+              void updateSettings({ advanced: { enableGitPanel: e.target.checked } }, setError)
             }
           />
           <span>{tx('显示 Git 变更面板', 'Show Git changes panel')}</span>
@@ -3281,10 +3383,7 @@ function AdvancedPanel({ setError }: { setError: (msg: string | null) => void })
           value={adv?.gitBinaryPath ?? ''}
           placeholder={tx('留空 = 用 PATH 里的 git', 'Empty = use git from PATH')}
           onChange={(e) =>
-            void updateSettings(
-              { advanced: { gitBinaryPath: e.target.value } },
-              setError,
-            )
+            void updateSettings({ advanced: { gitBinaryPath: e.target.value } }, setError)
           }
         />
       </SettingRow>

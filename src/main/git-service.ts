@@ -16,8 +16,9 @@
  * - 动态 LayoutNode:evaluateAvailability 是 Git tab 出现/消失的判定函数,
  *   SessionManager cwd 变更时防抖调用它重算 tree(见 §6.7)。它只做 realpath +
  *   stat .git,绝不调 git 二进制,因此 cd 频繁时不会产生子进程风暴。
- * - 真正跑 git 二进制(getStatus/openDiff)只在用户主动操作时触发,且 spawn
- *   限 5s 超时 + 8MB stdout 上限防恶意大输出。
+ * - git status 由用户请求或 ADR-021 demand-aware scheduler 触发：当前可见 HOT=3s，
+ *   隐藏/失焦 WARM=60s，无 consumer COLD=停止；全局昂贵任务并发上限 1。
+ * - 所有 git 子进程限 5s 超时 + 8MB stdout 上限，并注入 GIT_OPTIONAL_LOCKS=0。
  *
  * @对应文档章节: 软件定义书.md §14.6 受限 Git 变更浏览例外(v0.3.0,ADR-017);
  *   docs/方案-Git面板与文件条目统一-20260718.md §6.1;docs/ipc-protocol.md git 域。
@@ -35,12 +36,31 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promises as fs, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
-import type { FilePanelSnapshot } from '@shared/protocol';
-import type { PathKind } from '@shared/types';
+import type { BackgroundDemandLevel, FilePanelSnapshot } from '@shared/protocol';
+import type { PathKind, SessionState } from '@shared/types';
 import type { FilePanelService } from './file-panel-service';
+import { BackgroundWorkScheduler } from './background-work-scheduler';
 import { logger } from './logger';
+import { performanceMetrics } from './performance-metrics';
 
 const MODULE = 'GitService';
+const GIT_HOT_POLL_MS = 3000;
+const GIT_WARM_POLL_MS = 60_000;
+
+/**
+ * 构造 git 子进程环境变量。
+ *
+ * `GIT_OPTIONAL_LOCKS=0` 与 `--no-optional-locks` 目的相同:禁止 `git status`
+ * 为可选的 index refresh 写回 `.git/index`、短暂占用 `index.lock`。使用环境变量
+ * 而不是命令行 flag,因为该 flag 是 **git 全局选项**,旧代码却把它追加在
+ * `status` 子命令参数末尾(`git status ... --no-optional-locks`)——Git 会 exit 129
+ * 并让面板误报“工作区干净”。环境变量没有参数位置问题,同时保留父进程 PATH。
+ *
+ * 导出为纯函数,让测试直接守护“继承父环境 + 禁用 optional locks”的契约。
+ */
+export function buildGitSpawnEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return { ...baseEnv, GIT_OPTIONAL_LOCKS: '0' };
+}
 
 /** 单次 status 返回的变更文件上限,与 file-tree 的 500 项对齐。 */
 const MAX_STATUS_ENTRIES = 500;
@@ -81,6 +101,8 @@ export interface GitSessionLookup {
     pathId: string;
     currentCwd: string;
     ownerWindowId: string | null;
+    /** exited session 只保留静态 UI/scrollback,不得继续启动后台 watcher。 */
+    state: SessionState;
   } | null;
 }
 
@@ -98,20 +120,18 @@ export interface GitRuntimeConfig {
   gitBinaryPath: string;
 }
 
-export type GitUnavailableReason = 'disabled' | 'ssh-unsupported' | 'not-a-repo' | 'git-binary-missing';
+export type GitUnavailableReason =
+  | 'disabled'
+  | 'ssh-unsupported'
+  | 'not-a-repo'
+  | 'git-binary-missing';
 
 export type GitAvailability =
   | { available: true }
   | { available: false; reason: GitUnavailableReason };
 
 /** porcelain v2 行的解析结果,按状态分组。 */
-export type GitStatusTone =
-  | 'conflict'
-  | 'modified'
-  | 'added'
-  | 'deleted'
-  | 'renamed'
-  | 'untracked';
+export type GitStatusTone = 'conflict' | 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked';
 
 export interface GitStatusEntry {
   /** 相对 repoRoot 的 POSIX 风格路径(renamed 时是新路径)。 */
@@ -140,21 +160,73 @@ export interface GitStatusSnapshot {
  * session 文件读取接口。
  */
 export class GitService extends EventEmitter {
+  /** 已注册 Git polling task。保留 watchers 名称兼容既有诊断/测试，value 不再是 interval。 */
   private readonly watchers = new Map<string, { close: () => void }>();
+  /** scheduler 已保证后台任务不重叠；此 guard 作为纵深防御并供指标观察。 */
+  private readonly pollsInFlight = new Set<string>();
   private readonly debounceTimers = new Map<string, NodeJS.Timeout>();
+  /** 每次 availability 重算/disable/exit 都递增，阻止旧 async prefetch 复活 task。 */
+  private readonly availabilityEpoch = new Map<string, number>();
+  /** 同 session+cwd 的 status 子进程合并，避免 GitPanel mount 与 HOT immediate 重叠。 */
+  private readonly statusInFlight = new Map<
+    string,
+    {
+      cwd: string;
+      runtimeRevision: number;
+      promise: Promise<GitStatusSnapshot | { unavailable: GitUnavailableReason }>;
+    }
+  >();
+  /** 同 session+cwd+runtime revision 的“查询并 emit”也合并，避免重复广播。 */
+  private readonly refreshInFlight = new Map<
+    string,
+    { cwd: string; runtimeRevision: number; promise: Promise<void> }
+  >();
+  /** 可能早于 task 注册到达 demand 的 session，用于 disable/lifecycle 统一清理。 */
+  private readonly demandSessionIds = new Set<string>();
   private runtimeConfig: GitRuntimeConfig = { enableGitPanel: true, gitBinaryPath: '' };
+  private runtimeRevision = 0;
 
   constructor(
     private readonly sessionLookup: GitSessionLookup,
     private readonly workspaceLookup: GitWorkspaceLookup,
     private readonly filePanelService: FilePanelService,
+    private readonly scheduler: BackgroundWorkScheduler = new BackgroundWorkScheduler(),
   ) {
     super();
   }
 
-  /** SettingsManager 在启动 + 设置变更时注入。 */
+  /**
+   * SettingsManager 在启动 + 设置变更时注入。
+   *
+   * Git 面板从 enabled → disabled 时必须同步停掉全部 watcher。只让下一次 poll
+   * 在 getStatusInternal() 里返回 disabled 仍会留下永不销毁的 setInterval；长期
+   * 使用后 interval 数会跟历史 session 数一起增长。已在跑的 git 子进程无法由
+   * 这里安全取消,但受 5 秒 timeout 约束,完成后不会再调度下一轮。
+   */
   setRuntimeConfig(cfg: GitRuntimeConfig): void {
+    const previous = this.runtimeConfig;
+    const wasEnabled = previous.enableGitPanel;
     this.runtimeConfig = cfg;
+    if (
+      previous.enableGitPanel !== cfg.enableGitPanel ||
+      previous.gitBinaryPath !== cfg.gitBinaryPath
+    ) {
+      this.runtimeRevision += 1;
+    }
+    if (wasEnabled && !cfg.enableGitPanel) {
+      const affected = new Set([
+        ...this.watchers.keys(),
+        ...this.demandSessionIds,
+        ...this.availabilityEpoch.keys(),
+      ]);
+      for (const sessionId of affected) {
+        this.invalidateAvailability(sessionId);
+        this.stopWatcher(sessionId);
+        this.scheduler.clearTaskDemands(this.pollingTaskKey(sessionId));
+      }
+      this.demandSessionIds.clear();
+      performanceMetrics.setGauge('git.watchers', this.watchers.size);
+    }
   }
 
   /**
@@ -167,10 +239,7 @@ export class GitService extends EventEmitter {
    * @param cwdReal session.currentCwd 已 canonicalize 的绝对路径(调用方负责 realpath)
    * @param pathKind session.pathId 的 PathKind(SSH 直接拒绝)
    */
-  async evaluateAvailability(
-    cwdReal: string,
-    pathKind: PathKind,
-  ): Promise<GitAvailability> {
+  async evaluateAvailability(cwdReal: string, pathKind: PathKind): Promise<GitAvailability> {
     if (!this.runtimeConfig.enableGitPanel) return { available: false, reason: 'disabled' };
     if (pathKind === 'ssh') return { available: false, reason: 'ssh-unsupported' };
     if (!cwdReal) return { available: false, reason: 'not-a-repo' };
@@ -190,165 +259,194 @@ export class GitService extends EventEmitter {
     sessionId: string,
     requesterId: string,
   ): Promise<GitStatusSnapshot | { unavailable: GitUnavailableReason }> {
-    const session = this.requireOwnerSession(sessionId, requesterId);
-    if (pathKindFromPathId(session.pathId) === 'ssh') {
-      return { unavailable: 'ssh-unsupported' };
-    }
-    if (!this.runtimeConfig.enableGitPanel) {
-      return { unavailable: 'disabled' };
-    }
-    const cwdReal = await this.realpathOrThrow(session.currentCwd);
-    const repoRoot = await findRepoRoot(cwdReal);
-    if (!repoRoot) return { unavailable: 'not-a-repo' };
-
-    // porcelain=v2 机器友好,字段稳定。-z 用 NUL 分隔(文件名可含空格/特殊字符)。
-    // --untracked-files=all 列全部未跟踪文件(包括未跟踪目录里的文件)。
-    // --no-optional-locks:git status 默认会做 index refresh 优化,会写回 .git/index
-    //   并短暂持有 .git/index.lock(~0.4s),会干扰用户在终端外部跑的 git 写操作
-    //   (commit/add/reset 等,撞上即 "Unable to create '.git/index.lock'")。加此 flag
-    //   让 git 跳过需要锁的可选操作——状态结果对只读展示完全不变(仍会扫描工作区
-    //   检测改动),只是不持久化 index 缓存刷新。这也让 Marina 严格符合 GitService
-    //   「永不写 .git」的设计契约(见 软件定义书 §13.2 / AGENTS.md)。
-    const { stdout } = await this.runGit(repoRoot, [
-      'status',
-      '--porcelain=v2',
-      '-z',
-      '--untracked-files=all',
-      '--no-optional-locks',
-    ]);
-    const groups = parsePorcelainV2(stdout.toString('utf8'));
-    let truncated = false;
-    const total = groups.reduce((n, g) => n + g.entries.length, 0);
-    if (total > MAX_STATUS_ENTRIES) {
-      truncated = true;
-      // 截断:保留每组前 N 项,按 tone 优先级(conflict > modified > ...)。
-      const perGroup = Math.max(1, Math.floor(MAX_STATUS_ENTRIES / groups.length));
-      for (const g of groups) {
-        if (g.entries.length > perGroup) g.entries.length = perGroup;
-      }
-    }
-    return { repoRoot, groups, truncated };
+    this.requireOwnerSession(sessionId, requesterId);
+    // 与 prefetch/HOT poll 共用 session+cwd in-flight，GitPanel mount 的显式拉取和
+    // demand 切 HOT 即使同帧到达也只 spawn 一个 git status。
+    return this.getStatusInternal(sessionId);
   }
 
   /**
-   * 内部:拉一次 status 并 emit(预取 + watcher 复用)。跳过 owner 校验(可信
-   * 内部调用)。session 不存在 / 错误时静默不 emit。
+   * 内部:拉一次 status 并 emit。查询 + 广播整体按 session+cwd 合并；结果返回时
+   * 再校验 cwd/state/config，旧 cwd 或 exited/disabled 的结果绝不覆盖新 UI。
    */
-  private async emitCurrentStatus(sessionId: string): Promise<void> {
-    if (!this.sessionLookup.get(sessionId)) return; // 销毁竞态
-    let stripped:
-      | { groups: GitStatusGroup[]; truncated: boolean }
-      | { unavailable: GitUnavailableReason };
-    try {
-      const result = await this.getStatusInternal(sessionId);
-      stripped =
-        'unavailable' in result
-          ? { unavailable: result.unavailable }
-          : { groups: result.groups, truncated: result.truncated };
-    } catch (err) {
-      logger.warn(
-        'GitService',
-        `emitCurrentStatus failed sid=${sessionId}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-      return;
+  private emitCurrentStatus(sessionId: string): Promise<void> {
+    const session = this.sessionLookup.get(sessionId);
+    if (!session) return Promise.resolve();
+    const cwd = session.currentCwd;
+    const runtimeRevision = this.runtimeRevision;
+    const existing = this.refreshInFlight.get(sessionId);
+    if (existing?.cwd === cwd && existing.runtimeRevision === runtimeRevision) {
+      return existing.promise;
     }
-    this.emit('gitStatusUpdated', { sessionId, ...stripped });
+
+    const operation = (async (): Promise<void> => {
+      let stripped:
+        | { groups: GitStatusGroup[]; truncated: boolean }
+        | { unavailable: GitUnavailableReason };
+      try {
+        const result = await this.getStatusInternal(sessionId);
+        stripped =
+          'unavailable' in result
+            ? { unavailable: result.unavailable }
+            : { groups: result.groups, truncated: result.truncated };
+      } catch (err) {
+        logger.warn(
+          MODULE,
+          `emitCurrentStatus failed sid=${sessionId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        return;
+      }
+      const current = this.sessionLookup.get(sessionId);
+      const isDisabledResult = 'unavailable' in stripped && stripped.unavailable === 'disabled';
+      if (
+        !current ||
+        current.state === 'exited' ||
+        current.currentCwd !== cwd ||
+        this.runtimeRevision !== runtimeRevision ||
+        (!this.runtimeConfig.enableGitPanel && !isDisabledResult)
+      ) {
+        return;
+      }
+      this.emit('gitStatusUpdated', { sessionId, ...stripped });
+    })();
+    const tracked = operation.finally(() => {
+      if (this.refreshInFlight.get(sessionId)?.promise === tracked) {
+        this.refreshInFlight.delete(sessionId);
+      }
+    });
+    this.refreshInFlight.set(sessionId, { cwd, runtimeRevision, promise: tracked });
+    return tracked;
   }
 
   /**
-   * 预取 status 并 emit gitStatusUpdated 事件(供 renderer 缓存)。
+   * 可用性 flip 后注册/注销 demand-aware task。历史名称保留为 prefetchStatus，
+   * 但 ADR-021 起不再无条件 spawn：available 只注册 COLD task，真正 status 由
+   * HOT/WARM demand 或 GitPanel 交互请求触发；unavailable 事件可直接由判定结果推送。
    *
-   * 由 SessionManager 在检测到 cwd 进仓库(flip 到 available)时调用,目的是让
-   * renderer 在用户点 Git tab 之前就把缓存填上,消除面板切换的 spawn git 延迟
-   * (AGENTS.md §10 面板切换延迟约束)。
-   *
-   * 与 getStatus 的区别:
-   * - 不走 owner 校验:这是 main 端内部主动调用,不是 renderer 请求。SessionManager
-   *   是可信调用方(它管 session 生命周期,拥有 cwd 真值)。
-   * - 不 throw:预取失败(SSH / 非 repo / disable / git 报错)静默转为 unavailable
-   *   或不 emit,避免预取扊住 session 创建/cd 流程。
-   *
-   * 副作用:成功(拿到 snapshot,非 unavailable)→ 启动 watcher 持续推更新;
-   *   unavailable → 停 watcher(不在仓库 / SSH / disable 不需轮询)。
+   * 每次调用先递增 epoch；所有 await 后同时复核 epoch + cwd + enabled + state，
+   * 因此旧的 available=true Promise 无法在较新的 cd-out/disable/exit 后复活 task。
    */
   async prefetchStatus(sessionId: string): Promise<void> {
-    await this.emitCurrentStatus(sessionId);
-    // 根据当前状态启停 watcher。拿不到 session 说明已销毁,确保停。
+    const epoch = this.invalidateAvailability(sessionId);
     const session = this.sessionLookup.get(sessionId);
     if (!session) {
       this.stopWatcher(sessionId);
+      // 销毁后晚到的 prefetch 不能为不存在的 session 留永久 epoch 条目。
+      this.availabilityEpoch.delete(sessionId);
       return;
     }
-    // 判是否需要 watcher:SSH / disable / 非仓尩 → 不需要。用 evaluateAvailability
-    // 快速判(不 spawn git,只 realpath + stat .git)。
-    const pathKind: PathKind = pathKindFromPathId(session.pathId);
-    const cwdReal = await this.realpathOrThrow(session.currentCwd).catch(() => null);
-    if (!cwdReal) {
+    if (session.state === 'exited') {
       this.stopWatcher(sessionId);
       return;
     }
-    const avail = await this.evaluateAvailability(cwdReal, pathKind);
-    if (avail.available) {
+    const cwd = session.currentCwd;
+    if (!this.runtimeConfig.enableGitPanel) {
+      this.stopWatcher(sessionId);
+      this.emit('gitStatusUpdated', { sessionId, unavailable: 'disabled' });
+      return;
+    }
+    const pathKind: PathKind = pathKindFromPathId(session.pathId);
+    if (pathKind === 'ssh') {
+      this.stopWatcher(sessionId);
+      this.emit('gitStatusUpdated', { sessionId, unavailable: 'ssh-unsupported' });
+      return;
+    }
+    const cwdReal = await this.realpathOrThrow(cwd).catch(() => null);
+    if (!cwdReal || !this.isAvailabilityCurrent(sessionId, epoch, cwd)) {
+      if (this.availabilityEpoch.get(sessionId) === epoch) {
+        this.stopWatcher(sessionId);
+        this.emit('gitStatusUpdated', { sessionId, unavailable: 'not-a-repo' });
+      }
+      return;
+    }
+    const availability = await this.evaluateAvailability(cwdReal, pathKind);
+    if (!this.isAvailabilityCurrent(sessionId, epoch, cwd)) return;
+
+    if (availability.available) {
       this.startWatcher(sessionId);
     } else {
       this.stopWatcher(sessionId);
+      this.emit('gitStatusUpdated', { sessionId, unavailable: availability.reason });
     }
   }
 
-  /**
-   * 内部 getStatus:跳过 owner 校验(可信内部调用)。其他逻辑与 getStatus 完全一致。
-   * 被 prefetchStatus / watcher 复用。
-   */
-  private async getStatusInternal(
+  /** 同 session+cwd 查询合并；cwd 在查询期间变化时自动重拉新 cwd，永不返回旧快照。 */
+  private getStatusInternal(
     sessionId: string,
   ): Promise<GitStatusSnapshot | { unavailable: GitUnavailableReason }> {
     const session = this.sessionLookup.get(sessionId);
-    if (!session) {
-      // session 已销毁(预取与销毁竞态)。返 unavailable 而非 throw,预取静默退出。
-      return { unavailable: 'not-a-repo' };
+    if (!session) return Promise.resolve({ unavailable: 'not-a-repo' });
+    const cwd = session.currentCwd;
+    const runtimeRevision = this.runtimeRevision;
+    const existing = this.statusInFlight.get(sessionId);
+    if (existing?.cwd === cwd) {
+      // 配置 revision 变化也先等待旧进程结束；旧 wrapper 随后检测 revision 并串行
+      // 重拉，保证同 cwd 任何时刻最多一个 git status，而不是并发启第二个。
+      return existing.promise;
     }
-    if (pathKindFromPathId(session.pathId) === 'ssh') {
-      return { unavailable: 'ssh-unsupported' };
-    }
-    if (!this.runtimeConfig.enableGitPanel) {
-      return { unavailable: 'disabled' };
-    }
-    const cwdReal = await this.realpathOrThrow(session.currentCwd);
+
+    const operation = this.getStatusInternalUncoalesced(sessionId, cwd);
+    const settled = operation.finally(() => {
+      // 先移除旧 in-flight，再由下面 then 按新 cwd/revision 串行重拉；避免同 cwd
+      // 递归命中自己造成 Promise cycle，也保证不会与旧 git 进程重叠。
+      if (this.statusInFlight.get(sessionId)?.promise === refreshed) {
+        this.statusInFlight.delete(sessionId);
+      }
+    });
+    const contextChanged = (): boolean => {
+      const current = this.sessionLookup.get(sessionId);
+      return (
+        !!current &&
+        current.state !== 'exited' &&
+        (current.currentCwd !== cwd || this.runtimeRevision !== runtimeRevision)
+      );
+    };
+    const refreshed = settled.then(
+      async (result) => (contextChanged() ? this.getStatusInternal(sessionId) : result),
+      async (error: unknown) => {
+        // 旧 binary/cwd 的失败也不能盖住新配置：先等旧进程结束，再用新 context
+        // 串行重拉；只有 context 未变化时才把真实错误交给调用方。
+        if (contextChanged()) return this.getStatusInternal(sessionId);
+        throw error;
+      },
+    );
+    this.statusInFlight.set(sessionId, { cwd, runtimeRevision, promise: refreshed });
+    return refreshed;
+  }
+
+  private async getStatusInternalUncoalesced(
+    sessionId: string,
+    cwd: string,
+  ): Promise<GitStatusSnapshot | { unavailable: GitUnavailableReason }> {
+    const session = this.sessionLookup.get(sessionId);
+    if (!session) return { unavailable: 'not-a-repo' };
+    if (pathKindFromPathId(session.pathId) === 'ssh') return { unavailable: 'ssh-unsupported' };
+    if (!this.runtimeConfig.enableGitPanel) return { unavailable: 'disabled' };
+    const cwdReal = await this.realpathOrThrow(cwd);
     const repoRoot = await findRepoRoot(cwdReal);
     if (!repoRoot) return { unavailable: 'not-a-repo' };
-    // --no-optional-locks:同 getStatus,避免后台轮询持有 index.lock 干扰外部 git 写
-    //   操作(详见 getStatus 处注释)。后台 watcher 每 3s 调一次本方法,这是 historically
-    //   造成用户 "index.lock" 提交失败的根因,故此处务必带此 flag。
     const { stdout } = await this.runGit(repoRoot, [
       'status',
       '--porcelain=v2',
       '-z',
       '--untracked-files=all',
-      '--no-optional-locks',
     ]);
     const groups = parsePorcelainV2(stdout.toString('utf8'));
-    let truncated = false;
-    if (groups.reduce((n, g) => n + g.entries.length, 0) > MAX_STATUS_ENTRIES) {
-      truncated = true;
-      // 截断:保留按 tone 优先级的前 N 项(冲突置顶逻辑在 parsePorcelainV2 里已排序)。
-      let used = 0;
-      const kept: typeof groups = [];
-      for (const g of groups) {
-        const room = MAX_STATUS_ENTRIES - used;
-        if (room <= 0) break;
-        if (g.entries.length <= room) {
-          kept.push(g);
-          used += g.entries.length;
-        } else {
-          kept.push({ ...g, entries: g.entries.slice(0, room) });
-          used = MAX_STATUS_ENTRIES;
-        }
-      }
-      return { repoRoot, groups: kept, truncated };
+    if (groups.reduce((n, group) => n + group.entries.length, 0) <= MAX_STATUS_ENTRIES) {
+      return { repoRoot, groups, truncated: false };
     }
-    return { repoRoot, groups, truncated };
+    let used = 0;
+    const kept: typeof groups = [];
+    for (const group of groups) {
+      const room = MAX_STATUS_ENTRIES - used;
+      if (room <= 0) break;
+      const entries = group.entries.slice(0, room);
+      kept.push({ ...group, entries });
+      used += entries.length;
+    }
+    return { repoRoot, groups: kept, truncated: true };
   }
 
   /**
@@ -368,7 +466,10 @@ export class GitService extends EventEmitter {
   ): Promise<FilePanelSnapshot> {
     const session = this.requireOwnerSession(sessionId, requesterId);
     if (pathKindFromPathId(session.pathId) === 'ssh') {
-      throw new GitError('SshUnsupported', 'SSH 会话不支持 Git 面板。请在远程终端中使用 git 命令。');
+      throw new GitError(
+        'SshUnsupported',
+        'SSH 会话不支持 Git 面板。请在远程终端中使用 git 命令。',
+      );
     }
     if (!this.runtimeConfig.enableGitPanel) {
       throw new GitError('GitFailed', 'Git 面板已在设置中禁用。');
@@ -439,11 +540,7 @@ export class GitService extends EventEmitter {
    *
    * @returns canonical 绝对路径
    */
-  async resolvePath(
-    sessionId: string,
-    requesterId: string,
-    relativePath: string,
-  ): Promise<string> {
+  async resolvePath(sessionId: string, requesterId: string, relativePath: string): Promise<string> {
     const session = this.requireOwnerSession(sessionId, requesterId);
     if (pathKindFromPathId(session.pathId) === 'ssh') {
       throw new GitError('SshUnsupported', 'SSH 会话不支持 Git 面板。');
@@ -456,14 +553,110 @@ export class GitService extends EventEmitter {
     return this.resolveInsideRepo(repoRoot, relativePath);
   }
 
-  /** session 销毁:清 watcher + 防抖 timer(ipc wireEventBroadcasts 调)。 */
-  onSessionDestroyed(sessionId: string): void {
-    this.stopWatcher(sessionId);
-    const t = this.debounceTimers.get(sessionId);
-    if (t) {
-      clearTimeout(t);
-      this.debounceTimers.delete(sessionId);
+  /**
+   * renderer 上报 Git 周期工作的绝对需求。HOT/WARM 只能由当前 owner 注册；NONE
+   * 在 session 已消失后仍幂等允许，保证 React cleanup 永远能执行。
+   */
+  setPollingDemand(sessionId: string, consumerId: string, level: BackgroundDemandLevel): void {
+    const key = this.pollingTaskKey(sessionId);
+    if (level === 'none') {
+      this.scheduler.setDemand(key, consumerId, 'none');
+      return;
     }
+    const session = this.sessionLookup.get(sessionId);
+    if (!session) {
+      throw new GitError('SessionMissing', '会话不存在，无法注册 Git 后台刷新需求。');
+    }
+    if (session.state === 'exited') {
+      throw new GitError('GitFailed', '已退出会话只保留静态 Git 快照，不再后台刷新。');
+    }
+    if (!consumerId || session.ownerWindowId !== consumerId) {
+      throw new GitError(
+        'NotOwner',
+        '只有当前持有该会话的窗口才能注册 Git 后台刷新需求。请先接管会话。',
+      );
+    }
+    if (!this.runtimeConfig.enableGitPanel) {
+      throw new GitError('GitFailed', 'Git 面板已禁用，不能注册后台刷新需求。');
+    }
+    this.demandSessionIds.add(sessionId);
+    this.scheduler.setDemand(key, consumerId, level);
+  }
+
+  /** 窗口关闭/远程断线：移除它在所有 Git task 上的 demand。 */
+  removePollingConsumer(consumerId: string): void {
+    this.scheduler.removeConsumer(consumerId);
+  }
+
+  /** owner 改变时旧 renderer 可能不 remount；main 先清 demand，新 owner 再绝对上报。 */
+  onSessionOwnerChanged(sessionId: string): void {
+    this.scheduler.clearTaskDemands(this.pollingTaskKey(sessionId));
+    this.demandSessionIds.delete(sessionId);
+  }
+
+  /**
+   * PTY 自然退出:立即停掉后台 Git 轮询。
+   *
+   * ADR-008 要求 exited session 无时限保留 scrollback,但“保留可查看快照”不等于
+   * “继续扫描仓库”。如果只在 sessionDestroyed 时清理,历史 task 会永久存活。
+   */
+  onSessionExited(sessionId: string): void {
+    this.invalidateAvailability(sessionId);
+    this.stopWatcher(sessionId);
+    this.scheduler.clearTaskDemands(this.pollingTaskKey(sessionId));
+    this.demandSessionIds.delete(sessionId);
+    this.clearDebounceTimer(sessionId);
+  }
+
+  /** session 销毁:清 polling task/demand + 防抖 timer。 */
+  onSessionDestroyed(sessionId: string): void {
+    this.invalidateAvailability(sessionId);
+    this.stopWatcher(sessionId);
+    this.scheduler.clearTaskDemands(this.pollingTaskKey(sessionId));
+    this.demandSessionIds.delete(sessionId);
+    this.statusInFlight.delete(sessionId);
+    this.refreshInFlight.delete(sessionId);
+    // invalidate 已让旧 async 工作失效；删除 entry 后旧 epoch 比较仍必然失败。
+    this.availabilityEpoch.delete(sessionId);
+    this.clearDebounceTimer(sessionId);
+  }
+
+  /** 应用退出或服务卸载：注销本服务全部 task；共享 scheduler 由装配层最终 shutdown。 */
+  shutdownPolling(): void {
+    for (const sessionId of [...this.watchers.keys()]) this.stopWatcher(sessionId);
+    for (const sessionId of this.demandSessionIds) {
+      this.scheduler.clearTaskDemands(this.pollingTaskKey(sessionId));
+    }
+    this.demandSessionIds.clear();
+  }
+
+  private clearDebounceTimer(sessionId: string): void {
+    const timer = this.debounceTimers.get(sessionId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.debounceTimers.delete(sessionId);
+  }
+
+  private pollingTaskKey(sessionId: string): string {
+    return `git-status:${sessionId}`;
+  }
+
+  /** 递增并返回新 epoch；调用名沿用 invalidate，因为它会使全部旧 async 工作失效。 */
+  private invalidateAvailability(sessionId: string): number {
+    const next = (this.availabilityEpoch.get(sessionId) ?? 0) + 1;
+    this.availabilityEpoch.set(sessionId, next);
+    return next;
+  }
+
+  private isAvailabilityCurrent(sessionId: string, epoch: number, cwd: string): boolean {
+    const session = this.sessionLookup.get(sessionId);
+    return (
+      this.availabilityEpoch.get(sessionId) === epoch &&
+      this.runtimeConfig.enableGitPanel &&
+      !!session &&
+      session.state !== 'exited' &&
+      session.currentCwd === cwd
+    );
   }
 
   // ────────────────────────────────────────────────────────────────
@@ -517,10 +710,7 @@ export class GitService extends EventEmitter {
       );
     }
     if (rawRelativePath.split(/[\\/]+/).some((part) => part === '..')) {
-      throw new GitError(
-        'OutsideRepoRoot',
-        'Git 路径不能包含 "..",只能在仓库根目录内。',
-      );
+      throw new GitError('OutsideRepoRoot', 'Git 路径不能包含 "..",只能在仓库根目录内。');
     }
     const lexicalTarget = resolve(repoRoot, rawRelativePath);
     if (!isWithinRoot(repoRoot, lexicalTarget)) {
@@ -542,20 +732,28 @@ export class GitService extends EventEmitter {
     repoRoot: string,
     args: string[],
   ): Promise<{ stdout: Buffer; stderr: string; exitCode: number }> {
+    const operationName =
+      args[0] === 'status' ? 'git.status' : args[0] === 'diff' ? 'git.diff' : 'git.command';
+    const finishMetric = performanceMetrics.begin(operationName);
     const binary = this.resolveGitBinary();
     if (!binary) {
-      return Promise.reject(
-        new GitError(
-          'GitBinaryMissing',
-          '未找到 git 二进制。请在设置 → 高级 → Git 二进制路径 中指定 git.exe 路径,或确保 git 在系统 PATH 中。',
-        ),
+      const error = new GitError(
+        'GitBinaryMissing',
+        '未找到 git 二进制。请在设置 → 高级 → Git 二进制路径 中指定 git.exe 路径,或确保 git 在系统 PATH 中。',
       );
+      finishMetric(error);
+      return Promise.reject(error);
     }
     return new Promise((resolveP, rejectP) => {
       const fullArgs = ['-C', repoRoot, ...args];
+      // GIT_OPTIONAL_LOCKS=0:等同全局选项 `git --no-optional-locks ...`,但走 env 注入。
+      // 旧代码把该全局选项错放成 `git status ... --no-optional-locks`,status 会报
+      // unknown option(exit 129)→ Git 面板失效/显示干净。env 没有参数位置问题,
+      // 既避免 index.lock 竞争又不破坏 status 调用。详见 getStatus 处注释。
       const child = spawn(binary, fullArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
+        env: buildGitSpawnEnv(),
       });
       const stdoutChunks: Buffer[] = [];
       let stdoutBytes = 0;
@@ -569,7 +767,10 @@ export class GitService extends EventEmitter {
         } catch {
           /* ignore */
         }
-        rejectP(new GitError('GitFailed', `git ${args[0]} 超时(${GIT_TIMEOUT_MS}ms)。`));
+        const error = new GitError('GitFailed', `git ${args[0]} 超时(${GIT_TIMEOUT_MS}ms)。`);
+        finishMetric(error);
+        performanceMetrics.increment('git.timeouts');
+        rejectP(error);
       }, GIT_TIMEOUT_MS);
 
       child.stdout?.on('data', (chunk: Buffer) => {
@@ -583,12 +784,12 @@ export class GitService extends EventEmitter {
             } catch {
               /* ignore */
             }
-            rejectP(
-              new GitError(
-                'GitFailed',
-                `git ${args[0]} 输出超过 ${MAX_GIT_STDOUT_BYTES} 字节上限。仓库可能过大,请缩小变更范围。`,
-              ),
+            const error = new GitError(
+              'GitFailed',
+              `git ${args[0]} 输出超过 ${MAX_GIT_STDOUT_BYTES} 字节上限。仓库可能过大,请缩小变更范围。`,
             );
+            finishMetric(error);
+            rejectP(error);
           }
           return;
         }
@@ -601,17 +802,18 @@ export class GitService extends EventEmitter {
         if (resolved) return;
         resolved = true;
         clearTimeout(timer);
-        rejectP(
-          new GitError(
-            'GitFailed',
-            `无法启动 git 二进制 "${binary}":${err.message}。请检查设置中的路径。`,
-          ),
+        const error = new GitError(
+          'GitFailed',
+          `无法启动 git 二进制 "${binary}":${err.message}。请检查设置中的路径。`,
         );
+        finishMetric(error);
+        rejectP(error);
       });
       child.on('close', (code) => {
         if (resolved) return;
         resolved = true;
         clearTimeout(timer);
+        finishMetric(code === 0 || code === null ? undefined : new Error(`git exit ${code}`));
         resolveP({
           stdout: Buffer.concat(stdoutChunks),
           stderr: stderrText,
@@ -649,14 +851,13 @@ export class GitService extends EventEmitter {
   private async produceDiff(repoRoot: string, relativePath: string): Promise<string> {
     // 用 porcelain v2 单文件查状态(比 `git status` 文本解析稳)。
     // 注意:对 untracked 文件 porcelain v2 仍会列出 `? <path>`。
-    // --no-optional-locks:同 getStatus,避免持有 index.lock 干扰外部 git 写操作。
+    // index.lock 防护:同 getStatus(runGit 统一注入 env GIT_OPTIONAL_LOCKS=0)。
     let statusLetter = 'M'; // 兜底按 modified 处理
     try {
       const { stdout } = await this.runGit(repoRoot, [
         'status',
         '--porcelain=v2',
         '-z',
-        '--no-optional-locks',
         '--',
         relativePath,
       ]);
@@ -700,17 +901,19 @@ export class GitService extends EventEmitter {
     if (text.length <= MAX_DIFF_TEXT_BYTES) return text;
     // 尾部裁切 + 标记(对齐 file-panel-service 的 text 截断哲学)。
     return (
-      text.slice(0, MAX_DIFF_TEXT_BYTES) +
-      '\n\n... diff 过大已截断,请用外部工具查看完整差异 ...\n'
+      text.slice(0, MAX_DIFF_TEXT_BYTES) + '\n\n... diff 过大已截断,请用外部工具查看完整差异 ...\n'
     );
   }
 
   /** `git diff --no-index /dev/null <path>` 包装(exit 1 是正常的"有差异")。 */
   private async runGitNoIndex(repoRoot: string, relativePath: string): Promise<Buffer> {
     // --no-index 不能配 -C,但 git 仍需在仓库上下文识别 ignore 规则。用 cwd=repoRoot。
+    const finishMetric = performanceMetrics.begin('git.diff');
     const binary = this.resolveGitBinary();
     if (!binary) {
-      throw new GitError('GitBinaryMissing', '未找到 git 二进制(见设置 → 高级)。');
+      const error = new GitError('GitBinaryMissing', '未找到 git 二进制(见设置 → 高级)。');
+      finishMetric(error);
+      throw error;
     }
     const target = resolve(repoRoot, relativePath);
     return new Promise<Buffer>((resolveP, rejectP) => {
@@ -730,7 +933,10 @@ export class GitService extends EventEmitter {
         } catch {
           /* ignore */
         }
-        rejectP(new GitError('GitFailed', `git diff --no-index 超时(${GIT_TIMEOUT_MS}ms)。`));
+        const error = new GitError('GitFailed', `git diff --no-index 超时(${GIT_TIMEOUT_MS}ms)。`);
+        finishMetric(error);
+        performanceMetrics.increment('git.timeouts');
+        rejectP(error);
       }, GIT_TIMEOUT_MS);
       child.stdout?.on('data', (c: Buffer) => {
         if (Buffer.concat(chunks).byteLength + c.byteLength <= MAX_GIT_STDOUT_BYTES) chunks.push(c);
@@ -742,7 +948,9 @@ export class GitService extends EventEmitter {
         if (resolved) return;
         resolved = true;
         clearTimeout(timer);
-        rejectP(new GitError('GitFailed', `git diff --no-index 启动失败:${err.message}`));
+        const error = new GitError('GitFailed', `git diff --no-index 启动失败:${err.message}`);
+        finishMetric(error);
+        rejectP(error);
       });
       child.on('close', (code) => {
         if (resolved) return;
@@ -751,14 +959,15 @@ export class GitService extends EventEmitter {
         // exit 0 = 无差异(untracked 文件理论总有差异);1 = 有差异(正常);
         // >1 = 真错误。
         if (typeof code === 'number' && code > 1) {
-          rejectP(
-            new GitError(
-              'GitFailed',
-              `git diff --no-index 退出码 ${code}:${stderrText.slice(0, 200)}`,
-            ),
+          const error = new GitError(
+            'GitFailed',
+            `git diff --no-index 退出码 ${code}:${stderrText.slice(0, 200)}`,
           );
+          finishMetric(error);
+          rejectP(error);
           return;
         }
+        finishMetric();
         resolveP(Buffer.concat(chunks));
       });
     });
@@ -793,43 +1002,50 @@ export class GitService extends EventEmitter {
   // 内部:watcher(v0.3.0 轮询实现)
   // ────────────────────────────────────────────────────────────────
 
-  /** 轮询间隔(ms)。3s 平衡及时性与 CPU:git status 在已索引仓库 <50ms,3s 一次可忽略。 */
-  private static readonly WATCHER_POLL_MS = 3000;
-
   /**
-   * 启动轮询 watcher:每 3s 拉一次 status 并 emit,让 renderer 缓存持续新鲜。
-   * 幂等:已存在则不重复启动。session 销毁 / cd 出仓库时由 stopWatcher / prefetchStatus 停。
-   *
-   * 为什么用轮询而非 fs.watch:
-   * - fs.watch 递归 watch 工作区会捕获 node_modules 噪声 + Windows/Linux/macOS
-   *   行为不一致 + 高频变更会压爆。
-   * - 只 watch .git/index 只捕获 staged,遗漏工作区 modified/untracked。
-   * - 轮询一次 git status 捕获所有变化,逻辑简单,3s 间隔 CPU 可忽略。
-   * 未来若需要更低延迟,可加 .git/index 的 fs.watch 即时触发(补充轮询)。
+   * 注册 demand-aware Git task。没有 demand 时 task 为 COLD、不起 timer；HOT 3s，
+   * WARM 60s。仍用 status poll 而非 fs.watch，原因是后者无法可靠覆盖工作区全部
+   * modified/untracked 且跨平台噪声大。
    */
   private startWatcher(sessionId: string): void {
-    if (this.watchers.has(sessionId)) return; // 已启动,幂等
-    const poll = async (): Promise<void> => {
-      try {
-        await this.emitCurrentStatus(sessionId);
-      } catch (err) {
+    if (!this.runtimeConfig.enableGitPanel) return;
+    const session = this.sessionLookup.get(sessionId);
+    if (!session || session.state === 'exited') return;
+    if (this.watchers.has(sessionId)) return;
+
+    const key = this.pollingTaskKey(sessionId);
+    this.scheduler.registerTask(key, {
+      hotIntervalMs: GIT_HOT_POLL_MS,
+      warmIntervalMs: GIT_WARM_POLL_MS,
+      run: async () => {
+        // scheduler 已串行；guard 防未来交互路径误接同一后台函数。
+        if (this.pollsInFlight.has(sessionId)) {
+          performanceMetrics.increment('git.pollsSkippedInFlight');
+          return;
+        }
+        this.pollsInFlight.add(sessionId);
+        performanceMetrics.setGauge('git.pollsInFlight', this.pollsInFlight.size);
+        try {
+          await this.emitCurrentStatus(sessionId);
+        } finally {
+          this.pollsInFlight.delete(sessionId);
+          performanceMetrics.setGauge('git.pollsInFlight', this.pollsInFlight.size);
+        }
+      },
+      onError: (error) => {
         logger.warn(
-          'GitService',
-          `watcher poll error sid=${sessionId}: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
+          MODULE,
+          `scheduled status refresh failed: ${error instanceof Error ? error.message : String(error)}`,
         );
-      }
-    };
-    const handle = setInterval(() => {
-      void poll();
-    }, GitService.WATCHER_POLL_MS);
-    // unref:不阻止进程退出(session 都关了进程应能退)。
-    handle.unref?.();
-    this.watchers.set(sessionId, {
-      close: () => clearInterval(handle),
+      },
     });
-    logger.debug('GitService', `watcher started sid=${sessionId} interval=${GitService.WATCHER_POLL_MS}ms`);
+    this.watchers.set(sessionId, { close: () => this.scheduler.unregisterTask(key) });
+    performanceMetrics.increment('git.watchersStarted');
+    performanceMetrics.setGauge('git.watchers', this.watchers.size);
+    logger.debug(
+      MODULE,
+      `polling task registered sid=${sessionId} hot=${GIT_HOT_POLL_MS}ms warm=${GIT_WARM_POLL_MS}ms`,
+    );
   }
 
   private stopWatcher(sessionId: string): void {
@@ -838,10 +1054,15 @@ export class GitService extends EventEmitter {
       try {
         w.close();
       } catch {
-        /* ignore */
+        /* scheduler unregister below is the authoritative cleanup */
       }
       this.watchers.delete(sessionId);
+      performanceMetrics.increment('git.watchersStopped');
     }
+    // 即使 task 尚未注册也要调用：unregister 会删除 demand-before-register placeholder。
+    this.scheduler.unregisterTask(this.pollingTaskKey(sessionId));
+    this.demandSessionIds.delete(sessionId);
+    performanceMetrics.setGauge('git.watchers', this.watchers.size);
   }
 }
 
@@ -911,8 +1132,17 @@ export function parsePorcelainV2(input: string): GitStatusGroup[] {
     if (parsed) buckets[parsed.tone].push(parsed.entry);
   }
   // 按 tone 优先级输出(conflict 置顶,与 GitPanel 分组顺序一致)。
-  const order: GitStatusTone[] = ['conflict', 'modified', 'added', 'deleted', 'renamed', 'untracked'];
-  return order.map((tone) => ({ tone, entries: buckets[tone] })).filter((g) => g.entries.length > 0);
+  const order: GitStatusTone[] = [
+    'conflict',
+    'modified',
+    'added',
+    'deleted',
+    'renamed',
+    'untracked',
+  ];
+  return order
+    .map((tone) => ({ tone, entries: buckets[tone] }))
+    .filter((g) => g.entries.length > 0);
 }
 
 function parseOneRecord(rec: string): { tone: GitStatusTone; entry: GitStatusEntry } | null {
@@ -959,7 +1189,8 @@ function trackedTone(xy: string): GitStatusTone {
   const x = xy[0] ?? ' ';
   const y = xy[1] ?? ' ';
   // 冲突优先(u 行已单独处理,但 1 行的 XY 也可能含 U)。
-  if (x === 'U' || y === 'U' || x === 'A' && y === 'A' || x === 'D' && y === 'D') return 'conflict';
+  if (x === 'U' || y === 'U' || (x === 'A' && y === 'A') || (x === 'D' && y === 'D'))
+    return 'conflict';
   if (x === 'A' || y === 'A') return 'added'; // 新增到 index 或 worktree
   if (x === 'D' || y === 'D') return 'deleted';
   // M 占多数;C(copied)在 1 行不出现(只在 2 行),此处兜底 modified。
