@@ -344,6 +344,18 @@ export interface Settings {
      */
     language: 'system' | 'zh-CN' | 'en-US';
     terminalFontFamily: string;
+    /**
+     * 终端「回退字体」(高级用户可空)。主字体不含的字形(常见:powerlevel10k /
+     * starship / lsd 等 CLI 工具塞的 Nerd Font 图标)会按 CSS font-family 回退
+     * 机制,依次尝试这里写的字体。
+     *
+     * 空字符串 = 仅使用内置 Symbols Nerd Font Mono 兜底(零配置,见 font-stack.ts)。
+     * 用户可填自己装的完整 Nerd Font(如 `'JetBrainsMono Nerd Font'`)或加 emoji
+     * 字体(如 `'Noto Color Emoji'` / `'Segoe UI Emoji'`)。
+     *
+     * 拼接逻辑与优先级见 src/shared/font-stack.ts 的 buildTerminalFontStack()。
+     */
+    terminalFallbackFont: string;
     terminalFontSize: number;
     terminalLineHeight: number;
     uiFontFamily: string;

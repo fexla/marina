@@ -7,6 +7,10 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+### 新增
+
+- **内置 Nerd Font 兑底 + 自定义回退字体。** 很多 CLI 工具(powerlevel10k / starship / lsd / eza 等)在输出里塞 Nerd Font 图标,用户选的终端字体不含这些字形就会显方块。现应用内置 `Symbols Nerd Font Mono`(打包进 `assets/fonts/`,MIT 协议)作为终端字体栈的零配置兑底;字体栈由 `src/shared/font-stack.ts` 的 `buildTerminalFontStack()` 统一构建,优先级为主字体 → 用户自定义回退 → 内置 Nerd Font → 通用 monospace,保证 PUA 图标先命中符号字体而非被通用 monospace 截胡。另在「设置 → 外观」新增「回退字体」输入框(默认留空 = 仅用内置兑底),高级用户可填自定义回退(如自己装的完整 Nerd Font、emoji 字体),下方有实时 Nerd Font 图标预览 + 最终字体栈明文展示。
+
 ### 修复
 
 - **关闭当前终端后自动续看(通用,不限 hideTopTabBar)。** 此前关掉正在看的终端,主区直接掉进「新建终端」页(即使同目录还有别的终端)——因为一个窗口同一时刻只持有 1 个 session,销毁后本窗口不再持有任何 session。现 tab 的 × / 右键菜单「关闭」/ hideTopTabBar 工具栏「关闭」统一走续看逻辑:关掉当前终端时,若同目录有无主(orphan)终端就接管并切过去,没有才进新建页。乐观先选候选再 SESSION_CLOSE,避免中间闪一下新建页;claim 失败回滚到新建页。

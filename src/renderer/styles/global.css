@@ -58,11 +58,37 @@
  * ╚════════════════════════════════════════════════════════════════════════╝
  */
 
+/* ────────────────────────────────────────────────────────────────
+ * 内置 Nerd Font 符号兜底 (ADR 见 font-stack.ts)
+ *
+ * 这是个「纯符号」字体(Nerd Fonts 官方 Symbols Only,Mono 变体 = 单格
+ * 宽度,适合终端网格),只含图标区字形(U+E000–U+F8FF 等),不含任何基础
+ * 字形。主字体缺字形时,浏览器 / xterm 渲染器会沿 font-family 链回退到它,
+ * 让 powerlevel10k / starship / lsd 等 CLI 工具的图标零配置不显方块。
+ *
+ * family 名 'Symbols Nerd Font Mono' 必须与 src/shared/font-stack.ts 里
+ * BUILTIN_FALLBACK_FONT 常量一致(两处都是字面值,CSS 拿不到 TS 常量)。
+ *
+ * 资源:src/renderer/assets/fonts/SymbolsNerdFontMono.woff2 (Vite 打包,
+ * 经 hash 重写到 out/renderer/assets/,Electron 从 asar 内 app:// 加载)。
+ * 满足 CSP font-src 'self' (见 main/index.ts onHeadersReceived)。
+ * License:MIT(随包附带 LICENSE-NerdFontSymbols.txt)。 */
+@font-face {
+  font-family: 'Symbols Nerd Font Mono';
+  src: url('../assets/fonts/SymbolsNerdFontMono.woff2') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+  /* 终端字形需要尽快出现,不闪无衬线占位;但终端单元宽度以主字体为准,
+   * 符号字体只填补缺字,swap 是安全的(不会改变网格度量)。 */
+  font-display: swap;
+}
+
 :root {
   --ui-font-family:
     'LXGW WenKai', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
   --terminal-font-family:
-    'Cascadia Mono', 'JetBrains Mono', consolas, 'LXGW WenKai Mono', monospace;
+    'Cascadia Mono', 'JetBrains Mono', consolas, 'LXGW WenKai Mono', 'Symbols Nerd Font Mono',
+    monospace;
 
   /* color-scheme 让 Chromium 的 OS 原生控件(select 弹出菜单、滚动条等)
    * 跟随主题色调:深色主题默认 dark,浅色主题在各自 [data-theme] 块覆盖
@@ -2169,12 +2195,24 @@ html[data-maximized='true'] .app-root.with-shell {
 }
 
 /* chip 颜色按 tone(与 status badge 字母色一致)。 */
-.git-summary-modified .git-summary-num { color: var(--color-warning, #f6c177); }
-.git-summary-added .git-summary-num { color: var(--color-success, #3e8fb0); }
-.git-summary-deleted .git-summary-num { color: var(--color-danger, #eb6f92); }
-.git-summary-renamed .git-summary-num { color: var(--color-info, #9ccfd8); }
-.git-summary-untracked .git-summary-num { color: var(--color-accent, #c4a7e7); }
-.git-summary-conflict .git-summary-num { color: var(--color-danger, #eb6f92); }
+.git-summary-modified .git-summary-num {
+  color: var(--color-warning, #f6c177);
+}
+.git-summary-added .git-summary-num {
+  color: var(--color-success, #3e8fb0);
+}
+.git-summary-deleted .git-summary-num {
+  color: var(--color-danger, #eb6f92);
+}
+.git-summary-renamed .git-summary-num {
+  color: var(--color-info, #9ccfd8);
+}
+.git-summary-untracked .git-summary-num {
+  color: var(--color-accent, #c4a7e7);
+}
+.git-summary-conflict .git-summary-num {
+  color: var(--color-danger, #eb6f92);
+}
 
 .git-summary-truncated {
   font-size: 10px;

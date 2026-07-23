@@ -116,6 +116,7 @@ import { useToast } from './Toast';
 import { useModal } from './Modal';
 import { useTranslation } from './LanguageProvider';
 import { matchKeybinding } from '@shared/terminal-keybindings';
+import { buildTerminalFontStack } from '@shared/font-stack';
 import '@xterm/xterm/css/xterm.css';
 
 /**
@@ -491,19 +492,19 @@ const XTERM_THEMES: Record<ThemeId, ITheme> = {
     black: '#54494b',
     red: '#d2304b',
     green: '#4a7559',
-    yellow: '#8a6c1f',    // 上游 #b08b35 在浅底 ~3.2:1,加深到 ≥4.5
+    yellow: '#8a6c1f', // 上游 #b08b35 在浅底 ~3.2:1,加深到 ≥4.5
     blue: '#1f6e89',
-    magenta: '#9d3c5e',   // 上游 function 色,本身已 ≥4.5
-    cyan: '#2d6b75',      // 上游 #458a96 仅 ~3.7,加深到 ≥4.5
+    magenta: '#9d3c5e', // 上游 function 色,本身已 ≥4.5
+    cyan: '#2d6b75', // 上游 #458a96 仅 ~3.7,加深到 ≥4.5
     white: '#54494b',
     brightBlack: '#7d6770',
     brightRed: '#d2304b',
     brightGreen: '#4a7559',
     brightYellow: '#8a6c1f',
     brightBlue: '#1f6e89',
-    brightMagenta: '#8855a0',   // 加深后的紫莓
+    brightMagenta: '#8855a0', // 加深后的紫莓
     brightCyan: '#2d6b75',
-    brightWhite: '#44132d',     // 深酒红(exception 色)
+    brightWhite: '#44132d', // 深酒红(exception 色)
     extendedAnsi: LIGHT_EXTENDED_ANSI,
   },
   // UI-2 — Fairyfloss(深色可爱,sailorhg 原创)
@@ -654,16 +655,19 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
   const simpleMode = appState.simpleMode;
   const themeId = appState.settings.appearance?.theme;
   const fontSize = appState.settings.appearance?.terminalFontSize ?? 13;
-  const fontFamily =
-    appState.settings.appearance?.terminalFontFamily ??
-    '"Cascadia Mono", "JetBrains Mono", Consolas, "LXGW WenKai Mono", monospace';
+  // 终端字体栈:主字体 → 用户自定义回退 → 内置 Symbols Nerd Font Mono → monospace。
+  // buildTerminalFontStack 是唯一真相源(优先级 / 顺序不变量见 font-stack.ts),
+  // 保证 Nerd Font 图标(powerlevel10k / starship / lsd 等)零配置不显方块。
+  const fontFamily = buildTerminalFontStack(
+    appState.settings.appearance?.terminalFontFamily,
+    appState.settings.appearance?.terminalFallbackFont,
+  );
   const lineHeight = appState.settings.appearance?.terminalLineHeight ?? 1.2;
   const selectOnCopy = appState.settings.behavior?.selectOnCopy ?? true;
   const rightClickMode = appState.settings.behavior?.terminalRightClick ?? 'menu';
   const bracketedPaste = appState.settings.behavior?.bracketedPaste ?? true;
   // 终端渲染器选择(mount 时决定,运行时切换需关 tab 重开)
-  const terminalRenderer =
-    appState.settings.advanced?.terminalRenderer ?? 'auto';
+  const terminalRenderer = appState.settings.advanced?.terminalRenderer ?? 'auto';
 
   // 把"创建期"读到的初始值用 useMemo 锁定 (terminal 创建后只用 mutator 调整),
   // 否则每次 settings 引用变化都会重建 xterm 实例。
@@ -791,8 +795,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       // 避免预览本身欺骗用户(CPB-P7)。
       const hasEsc = text.indexOf('\x1b') >= 0;
       if (hasEsc) {
-        const previewRaw =
-          text.length > 200 ? text.slice(0, 200) + '…' : text;
+        const previewRaw = text.length > 200 ? text.slice(0, 200) + '…' : text;
         const preview = sanitizePastedPreview(previewRaw);
         const ok = await modal.confirm({
           title: '粘贴内容含转义字符',
@@ -819,10 +822,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         const lineCount = lines.length;
         if (lineCount > 1) {
           const normalized = lines.join('\n');
-          const previewRaw =
-            normalized.length > 200
-              ? normalized.slice(0, 200) + '…'
-              : normalized;
+          const previewRaw = normalized.length > 200 ? normalized.slice(0, 200) + '…' : normalized;
           const preview = sanitizePastedPreview(previewRaw);
           const ok = await modal.confirm({
             title: tx('多行粘贴确认', 'Multi-line paste confirmation'),
@@ -1086,22 +1086,20 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     });
 
     // SearchAddon 暴露 onDidChangeResults — 用它拿命中数 + 当前位置 (#7)
-    const searchResultsDisposable = searchAddon.onDidChangeResults?.(
-      (results) => {
-        if (!results) {
-          setSearchResults({ matches: 0, current: 0 });
-          return;
-        }
-        // xterm 的 ISearchAddonResult: { resultIndex: number, resultCount: number }
-        // resultIndex 为 -1 表示无命中
-        const count = results.resultCount ?? 0;
-        const idx = results.resultIndex ?? -1;
-        setSearchResults({
-          matches: count,
-          current: count > 0 && idx >= 0 ? idx + 1 : 0,
-        });
-      },
-    );
+    const searchResultsDisposable = searchAddon.onDidChangeResults?.((results) => {
+      if (!results) {
+        setSearchResults({ matches: 0, current: 0 });
+        return;
+      }
+      // xterm 的 ISearchAddonResult: { resultIndex: number, resultCount: number }
+      // resultIndex 为 -1 表示无命中
+      const count = results.resultCount ?? 0;
+      const idx = results.resultIndex ?? -1;
+      setSearchResults({
+        matches: count,
+        current: count > 0 && idx >= 0 ? idx + 1 : 0,
+      });
+    });
 
     // CURSOR-1 根治后(state-replay 架构),BETA-019 workaround 已删除:
     // 此处原有 `term.buffer.onBufferChange` listener 强行在 alt-buffer 期间
@@ -1143,9 +1141,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       evt.preventDefault();
       void handlersRef.current.handlePaste();
     };
-    const helperTaForPaste = container.querySelector<HTMLElement>(
-      '.xterm-helper-textarea',
-    );
+    const helperTaForPaste = container.querySelector<HTMLElement>('.xterm-helper-textarea');
     helperTaForPaste?.addEventListener('paste', pasteInterceptor, true);
     container.addEventListener('paste', pasteInterceptor, true);
 
@@ -1168,9 +1164,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         '.xterm-helper-textarea',
       ) as HTMLTextAreaElement | null;
       if (helperTaForWorkaround) {
-        detachImeWorkaround = attachImeCompositionEndCleaner(
-          helperTaForWorkaround,
-        );
+        detachImeWorkaround = attachImeCompositionEndCleaner(helperTaForWorkaround);
       }
     } catch (err) {
       console.warn('[TerminalView] IME-1 workaround attach failed', err);
@@ -1209,15 +1203,12 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
           bufferService,
         );
       } else {
-        console.warn(
-          '[TerminalView] IME-2 position lock skipped — _core shape changed?',
-          {
-            hasHelperTa: !!helperTaForLock,
-            hasCompHelper: !!compHelper,
-            hasUpdateFn: typeof compHelper?.updateCompositionElements,
-            hasBufferService: !!bufferService,
-          },
-        );
+        console.warn('[TerminalView] IME-2 position lock skipped — _core shape changed?', {
+          hasHelperTa: !!helperTaForLock,
+          hasCompHelper: !!compHelper,
+          hasUpdateFn: typeof compHelper?.updateCompositionElements,
+          hasBufferService: !!bufferService,
+        });
       }
     } catch (err) {
       console.warn('[TerminalView] IME-2 position lock attach failed', err);
@@ -1295,11 +1286,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       /linux/i.test(navigator.userAgent) &&
       !/android/i.test(navigator.userAgent);
     const useWebGL =
-      terminalRenderer === 'webgl'
-        ? true
-        : terminalRenderer === 'dom'
-          ? false
-          : !isLinux; // 'auto'
+      terminalRenderer === 'webgl' ? true : terminalRenderer === 'dom' ? false : !isLinux; // 'auto'
     if (!useWebGL) {
       console.info(
         `[TerminalView] using DOM renderer (settings.advanced.terminalRenderer=${terminalRenderer}${terminalRenderer === 'auto' && isLinux ? ', Linux auto' : ''})`,
@@ -1317,10 +1304,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         });
         term.loadAddon(webglAddon);
       } catch (err) {
-        console.warn(
-          '[TerminalView] WebGL renderer unavailable, falling back to DOM',
-          err,
-        );
+        console.warn('[TerminalView] WebGL renderer unavailable, falling back to DOM', err);
         webglAddon = null;
       }
     }
@@ -1562,8 +1546,9 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     //
     // XTM-7:打字时若有待定 resize,先 flush 再发输入 — 拖窗 + 立刻打字
     // 场景下避免 PTY 用旧 cols/rows 处理 prompt 折行错位。
-    const sshDaFilterUntil =
-      session.pathId.startsWith('ssh:') ? Date.now() + SSH_STARTUP_DA_FILTER_MS : 0;
+    const sshDaFilterUntil = session.pathId.startsWith('ssh:')
+      ? Date.now() + SSH_STARTUP_DA_FILTER_MS
+      : 0;
     const dataHandler = term.onData((data) => {
       // [IME-1 PROBE A] 临时探针 — 检测 onData 收到的 data 是否疑似
       // "textarea 累积历史被冲刷出去"。判定下沉到 isLikelyHistoryFlush
@@ -1580,9 +1565,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       //   - drain ring 整体经 IPC 发到 main 端 logger.ime 落盘 — 不依赖
       //     DevTools 打开
       //   - 同时 console.warn 一条,DevTools 开着的话第一时间能看到
-      const ta = container.querySelector(
-        '.xterm-helper-textarea',
-      ) as HTMLTextAreaElement | null;
+      const ta = container.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null;
       const taLen = ta?.value.length ?? -1;
       if (isLikelyHistoryFlush(data.length, taLen)) {
         const taTail = ta?.value.slice(-60) ?? '';
@@ -1600,13 +1583,10 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         console.warn('[IME-LEAK]', leakEntry);
         // fire-and-forget — IPC 失败不阻塞用户输入,main handler 已有兜底
         void window.api
-          .invoke<ImeProbeDumpPayload, ImeProbeDumpResponse>(
-            COMMAND_CHANNELS.LOGGER_IME_DUMP,
-            {
-              meta: { t: leakEntry.t, sessionId: session.id },
-              entries,
-            },
-          )
+          .invoke<ImeProbeDumpPayload, ImeProbeDumpResponse>(COMMAND_CHANNELS.LOGGER_IME_DUMP, {
+            meta: { t: leakEntry.t, sessionId: session.id },
+            entries,
+          })
           .catch((err) => {
             console.warn('[IME-1] ime-dump IPC failed', err);
           });
@@ -1689,9 +1669,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     const term = termRef.current;
     if (!term) return;
     term.options.theme = getXtermTheme(themeId);
-    term.options.minimumContrastRatio = isLightTheme(themeId)
-      ? LIGHT_THEME_MIN_CONTRAST
-      : 1;
+    term.options.minimumContrastRatio = isLightTheme(themeId) ? LIGHT_THEME_MIN_CONTRAST : 1;
   }, [themeId]);
 
   // SCROLL-1 二次修复 + KBD-1:reveal 后立即归还焦点给 helper-textarea。
@@ -1900,9 +1878,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
   //
   // 现在:term.options.fontSize 本地立刻改给用户视觉反馈,IPC 走 trailing
   // debounce — 滚动停 100ms 后才广播一次,跨窗口同步只发生一次。
-  const wheelDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
+  const wheelDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingFontSizeRef = useRef<number | null>(null);
   const handleWheel = useCallback(
     (e: ReactWheelEvent<HTMLDivElement>) => {
@@ -1961,14 +1937,15 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
           )}
           {session.state === 'exited' &&
             typeof session.exitCode === 'number' &&
-            session.exitCode !== 0 && (
-              <X size={8} className="status-dot-icon fail" />
-            )}
+            session.exitCode !== 0 && <X size={8} className="status-dot-icon fail" />}
         </span>
         <span className="status-text">
           {session.displayName} · pid {session.pid > 0 ? session.pid : '—'}
           {session.state === 'exited' &&
-            tx(` · 已退出 (exitCode=${session.exitCode ?? 0})`, ` · Exited (exitCode=${session.exitCode ?? 0})`)}
+            tx(
+              ` · 已退出 (exitCode=${session.exitCode ?? 0})`,
+              ` · Exited (exitCode=${session.exitCode ?? 0})`,
+            )}
         </span>
         {session.state === 'exited' && session.pathId.startsWith('ssh:') && (
           <ReconnectButton session={session} />
@@ -1977,15 +1954,9 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
           type="button"
           className="status-simple-toggle"
           onClick={() => dispatch({ type: 'view/toggle-simple-mode' })}
-          title={
-            simpleMode
-              ? t('terminal.toolbar.fromSimple')
-              : t('terminal.toolbar.toSimple')
-          }
+          title={simpleMode ? t('terminal.toolbar.fromSimple') : t('terminal.toolbar.toSimple')}
           aria-label={
-            simpleMode
-              ? t('terminal.toolbar.fromSimple')
-              : t('terminal.toolbar.toSimple')
+            simpleMode ? t('terminal.toolbar.fromSimple') : t('terminal.toolbar.toSimple')
           }
         >
           {simpleMode ? <Maximize2 size={12} /> : <Minimize2 size={12} />}
@@ -1994,7 +1965,10 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
           className="status-cwd"
           title={
             cwdDrifted
-              ? tx(`当前: ${session.currentCwd}\n原: ${session.originalCwd}`, `Current: ${session.currentCwd}\nOriginal: ${session.originalCwd}`)
+              ? tx(
+                  `当前: ${session.currentCwd}\n原: ${session.originalCwd}`,
+                  `Current: ${session.currentCwd}\nOriginal: ${session.originalCwd}`,
+                )
               : session.currentCwd
           }
         >
@@ -2027,12 +2001,19 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         onDrop={handleTerminalDrop}
       />
       {searchVisible && (
-        <div className="terminal-search-bar" role="search" aria-label={tx('终端搜索', 'Terminal search')}>
+        <div
+          className="terminal-search-bar"
+          role="search"
+          aria-label={tx('终端搜索', 'Terminal search')}
+        >
           <input
             ref={searchInputRef}
             type="text"
             className="terminal-search-input"
-            placeholder={tx('搜索 (Enter 下一个 / Shift+Enter 上一个 / Esc 关闭)', 'Search (Enter = next, Shift+Enter = prev, Esc = close)')}
+            placeholder={tx(
+              '搜索 (Enter 下一个 / Shift+Enter 上一个 / Esc 关闭)',
+              'Search (Enter = next, Shift+Enter = prev, Esc = close)',
+            )}
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
             onKeyDown={(e) => {
@@ -2052,7 +2033,10 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
             className="terminal-search-count"
             title={
               searchText
-                ? tx(`${searchResults.matches} 个匹配,当前第 ${searchResults.current}`, `${searchResults.matches} matches, currently #${searchResults.current}`)
+                ? tx(
+                    `${searchResults.matches} 个匹配,当前第 ${searchResults.current}`,
+                    `${searchResults.matches} matches, currently #${searchResults.current}`,
+                  )
                 : tx('输入关键字开始搜索', 'Type to start searching')
             }
           >
@@ -2175,7 +2159,10 @@ function ReconnectButton({ session }: { session: SessionInfo }): JSX.Element {
       className="reconnect-button"
       onClick={() => void handleClick()}
       disabled={busy}
-      title={tx('用相同 SSH profile + 路径起一个新 session', 'Start a new session with the same SSH profile and remote path')}
+      title={tx(
+        '用相同 SSH profile + 路径起一个新 session',
+        'Start a new session with the same SSH profile and remote path',
+      )}
     >
       {busy ? tx('重连中…', 'Reconnecting…') : tx('重连', 'Reconnect')}
     </button>

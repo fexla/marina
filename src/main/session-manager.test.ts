@@ -176,6 +176,7 @@ function makeStubSettingsManager(overrides: Partial<Settings['advanced']> = {}):
       windowStyle: 'windows',
       language: 'system',
       terminalFontFamily: '',
+      terminalFallbackFont: '',
       terminalFontSize: 13,
       terminalLineHeight: 1.2,
       uiFontFamily: '',

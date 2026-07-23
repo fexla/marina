@@ -206,6 +206,9 @@ describe('SettingsManager — initialize', () => {
     const settings = mgr.get();
     expect(settings.appearance.theme).toBe('cutie');
     expect(settings.appearance.terminalFontSize).toBe(13); // 来自默认
+    // 新增字段 terminalFallbackFont 对老存量 settings.json 同样自动填充默认值
+    // (deepMerge 兜底);空字符串 = 仅用内置 Nerd Font 兜底。见 font-stack.ts。
+    expect(settings.appearance.terminalFallbackFont).toBe('');
     expect(settings.behavior.confirmOnQuit).toBe(true); // 来自默认
     expect(settings.advanced.logLevel).toBe('INFO');
   });

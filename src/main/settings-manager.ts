@@ -42,8 +42,12 @@ export const DEFAULT_SETTINGS: Settings = {
     theme: 'rose-pine',
     windowStyle: 'windows',
     language: 'system',
-    terminalFontFamily:
-      "'Cascadia Mono', 'JetBrains Mono', 'Consolas', 'LXGW WenKai Mono', monospace",
+    // 注意末尾故意不带裸 monospace:buildTerminalFontStack 会统一在最后补上,
+    // 保证内置 Symbols Nerd Font Mono 排在 monospace 之前(否则 PUA 图标会被
+    // 通用等宽字体截胡)。存量 settings 里若仍带 monospace,strip 逻辑会兜住。
+    terminalFontFamily: "'Cascadia Mono', 'JetBrains Mono', 'Consolas', 'LXGW WenKai Mono'",
+    // 默认空 = 仅用内置 Nerd Font 兜底;用户可在设置里填自定义回退字体。
+    terminalFallbackFont: '',
     terminalFontSize: 13,
     terminalLineHeight: 1.2,
     uiFontFamily: "'LXGW WenKai', system-ui, sans-serif",

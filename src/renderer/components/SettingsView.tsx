@@ -79,6 +79,7 @@ import { TemplateIcon } from './TemplateIcon';
 import { useToast } from './Toast';
 import { useTranslation } from './LanguageProvider';
 import { TERMINAL_KEYBINDINGS } from '@shared/terminal-keybindings';
+import { BUILTIN_FALLBACK_FONT, buildTerminalFontStack } from '@shared/font-stack';
 
 type CategoryId =
   | 'appearance'
@@ -715,6 +716,7 @@ function AppearancePanel({ setError }: { setError: (msg: string | null) => void 
   const theme = a?.theme ?? 'rose-pine';
   const windowStyle: WindowStyle = a?.windowStyle ?? 'windows';
   const terminalFontFamily = a?.terminalFontFamily ?? '';
+  const terminalFallbackFont = a?.terminalFallbackFont ?? '';
   const terminalFontSize = a?.terminalFontSize ?? 13;
   const terminalLineHeight = a?.terminalLineHeight ?? 1.2;
   const uiFontFamily = a?.uiFontFamily ?? '';
@@ -828,6 +830,14 @@ function AppearancePanel({ setError }: { setError: (msg: string | null) => void 
           }
         />
       </SettingRow>
+
+      <FallbackFontRow
+        primaryFont={terminalFontFamily}
+        fallbackFont={terminalFallbackFont}
+        onChange={(value) =>
+          void updateSettings({ appearance: { terminalFallbackFont: value } }, setError)
+        }
+      />
 
       <SettingRow
         label={tx('终端字号', 'Terminal font size')}
@@ -3784,4 +3794,141 @@ function extractFirstFontFamily(cssFontFamily: string): string {
   // 取逗号前第一个 token,去引号
   const first = (cssFontFamily.split(',')[0] ?? '').trim();
   return first.replace(/^['"]|['"]$/g, '');
+}
+
+/**
+ * 预览用的 Nerd Font 样本 codepoint 集。选的都是高频图标:
+ * powerline 分隔符(几乎所有 prompt 主题都用)、文件夹 / git 分支(lsd/exa/eza/
+ * starship 高频)、文件类、终端 / 右箭头(devicons 常见)。
+ * 用 codepoint 而非直接写字面字符,避免源码里出现不可见 / 被编辑器 normalize 的 PUA 字。
+ */
+const NERD_FONT_PREVIEW_CODEPOINTS = [
+  '\uE0B0',
+  '\uE0B2', // powerline 实心右/左箭头
+  '\uF07C', // 文件夹开
+  '\uE5FB', // git
+  '\uF126', // git branch
+  '\uF1D3', // docker
+  '\uE617', // (seti) py
+  '\uF121', // code
+  '\uE612', // devicon terminal
+  '\uF413', // devicon rust
+];
+
+interface FallbackFontRowProps {
+  primaryFont: string;
+  fallbackFont: string;
+  onChange: (value: string) => void;
+}
+
+/**
+ * 回退字体设置行(高级用户可空)。
+ *
+ * 设计取舍 —— 为什么不复用 <FontPicker>:
+ *   FontPicker 的 extractFirstFontFamily 只取第一个 family,且是为「选一个主字体」
+ *   优化的(下拉 + 推荐分组)。回退字体的语义不同:常是多 family 字符串
+ *   (如 `'JetBrainsMono Nerd Font', 'Noto Color Emoji'`)或特定符号字体,
+ *   且多数用户留空(靠内置 Symbols Nerd Font Mono 兜底)。强套 FontPicker 会
+ *   扭曲它的语义,也会动到 CP-4 勘误「封箱」过的代码(违反 AGENTS.md §7)。
+ *   所以这里单独做一个轻量输入框 + 实时预览,语义更准确,也不碰已封箱的 FontPicker。
+ *
+ * 实时预览直接回答用户最关心的问题:「我的乱码修好了吗」—— 预览 div 的
+ * font-family 绑定 buildTerminalFontStack 的输出,看到方块 = 没生效,
+ * 看到图标 = 成了。底部再明文展示最终解析栈,让高级用户能验证优先级顺序。
+ */
+function FallbackFontRow({
+  primaryFont,
+  fallbackFont,
+  onChange,
+}: FallbackFontRowProps): JSX.Element {
+  const { tx } = useTranslation();
+  const stack = useMemo(
+    () => buildTerminalFontStack(primaryFont, fallbackFont),
+    [primaryFont, fallbackFont],
+  );
+  const [text, setText] = useState<string>(fallbackFont);
+  useEffect(() => {
+    setText(fallbackFont);
+  }, [fallbackFont]);
+
+  return (
+    <SettingRow
+      label={tx('回退字体', 'Fallback font')}
+      hint={tx(
+        '主字体不含的字符(图标 / 符号)会依次尝试这里填的字体。留空 = 使用内置 Nerd Font 兜底。',
+        'Characters missing from the main font (icons / symbols) fall back to the fonts listed here. Empty = use the built-in Nerd Font.',
+      )}
+    >
+      <span
+        style={{
+          display: 'inline-flex',
+          flexDirection: 'column',
+          alignItems: 'stretch',
+          gap: 6,
+          minWidth: 0,
+        }}
+      >
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <input
+            type="text"
+            className="settings-input"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onBlur={() => onChange(text.trim())}
+            placeholder={tx(
+              "留空用内置 Nerd Font；例如 'JetBrainsMono Nerd Font', 'Noto Color Emoji'",
+              "Empty = built-in Nerd Font; e.g. 'JetBrainsMono Nerd Font', 'Noto Color Emoji'",
+            )}
+            spellCheck={false}
+          />
+        </span>
+        {/* 实时预览:用最终解析出的字体栈渲染 Nerd Font 样本。
+         * 看到方块 = 没生效；看到图标 = 成了。 */}
+        <div
+          className="nerdfont-preview"
+          style={{
+            fontFamily: stack,
+            // 样本行等宽展示,背景与终端一致观感
+            whiteSpace: 'pre',
+            fontSize: '13px',
+            lineHeight: '20px',
+            padding: '4px 8px',
+            borderRadius: '4px',
+            border: '1px solid var(--color-border, rgba(128,128,128,0.3))',
+            background: 'var(--color-bg-elevated, rgba(0,0,0,0.15))',
+            color: 'var(--color-text-secondary, currentColor)',
+            overflow: 'hidden',
+          }}
+          aria-label={tx('Nerd Font 图标预览', 'Nerd Font icon preview')}
+        >
+          {NERD_FONT_PREVIEW_CODEPOINTS.join(' ')}
+        </div>
+        {/* 最终解析栈:让高级用户能验证优先级顺序。 */}
+        <div
+          className="nerdfont-stack-display"
+          style={{
+            fontFamily: 'var(--ui-font-family)',
+            fontSize: '11px',
+            lineHeight: '15px',
+            opacity: 0.7,
+            wordBreak: 'break-all',
+          }}
+        >
+          {tx('最终字体栈：', 'Final font stack: ')}
+          {stack}
+          {!fallbackFont.trim() && (
+            <span style={{ fontStyle: 'italic' }}>
+              {' '}
+              (
+              {tx(
+                `内置 ${BUILTIN_FALLBACK_FONT} 已启用`,
+                `built-in ${BUILTIN_FALLBACK_FONT} active`,
+              )}
+              )
+            </span>
+          )}
+        </div>
+      </span>
+    </SettingRow>
+  );
 }
