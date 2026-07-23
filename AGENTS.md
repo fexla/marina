@@ -4,8 +4,14 @@
 > 你正在 YOLO 模式下工作,大部分时间不需要打扰开发者。但有少数情况你必须立刻停下来。
 > 仔细读完整份文件再开始工作。
 
-文档版本:1.6 · 最后更新:2026-07-21
+文档版本:1.9 · 最后更新:2026-07-22
 
+> **v1.9 变更**:新增附录 I「昂贵周期后台任务规范」—— 对齐 ADR-021，固定 HOT/WARM/NONE demand、recursive timeout、全局并发预算、renderer 绝对状态上报及本地/远程 consumer 生命周期清理；禁止昂贵后台工作自行新增固定 `setInterval`。
+>
+> **v1.8 变更**:新增附录 H「性能指标命名 / 隐私 / 开销规范」—— 对齐 ADR-020 与 0.3.2 飞行记录器，固定自动报告只记录数值和固定低基数标签、禁止路径/命令/PTY/IPC payload/stack，operation name 上限与深度 profile 显式确认规则。
+>
+> **v1.7 变更**:新增附录 G「新面板 UI 状态 / 缩进 / icon 规范」—— 固化 ADR-019 的三条共享基础设施(面板 UI 状态三层模型 panel-ui-cache/panel-preferences + 树形缩进单一真相源 --tree-indent-unit/FileListRow depth + 文件 icon 单一数据源 file-icon.ts),给新面板可循规范。
+>
 > **v1.6 变更**:新增附录 F「开发构建版本号规则」—— 定义 `0.3.1-dev.N` 格式(SemVer 预发布后缀,`0.3.0 < 0.3.1-dev.N < 0.3.1`,装包是升级不降级),用于"需要产出可测试 portable 但改动量未到正式 bump"的中间态。dev 版本号 = 按附录 E 预判的正式 bump 目标 + `-dev.N`;CHANGELOG 与 version 严格同步(附录 E 纪律 3 零豁免)。附录 D 验收清单加「dev 构建文件名 + CHANGELOG 同步」校验项。
 >
 > **v1.5 变更**:新增附录 E「版本号规则」—— 定义 MINOR/PATCH 的 bump 标准 + 四条硬纪律(不为小更新单独发版、一次批量只 bump 一次、构建前同步 package.json ↔ CHANGELOG、一个版本一个条目)。纠偏此前 0.3.0/0.3.1/0.3.2 连 bump 的失误。附录 D 验收清单加「version 同步」第 1 项。
@@ -421,7 +427,7 @@ Marina 的开发被切分成 **N 个检查点**,与 `软件定义书.md` 第 15 
 - [ ] 数据导出 / 导入工作 — **导入走 in-memory replace**(Manager.replaceAll + emit),不调 `app.relaunch`,运行中 PTY 不被关(ADR-009)
 - [ ] CSP 通过 main 进程 `webRequest.onHeadersReceived` 注入(dev 含 unsafe-eval 给 React Refresh,prod 严格);移除 `index.html` 的 meta CSP
 - [ ] 终端状态机有兜底:`createSession` 末尾立即 `scheduleIdleCheck()`,首波 PTY 数据是纯 OSC 时不会卡 active(CP-4 勘误 #5)
-- [ ] Git 面板的 `git status` 调用全部带 `--no-optional-locks` — 不抢 `.git/index.lock`、不干扰用户在 Marina 外部跑的 `git commit`/`add`,且真正符合「永不写 `.git`」契约(回归断言在 `git-service.test.ts`)(CP-4 勘误 #6,2026-07-21)
+- [ ] GitService 启动的所有 git 子进程统一注入 `GIT_OPTIONAL_LOCKS=0` — 不抢 `.git/index.lock`、不干扰用户在 Marina 外部跑的 `git commit`/`add`,且符合「永不写 `.git`」契约。禁止把 git 全局选项 `--no-optional-locks` 错放在 `status` 子命令参数末尾(会 exit 129、面板误报干净);回归断言在 `git-service.test.ts`(CP-4 勘误 #6 兼容性修正,2026-07-21)
 - [ ] 应用打包(`npm run build`)产生 Windows 安装包(.exe / .msi)
 - [ ] 在干净的 Windows 11 虚拟机或机器上,安装该包,能正常启动并运行
 - [ ] 后端整体测试覆盖率 > 75%
@@ -891,7 +897,7 @@ E. 检查点之间想"顺手"重构 / 加新功能
 **关键事实(不用每次查)**:
 - `win.target` 在 `electron-builder.yml` 已配 `nsis` + `portable` 双目标。`npm run build` 一次性产两个 exe。
 - `portable` 块的 `artifactName: ${productName}-Portable-${version}-${arch}.${ext}` → 文件名固定 `Marina-Portable-{ver}-x64.exe`。
-- 版本号取自 `package.json` 的 `version`(当前 0.2.6),产物在 `release/{version}/`。
+- 版本号取自 `package.json` 的 `version`(当前 0.3.1),产物在 `release/{version}/`。
 - icon:`build/icon.ico`(三处复用:win 主图标 / nsis 安装&卸载器)。**没有 .ico 时 portable 用默认 electron 图标,不报错但难看** —— icon 由 `scripts/generate-icon.cjs` 从 svg 离线生成,别在 build 流程里现造。
 - `asar: true` + `asarUnpack: node_modules/node-pty/**`(native 模块不能进 asar)。
 - shell-hooks / skills / context-menu MSIX 通过 `extraResources` 放 app.asar 旁(外部进程读不了 asar)。
@@ -945,7 +951,7 @@ E. 检查点之间想"顺手"重构 / 加新功能
 3. **构建前必须同步 package.json version ↔ CHANGELOG**(见附录 D 验收清单第 1 项)。二者不一致 = 构建阻塞。package.json 的 `version` 是“当前版本”的唯一真相源。
 4. **一个版本号 = 一个 CHANGELOG 条目**。patch 版本把多条小改动合并到同一条目下,不拆成多个版本。
 
-**当前版本状态**:0.3.0(2026-07-20,版本号规则生效后首个版本)。其后积累的 viewer 子系统修复批(viewer 布局 / 中键 pan / diff 行号槽 / 后台面板状态 / 语言表扩展)已按附录 F 折成 `0.3.1-dev.1`(2026-07-21 首个开发构建)。正式 `0.3.1` 待攒够一批或正式发布时从 dev 条目升格。
+**当前版本状态**:0.3.1(2026-07-22 正式发布)。该版本合并 `0.3.1-dev.1` / `0.3.1-dev.2` 的 viewer、面板基础设施与 `show-in-marina` 改进，并补上 Git 后台轮询生命周期/反压修复。下一批性能诊断工具按开发者指定目标记为 0.3.2，开发期间先进入 `[Unreleased]`，需要分发测试包时再按附录 F 产 `0.3.2-dev.N`。
 
 ---
 
@@ -1026,6 +1032,120 @@ package.json: "version": "0.3.1"(保持,直到下次 dev 构建或正式 bump)
 - electron-builder 24.x 对 `-dev.N`(预发布)**完整保留**:目录名、文件名、latest.yml 都带。`artifactName` 默认 `${productName}-${version}-${arch}.${ext}`,无需改配置。
 - electron-builder 对 `+dev.N`(build 元数据)**全部丢弃**(实测,2026-07-21):目录退化成 `0.3.0/`、文件名 `Marina-Portable-0.3.0-x64.exe`、latest.yml `version: 0.3.0`,与正式版无法区分。这是本附录最终选 `-` 不选 `+` 的决定性原因。
 - npm `semver` / electron-updater 对预发布版本标准支持:`0.3.1-dev.1 > 0.3.0`(升级),装 dev 包不会被降级拦截。
+
+---
+
+## 附录 G:新面板 UI 状态 / 缩进 / icon 规范(v1.7 增补,ADR-019)
+
+> 这三件事有了共享基础设施(ADR-019)。新面板开发按下表/决策,不再各面板自拼,
+> 也不会再出「切面板丢状态 / 缩进不一致 / icon 都一样」的毛病。
+
+### G.1 面板 UI 状态:按生命周期分三层(必选)
+
+写面板状态前先问「这个状态丢了用户会烦吗」,按下决策:
+
+| 丢了烦吗? | 例子 | 归属 | 用法 |
+|---|---|---|---|
+| 不烦(瞬态) | loading / error | L0 | 组件 `useState` |
+| 烦,但重启可丢(工作态) | 展开目录 / 选中项 / 过滤草稿 | L1 | `usePanelUiState(sessionId, panelId, initial)` |
+| 烦,且重启也该记(偏好) | 视图模式 / 排序方式 / 活跃项 | L2 | `usePanelPreference(panelId, key, fallback)` |
+
+- L1 `usePanelUiState`(`src/shared/panel-ui-cache.ts`):组件外缓存,切面板再切回状态仍在。
+- L2 `usePanelPreference`(`src/shared/panel-preferences.ts`):localStorage,跨重启。key 自动走 `marina.panel.<panelId>.<key>` 规范。
+- **不许**:工作态存裸 `useState`(切面板即丢);偏好直接 `localStorage.setItem` 裸 key(绕过统一规范与老 key 迁移)。
+
+### G.2 树形缩进:单一真相源(必选)
+
+- 所有树形层级缩进**只能**用 `<FileListRow depth={n}>`(唯一渲染入口),内部 `calc(var(--tree-indent-unit, 14px) * depth)`。
+- 递归组件把 `depth` 往下传(根 0,每层 +1)。
+- **不许**:自建 CSS 层叠缩进(`.x .x { margin-left }`)、自写 `depth * <硬编码>` inline style、改 `--tree-indent-unit` 的值(要改全局只改 `:root` 一处)。
+
+### G.3 文件 icon:单一数据源(必选)
+
+- 文件条目 icon 用 `fileIconFor(fileName)`(`src/shared/file-icon.ts`),按扩展名返回细分图标。目录用 `'folder'`。
+- 新增文件类型 icon:扩 `file-icon.ts` 的扩展名集合(复用既有集合判定),并在 `icons.tsx` 注册同名 lucide 组件(`FileIconKey` ⊆ `IconName`,由 `file-icon.test.ts` 守护)。
+- **不许**:硬编码 `icon="file"`、在组件里写 if-else 后缀判断。
+
+### G.4 顶部多视图/多根切换
+
+- 类似 Git 面板的 toolbar(`.git-panel-toolbar`)或 file-tree 的双根切换(`.file-tree-toolbar`):顶部按钮切换,内容区只渲染当前选中项。
+- 切换状态(选中哪个)是**偏好** → L2 `usePanelPreference`。
+
+---
+
+## 附录 H:性能指标命名 / 隐私 / 开销规范(v1.8 增补,ADR-020)
+
+### H.1 自动指标只能是固定低基数名称
+
+- 统一用 `performanceMetrics`(`src/main/performance-metrics.ts`)。
+- operation/counter/gauge 名只能由源码固定写死,如 `git.status`、`ipc.cmd:session:create`。
+- **禁止**把 sessionId/windowId/路径/文件名/命令/URL 拼进 metric name。
+- operation/counter/gauge name 各自硬上限 200（溢出并入固定 bucket）；新增模块应复用领域前缀，不得绕过 registry 自建 Map。
+
+### H.2 自动报告隐私红线
+
+自动 JSON/Markdown **禁止**记录:
+- 文件/仓库/用户目录路径；
+- shell 命令、环境变量、PTY 输入输出、scrollback；
+- IPC payload/response；
+- stack trace、函数源码 URL、窗口标题；
+- sessionId/windowId 等可关联用户行为的标识。
+
+只允许固定标签、进程类型和数值聚合。若新指标无法满足，先停下来评估，不得“先收集以后再脱敏”。
+
+### H.3 深度 profile 必须显式确认
+
+- `.cpuprofile` / trace 可能含函数名和本地源码路径，只能用户主动触发。
+- UI 必须先提示隐私与采样开销；服务端必须限制时长/并发，每 run 最多保留 5 份。
+- 禁止因检测到 stall 自动 profile，禁止把 profile 内容混入自动报告。
+
+### H.4 开销纪律
+
+- 不对逐字节/逐字符热函数做 duration timer；PTY 热路径只允许 O(1) counter。
+- timeline/ring/sample/report/run 数必须有硬上限。
+- report 平时 5 分钟聚合写盘并做 in-flight 防重；>=1 秒严重 stall 可按 60 秒限频额外刷新，不能每事件写盘。
+- main event-loop stall 只能按本义展示，不能称作 renderer FPS 或 Windows DPC 卡顿。
+
+---
+
+## 附录 I:昂贵周期后台任务规范（ADR-021）
+
+### I.1 哪些任务必须走 BackgroundWorkScheduler
+
+会周期 spawn 子进程、扫描仓库/文件树、做明显磁盘或网络 I/O 的后台任务必须先评估
+`BackgroundWorkScheduler`，不得在业务模块自行新增固定 `setInterval`。
+
+不属于本规范：event-loop stall detector、Session idle timeout、持久化/fs.watch debounce
+等语义 timer；它们不应因面板隐藏而改变语义。
+
+### I.2 Demand 三层模型
+
+| 等级 | 含义 | Git 基准策略 |
+|---|---|---|
+| HOT | 用户正在聚焦查看结果 | 立即运行；完成后 3 秒 |
+| WARM | 当前工作态仍相关，但结果不可见/窗口失焦 | 完成后 60 秒 |
+| NONE | 无消费者、切走 Session、owner 释放、零窗口 | 不运行、不保温 |
+
+- 多 consumer 取最高等级；窗口关闭/远程断线必须 `removeConsumer`。
+- renderer 只报告绝对 UI 状态；task key 和 consumerId 只能由 main/envelope 生成。
+- demand 可以早于 task 注册；scheduler 必须保留有界 placeholder，不能丢首次 HOT。
+
+### I.3 调度纪律
+
+- 只能 recursive `setTimeout`：本次完成后再算下一次，禁止周期工作用 `setInterval`。
+- 昂贵后台任务共享全局并发预算，默认 1；同 task 永不重叠。
+- WARM/NONE 降级必须使已 queued 工作失效；unregister→同 key register 后旧 completion
+  不能给新 generation 续排。
+- WARM/COLD → HOT 必须立即刷新；HOT → WARM 必须取消旧短周期 timer。
+- task/session/client/timer/queue 都必须有上限和显式清理路径，所有 timer `unref()`。
+- 自动性能指标只能记录固定 aggregate，不得记录 task key/sessionId/clientId/path。
+
+### I.4 Git 面板信号真值
+
+`LayoutHost.PanelStack` 是当前 Session/面板真值源：Git tab 可见 + document visible +
+窗口 focus + 当前 owner → HOT；仍显示该 Session 但其他面板/折叠/失焦 → WARM；
+非 owner/unmount → NONE。命令 `cmd:git:set-polling-demand` 属于 backend-data，远程窗口
+必须把 demand 发到 daemon。main 仍做 owner 校验，不能只信 renderer。
 
 ---
 

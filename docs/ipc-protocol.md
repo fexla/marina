@@ -6,8 +6,18 @@
 > 这份文档定义所有消息的 schema、语义、错误码、时序约束。
 > 实现代码必须严格遵循,不允许"自由发挥"。
 
-文档版本:2.3 · 最后更新:2026-07-18
+文档版本:2.5 · 最后更新:2026-07-22
 
+> **v2.5 变更**(ADR-021 需求感知后台任务):
+> - 新增 backend-data `cmd:git:set-polling-demand`，renderer 只上报固定枚举 HOT/WARM/NONE；consumerId 必须取 envelope.windowId。
+> - Git demand 支持本地窗口与远程 WS client；窗口关闭/断线/owner 变化统一撤销。
+> - HOT=聚焦可见 Git 面板（立即+3秒），WARM=当前 Session 其他面板/折叠/失焦（60秒），NONE=unmount/非 owner/零窗口（停止）。
+>
+> **v2.4 变更**(0.3.2 性能诊断):
+> - 新增 4 条 `cmd:performance:*` 本地控制命令：状态、立即刷新报告、打开报告目录、显式捕获 CPU profile。
+> - 性能命令全部属于 `local-control`：远程窗口分析当前客户端 main，不把本机诊断请求发给 daemon。
+> - 自动报告只含固定名称/数值聚合；CPU profile payload 的 duration 服务端 clamp 到 5-30 秒。
+>
 > **v2.3 变更**(2026-07-18,文件面板自动激活):
 > - `evt:file-panel:updated` payload 新增可选字段 `requestActivation?: boolean`(§6.6):仅 `FilePanelService.openFile` 成功时为 true(HTTP /open-file、cmd:file-panel:open、文件树点击三条入口)。show / close / fs.watch 自动刷新为 false。
 > - renderer 收到 `requestActivation=true` 时,由 `file-panel/updated` reducer 直接把该 session 的 active 面板设为 `file-panel`(本窗口私有 view state,不走组件 effect)。向后兼容:旧 renderer 忽略该可选字段。
@@ -299,6 +309,10 @@ v2.0 引入 `clientId` 后,两个字段名容易混淆,明确边界:
 | `cmd:system:show-in-explorer` | 在 Explorer 中显示某路径 |
 | `cmd:system:open-data-dir` | 在 Explorer 中打开 `%APPDATA%\Marina` |
 | `cmd:system:open-logs-dir` | 在 Explorer 中打开日志目录 |
+| `cmd:performance:get-status` | 查询当前本机 run 的采样/stall 摘要 |
+| `cmd:performance:write-report` | 立即采样并原子刷新 JSON/Markdown |
+| `cmd:performance:open-reports-dir` | 打开本机性能报告目录 |
+| `cmd:performance:capture-cpu-profile` | 显式捕获 5-30 秒 main V8 CPU profile |
 | `cmd:system:open-external` | 用系统默认浏览器打开 URL(仅 http(s)/mailto) |
 
 > v1.2 起删除:`cmd:template:list` (用 `cmd:app:get-snapshot` 拿到)、`cmd:session:restart-from-tombstone` (ADR-008 砍墓地)、`cmd:settings:detect-shells` (并入 `cmd:settings:list-shells`)、`cmd:settings:open-data-dir/open-log-dir` (并入 `cmd:system:open-data-dir/open-logs-dir`)、`cmd:system:show-context-menu` (renderer 端自绘菜单,不需要 main 端 popup)。
@@ -903,6 +917,11 @@ interface OpenFileTreeFilePayload {
 
 ```typescript
 interface GetGitStatusPayload { sessionId: string }
+type BackgroundDemandLevel = 'none' | 'warm' | 'hot';
+interface SetGitPollingDemandPayload {
+  sessionId: string;
+  level: BackgroundDemandLevel;
+}
 type GitUnavailableReason = 'disabled' | 'ssh-unsupported' | 'not-a-repo' | 'git-binary-missing';
 interface GitStatusGroup {
   tone: 'conflict' | 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked';
@@ -916,14 +935,28 @@ interface OpenGitDiffPayload { sessionId: string; relativePath: string }
 // open-diff response: FilePanelSnapshot(复用既有)
 ```
 
+#### `cmd:git:set-polling-demand`（v0.3.2，ADR-021）
+
+Renderer 在当前 Session/面板/窗口状态变化时发送**绝对 demand**：
+
+- `hot`：当前 owner、Git tab 可见、dock 未折叠、document visible、窗口有焦点；
+- `warm`：当前 owner Session 仍显示，但 Git tab 隐藏/dock 折叠/窗口失焦；
+- `none`：非 owner、PanelStack unmount、切换 Session。cleanup 必须幂等发送。
+
+命令成功返回 `void`。它是 backend-data：远程窗口必须把 demand 发到 daemon。Main 只从
+envelope 取 consumerId，忽略 payload 中任何额外 client 字段；HOT/WARM 做 Session 存在、
+非 exited、Git enabled 和 owner 校验。NONE 即使 Session 已销毁也允许，便于清理竞态。
+Demand 只影响周期刷新；用户显式 `get-status` 仍立即返回。
+
 **安全与错误**:
-- 三个命令均为 backend-data，远程窗口请求由 daemon 主机执行。
+- Git 命令均为 backend-data，远程窗口请求由 daemon 主机执行。
 - 每次请求验证 `ownerWindowId === envelope.windowId`；接管后旧 owner 立即失权。
 - SSH session 一律拒绝(不引入远端 git 协议)，返回 `unavailable: 'ssh-unsupported'`。
 - `relativePath` 拒绝 `..` / 绝对路径 / NUL；main 端 realpath 后再次验证 repoRoot 包含。
 - `runGit` spawn 限 5s 超时 + 8MB stdout 上限防恶意大输出。
 
 **Side Effects**:
+- `set-polling-demand` 只改变 main 内存中的 scheduler demand，不持久化；HOT 可能立即触发一次只读 status。
 - `get-status` 只读，无副作用。
 - `open-diff` 产 unified diff 写入 session 的
   `MARINA_WORKSPACE/__marina_diff__/<sanitized>__<sha8>.diff`，再调既有
@@ -2110,6 +2143,38 @@ async function handleSessionTabClick(sessionId: string) {
   }
 }
 ```
+
+---
+
+## 9. 性能诊断（0.3.2）
+
+四条命令均为 `local-control`，不进入当前窗口所连接的远程 daemon。
+
+### `cmd:performance:get-status`
+
+Payload：`{}`。返回 `PerformanceStatus`：runId、开始时间、采样数、>=100/250/1000ms main event-loop stall 计数、最大 stall、最近 main CPU/RSS、报告文件名、CPU profile 是否正在运行。
+
+### `cmd:performance:write-report`
+
+Payload：`{}`。立即追加一次采样并刷新当前 run 的 JSON/Markdown，返回新的 `PerformanceStatus`。自动周期刷新仍继续（平时 5 分钟；>=1 秒 stall 按 60 秒限频额外刷新）。
+
+### `cmd:performance:open-reports-dir`
+
+Payload：`{}`。确保 `%APPDATA%/Marina/performance-reports/` 存在并在当前客户端 Explorer 中打开；`shell.openPath` 返回错误字符串时命令必须 reject，不能静默成功。
+
+### `cmd:performance:capture-cpu-profile`
+
+```typescript
+interface CaptureCpuProfilePayload {
+  durationSeconds?: number; // 默认 15；main clamp 到 5-30
+}
+interface CaptureCpuProfileResponse {
+  path: string;             // 本机 .cpuprofile 绝对路径；仅显式操作返回
+  durationSeconds: number;
+}
+```
+
+约束：同一时刻最多一份、每个 run 最多保留最近 5 份；renderer 必须先提示 `.cpuprofile` 可能包含函数名、模块名和本地源码路径。自动飞行记录器绝不调用本命令，也绝不把 profile 内容混入 JSON/Markdown。
 
 ---
 
