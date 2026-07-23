@@ -78,6 +78,7 @@
   src: url('../assets/fonts/SymbolsNerdFontMono.woff2') format('woff2');
   font-weight: normal;
   font-style: normal;
+
   /* 终端字形需要尽快出现,不闪无衬线占位;但终端单元宽度以主字体为准,
    * 符号字体只填补缺字,swap 是安全的(不会改变网格度量)。 */
   font-display: swap;
@@ -2198,18 +2199,23 @@ html[data-maximized='true'] .app-root.with-shell {
 .git-summary-modified .git-summary-num {
   color: var(--color-warning, #f6c177);
 }
+
 .git-summary-added .git-summary-num {
   color: var(--color-success, #3e8fb0);
 }
+
 .git-summary-deleted .git-summary-num {
   color: var(--color-danger, #eb6f92);
 }
+
 .git-summary-renamed .git-summary-num {
   color: var(--color-info, #9ccfd8);
 }
+
 .git-summary-untracked .git-summary-num {
   color: var(--color-accent, #c4a7e7);
 }
+
 .git-summary-conflict .git-summary-num {
   color: var(--color-danger, #eb6f92);
 }

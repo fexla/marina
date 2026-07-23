@@ -1148,6 +1148,16 @@ package.json: "version": "0.3.1"(保持,直到下次 dev 构建或正式 bump)
 非 owner/unmount → NONE。命令 `cmd:git:set-polling-demand` 属于 backend-data，远程窗口
 必须把 demand 发到 daemon。main 仍做 owner 校验，不能只信 renderer。
 
+### I.5 Git 轮询按 repo 去重（方案 A，2026-07-23）
+
+- Git polling task 按 **repo** 注册（`git-status:${repoKey}`），不按 session：同一 repo
+  开 N 个终端只注册 1 个 task，run 时跑一次 git status 再 fan-out emit 给所有 session。
+- 每个 session 作为 repo task 的一个 scheduler consumer（`consumerId=sessionId`），
+  demand 由 scheduler 取最高（复用 I.2 多 consumer 模型）。
+- status 拉取的 in-flight 合并也按 repo 维度：同 repo 任何时刻最多一个 git status。
+- `removePollingConsumer(windowId)` 枚举该窗口持有的 session 逐个撤 demand（demand
+  consumerId 是 sessionId，不是 windowId）；detach 后 repo 无 session 时注销 task。
+
 ---
 
 **说明书结束**

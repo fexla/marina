@@ -7,6 +7,10 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+### 性能
+
+- **Git 后台轮询按 repo 去重(ADR-021 方案 A)。** 此前每个 Git 仓库 session 各注册一个 3 秒/60 秒 polling task，同一 repo 开 N 个终端就重复轮询 N 次 `git status`（并占满全局并发预算，大仓库下制造 stall）。现改为按 repo 去重：一个 repo 只注册一个 task，run 时跑一次 git status 再 fan-out emit 给该 repo 下所有 session；每个 session 作为该 task 的一个 scheduler consumer（demand 由 scheduler 自动取各 session 最高）。同 repo 的 GitPanel mount / HOT immediate / 后台 poll 共享同一个 repo 级 in-flight，同 repo 任何时刻最多一个 git status 在跑。removePollingConsumer 改为枚举该窗口持有的 session 逐个撤 demand（demand consumerId 从 windowId 改为 sessionId）。
+
 ### 新增
 
 - **内置 Nerd Font 兑底 + 自定义回退字体。** 很多 CLI 工具(powerlevel10k / starship / lsd / eza 等)在输出里塞 Nerd Font 图标,用户选的终端字体不含这些字形就会显方块。现应用内置 `Symbols Nerd Font Mono`(打包进 `assets/fonts/`,MIT 协议)作为终端字体栈的零配置兑底;字体栈由 `src/shared/font-stack.ts` 的 `buildTerminalFontStack()` 统一构建,优先级为主字体 → 用户自定义回退 → 内置 Nerd Font → 通用 monospace,保证 PUA 图标先命中符号字体而非被通用 monospace 截胡。另在「设置 → 外观」新增「回退字体」输入框(默认留空 = 仅用内置兑底),高级用户可填自定义回退(如自己装的完整 Nerd Font、emoji 字体),下方有实时 Nerd Font 图标预览 + 最终字体栈明文展示。

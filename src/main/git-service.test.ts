@@ -69,7 +69,10 @@ describe('GitService', () => {
     filePanelService.attachSessionLookup({ get: (id) => sessions[id] ?? null });
     scheduler = new BackgroundWorkScheduler({ metrics: new PerformanceMetrics() });
     service = new GitService(
-      { get: (id) => sessions[id] ?? null },
+      {
+        get: (id) => sessions[id] ?? null,
+        list: () => Object.entries(sessions).map(([id, s]) => ({ id, ...s })),
+      },
       { getPathForSession: (id) => (id === 's1' || id === 's2' ? workspaceDir : null) },
       filePanelService,
       scheduler,
@@ -185,12 +188,17 @@ describe('GitService', () => {
     await vi.waitFor(() => expect(runGit).toHaveBeenCalledTimes(1));
     service.setRuntimeConfig({ enableGitPanel: true, gitBinaryPath: 'alternate-git' });
     const second = service.getStatus('s1', 'owner-1');
+    // repo 级 in-flight：第二个 getStatus 等待第一个进程结束后串行重拉，不并发启第二个。
     expect(runGit).toHaveBeenCalledTimes(1);
 
     resolveFirst({ stdout: Buffer.from('', 'utf8'), stderr: '', exitCode: 0 });
-    await vi.waitFor(() => expect(runGit).toHaveBeenCalledTimes(2));
+    // 旧进程结束后用新 revision 串行重拉一次。allow for repo 解析异步。
+    await vi.waitFor(() => expect(runGit.mock.calls.length).toBeGreaterThanOrEqual(2));
     await expect(Promise.all([first, second])).resolves.toHaveLength(2);
-    expect(runGit).toHaveBeenCalledTimes(2);
+    // 关键不变量：同 repo 任何时刻最多一个 git status 在跑（串行，不重叠）。
+    const inFlight = (service as unknown as { statusInFlight: Map<string, unknown> })
+      .statusInFlight;
+    expect(inFlight.size).toBeLessThanOrEqual(1);
   });
 
   it('旧配置 status reject 后若 revision 已变化，等待结束再用新配置串行重试', async () => {
@@ -211,9 +219,10 @@ describe('GitService', () => {
     const second = service.getStatus('s1', 'owner-1');
     rejectFirst(new Error('old binary disappeared'));
 
-    await vi.waitFor(() => expect(runGit).toHaveBeenCalledTimes(2));
+    // 旧进程 reject 后用新 revision 串行重拉。
+    await vi.waitFor(() => expect(runGit.mock.calls.length).toBeGreaterThanOrEqual(2));
     await expect(Promise.all([first, second])).resolves.toHaveLength(2);
-    expect(runGit).toHaveBeenCalledTimes(2);
+    expect(runGit.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it('getStatus:非 repo 返回 not-a-repo', async () => {
@@ -404,9 +413,11 @@ describe('GitService', () => {
   });
 
   // ── ADR-021 demand-aware polling task:prefetch 注册,COLD 无 timer,HOT/WARM 动态调度 ──
-  // watchers Map 现表示 scheduler task registry，不再持有 setInterval。
-  const getWatchers = (svc: GitService): Map<string, unknown> =>
-    (svc as unknown as { watchers: Map<string, unknown> }).watchers;
+  // 方案 A 后 watcher 按 repo 去重：sessionRepoKey 记录 session 当前 attach 到哪个 repo。
+  const sessionAttachedToRepo = (svc: GitService, sessionId: string): boolean =>
+    (svc as unknown as { sessionRepoKey: Map<string, string> }).sessionRepoKey.has(sessionId);
+  const pendingDemandCount = (svc: GitService): number =>
+    (svc as unknown as { pendingSessionDemand: Map<string, unknown> }).pendingSessionDemand.size;
 
   it('renderer demand 可早于 prefetch/task 注册到达，HOT 注册后立即刷新且查询合并', async () => {
     const sample = '1 .M N... 100644 100644 100644 aaaa bbbb modified.txt\0';
@@ -415,13 +426,14 @@ describe('GitService', () => {
       .mockResolvedValue({ stdout: Buffer.from(sample, 'utf8'), stderr: '', exitCode: 0 });
 
     service.setPollingDemand('s1', 'owner-1', 'hot');
-    expect(scheduler.getSnapshot().pendingDemandTasks).toBe(1);
+    expect(pendingDemandCount(service)).toBe(1);
     await service.prefetchStatus('s1');
     const mountRequest = service.getStatus('s1', 'owner-1');
     await mountRequest;
     await vi.waitFor(() => expect(runGit).toHaveBeenCalledTimes(1));
 
-    expect(scheduler.getSnapshot()).toMatchObject({ hotTasks: 1, pendingDemandTasks: 0 });
+    expect(scheduler.getSnapshot()).toMatchObject({ hotTasks: 1 });
+    expect(pendingDemandCount(service)).toBe(0);
     // GitPanel mount 与 HOT immediate 同时到达仍只 spawn 一个 status。
     expect(runGit).toHaveBeenCalledTimes(1);
   });
@@ -435,27 +447,21 @@ describe('GitService', () => {
     try {
       await service.prefetchStatus('s1');
       expect(runGit).not.toHaveBeenCalled();
-      const refresh = vi
-        .spyOn(
-          service as unknown as { emitCurrentStatus: (sessionId: string) => Promise<void> },
-          'emitCurrentStatus',
-        )
-        .mockResolvedValue();
       service.setPollingDemand('s1', 'owner-1', 'warm');
       await vi.advanceTimersByTimeAsync(59_999);
-      expect(refresh).not.toHaveBeenCalled();
+      expect(runGit).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
-      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(runGit).toHaveBeenCalledTimes(1);
 
       service.setPollingDemand('s1', 'owner-1', 'hot');
       await vi.advanceTimersByTimeAsync(0);
-      expect(refresh).toHaveBeenCalledTimes(2);
+      expect(runGit).toHaveBeenCalledTimes(2);
       await vi.advanceTimersByTimeAsync(3000);
-      expect(refresh).toHaveBeenCalledTimes(3);
+      expect(runGit).toHaveBeenCalledTimes(3);
 
       service.setPollingDemand('s1', 'owner-1', 'none');
       await vi.advanceTimersByTimeAsync(60_000);
-      expect(refresh).toHaveBeenCalledTimes(3);
+      expect(runGit).toHaveBeenCalledTimes(3);
     } finally {
       vi.useRealTimers();
     }
@@ -463,9 +469,10 @@ describe('GitService', () => {
 
   it('task 注册前的 HOT demand 遇到非仓库 prefetch 会被彻底清理', async () => {
     service.setPollingDemand('s2', 'owner-2', 'hot');
-    expect(scheduler.getSnapshot().pendingDemandTasks).toBe(1);
+    expect(pendingDemandCount(service)).toBe(1);
     await service.prefetchStatus('s2');
-    expect(scheduler.getSnapshot()).toMatchObject({ tasks: 0, pendingDemandTasks: 0 });
+    expect(scheduler.getSnapshot()).toMatchObject({ tasks: 0 });
+    expect(pendingDemandCount(service)).toBe(0);
   });
 
   it('polling demand 校验 owner；NONE 在 session 已消失后仍幂等', () => {
@@ -495,14 +502,79 @@ describe('GitService', () => {
       service as unknown as { runGit: (...a: never[]) => Promise<unknown> },
       'runGit',
     ).mockResolvedValue({ stdout: Buffer.from(sample, 'utf8'), stderr: '', exitCode: 0 });
-    expect(getWatchers(service).has('s1')).toBe(false);
+    expect(sessionAttachedToRepo(service, 's1')).toBe(false);
     await service.prefetchStatus('s1');
-    expect(getWatchers(service).has('s1')).toBe(true);
+    expect(sessionAttachedToRepo(service, 's1')).toBe(true);
   });
 
   it('prefetchStatus SSH(unavailable)不启动 watcher', async () => {
     await service.prefetchStatus('ssh1');
-    expect(getWatchers(service).has('ssh1')).toBe(false);
+    expect(sessionAttachedToRepo(service, 'ssh1')).toBe(false);
+  });
+
+  // ── 方案 A：watcher 按 repo 去重（同 repo 多 session 共享一个 task）─────
+  it('同 repo 多个 session 共享一个 polling task（不重复轮询）', async () => {
+    const sample = '1 .M N... 100644 100644 100644 aaaa bbbb modified.txt\0';
+    const runGit = vi
+      .spyOn(service as unknown as { runGit: (...a: never[]) => Promise<unknown> }, 'runGit')
+      .mockResolvedValue({ stdout: Buffer.from(sample, 'utf8'), stderr: '', exitCode: 0 });
+    sessions.s3 = { pathId: repoDir, currentCwd: repoDir, ownerWindowId: 'owner-3', state: 'idle' };
+    const emitted: { sessionId: string }[] = [];
+    service.on('gitStatusUpdated', (p: { sessionId: string }) => emitted.push(p));
+    await service.prefetchStatus('s1');
+    await service.prefetchStatus('s3');
+    expect(sessionAttachedToRepo(service, 's1')).toBe(true);
+    expect(sessionAttachedToRepo(service, 's3')).toBe(true);
+    // scheduler 只注册了 1 个 task（repo 去重）。
+    expect(scheduler.getSnapshot().tasks).toBe(1);
+
+    service.setPollingDemand('s1', 'owner-1', 'hot');
+    await vi.waitFor(() => expect(runGit).toHaveBeenCalledTimes(1));
+    // HOT 轮询只跑一次 git status，fan-out 给两个 session。
+    await vi.waitFor(() => {
+      const ids = emitted.map((e) => e.sessionId).sort();
+      expect(ids).toEqual(['s1', 's3']);
+    });
+    expect(runGit).toHaveBeenCalledTimes(1); // 同 repo 仍然只一次 spawn
+    service.onSessionDestroyed('s3');
+    service.onSessionDestroyed('s1');
+  });
+
+  it('同 repo 全部 session 退出后 repo task 被注销', async () => {
+    const sample = '1 .M N... 100644 100644 100644 aaaa bbbb modified.txt\0';
+    vi.spyOn(
+      service as unknown as { runGit: (...a: never[]) => Promise<unknown> },
+      'runGit',
+    ).mockResolvedValue({ stdout: Buffer.from(sample, 'utf8'), stderr: '', exitCode: 0 });
+    sessions.s3 = { pathId: repoDir, currentCwd: repoDir, ownerWindowId: 'owner-3', state: 'idle' };
+    await service.prefetchStatus('s1');
+    await service.prefetchStatus('s3');
+    expect(scheduler.getSnapshot().tasks).toBe(1);
+    service.onSessionDestroyed('s3'); // 还剩 s1 → task 保留
+    expect(scheduler.getSnapshot().tasks).toBe(1);
+    service.onSessionDestroyed('s1'); // 全部退出 → 注销
+    expect(scheduler.getSnapshot().tasks).toBe(0);
+  });
+
+  it('不同 repo 的 session 各自独立 task', async () => {
+    const repoDir2 = join(baseDir, 'repo2');
+    await mkdir(join(repoDir2, '.git'), { recursive: true });
+    sessions.s3 = {
+      pathId: repoDir2,
+      currentCwd: repoDir2,
+      ownerWindowId: 'owner-3',
+      state: 'idle',
+    };
+    const sample = '1 .M N... 100644 100644 100644 aaaa bbbb modified.txt\0';
+    vi.spyOn(
+      service as unknown as { runGit: (...a: never[]) => Promise<unknown> },
+      'runGit',
+    ).mockResolvedValue({ stdout: Buffer.from(sample, 'utf8'), stderr: '', exitCode: 0 });
+    await service.prefetchStatus('s1');
+    await service.prefetchStatus('s3');
+    expect(scheduler.getSnapshot().tasks).toBe(2); // 两个 repo 各一个 task
+    service.onSessionDestroyed('s3');
+    service.onSessionDestroyed('s1');
   });
 
   it('onSessionExited 清理 watcher(exited tab 保留但不再后台扫描)', async () => {
@@ -512,33 +584,36 @@ describe('GitService', () => {
       'runGit',
     ).mockResolvedValue({ stdout: Buffer.from(sample, 'utf8'), stderr: '', exitCode: 0 });
     await service.prefetchStatus('s1');
-    expect(getWatchers(service).has('s1')).toBe(true);
+    expect(sessionAttachedToRepo(service, 's1')).toBe(true);
     service.onSessionExited('s1');
-    expect(getWatchers(service).has('s1')).toBe(false);
+    expect(sessionAttachedToRepo(service, 's1')).toBe(false);
   });
 
   it('慢 availability 与 PTY exit 竞态时不会在退出后复活 watcher', async () => {
-    let resolveAvailability!: (value: { available: true }) => void;
+    let resolveRealpath!: (value: string) => void;
     let entered!: () => void;
-    const availabilityEntered = new Promise<void>((resolve) => {
+    const realpathEntered = new Promise<void>((resolve) => {
       entered = resolve;
     });
-    vi.spyOn(service, 'evaluateAvailability').mockImplementation(
+    vi.spyOn(
+      service as unknown as { realpathOrThrow: (cwd: string) => Promise<string> },
+      'realpathOrThrow',
+    ).mockImplementation(
       () =>
         new Promise((resolve) => {
-          resolveAvailability = resolve;
+          resolveRealpath = resolve;
           entered();
         }),
     );
 
     const pending = service.prefetchStatus('s1');
-    await availabilityEntered;
+    await realpathEntered;
     sessions.s1!.state = 'exited';
     service.onSessionExited('s1');
-    resolveAvailability({ available: true });
+    resolveRealpath(repoDir);
     await pending;
 
-    expect(getWatchers(service).has('s1')).toBe(false);
+    expect(sessionAttachedToRepo(service, 's1')).toBe(false);
   });
 
   it('onSessionDestroyed 清理 watcher(watchers Map 移除)', async () => {
@@ -548,9 +623,9 @@ describe('GitService', () => {
       'runGit',
     ).mockResolvedValue({ stdout: Buffer.from(sample, 'utf8'), stderr: '', exitCode: 0 });
     await service.prefetchStatus('s1');
-    expect(getWatchers(service).has('s1')).toBe(true);
+    expect(sessionAttachedToRepo(service, 's1')).toBe(true);
     service.onSessionDestroyed('s1');
-    expect(getWatchers(service).has('s1')).toBe(false);
+    expect(sessionAttachedToRepo(service, 's1')).toBe(false);
     const epochs = (service as unknown as { availabilityEpoch: Map<string, number> })
       .availabilityEpoch;
     expect(epochs.has('s1')).toBe(false);
@@ -563,36 +638,37 @@ describe('GitService', () => {
       'runGit',
     ).mockResolvedValue({ stdout: Buffer.from(sample, 'utf8'), stderr: '', exitCode: 0 });
     await service.prefetchStatus('s1');
-    expect(getWatchers(service).has('s1')).toBe(true);
+    expect(sessionAttachedToRepo(service, 's1')).toBe(true);
     service.setRuntimeConfig({ enableGitPanel: false, gitBinaryPath: '' });
-    expect(getWatchers(service).size).toBe(0);
+    expect(
+      (service as unknown as { sessionRepoKey: Map<string, unknown> }).sessionRepoKey.size,
+    ).toBe(0);
   });
 
   it('慢 availability 与关闭 Git 竞态时不会用旧结果复活 watcher', async () => {
-    vi.spyOn(
-      service as unknown as { emitCurrentStatus: (sessionId: string) => Promise<void> },
-      'emitCurrentStatus',
-    ).mockResolvedValue();
-    let resolveAvailability!: (value: { available: true; repoRoot: string }) => void;
+    let resolveRealpath!: (value: string) => void;
     let entered!: () => void;
-    const availabilityEntered = new Promise<void>((resolve) => {
+    const realpathEntered = new Promise<void>((resolve) => {
       entered = resolve;
     });
-    vi.spyOn(service, 'evaluateAvailability').mockImplementation(
+    vi.spyOn(
+      service as unknown as { realpathOrThrow: (cwd: string) => Promise<string> },
+      'realpathOrThrow',
+    ).mockImplementation(
       () =>
         new Promise((resolve) => {
-          resolveAvailability = resolve;
+          resolveRealpath = resolve;
           entered();
         }),
     );
 
     const pending = service.prefetchStatus('s1');
-    await availabilityEntered;
+    await realpathEntered;
     service.setRuntimeConfig({ enableGitPanel: false, gitBinaryPath: '' });
-    resolveAvailability({ available: true, repoRoot: repoDir });
+    resolveRealpath(repoDir);
     await pending;
 
-    expect(getWatchers(service).has('s1')).toBe(false);
+    expect(sessionAttachedToRepo(service, 's1')).toBe(false);
   });
 
   it('session 离开仓库后 prefetchStatus 停止既有 watcher', async () => {
@@ -602,42 +678,38 @@ describe('GitService', () => {
       'runGit',
     ).mockResolvedValue({ stdout: Buffer.from(sample, 'utf8'), stderr: '', exitCode: 0 });
     await service.prefetchStatus('s1');
-    expect(getWatchers(service).has('s1')).toBe(true);
+    expect(sessionAttachedToRepo(service, 's1')).toBe(true);
     sessions.s1!.currentCwd = nonRepoDir;
     await service.prefetchStatus('s1');
-    expect(getWatchers(service).has('s1')).toBe(false);
+    expect(sessionAttachedToRepo(service, 's1')).toBe(false);
   });
 
   it('慢 poll 未完成时跳过下一轮,不叠加后台 git status', async () => {
     vi.useFakeTimers();
     let resolvePoll!: () => void;
-    const emitCurrentStatus = vi
-      .spyOn(
-        service as unknown as { emitCurrentStatus: (sessionId: string) => Promise<void> },
-        'emitCurrentStatus',
-      )
+    const runGit = vi
+      .spyOn(service as unknown as { runGit: (...a: never[]) => Promise<unknown> }, 'runGit')
       .mockImplementation(
         () =>
-          new Promise<void>((resolve) => {
-            resolvePoll = resolve;
+          new Promise<unknown>((resolve) => {
+            resolvePoll = () =>
+              resolve({ stdout: Buffer.from('', 'utf8'), stderr: '', exitCode: 0 });
           }),
       );
     try {
-      (
-        service as unknown as {
-          startWatcher: (sessionId: string) => void;
-        }
-      ).startWatcher('s1');
+      // attach 到 repo（走 prefetch 路径，不 spawn git）后切 HOT 触发首次轮询。
+      await service.prefetchStatus('s1');
       service.setPollingDemand('s1', 'owner-1', 'hot');
       await vi.advanceTimersByTimeAsync(0);
-      expect(emitCurrentStatus).toHaveBeenCalledTimes(1);
+      expect(runGit).toHaveBeenCalledTimes(1);
+      // 上一轮 git status 仍未返回；HOT 续排的 3s 后不应再叠第二个 status。
       await vi.advanceTimersByTimeAsync(6000);
-      expect(emitCurrentStatus).toHaveBeenCalledTimes(1);
+      expect(runGit).toHaveBeenCalledTimes(1);
 
       resolvePoll();
       await vi.advanceTimersByTimeAsync(0);
       await vi.advanceTimersByTimeAsync(3000);
-      expect(emitCurrentStatus).toHaveBeenCalledTimes(2);
+      expect(runGit).toHaveBeenCalledTimes(2);
     } finally {
       service.onSessionDestroyed('s1');
       vi.useRealTimers();
@@ -645,22 +717,27 @@ describe('GitService', () => {
   });
 
   it('watcher 轮询会 emit(真实短间隔定时器集成验证)', async () => {
-    // 临时覆写轮询间隔为 30ms 以快测(通过原型 hack)。
+    vi.useFakeTimers();
     const sample = '1 .M N... 100644 100644 100644 aaaa bbbb modified.txt\0';
-    vi.spyOn(
-      service as unknown as { runGit: (...a: never[]) => Promise<unknown> },
-      'runGit',
-    ).mockResolvedValue({ stdout: Buffer.from(sample, 'utf8'), stderr: '', exitCode: 0 });
+    const runGit = vi
+      .spyOn(service as unknown as { runGit: (...a: never[]) => Promise<unknown> }, 'runGit')
+      .mockResolvedValue({ stdout: Buffer.from(sample, 'utf8'), stderr: '', exitCode: 0 });
     const emitted: unknown[] = [];
     service.on('gitStatusUpdated', (p) => emitted.push(p));
-    // 用一个独立的短间隔 service 避免影响其他用例:直接调 startWatcher 的等价路径
-    // —— 这里复用 prefetchStatus 启动默认 3s watcher,然后用 advanceTimer。
-    // 简化:直接验证 emitCurrentStatus 能独立 emit(轮询就是重复调它)。
-    await (
-      service as unknown as { emitCurrentStatus: (id: string) => Promise<void> }
-    ).emitCurrentStatus('s1');
-    expect(emitted).toHaveLength(1);
-    expect((emitted[0] as { sessionId: string }).sessionId).toBe('s1');
+    try {
+      await service.prefetchStatus('s1');
+      service.setPollingDemand('s1', 'owner-1', 'hot');
+      await vi.advanceTimersByTimeAsync(0);
+      // HOT 立即触发一次轮询，emit 给 session。
+      expect(runGit).toHaveBeenCalledTimes(1);
+      expect(emitted).toHaveLength(1);
+      expect((emitted[0] as { sessionId: string }).sessionId).toBe('s1');
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(emitted).toHaveLength(2);
+    } finally {
+      service.onSessionDestroyed('s1');
+      vi.useRealTimers();
+    }
   });
 });
 

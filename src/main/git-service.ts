@@ -104,6 +104,17 @@ export interface GitSessionLookup {
     /** exited session 只保留静态 UI/scrollback,不得继续启动后台 watcher。 */
     state: SessionState;
   } | null;
+  /**
+   * 枚举全部 session（含 id）。方案 A 后 removePollingConsumer 需按 ownerWindowId
+   * 反查其持有的 session，以逐个清它们在 repo task 上的 demand。
+   */
+  list(): Array<{
+    id: string;
+    pathId: string;
+    currentCwd: string;
+    ownerWindowId: string | null;
+    state: SessionState;
+  }>;
 }
 
 /** GitService 对受管临时工作区的依赖(session 销毁自动回收,适合放 diff 缓存)。 */
@@ -160,26 +171,54 @@ export interface GitStatusSnapshot {
  * session 文件读取接口。
  */
 export class GitService extends EventEmitter {
-  /** 已注册 Git polling task。保留 watchers 名称兼容既有诊断/测试，value 不再是 interval。 */
-  private readonly watchers = new Map<string, { close: () => void }>();
-  /** scheduler 已保证后台任务不重叠；此 guard 作为纵深防御并供指标观察。 */
+  /**
+   * 按 **repo** 去重的 Git polling task（ADR-021 增补，方案 A）。
+   *
+   * 此前每个 session 各注册一个 `git-status:${sessionId}` task，同一 repo 开 N 个
+   * 终端就轮询 N 次 git status（重复劳动，并占满全局并发预算）。现改为按 repo
+   * 去重：一个 repo 只注册一个 task，run 时跑一次 git status 再 fan-out emit 给
+   * 该 repo 下所有 session；每个 session 作为该 repo task 的一个 scheduler consumer
+   * （consumerId=sessionId），demand 由 scheduler 自动取各 session 最高（HOT>WARM）。
+   *
+   * repoKey = 规范化(repoRoot)（win32 小写）。repoRoot 字段保留原大小写供 git -C。
+   */
+  private readonly repoWatchers = new Map<
+    string,
+    { repoRoot: string; sessionIds: Set<string>; close: () => void }
+  >();
+  /** session 当前所在的 repo（repoKey），用于 lifecycle/demand 反查。 */
+  private readonly sessionRepoKey = new Map<string, string>();
+  /**
+   * demand 早于 prefetch 到达时暂存（sessionId→level）。attachSessionToRepo 时
+   * 迁到真 repo task；ADR-021：renderer 看到 LayoutNode 早于 main prefetch 完成。
+   */
+  private readonly pendingSessionDemand = new Map<string, BackgroundDemandLevel>();
+  /**
+   * 诊断/兼容 gauge：仍反映“有多少 session 正在 Git 仓库里”。语义从 watcher 数
+   * 变为 repo-attached session 数（与旧 `git.watchers` 语义一致：Git tab 可见的
+   * session 数），保留既有测试断言。
+   */
+  private get watcherSessionCount(): number {
+    let n = 0;
+    for (const w of this.repoWatchers.values()) n += w.sessionIds.size;
+    return n;
+  }
+  /** scheduler 已保证后台任务不重叠；此 guard 作为纵深防御并供指标观察。按 repo 去重。 */
   private readonly pollsInFlight = new Set<string>();
   private readonly debounceTimers = new Map<string, NodeJS.Timeout>();
   /** 每次 availability 重算/disable/exit 都递增，阻止旧 async prefetch 复活 task。 */
   private readonly availabilityEpoch = new Map<string, number>();
-  /** 同 session+cwd 的 status 子进程合并，避免 GitPanel mount 与 HOT immediate 重叠。 */
+  /**
+   * 同 repo 的 status 子进程合并（取代旧的同 session+cwd 合并）：GitPanel mount、
+   * HOT immediate 与后台 poll 共享同一个 repo 级 in-flight，同 repo 任何时刻
+   * 最多一个 git status。key=repoKey。
+   */
   private readonly statusInFlight = new Map<
     string,
     {
-      cwd: string;
       runtimeRevision: number;
       promise: Promise<GitStatusSnapshot | { unavailable: GitUnavailableReason }>;
     }
-  >();
-  /** 同 session+cwd+runtime revision 的“查询并 emit”也合并，避免重复广播。 */
-  private readonly refreshInFlight = new Map<
-    string,
-    { cwd: string; runtimeRevision: number; promise: Promise<void> }
   >();
   /** 可能早于 task 注册到达 demand 的 session，用于 disable/lifecycle 统一清理。 */
   private readonly demandSessionIds = new Set<string>();
@@ -214,18 +253,23 @@ export class GitService extends EventEmitter {
       this.runtimeRevision += 1;
     }
     if (wasEnabled && !cfg.enableGitPanel) {
-      const affected = new Set([
-        ...this.watchers.keys(),
+      // 统一收据所有受影响 session：已 attach 到 repo 的、有 demand 的、有 epoch 的。
+      const affected = new Set<string>([
+        ...this.sessionRepoKey.keys(),
         ...this.demandSessionIds,
         ...this.availabilityEpoch.keys(),
       ]);
       for (const sessionId of affected) {
         this.invalidateAvailability(sessionId);
-        this.stopWatcher(sessionId);
-        this.scheduler.clearTaskDemands(this.pollingTaskKey(sessionId));
+        this.detachSession(sessionId);
+      }
+      // 兑底：disable 必须停止所有 repo task（detachSession 理论上已清完，但这里防漏）。
+      for (const repoKey of [...this.repoWatchers.keys()]) {
+        this.unregisterRepoWatcher(repoKey);
       }
       this.demandSessionIds.clear();
-      performanceMetrics.setGauge('git.watchers', this.watchers.size);
+      this.pendingSessionDemand.clear();
+      performanceMetrics.setGauge('git.watchers', this.watcherSessionCount);
     }
   }
 
@@ -260,64 +304,9 @@ export class GitService extends EventEmitter {
     requesterId: string,
   ): Promise<GitStatusSnapshot | { unavailable: GitUnavailableReason }> {
     this.requireOwnerSession(sessionId, requesterId);
-    // 与 prefetch/HOT poll 共用 session+cwd in-flight，GitPanel mount 的显式拉取和
-    // demand 切 HOT 即使同帧到达也只 spawn 一个 git status。
-    return this.getStatusInternal(sessionId);
-  }
-
-  /**
-   * 内部:拉一次 status 并 emit。查询 + 广播整体按 session+cwd 合并；结果返回时
-   * 再校验 cwd/state/config，旧 cwd 或 exited/disabled 的结果绝不覆盖新 UI。
-   */
-  private emitCurrentStatus(sessionId: string): Promise<void> {
-    const session = this.sessionLookup.get(sessionId);
-    if (!session) return Promise.resolve();
-    const cwd = session.currentCwd;
-    const runtimeRevision = this.runtimeRevision;
-    const existing = this.refreshInFlight.get(sessionId);
-    if (existing?.cwd === cwd && existing.runtimeRevision === runtimeRevision) {
-      return existing.promise;
-    }
-
-    const operation = (async (): Promise<void> => {
-      let stripped:
-        | { groups: GitStatusGroup[]; truncated: boolean }
-        | { unavailable: GitUnavailableReason };
-      try {
-        const result = await this.getStatusInternal(sessionId);
-        stripped =
-          'unavailable' in result
-            ? { unavailable: result.unavailable }
-            : { groups: result.groups, truncated: result.truncated };
-      } catch (err) {
-        logger.warn(
-          MODULE,
-          `emitCurrentStatus failed sid=${sessionId}: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-        return;
-      }
-      const current = this.sessionLookup.get(sessionId);
-      const isDisabledResult = 'unavailable' in stripped && stripped.unavailable === 'disabled';
-      if (
-        !current ||
-        current.state === 'exited' ||
-        current.currentCwd !== cwd ||
-        this.runtimeRevision !== runtimeRevision ||
-        (!this.runtimeConfig.enableGitPanel && !isDisabledResult)
-      ) {
-        return;
-      }
-      this.emit('gitStatusUpdated', { sessionId, ...stripped });
-    })();
-    const tracked = operation.finally(() => {
-      if (this.refreshInFlight.get(sessionId)?.promise === tracked) {
-        this.refreshInFlight.delete(sessionId);
-      }
-    });
-    this.refreshInFlight.set(sessionId, { cwd, runtimeRevision, promise: tracked });
-    return tracked;
+    // 与 prefetch/HOT poll 共用 **repo** 级 in-flight：同 repo 的 GitPanel mount /
+    // demand 切 HOT / 后台 poll 即使同帧到达也只 spawn 一个 git status。
+    return this.getStatusSnapshot(sessionId);
   }
 
   /**
@@ -332,101 +321,124 @@ export class GitService extends EventEmitter {
     const epoch = this.invalidateAvailability(sessionId);
     const session = this.sessionLookup.get(sessionId);
     if (!session) {
-      this.stopWatcher(sessionId);
+      this.detachSession(sessionId);
       // 销毁后晚到的 prefetch 不能为不存在的 session 留永久 epoch 条目。
       this.availabilityEpoch.delete(sessionId);
       return;
     }
     if (session.state === 'exited') {
-      this.stopWatcher(sessionId);
+      this.detachSession(sessionId);
       return;
     }
     const cwd = session.currentCwd;
     if (!this.runtimeConfig.enableGitPanel) {
-      this.stopWatcher(sessionId);
+      this.detachSession(sessionId);
       this.emit('gitStatusUpdated', { sessionId, unavailable: 'disabled' });
       return;
     }
     const pathKind: PathKind = pathKindFromPathId(session.pathId);
     if (pathKind === 'ssh') {
-      this.stopWatcher(sessionId);
+      this.detachSession(sessionId);
       this.emit('gitStatusUpdated', { sessionId, unavailable: 'ssh-unsupported' });
       return;
     }
     const cwdReal = await this.realpathOrThrow(cwd).catch(() => null);
     if (!cwdReal || !this.isAvailabilityCurrent(sessionId, epoch, cwd)) {
       if (this.availabilityEpoch.get(sessionId) === epoch) {
-        this.stopWatcher(sessionId);
+        this.detachSession(sessionId);
         this.emit('gitStatusUpdated', { sessionId, unavailable: 'not-a-repo' });
       }
       return;
     }
-    const availability = await this.evaluateAvailability(cwdReal, pathKind);
+    const repoRoot = await findRepoRoot(cwdReal);
     if (!this.isAvailabilityCurrent(sessionId, epoch, cwd)) return;
 
-    if (availability.available) {
-      this.startWatcher(sessionId);
+    if (repoRoot) {
+      // 同 repo 多 session 共享一个 polling task（方案 A）。cd 跨 repo 时
+      // attachSessionToRepo 内部会先从旧 repo detach。
+      this.attachSessionToRepo(sessionId, repoRoot);
     } else {
-      this.stopWatcher(sessionId);
-      this.emit('gitStatusUpdated', { sessionId, unavailable: availability.reason });
+      this.detachSession(sessionId);
+      this.emit('gitStatusUpdated', { sessionId, unavailable: 'not-a-repo' });
     }
   }
 
-  /** 同 session+cwd 查询合并；cwd 在查询期间变化时自动重拉新 cwd，永不返回旧快照。 */
-  private getStatusInternal(
+  /**
+   * 解析 session 所在 repo，走 **repo** 级 in-flight 合并（同 repo 最多一个 git
+   * status）。SSH/disabled/非 repo 返回 unavailable，不 spawn。
+   *
+   * runtimeRevision 变化时，旧 in-flight 结束后会串行重拉新配置；不会并发启第二个。
+   */
+  private getStatusSnapshot(
     sessionId: string,
   ): Promise<GitStatusSnapshot | { unavailable: GitUnavailableReason }> {
     const session = this.sessionLookup.get(sessionId);
     if (!session) return Promise.resolve({ unavailable: 'not-a-repo' });
-    const cwd = session.currentCwd;
-    const runtimeRevision = this.runtimeRevision;
-    const existing = this.statusInFlight.get(sessionId);
-    if (existing?.cwd === cwd) {
-      // 配置 revision 变化也先等待旧进程结束；旧 wrapper 随后检测 revision 并串行
-      // 重拉，保证同 cwd 任何时刻最多一个 git status，而不是并发启第二个。
-      return existing.promise;
+    if (pathKindFromPathId(session.pathId) === 'ssh') {
+      return Promise.resolve({ unavailable: 'ssh-unsupported' });
     }
+    if (!this.runtimeConfig.enableGitPanel) return Promise.resolve({ unavailable: 'disabled' });
 
-    const operation = this.getStatusInternalUncoalesced(sessionId, cwd);
+    // 优先用已 attach 的 repoKey（prefetch 已算过 repoRoot）。未 attach（如 GitPanel
+    // mount 早于 prefetch）时即时 realpath + findRepoRoot。
+    const resolveRepo = async (): Promise<{ repoKey: string; repoRoot: string } | null> => {
+      const existingKey = this.sessionRepoKey.get(sessionId);
+      if (existingKey) {
+        const watcher = this.repoWatchers.get(existingKey);
+        if (watcher) return { repoKey: existingKey, repoRoot: watcher.repoRoot };
+      }
+      const cwdReal = await this.realpathOrThrow(session.currentCwd).catch(() => null);
+      if (!cwdReal) return null;
+      const repoRoot = await findRepoRoot(cwdReal);
+      if (!repoRoot) return null;
+      return { repoKey: repoKeyOf(repoRoot), repoRoot };
+    };
+
+    return resolveRepo().then((resolved) => {
+      if (!resolved) return { unavailable: 'not-a-repo' as const };
+      return this.runGitStatusForRepo(resolved.repoKey, resolved.repoRoot);
+    });
+  }
+
+  /**
+   * 同 repo 的 status 子进程合并：key=repoKey。**任何时刻同 repo 最多一个 git status
+   * 在跑**（不管 runtimeRevision 是否变化）。revision 在进程跑期间变化时，旧进程
+   * 完成后**串行**重拉一次新配置，不并发启第二个。
+   *
+   * 这是 GitPanel 拉取、HOT/WARM poll、同 repo 多 session 的唯一 spawn 点。
+   */
+  private runGitStatusForRepo(
+    repoKey: string,
+    repoRoot: string,
+  ): Promise<GitStatusSnapshot | { unavailable: GitUnavailableReason }> {
+    const runtimeRevision = this.runtimeRevision;
+    // 不论 revision 是否变化，只要同 repo 有 in-flight 就合并：绝不并发启第二个进程。
+    // revision 变化由下面的串行重拉处理（旧进程结束后才会发生）。
+    const existing = this.statusInFlight.get(repoKey);
+    if (existing) return existing.promise;
+    const operation = this.runGitStatusForRepoUncoalesced(repoRoot);
     const settled = operation.finally(() => {
-      // 先移除旧 in-flight，再由下面 then 按新 cwd/revision 串行重拉；避免同 cwd
-      // 递归命中自己造成 Promise cycle，也保证不会与旧 git 进程重叠。
-      if (this.statusInFlight.get(sessionId)?.promise === refreshed) {
-        this.statusInFlight.delete(sessionId);
+      if (this.statusInFlight.get(repoKey)?.promise === refreshed) {
+        this.statusInFlight.delete(repoKey);
       }
     });
-    const contextChanged = (): boolean => {
-      const current = this.sessionLookup.get(sessionId);
-      return (
-        !!current &&
-        current.state !== 'exited' &&
-        (current.currentCwd !== cwd || this.runtimeRevision !== runtimeRevision)
-      );
-    };
+    const contextChanged = (): boolean => this.runtimeRevision !== runtimeRevision;
     const refreshed = settled.then(
-      async (result) => (contextChanged() ? this.getStatusInternal(sessionId) : result),
+      async (result) => (contextChanged() ? this.runGitStatusForRepo(repoKey, repoRoot) : result),
       async (error: unknown) => {
-        // 旧 binary/cwd 的失败也不能盖住新配置：先等旧进程结束，再用新 context
-        // 串行重拉；只有 context 未变化时才把真实错误交给调用方。
-        if (contextChanged()) return this.getStatusInternal(sessionId);
+        // 旧配置的失败也不能盖住新配置：等旧进程结束后用新 revision 串行重拉。
+        if (contextChanged()) return this.runGitStatusForRepo(repoKey, repoRoot);
         throw error;
       },
     );
-    this.statusInFlight.set(sessionId, { cwd, runtimeRevision, promise: refreshed });
+    this.statusInFlight.set(repoKey, { runtimeRevision, promise: refreshed });
     return refreshed;
   }
 
-  private async getStatusInternalUncoalesced(
-    sessionId: string,
-    cwd: string,
+  private async runGitStatusForRepoUncoalesced(
+    repoRoot: string,
   ): Promise<GitStatusSnapshot | { unavailable: GitUnavailableReason }> {
-    const session = this.sessionLookup.get(sessionId);
-    if (!session) return { unavailable: 'not-a-repo' };
-    if (pathKindFromPathId(session.pathId) === 'ssh') return { unavailable: 'ssh-unsupported' };
     if (!this.runtimeConfig.enableGitPanel) return { unavailable: 'disabled' };
-    const cwdReal = await this.realpathOrThrow(cwd);
-    const repoRoot = await findRepoRoot(cwdReal);
-    if (!repoRoot) return { unavailable: 'not-a-repo' };
     const { stdout } = await this.runGit(repoRoot, [
       'status',
       '--porcelain=v2',
@@ -558,9 +570,10 @@ export class GitService extends EventEmitter {
    * 在 session 已消失后仍幂等允许，保证 React cleanup 永远能执行。
    */
   setPollingDemand(sessionId: string, consumerId: string, level: BackgroundDemandLevel): void {
-    const key = this.pollingTaskKey(sessionId);
     if (level === 'none') {
-      this.scheduler.setDemand(key, consumerId, 'none');
+      // session 已可能 detach；幂等清除它在当前 repo task 上的 demand。
+      const repoKey = this.sessionRepoKey.get(sessionId);
+      if (repoKey) this.scheduler.setDemand(this.pollingTaskKey(repoKey), sessionId, 'none');
       return;
     }
     const session = this.sessionLookup.get(sessionId);
@@ -579,18 +592,40 @@ export class GitService extends EventEmitter {
     if (!this.runtimeConfig.enableGitPanel) {
       throw new GitError('GitFailed', 'Git 面板已禁用，不能注册后台刷新需求。');
     }
+    const repoKey = this.sessionRepoKey.get(sessionId);
+    if (!repoKey) {
+      // demand 早于 prefetch 完成：Git 仓库尚未判定，暂存；attachSessionToRepo 后
+      // 会迁到真 repo task。scheduler 的 placeholder 机制按 task key，这里 session 维度暂存。
+      this.pendingSessionDemand.set(sessionId, level);
+      this.demandSessionIds.add(sessionId);
+      return;
+    }
+    // demand 的 consumerId=sessionId：同 repo 多 session 作为同 task 的多个 consumer，
+    // scheduler 自动取最高需求（HOT>WARM）。
     this.demandSessionIds.add(sessionId);
-    this.scheduler.setDemand(key, consumerId, level);
+    this.scheduler.setDemand(this.pollingTaskKey(repoKey), sessionId, level);
   }
 
-  /** 窗口关闭/远程断线：移除它在所有 Git task 上的 demand。 */
+  /**
+   * 窗口关闭/远程断线：移除该窗口持有的所有 session 在其 repo task 上的 demand。
+   *
+   * 方案 A 后 demand 的 consumerId 是 sessionId（不是 windowId），所以不能直接
+   * removeConsumer(windowId)；需枚举 owner==window 的 session 逐个清 demand。
+   * session 本身仍在（可能被别的窗口接管），只撤它的后台需求。
+   */
   removePollingConsumer(consumerId: string): void {
-    this.scheduler.removeConsumer(consumerId);
+    for (const session of this.sessionLookup.list()) {
+      if (session.ownerWindowId !== consumerId) continue;
+      const repoKey = this.sessionRepoKey.get(session.id);
+      if (repoKey) this.scheduler.setDemand(this.pollingTaskKey(repoKey), session.id, 'none');
+    }
   }
 
   /** owner 改变时旧 renderer 可能不 remount；main 先清 demand，新 owner 再绝对上报。 */
+  /** owner 改变时旧 renderer 可能不 remount；main 先清该 session 的 demand，新 owner 再绝对上报。 */
   onSessionOwnerChanged(sessionId: string): void {
-    this.scheduler.clearTaskDemands(this.pollingTaskKey(sessionId));
+    const repoKey = this.sessionRepoKey.get(sessionId);
+    if (repoKey) this.scheduler.setDemand(this.pollingTaskKey(repoKey), sessionId, 'none');
     this.demandSessionIds.delete(sessionId);
   }
 
@@ -602,32 +637,31 @@ export class GitService extends EventEmitter {
    */
   onSessionExited(sessionId: string): void {
     this.invalidateAvailability(sessionId);
-    this.stopWatcher(sessionId);
-    this.scheduler.clearTaskDemands(this.pollingTaskKey(sessionId));
+    this.detachSession(sessionId);
     this.demandSessionIds.delete(sessionId);
     this.clearDebounceTimer(sessionId);
   }
 
   /** session 销毁:清 polling task/demand + 防抖 timer。 */
+  /** session 销毁:清 repo attach/demand/emit 合并 + 防抖 timer。 */
   onSessionDestroyed(sessionId: string): void {
     this.invalidateAvailability(sessionId);
-    this.stopWatcher(sessionId);
-    this.scheduler.clearTaskDemands(this.pollingTaskKey(sessionId));
+    this.detachSession(sessionId);
     this.demandSessionIds.delete(sessionId);
-    this.statusInFlight.delete(sessionId);
-    this.refreshInFlight.delete(sessionId);
     // invalidate 已让旧 async 工作失效；删除 entry 后旧 epoch 比较仍必然失败。
     this.availabilityEpoch.delete(sessionId);
     this.clearDebounceTimer(sessionId);
   }
 
-  /** 应用退出或服务卸载：注销本服务全部 task；共享 scheduler 由装配层最终 shutdown。 */
+  /** 应用退出或服务卸载：注销本服务全部 repo task；共享 scheduler 由装配层最终 shutdown。 */
   shutdownPolling(): void {
-    for (const sessionId of [...this.watchers.keys()]) this.stopWatcher(sessionId);
+    for (const repoKey of [...this.repoWatchers.keys()]) this.unregisterRepoWatcher(repoKey);
     for (const sessionId of this.demandSessionIds) {
-      this.scheduler.clearTaskDemands(this.pollingTaskKey(sessionId));
+      const repoKey = this.sessionRepoKey.get(sessionId);
+      if (repoKey) this.scheduler.clearTaskDemands(this.pollingTaskKey(repoKey));
     }
     this.demandSessionIds.clear();
+    this.pendingSessionDemand.clear();
   }
 
   private clearDebounceTimer(sessionId: string): void {
@@ -637,8 +671,9 @@ export class GitService extends EventEmitter {
     this.debounceTimers.delete(sessionId);
   }
 
-  private pollingTaskKey(sessionId: string): string {
-    return `git-status:${sessionId}`;
+  /** repo task 的 scheduler key。 */
+  private pollingTaskKey(repoKey: string): string {
+    return `git-status:${repoKey}`;
   }
 
   /** 递增并返回新 epoch；调用名沿用 invalidate，因为它会使全部旧 async 工作失效。 */
@@ -1013,66 +1048,158 @@ export class GitService extends EventEmitter {
   // ────────────────────────────────────────────────────────────────
 
   /**
-   * 注册 demand-aware Git task。没有 demand 时 task 为 COLD、不起 timer；HOT 3s，
-   * WARM 60s。仍用 status poll 而非 fs.watch，原因是后者无法可靠覆盖工作区全部
-   * modified/untracked 且跨平台噪声大。
+   * 把一个 session attach 到它所在的 repo（方案 A：按 repo 去重）。
+   *
+   * - cd 跨 repo 时先从旧 repo detach（避免一个 session 同时计入两个 repo task）。
+   * - repo task 只在首个 session attach 时注册；run 时跑一次 git status 并 fan-out
+   *   emit 给该 repo 下所有 session。
+   * - 本 session 作为该 repo task 的一个 scheduler consumer（consumerId=sessionId），
+   *   demand 由 scheduler 取各 session 最高。
    */
-  private startWatcher(sessionId: string): void {
+  private attachSessionToRepo(sessionId: string, repoRoot: string): void {
     if (!this.runtimeConfig.enableGitPanel) return;
     const session = this.sessionLookup.get(sessionId);
     if (!session || session.state === 'exited') return;
-    if (this.watchers.has(sessionId)) return;
+    const repoKey = repoKeyOf(repoRoot);
 
-    const key = this.pollingTaskKey(sessionId);
+    const previousKey = this.sessionRepoKey.get(sessionId);
+    if (previousKey === repoKey) return; // 同 repo，幂等
+    if (previousKey) this.detachSession(sessionId);
+
+    const watcher = this.ensureRepoTask(repoKey, repoRoot);
+    watcher.sessionIds.add(sessionId);
+    this.sessionRepoKey.set(sessionId, repoKey);
+    // 迁 pending demand（demand 早于 prefetch 到达的情况）到真 repo task。
+    const pending = this.pendingSessionDemand.get(sessionId);
+    if (pending) {
+      this.pendingSessionDemand.delete(sessionId);
+      this.scheduler.setDemand(this.pollingTaskKey(repoKey), sessionId, pending);
+    }
+    performanceMetrics.setGauge('git.watchers', this.watcherSessionCount);
+    logger.debug(
+      MODULE,
+      `session attached to repo sid=${sessionId} repoKey=${repoKey} sessions=${watcher.sessionIds.size}`,
+    );
+  }
+
+  /**
+   * 从当前 repo detach：移出 sessionIds、清它的 demand；repo 无 session 时注销 task。
+   * 幂等（session 未 attach 时无副作用）。不清 sessionRepoKey 以外的状态。
+   */
+  private detachSession(sessionId: string): void {
+    const repoKey = this.sessionRepoKey.get(sessionId);
+    this.sessionRepoKey.delete(sessionId);
+    const watcher = repoKey ? this.repoWatchers.get(repoKey) : undefined;
+    if (watcher) {
+      watcher.sessionIds.delete(sessionId);
+      // 撤该 session 在 repo task 上的 demand（不管是否还在 demandSessionIds 里）。
+      this.scheduler.setDemand(this.pollingTaskKey(repoKey!), sessionId, 'none');
+      if (watcher.sessionIds.size === 0) {
+        this.unregisterRepoWatcher(repoKey!);
+      }
+    } else if (repoKey) {
+      // task 尚未注册但 demand 已暂存到 placeholder：一并清。
+      this.scheduler.setDemand(this.pollingTaskKey(repoKey), sessionId, 'none');
+    }
+    this.demandSessionIds.delete(sessionId);
+    this.pendingSessionDemand.delete(sessionId);
+    performanceMetrics.setGauge('git.watchers', this.watcherSessionCount);
+  }
+
+  /**
+   * 确保 repo task 已注册（幂等）。run 时跑一次 git status 并 fan-out emit 给该
+   * repo 下所有 session。pollsInFlight 按 repo 去重防未来交互路径重叠。
+   */
+  private ensureRepoTask(
+    repoKey: string,
+    repoRoot: string,
+  ): { repoRoot: string; sessionIds: Set<string>; close: () => void } {
+    const existing = this.repoWatchers.get(repoKey);
+    if (existing) return existing;
+
+    const key = this.pollingTaskKey(repoKey);
+    const record: { repoRoot: string; sessionIds: Set<string>; close: () => void } = {
+      repoRoot,
+      sessionIds: new Set<string>(),
+      close: () => {
+        /* set after registerTask below */
+      },
+    };
     this.scheduler.registerTask(key, {
       hotIntervalMs: GIT_HOT_POLL_MS,
       warmIntervalMs: GIT_WARM_POLL_MS,
       run: async () => {
-        // scheduler 已串行；guard 防未来交互路径误接同一后台函数。
-        if (this.pollsInFlight.has(sessionId)) {
+        // scheduler 已串行；repo 级 guard 防未来交互路径误接同一后台函数。
+        if (this.pollsInFlight.has(repoKey)) {
           performanceMetrics.increment('git.pollsSkippedInFlight');
           return;
         }
-        this.pollsInFlight.add(sessionId);
+        this.pollsInFlight.add(repoKey);
         performanceMetrics.setGauge('git.pollsInFlight', this.pollsInFlight.size);
         try {
-          await this.emitCurrentStatus(sessionId);
+          // 跑一次 repo 级 status（内部同 repo in-flight 合并），fan-out 给所有 session。
+          // 不先查 snapshot：git status 的 porcelain 结果与 session 无关，emit 维度才按 session。
+          const result = await this.runGitStatusForRepo(repoKey, record.repoRoot);
+          const sessionIds = [...(this.repoWatchers.get(repoKey)?.sessionIds ?? [])];
+          for (const sid of sessionIds) {
+            this.emitStatusResult(sid, result);
+          }
         } finally {
-          this.pollsInFlight.delete(sessionId);
+          this.pollsInFlight.delete(repoKey);
           performanceMetrics.setGauge('git.pollsInFlight', this.pollsInFlight.size);
         }
       },
       onError: (error) => {
         logger.warn(
           MODULE,
-          `scheduled status refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+          `scheduled status refresh failed repoKey=${repoKey}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
         );
       },
     });
-    this.watchers.set(sessionId, { close: () => this.scheduler.unregisterTask(key) });
+    record.close = () => this.scheduler.unregisterTask(key);
+    this.repoWatchers.set(repoKey, record);
     performanceMetrics.increment('git.watchersStarted');
-    performanceMetrics.setGauge('git.watchers', this.watchers.size);
     logger.debug(
       MODULE,
-      `polling task registered sid=${sessionId} hot=${GIT_HOT_POLL_MS}ms warm=${GIT_WARM_POLL_MS}ms`,
+      `repo polling task registered repoKey=${repoKey} hot=${GIT_HOT_POLL_MS}ms warm=${GIT_WARM_POLL_MS}ms`,
     );
+    return record;
   }
 
-  private stopWatcher(sessionId: string): void {
-    const w = this.watchers.get(sessionId);
-    if (w) {
+  /**
+   * 发出一个 session 的 gitStatusUpdated（由后台 poll 的 fan-out 调用）。
+   * 不重拉 status（status 已在 run 里拉过）；只校验 session 仍有效且 config 未变。
+   */
+  private emitStatusResult(
+    sessionId: string,
+    result: GitStatusSnapshot | { unavailable: GitUnavailableReason },
+  ): void {
+    const session = this.sessionLookup.get(sessionId);
+    if (!session || session.state === 'exited') return;
+    if (!this.runtimeConfig.enableGitPanel) return;
+    // session 已 cd 到别的 repo（sessionRepoKey 变了）→ 不发旧 repo 的结果。
+    const repoKey = this.sessionRepoKey.get(sessionId);
+    if (!repoKey || !this.repoWatchers.get(repoKey)?.sessionIds.has(sessionId)) return;
+    this.emit('gitStatusUpdated', { sessionId, ...result });
+  }
+
+  /** 注销 repo task：清 timer/demand/placeholder，并从 repoWatchers 移除。 */
+  private unregisterRepoWatcher(repoKey: string): void {
+    const watcher = this.repoWatchers.get(repoKey);
+    if (watcher) {
       try {
-        w.close();
+        watcher.close();
       } catch {
-        /* scheduler unregister below is the authoritative cleanup */
+        /* scheduler unregister below is authoritative */
       }
-      this.watchers.delete(sessionId);
+      this.repoWatchers.delete(repoKey);
       performanceMetrics.increment('git.watchersStopped');
     }
-    // 即使 task 尚未注册也要调用：unregister 会删除 demand-before-register placeholder。
-    this.scheduler.unregisterTask(this.pollingTaskKey(sessionId));
-    this.demandSessionIds.delete(sessionId);
-    performanceMetrics.setGauge('git.watchers', this.watchers.size);
+    // 即使 task 尚未注册也调：unregister 会删 demand-before-register placeholder。
+    this.scheduler.unregisterTask(this.pollingTaskKey(repoKey));
+    performanceMetrics.setGauge('git.watchers', this.watcherSessionCount);
   }
 }
 
@@ -1113,6 +1240,16 @@ async function findRepoRoot(startReal: string): Promise<string | null> {
     current = parent;
   }
   return null;
+}
+
+/**
+ * 把 repoRoot 规范化为 repo task key。win32 下小写化以吸收大小写差异（同 repo
+ * 不同大小写的 cwd 不应注册两个 task）。repoRoot 本身已是 canonical（realpath +
+ * findRepoRoot），这里只做大小写规范化与正斜杠统一。
+ */
+function repoKeyOf(repoRoot: string): string {
+  const normalized = repoRoot.replace(/\\/g, '/');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
 /**

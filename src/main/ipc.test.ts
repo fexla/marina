@@ -292,7 +292,7 @@ function makeStubs() {
       // registerGitHandlers 注册的 getStatus / openDiff 在测试中不会被调用
       // (没有专门的 git IPC 测试用例,git-service 自身有完整单测)。
       gitService: new GitService(
-        { get: () => null },
+        { get: () => null, list: () => [] },
         { getPathForSession: () => null },
         new FilePanelService(),
       ),
