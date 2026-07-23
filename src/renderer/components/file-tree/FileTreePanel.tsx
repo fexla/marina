@@ -24,8 +24,11 @@ import {
   type ListFileTreeRecursiveResponse,
 } from '@shared/protocol';
 import type { FileTreeEntry, FileTreeRootId } from '@shared/types';
+import { fileIconFor } from '@shared/file-icon';
 import { matchText } from '@shared/text-search';
 import type { PanelSearchProps } from '../layout/panel-registry';
+import { usePanelPreference } from '../../hooks/usePanelPreference';
+import { usePanelUiState } from '../../hooks/usePanelUiState';
 import { buildFileEntryMenu } from '../common/fileListRowContextMenu';
 import { FileListRow } from '../common/FileListRow';
 import { HighlightedText } from '../common/HighlightedText';
@@ -96,7 +99,12 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
   const { tx } = useTranslation();
   const [roots, setRoots] = useState<FileTreeRootInfo[] | null>(null);
   const [rootError, setRootError] = useState<string | null>(null);
-  const [directories, setDirectories] = useState<DirectoryStates>({});
+  // 需求3(ADR-019 L1):展开/加载态走组件外缓存,切面板再切回不丢展开目录。
+  const [directories, setDirectories] = usePanelUiState<DirectoryStates>(
+    sessionId,
+    'file-tree',
+    {},
+  );
   /** v0.3.2:搜索用的全量扁平缓存(按 rootId)。query 变化不重拉,只在进入搜索态/
    * session 变化时拉一次,让本地过滤即时(无 IPC 延迟)。 */
   const [recursiveResults, setRecursiveResults] = useState<
@@ -134,14 +142,16 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
         }));
       }
     },
-    [sessionId],
+    [sessionId, setDirectories],
   );
 
   useEffect(() => {
     let cancelled = false;
     setRoots(null);
     setRootError(null);
-    setDirectories({});
+    // directories 不在这里清:它走 usePanelUiState(按 sessionId 隔离),sessionId
+    // 变化会触发组件重挂(LayoutHost key 含 sessionId),新 mount 自动读新 session 缓存;
+    // 在这里 setDirectories({}) 反而会清掉刚从缓存恢复的展开态(需求3)。
     setRecursiveResults({});
     window.api
       .invoke<{ sessionId: string }, GetFileTreeRootsResponse>(
@@ -263,6 +273,27 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
     return { items: out, truncated: anyTruncated, dirCount: totalDirCount };
   }, [isSearching, search.query, search.caseSensitive, roots, recursiveResults]);
 
+  // 需求2(ADR-019):双根切换 —— 顶部 toolbar 选「当前目录 / 临时工作区」,
+  // 下方只渲染选中 root 的树(不再两个并排)。activeRootId 是 L2 偏好(跨重启记忆);
+  // 偏好命中且可用 → 用它,否则回退第一个可用 root(异常兑底:workspace 创建中 /
+  // cwd 丢失时自动落到另一个)。单 available root 不显示 toolbar(切无可切);
+  // 零 available(SSH 会话等)在根渲染显示不可用提示。
+  const availableRoots = useMemo(
+    () => (roots ?? []).filter((r) => r.available),
+    [roots],
+  );
+  const [activeRootId, setActiveRootId] = usePanelPreference<FileTreeRootId | null>(
+    'file-tree',
+    'activeRootId',
+    null,
+  );
+  const effectiveActiveRoot = useMemo(() => {
+    if (activeRootId && availableRoots.some((r) => r.id === activeRootId)) {
+      return availableRoots.find((r) => r.id === activeRootId) ?? null;
+    }
+    return availableRoots[0] ?? null;
+  }, [activeRootId, availableRoots]);
+
   if (rootError) {
     return (
       <div className="file-tree-error">
@@ -288,42 +319,53 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
           onOpen={openFile}
           tx={tx}
         />
+      ) : availableRoots.length === 0 ? (
+        // 零可用 root(SSH 会话 / cwd 与 workspace 都不可用):显示首个 root 的原因。
+        <p className="file-tree-unavailable">
+          {roots[0]?.reason ?? tx('文件导航不可用', 'File navigation unavailable')}
+        </p>
       ) : (
-        roots.map((root) => {
-          const state = directories[directoryKey(root.id, '')];
-          return (
-            <section key={root.id} className="file-tree-root">
-              <button
-                type="button"
-                className="file-tree-root-button"
-                disabled={!root.available}
-                onClick={() => toggleDirectory(root.id, '')}
-                aria-expanded={root.available ? !!state?.expanded : undefined}
-                title={root.available ? root.label : root.reason}
-              >
-                <Icon name={state?.expanded ? 'chevronDown' : 'chevronRight'} size={12} />
-                <Icon name="folder" size={14} />
-                <span>{root.label}</span>
-              </button>
-              {!root.available ? (
-                <p className="file-tree-unavailable">
-                  {root.reason ?? tx('目录不可用', 'Unavailable')}
-                </p>
-              ) : (
-                <DirectoryChildren
-                  sessionId={sessionId}
-                  rootId={root.id}
-                  state={state}
-                  directories={directories}
-                  onToggle={toggleDirectory}
-                  onOpen={openFile}
-                  tx={tx}
-                  search={search}
-                />
-              )}
+        <>
+          {/* 双可用 root 时显示切换 toolbar(需求2);单 root 不显示(切无可切)。 */}
+          {availableRoots.length >= 2 && (
+            <div
+              className="file-tree-toolbar"
+              role="group"
+              aria-label={tx('切换根目录', 'Switch root')}
+            >
+              {availableRoots.map((root) => (
+                <button
+                  key={root.id}
+                  type="button"
+                  className={`file-tree-toolbar-btn${
+                    root.id === effectiveActiveRoot?.id ? ' active' : ''
+                  }`}
+                  onClick={() => setActiveRootId(root.id)}
+                  aria-pressed={root.id === effectiveActiveRoot?.id}
+                  title={root.label}
+                >
+                  <Icon name="folder" size={14} />
+                  <span>{root.label}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {effectiveActiveRoot && (
+            <section className="file-tree-root">
+              <DirectoryChildren
+                sessionId={sessionId}
+                rootId={effectiveActiveRoot.id}
+                state={directories[directoryKey(effectiveActiveRoot.id, '')]}
+                directories={directories}
+                onToggle={toggleDirectory}
+                onOpen={openFile}
+                tx={tx}
+                search={search}
+                depth={0}
+              />
             </section>
-          );
-        })
+          )}
+        </>
       )}
     </div>
   );
@@ -386,7 +428,7 @@ function SearchResultsList({
         <FileListRow
           key={`${rootId}:${entry.relativePath}`}
           variant="list"
-          icon={entry.kind === 'directory' ? 'folder' : 'file'}
+          icon={entry.kind === 'directory' ? 'folder' : fileIconFor(entry.name)}
           label={
             <HighlightedText text={entry.relativePath} query={q} caseSensitive={cs} />
           }
@@ -465,6 +507,7 @@ function DirectoryChildren({
   onOpen,
   tx,
   search,
+  depth = 0,
 }: {
   sessionId: string;
   rootId: FileTreeRootId;
@@ -474,6 +517,8 @@ function DirectoryChildren({
   onOpen: (rootId: FileTreeRootId, relativePath: string) => void;
   tx: (zh: string, en: string) => string;
   search: PanelSearchProps;
+  /** 当前层级(根层=0)。传给 FileListRow 做缩进,替代旧 CSS 层叠(ADR-019)。 */
+  depth?: number;
 }): JSX.Element | null {
   const isSearching = search.visible && search.query.length > 0;
   // 搜索模式下强制展开所有已加载目录(让匹配可见)。未加载目录仍需用户手动展开
@@ -498,6 +543,7 @@ function DirectoryChildren({
           key={entry.relativePath}
           sessionId={sessionId}
           rootId={rootId}
+          depth={depth}
           entry={entry}
           state={directories[directoryKey(rootId, entry.relativePath)]}
           directories={directories}
@@ -532,6 +578,7 @@ function FileTreeEntryRow({
   onOpen,
   tx,
   search,
+  depth = 0,
 }: {
   sessionId: string;
   rootId: FileTreeRootId;
@@ -542,6 +589,8 @@ function FileTreeEntryRow({
   onOpen: (rootId: FileTreeRootId, relativePath: string) => void;
   tx: (zh: string, en: string) => string;
   search: PanelSearchProps;
+  /** 当前层级(根层=0)。传给 FileListRow 做缩进(ADR-019)。 */
+  depth?: number;
 }): JSX.Element {
   const isDirectory = entry.kind === 'directory';
   const isSearching = search.visible && search.query.length > 0;
@@ -611,7 +660,8 @@ function FileTreeEntryRow({
           原视觉对齐。目录展开的子树仍在本组件内递归渲染(不变)。 */}
       <FileListRow
         variant="list"
-        icon={isDirectory ? 'folder' : 'file'}
+        depth={depth}
+        icon={isDirectory ? 'folder' : fileIconFor(entry.name)}
         label={
           <HighlightedText
             text={entry.name}
@@ -643,6 +693,7 @@ function FileTreeEntryRow({
           onOpen={onOpen}
           tx={tx}
           search={search}
+          depth={depth + 1}
         />
       )}
     </div>

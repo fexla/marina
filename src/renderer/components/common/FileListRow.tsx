@@ -151,7 +151,9 @@ export function FileListRow({
       className={`file-list-row file-list-row-list${selected ? ' selected' : ''}${
         dimmed ? ' dimmed' : ''
       }${disabled ? ' disabled' : ''}`}
-      style={depth > 0 ? { marginLeft: depth * 14 } : undefined}
+      // ADR-019:缩进走 --tree-indent-unit(树形缩进单一真相源),与 file-tree / git-tree
+      // 统一。depth=0 不加 margin(根层贴左),>0 时按 depth 倍数缩进。
+      style={depth > 0 ? { marginLeft: `calc(var(--tree-indent-unit, 14px) * ${depth})` } : undefined}
     >
       <button
         type="button"

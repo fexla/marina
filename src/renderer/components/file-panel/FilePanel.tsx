@@ -22,6 +22,7 @@ import { COMMAND_CHANNELS, type FilePanelSnapshot } from '@shared/protocol';
 import type { OpenedFile } from '@shared/types';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { matchText } from '@shared/text-search';
+import { fileIconFor } from '@shared/file-icon';
 import { HighlightedText } from '../common/HighlightedText';
 import { buildFileEntryMenu } from '../common/fileListRowContextMenu';
 import { FileListRow } from '../common/FileListRow';
@@ -173,7 +174,7 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
               <FileListRow
                 key={file.path}
                 variant="tab"
-                icon="file"
+                icon={fileIconFor(file.name)}
                 label={
                   <HighlightedText
                     text={file.name}

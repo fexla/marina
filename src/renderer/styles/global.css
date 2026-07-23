@@ -124,6 +124,12 @@
   --pine: var(--rp-pine, #f0f);
   --foam: var(--rp-foam, #f0f);
   --iris: var(--rp-iris, #f0f);
+
+  /* —— 布局度量(主题无关,所有主题共享) ——
+   * ADR-019:树形缩进单一真相源。所有树形面板(file-tree / git-tree / 未来新面板)
+   * 的层级缩进都必须经此变量,不许硬编码 px。消费入口统一是 FileListRow 的 depth
+   * prop:calc(var(--tree-indent-unit) * depth);不另设 CSS 层叠缩进规则。 */
+  --tree-indent-unit: 14px;
 }
 
 /* Rose Pine Dawn — 浅色 */
@@ -1835,9 +1841,10 @@ html[data-maximized='true'] .app-root.with-shell {
   background-color: var(--color-bg-elevated, #f0f);
 }
 
-.file-tree-entry .file-tree-entry {
-  margin-left: 14px;
-}
+/* ADR-019:层级缩进改由 FileListRow 的 depth prop 提供(calc(var(--tree-indent-unit) * depth))。
+ * 原先的 .file-tree-entry .file-tree-entry { margin-left:14px } CSS 层叠规则已移除 ——
+ * 它与 Git 面板的 depth inline style 机制不一致;统一到 depth prop 后,file-tree / git-tree
+ * / 未来新面板视觉一致,且新面板用 FileListRow 即得正确缩进,不需自建层叠规则。 */
 
 .file-tree-entry-name {
   overflow: hidden;
@@ -2125,8 +2132,8 @@ html[data-maximized='true'] .app-root.with-shell {
 }
 
 .git-panel-group-entries {
-  /* 嵌套视觉:与 file-tree 子目录同缩进语言。 */
-  margin-left: 14px;
+  /* 嵌套视觉:与 file-tree 子目录同缩进语言(ADR-019 后共用 --tree-indent-unit)。 */
+  margin-left: var(--tree-indent-unit, 14px);
 }
 
 .git-panel-truncated {
@@ -2201,6 +2208,40 @@ html[data-maximized='true'] .app-root.with-shell {
 }
 
 .git-panel-toolbar-btn.active {
+  color: var(--color-info, #f0f);
+  background: color-mix(in srgb, var(--color-info, #b89cd9) 12%, transparent);
+}
+
+/* v0.3.1 需求2(ADR-019):文件面板顶部双根切换 toolbar(当前目录 / 临时工作区)。
+ * 视觉语言与 .git-panel-toolbar 对齐(同 dock 内 toolbar 一致);按钮含 icon+文字,
+ * 故用 gap 排列(git toolbar 只 icon 用 center)。单可用 root 时不渲染此 toolbar。 */
+.file-tree-toolbar {
+  display: flex;
+  gap: 2px;
+  padding: 2px 6px 4px;
+  border-bottom: 1px solid var(--color-bg-elevated, transparent);
+  flex: 0 0 auto;
+}
+
+.file-tree-toolbar-btn {
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted, #f0f);
+  padding: 4px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.file-tree-toolbar-btn:hover {
+  background: var(--color-bg-elevated, #f0f);
+  color: var(--color-text-primary, #f0f);
+}
+
+.file-tree-toolbar-btn.active {
   color: var(--color-info, #f0f);
   background: color-mix(in srgb, var(--color-info, #b89cd9) 12%, transparent);
 }
