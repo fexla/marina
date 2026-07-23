@@ -1,6 +1,6 @@
 ---
 name: show-in-marina
-description: Use Marina's terminal-side file panel to show the user Markdown, text, code, or image results. Use after producing a report, plan, review, research result, or other artifact worth reading outside chat. Requires Marina (the CLI checks; do not read env vars yourself).
+description: Use Marina's terminal-side file panel to show the user Markdown, text, code, or image results. Use after producing a report, plan, review, research result, or other artifact worth reading outside chat. Requires Marina (the CLI checks; never read service/token vars yourself; use the workspace command for scratch paths).
 ---
 
 # Show files in Marina
@@ -90,43 +90,52 @@ Instead:
    (no BOM).
 2. Show that file's path.
 
-### Where to write the artifact: use `$MARINA_WORKSPACE`
+### Where to write the artifact: resolve the managed workspace first
 
-Marina injects a per-terminal scratch directory into every session's
-environment as `MARINA_WORKSPACE`. **Write throwaway display-only artifacts
-there**, then `show` the file. It is per-session, isolated from other
-terminals, and is **automatically reclaimed** when the session closes (default
-retention 7 days, configurable in settings; `0` deletes immediately). So you
-don't need to clean up, and you must **not** invent your own temp directory
-(such as `Temp\pi-marina`) — those scatter across the machine and never get
-reclaimed.
+Marina injects a per-terminal scratch directory as `MARINA_WORKSPACE`.
+Throwaway display-only artifacts belong there; source-controlled deliverables
+still belong in the project's `docs/`. The managed directory is isolated per
+terminal and automatically reclaimed after the session closes (default
+retention 7 days, configurable; `0` deletes immediately).
 
-- Source-controlled deliverables (a review you want kept in the repo) still
-  belong in the project's `docs/`.
-- Throwaway display-only artifacts (a generated report the user just reads
-  once) go in `$MARINA_WORKSPACE`.
+**Critical path rule:** shell variable syntax is expanded only by that shell.
+A file-writing API/tool (`write`, `edit`, Python `open`, Node `fs`, etc.) does
+**not** expand `$MARINA_WORKSPACE`, `$env:MARINA_WORKSPACE`, or
+`%MARINA_WORKSPACE%`. Passing one of those strings to such a tool creates a
+literal directory with that name under the current cwd — exactly the wrong
+behavior.
 
-**Refer to the directory by the environment variable symbol throughout** —
-do not `echo`/print its concrete value and then hardcode that path. The
-variable is stable; the underlying directory path is per-session and changes
-between terminals.
+Use the CLI to resolve the workspace to a concrete absolute path:
 
-Bash / Git Bash:
-
-```bash
-# write the artifact (use your own file-writing tool; do NOT pipe via stdin)
-printf '# Architecture review\n\n...' > "$MARINA_WORKSPACE/architecture-review.md"
-./marina show "$MARINA_WORKSPACE/architecture-review.md"
-```
-
-PowerShell:
+PowerShell / cmd launcher:
 
 ```powershell
-# write the artifact (use your own file-writing tool; do NOT pipe via stdin)
-Set-Content -Path "$env:MARINA_WORKSPACE\architecture-review.md" `
-            -Value '# Architecture review' -Encoding utf8
-.\marina.cmd show "$env:MARINA_WORKSPACE\architecture-review.md"
+$workspace = & ".\marina.cmd" workspace
+$artifact = Join-Path $workspace 'architecture-review.md'
+Set-Content -LiteralPath $artifact -Value '# Architecture review' -Encoding utf8
+.\marina.cmd show $artifact
 ```
+
+Bash / Git Bash wrapper:
+
+```bash
+workspace="$(./marina workspace)" || exit $?
+artifact="${workspace}/architecture-review.md"
+printf '# Architecture review\n\n...' > "$artifact"
+./marina show "$artifact"
+```
+
+When using a non-shell file-writing tool, follow this exact sequence:
+
+1. Run the appropriate launcher with `workspace`.
+2. Capture the single absolute path printed to stdout.
+3. Append the filename to that concrete path.
+4. Pass the concrete absolute path to `write` / `edit` / Python / Node.
+5. Pass the same path to `show`.
+
+Resolve it again for each terminal/session; do not reuse a path captured from
+another terminal. Never construct `<cwd>/$MARINA_WORKSPACE/...`, and never
+pass an environment-variable symbol as a path to a non-shell tool.
 
 To iterate, overwrite the same file and re-run `show` with the same path — the
 panel refreshes that tab in place instead of stacking a new one.
@@ -134,18 +143,20 @@ panel refreshes that tab in place instead of stacking a new one.
 `-q` / `--quiet` suppresses the success line:
 
 ```bash
-./marina show --quiet "$MARINA_WORKSPACE/architecture-review.md"
+./marina show --quiet "$artifact"
 ```
 
 ## Other commands
 
 ```bash
-./marina list                                          # files open in this terminal's panel
-./marina list --json                                   # machine-readable output
-./marina close "$MARINA_WORKSPACE/architecture-review.md"   # close a file in the panel
+./marina workspace              # print this terminal's managed scratch path
+./marina list                   # files open in this terminal's panel
+./marina list --json            # machine-readable output
+./marina close "$artifact"      # close the previously resolved artifact
 ```
 
-(PowerShell/cmd.exe: same commands with `.\marina.cmd` and `$env:MARINA_WORKSPACE`.)
+(PowerShell/cmd.exe: use `.\marina.cmd`; resolve `$artifact` from the
+`workspace` command as shown above.)
 
 ## Exit codes
 

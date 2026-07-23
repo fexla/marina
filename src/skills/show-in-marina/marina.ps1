@@ -1,12 +1,13 @@
 <#
 .SYNOPSIS
   marina.ps1 -- CLI for AI agents running inside a Marina terminal to drive
-  Marina's side file panel (show / close / list files, probe reachability).
+  Marina's side file panel (show / close / list files, workspace path, probe).
 
 .DESCRIPTION
   One command per action. The agent invokes this script (via the marina.cmd
-  launcher that sits next to it) and never touches env vars, curl, or
-  encoding.
+  launcher that sits next to it) and never reads service/token vars directly,
+  calls curl, or handles encoding. The workspace command safely returns the
+  current session's MARINA_WORKSPACE as an absolute path.
 
   Why PowerShell (not Python): Marina targets Windows users, and PowerShell
   ships with every Windows install -- so this skill needs NO extra runtime.
@@ -16,9 +17,10 @@
   instead of the full powershell incantation).
 
   Env vars (injected by Marina per session, read here automatically):
-    MARINA_SERVICE   HTTP base URL of the file-panel service (REQUIRED)
-    MARINA_TOKEN     Bearer token (auth)
-    TERMINAL_ID      active terminal session id
+    MARINA_SERVICE     HTTP base URL of the file-panel service (REQUIRED)
+    MARINA_TOKEN       Bearer token (auth)
+    TERMINAL_ID        active terminal session id
+    MARINA_WORKSPACE   per-session managed scratch directory
 
   Exit codes (agents branch on these):
     0 success
@@ -51,14 +53,14 @@
 
     MARINA_WORKSPACE is NOT deprecated: it is the per-session scratch
     directory Marina injects into the child process env, and the RECOMMENDED
-    place for the AI to write throwaway display-only artifacts before calling
-    `marina show <path>` (see SKILL.md). This script itself never reads
-    MARINA_WORKSPACE -- the agent writes files into it with its own tool, then
-    hands the resulting path to `show`. The stdin pipeline problem above is
-    specifically about piping bytes through a shell pipe; writing a file with
-    a proper file-writing tool and then passing the PATH is unaffected and is
-    exactly the supported usage. (Marina's main process creates and reclaims
-    this directory per session; see src/main/session-workspace-manager.ts.)
+    place for throwaway display-only artifacts before `marina show <path>`.
+    Use `marina workspace` to obtain its concrete absolute path before calling
+    a non-shell write/edit tool. Such tools do NOT expand `$MARINA_WORKSPACE`
+    or `$env:MARINA_WORKSPACE`; passing either symbol as a path creates a
+    literal directory with that name. The stdin pipeline problem above is
+    specifically about piping bytes through a shell pipe. Writing a file with
+    a proper file tool to the resolved absolute workspace path is supported.
+    Marina creates and reclaims this directory per session.
 
   Corresponding Marina code:
     src/main/file-panel-service.ts  routes: GET /health (auth-free, returns
@@ -89,9 +91,10 @@ function Get-MarinaConfig {
   # guess or fall back to anything -- strict on env (user requirement):
   # no port scan, no address retry, exactly MARINA_SERVICE.
   [pscustomobject]@{
-    Service  = ($(if ($null -ne $env:MARINA_SERVICE) { $env:MARINA_SERVICE } else { '' })).Trim()
-    Token    = ($(if ($null -ne $env:MARINA_TOKEN) { $env:MARINA_TOKEN } else { '' })).Trim()
-    Terminal = ($(if ($null -ne $env:TERMINAL_ID) { $env:TERMINAL_ID } else { '' })).Trim()
+    Service   = ($(if ($null -ne $env:MARINA_SERVICE) { $env:MARINA_SERVICE } else { '' })).Trim()
+    Token     = ($(if ($null -ne $env:MARINA_TOKEN) { $env:MARINA_TOKEN } else { '' })).Trim()
+    Terminal  = ($(if ($null -ne $env:TERMINAL_ID) { $env:TERMINAL_ID } else { '' })).Trim()
+    Workspace = ($(if ($null -ne $env:MARINA_WORKSPACE) { $env:MARINA_WORKSPACE } else { '' })).Trim()
   }
 }
 
@@ -196,6 +199,26 @@ function Invoke-CmdPing {
   return $script:EXIT_OFFLINE
 }
 
+function Invoke-CmdWorkspace {
+  # Print the concrete absolute workspace path. This command intentionally
+  # does not require MARINA_SERVICE/TOKEN: the directory is a local env
+  # capability created before the PTY starts. Non-shell write tools must use
+  # this concrete path because they never expand shell variable syntax.
+  param($Config, [string[]]$CmdArgs)
+  if ($CmdArgs.Count -gt 0) {
+    Die $script:EXIT_USAGE 'workspace: does not accept arguments'
+  }
+  if (-not $Config.Workspace) {
+    Die $script:EXIT_OFFLINE 'MARINA_WORKSPACE is unset (not in a Marina terminal, or this session predates managed workspaces)'
+  }
+  $p = Resolve-AbsPath -P $Config.Workspace
+  if (-not (Test-Path -LiteralPath $p -PathType Container)) {
+    Die $script:EXIT_REJECTED "MARINA_WORKSPACE is not an existing directory: $p"
+  }
+  [Console]::Out.WriteLine($p)
+  return $script:EXIT_OK
+}
+
 # Reject any unrecognized --foo / -x token instead of silently swallowing it.
 # An agent that typo'd `--quie` would otherwise think the command succeeded.
 function Assert-NoUnknownOptions([string[]]$CmdArgs, [string[]]$Allowed, [string]$CmdName) {
@@ -283,23 +306,25 @@ function Invoke-CmdList {
 
 function Print-Usage {
   [Console]::Out.WriteLine(@'
-usage: marina [-h] {ping,show,close,list} ...
+usage: marina [-h] {ping,workspace,show,close,list} ...
 
-Drive Marina's side file panel from inside a Marina terminal. Env vars
-(MARINA_SERVICE/TOKEN/TERMINAL_ID) are read automatically; do not pass them.
+Drive Marina's side file panel from inside a Marina terminal. Env vars are
+read automatically; do not pass them as CLI options.
 
 commands:
   ping              check whether Marina is reachable (exit 0/1)
+  workspace         print this session's managed scratch directory
   show <PATH>       open an existing file in the panel
                     -q, --quiet suppress success output
   close <PATH>      close a file in the panel
   list              list files open in this terminal's panel
                     --json      raw JSON output
 
-There is no stdin mode. Write the artifact to a file first (with your
-file-writing tool, UTF-8; the recommended location is $MARINA_WORKSPACE),
-then `marina show <PATH>`. The PS 5.1 pipeline corrupts non-ASCII bytes
-piped through stdin before this script sees them.
+There is no stdin mode. Run `marina workspace` to get the concrete scratch
+path, write the artifact there with your file-writing tool (UTF-8), then run
+`marina show <PATH>`. Never pass a literal $MARINA_WORKSPACE or
+$env:MARINA_WORKSPACE string to a non-shell tool: it will not be expanded.
+The PS 5.1 pipeline corrupts non-ASCII bytes piped through stdin.
 '@)
 }
 
@@ -313,6 +338,7 @@ if ($Command -in @('-h', '--help', 'help')) { Print-Usage; exit $script:EXIT_OK 
 
 switch ($Command) {
   'ping' { exit (Invoke-CmdPing -Config $cfg) }
+  'workspace' { exit (Invoke-CmdWorkspace -Config $cfg -CmdArgs $Rest) }
   'show' { exit (Invoke-CmdShow -Config $cfg -CmdArgs $Rest) }
   'close' { exit (Invoke-CmdClose -Config $cfg -CmdArgs $Rest) }
   'list' { exit (Invoke-CmdList -Config $cfg -CmdArgs $Rest) }

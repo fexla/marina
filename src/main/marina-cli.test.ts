@@ -1,7 +1,7 @@
 /**
  * @file src/main/marina-cli.test.ts
  * @purpose 集成测试:跑真实 src/skills/show-in-marina/marina.cmd(Windows
- *   启动器壳)→ marina.ps1,断言端到端行为(ping/show/close/list 退出码、
+ *   启动器壳)→ marina.ps1,断言端到端行为(ping/workspace/show/close/list 退出码、
  *   env 严格性、健康标记严格匹配、相对路径启动器调用、退出码穿透)。
  *
  * @被测对象: marina.cmd 启动器 + 它调用的 marina.ps1。用真实 .cmd 而非
@@ -48,12 +48,9 @@ const CMD = join(SKILL_DIR, 'marina.cmd');
 const BASH_WRAPPER = join(SKILL_DIR, 'marina');
 const MOCK_SERVER = resolve(__dirname, 'marina-cli-mock-server.py');
 const TOKEN = 'test-token-xyz';
-// 含 MARINA_WORKSPACE 是为了在测单个用例时把它从环境里清掉 (防止开发机
-// 残留干扰被测 CLI 的 env 严格性证据)。注意：该变量本身仍然存在，是
-// Marina 为每个 session 注入的临时展示目录 (见 session-workspace-manager.ts)，
-// 是 AI 写展示文档的推荐位置 (见 SKILL.md)。它只是不被 marina.ps1 本身读取 ——
-// CLI 只读 MARINA_SERVICE/TOKEN/TERMINAL_ID 做鉴权与路由。这里从 env 清掉它，
-// 是为了证明“CLI 不依赖 MARINA_WORKSPACE 就能工作”，而不是说它被废弃了。
+// 含 MARINA_WORKSPACE 是为了在测单个用例时先从环境里清掉，防止开发机残留
+// 干扰 env 严格性。workspace 子命令会读取它并输出具体绝对路径；其它命令仍只按
+// 各自需要读取 SERVICE/TOKEN/TERMINAL_ID，不因 workspace 缺失而失败。
 const MARINA_VARS = ['MARINA_SERVICE', 'MARINA_TOKEN', 'TERMINAL_ID', 'MARINA_WORKSPACE'] as const;
 
 /**
@@ -333,6 +330,32 @@ describeOrSkip('marina.cmd launcher + marina.ps1 (requires PowerShell + Python m
     } finally {
       bad.proc.kill();
     }
+  });
+
+  // ── workspace:把 env 安全解析为非 shell 工具可用的绝对路径 ─────────
+  it('workspace:输出当前 session 的具体绝对目录', () => {
+    const managed = join(workspace, 'managed scratch 空格');
+    mkdirSync(managed, { recursive: true });
+    const r = runMarina(['workspace'], { env: { MARINA_WORKSPACE: managed } });
+    expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+    expect(resolve(r.stdout.trim())).toBe(resolve(managed));
+  });
+
+  it('workspace:MARINA_WORKSPACE 未注入时 exit 1', () => {
+    const r = runMarina(['workspace']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('MARINA_WORKSPACE is unset');
+  });
+
+  it('workspace:目录不存在时 exit 3,多余参数时 exit 2', () => {
+    const missing = join(workspace, 'missing');
+    const absent = runMarina(['workspace'], { env: { MARINA_WORKSPACE: missing } });
+    expect(absent.status).toBe(3);
+    expect(absent.stderr).toContain('not an existing directory');
+
+    const extra = runMarina(['workspace', 'literal-name']);
+    expect(extra.status).toBe(2);
+    expect(extra.stderr).toContain('does not accept arguments');
   });
 
   // ── show:路径模式唯一(无 stdin / 无 --as)────────────────────

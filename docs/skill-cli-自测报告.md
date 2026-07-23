@@ -43,8 +43,8 @@ stdin、`--as`、workspace staging 已全部移除。原因是 Windows PowerShel
 
 ### 运行时与环境
 
-- 生产 skill 只有 `marina.cmd` + `marina.ps1`，依赖 Windows 自带
-  `powershell.exe`，没有 Python 依赖。
+- 生产 skill 的 CLI 为 `marina`(Bash wrapper)+ `marina.cmd` + `marina.ps1`，
+  依赖 Windows 自带 `powershell.exe`，没有 Python 依赖。
 - Python 只用于 Vitest 的本地 HTTP mock server。初版 `marina.py` 设计已移除，
   不随生产 skill 分发。
 - `MARINA_SERVICE` 严格必需；不扫描端口、不尝试备用地址。
@@ -72,8 +72,8 @@ stdin、`--as`、workspace staging 已全部移除。原因是 Windows PowerShel
 | `src/main/file-panel-service.test.ts` | 覆盖 `/health` 无 token 与带 token。 |
 | `src/skills/show-in-marina/SKILL.md` | 文档改为 PowerShell、相对 skill 路径及 `show <PATH>` 工作流。 |
 | `src/skills/show-in-marina/marina.cmd` | 真实 Windows 启动器；通过 `%~dp0` 找同目录 ps1，并穿透退出码。 |
-| `src/skills/show-in-marina/marina.ps1` | 路径模式 CLI；严格健康标记、严格 env、无 staging。 |
-| `src/main/marina-cli.test.ts` | 通过真实 `marina.cmd` 做 22 个端到端测试。 |
+| `src/skills/show-in-marina/marina.ps1` | 路径模式 CLI；严格健康标记、严格 env、workspace 查询、无 staging。 |
+| `src/main/marina-cli.test.ts` | 通过真实 `marina.cmd` / Bash wrapper 做端到端测试。 |
 | `src/main/marina-cli-mock-server.py` | 仅测试使用的 HTTP mock，可返回错误健康标记。 |
 | `src/main/shipped-scripts-ascii.test.ts` | 将 cmd/ps1 加入 ASCII/no-BOM 守护。 |
 | `.gitignore` | 忽略测试 mock server 的 Python bytecode cache。 |
@@ -121,9 +121,26 @@ src/skills/show-in-marina/marina.ps1: ASCII, no BOM
 
 ## 四、剩余人工验证
 
-- 安装包内应包含 `resources/skills/show-in-marina/SKILL.md`、`marina.cmd`、
+- 安装包内应包含 `resources/skills/show-in-marina/SKILL.md`、`marina`、`marina.cmd`、
   `marina.ps1`，不应包含生产 Python 客户端。
-- skill 安装到项目后，应在 `.pi/.claude/.agents` 对应 skill 目录内保留三个文件
-  的相邻关系，使 `marina.cmd` 的 `%~dp0` 解析生效。
+- skill 安装到项目后，应在 `.pi/.claude/.agents` 对应 skill 目录内保留 CLI 文件
+  的相邻关系，使 launcher 能找到同目录 `marina.ps1`。
 - 本轮未运行安装包构建或真实 GUI 面板人工测试；自动化使用真实 cmd/ps1 和本地
   mock HTTP 服务覆盖 CLI 协议。
+
+## 五、2026-07-21 workspace 路径查询修正
+
+**触发现象**:Agent 把 `$MARINA_WORKSPACE` 字符串直接传给非 shell 写文件工具，在项目
+cwd 下创建了字面目录 `$MARINA_WORKSPACE/`。根因是 Pi 内置 read/write/edit 只展开
+`~` / `file://`，不会展开 shell 环境变量。
+
+**最终修正**:
+- CLI 新增 `marina workspace`，输出当前 terminal session 的受管工作区绝对路径。
+- AI 必须先执行该命令、读取 stdout，再把返回的具体绝对路径交给 `write` / `edit` /
+  Python / Node 和 `marina show`；不拦截或改写 Pi 工具调用。
+- SKILL 明确禁止把 `$MARINA_WORKSPACE`、`$env:MARINA_WORKSPACE`、
+  `%MARINA_WORKSPACE%` 直接传给非 shell 工具，也禁止构造 cwd 下同名字面目录。
+- 每个 terminal/session 重新查询，不复用其他 session 的路径。
+
+**新增验证**:`marina-cli.test.ts` 覆盖 workspace 查询成功、环境变量未注入、目录不存在
+和多余参数四种情况。
