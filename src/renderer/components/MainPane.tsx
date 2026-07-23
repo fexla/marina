@@ -112,12 +112,58 @@ function filterShellsForWslPath(
 export function MainPane(): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
+  const { tx } = useTranslation();
   const sessions = getSessionsInSelectedPath(state);
   const displayable = getDisplayableSession(state);
 
   const containerRef = useRef<HTMLElement | null>(null);
   const fontSize = state.settings.appearance?.terminalFontSize ?? 13;
   const lineHeight = state.settings.appearance?.terminalLineHeight ?? 1.2;
+
+  // hideTopTabBar 模式下「关闭当前终端」的续看逻辑(fix ①):
+  // 一个窗口同一时刻只持有 1 个 session(createSession/claimOwner 都会
+  // releaseAllOwnedBy)。关掉当前终端后,若同 path 下还有「无主」(orphan)
+  // 的 session,就接管它作为下一个显示目标;否则才落到 EmptyPathState。
+  // 「他人窗口持有」的 session 不能接管(只能 focus-owner),故不作为候选。
+  //
+  // 时序要点:先乐观 dispatch 选中候选(owner-changed + select-session),
+  // 再发起 SESSION_CLOSE。这样随后到达的 sessions/destroyed(被关的那个)
+  // 不会命中 selectedSessionId(selectedSessionId 已是候选),避免中间闪一下
+  // EmptyPathState。SESSION_CLAIM 失败(候选被别的窗口抢先接管)时回滚到
+  // EmptyPathState —— 与「没有候选」的兜底一致。
+  const handleCloseCurrent = async (): Promise<void> => {
+    const current = getDisplayableSession(state);
+    if (!current) return; // 当前没有可显示的终端(已在 EmptyPathState),无操作
+    const pathId = current.pathId;
+    // 在同 path 下找一个无主 session 作为续看候选(优先顺序与侧栏/Tab 一致)。
+    const node = pathId ? findPathNode(state.pathTree, pathId) : null;
+    const candidate = node?.sessionIds
+      .map((sid) => state.sessions.get(sid))
+      .find((s) => !!s && s.id !== current.id && s.ownerWindowId === null);
+    if (candidate) {
+      // 乐观接管 + 选中,抢在 destroyed 事件之前
+      dispatch({ type: 'sessions/owner-changed', sessionId: candidate.id, ownerWindowId: state.myWindowId });
+      dispatch({ type: 'view/select-session', sessionId: candidate.id });
+    }
+    try {
+      await window.api.invoke(COMMAND_CHANNELS.SESSION_CLOSE, { sessionId: current.id });
+      if (candidate) {
+        // 当前 session 已关,本窗口已无持有;claim 候选(幂等,乐观已设 owner)。
+        await window.api.invoke(COMMAND_CHANNELS.SESSION_CLAIM, { sessionId: candidate.id }).catch((err) => {
+          console.error('[MainPane] claim-after-close failed, rollback', err);
+          dispatch({ type: 'sessions/owner-changed', sessionId: candidate.id, ownerWindowId: null });
+          dispatch({ type: 'view/select-session', sessionId: null });
+        });
+      }
+    } catch (err) {
+      console.error('[MainPane] close current session failed', err);
+      // close 失败:回滚乐观的接管(候选还给别人/变回 orphan)
+      if (candidate) {
+        dispatch({ type: 'sessions/owner-changed', sessionId: candidate.id, ownerWindowId: null });
+        dispatch({ type: 'view/select-session', sessionId: current.id });
+      }
+    }
+  };
 
   // FOC-6:selectedSessionId 变化时(托盘点击 / 跨窗口聚焦 /
   // evt:window:focus-requested / view/select-session 等任意路径)
@@ -182,6 +228,36 @@ export function MainPane(): JSX.Element {
           selectedSessionId={state.selectedSessionId}
           showBlankTab={!displayable}
         />
+      )}
+      {/* hideTopTabBar 模式下的常驻入口(fix ②):TabBar 被隐藏后,主区没有「新建/
+          关闭」按钮。这里补一个极简工具栏,「新建」进 EmptyPathState 选模板(与原
+          TabBar 的 + 行为一致),「关闭」关闭当前终端并自动续看到同 path 下另一个
+          无主 session(fix ①)。简易模式不渲染(它有自己的 statusbar 入口)。 */}
+      {!state.simpleMode && state.settings.appearance?.hideTopTabBar && (
+        <div className="tabless-toolbar">
+          <button
+            type="button"
+            className="tabless-toolbar-btn"
+            onClick={() => {
+              dispatch({ type: 'view/select-session', sessionId: null });
+              (document.activeElement as HTMLElement | null)?.blur();
+            }}
+            title={tx('新建终端 — 选择 Shell 或模板', 'New terminal — pick a shell or template')}
+          >
+            <Icon name="plus" size={16} aria-hidden="true" />
+            <span>{tx('新建', 'New')}</span>
+          </button>
+          <button
+            type="button"
+            className="tabless-toolbar-btn"
+            onClick={() => void handleCloseCurrent()}
+            disabled={!displayable}
+            title={tx('关闭当前终端', 'Close current terminal')}
+          >
+            <Icon name="close" size={16} aria-hidden="true" />
+            <span>{tx('关闭', 'Close')}</span>
+          </button>
+        </div>
       )}
       <div className="terminal-area">
         {displayable ? (
@@ -272,7 +348,10 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
           rows: dims.rows,
         },
       );
-      dispatch({ type: 'view/select-session', sessionId: res.session.id });
+      // 乐观 dispatch sessions/created:广播(evt:session:created)可能晚于 invoke
+      // 返回,此时 select-session 设的 id 还不在 state 里 → getDisplayableSession
+      // 返回 null → 闪一下新建页。直接把 res.session 写入 state + 选中,无空窗。
+      dispatch({ type: 'sessions/created', session: res.session });
       if (res.warning) {
         toast.push({ kind: 'warn', message: tx(res.warning, res.warning) });
       }

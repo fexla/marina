@@ -349,13 +349,11 @@ export function Sidebar(): JSX.Element {
           rows: dims.rows,
         },
       );
-      // session 创建后:store reducer 自动 select 它(因 ownerWindowId === myWindowId)。
-      // 这里再显式 dispatch 一次 select-path,防御性把视图切到该路径;紧随
-      // 其后 select-session 把焦点重新落到新 session 上 —— hideTopTabBar=true
-      // 模式下 view/select-path reducer 会清空 selectedSessionId,不补一次
-      // select-session 会落到 EmptyPathState(用户刚显式新建却看不到终端)。
-      dispatch({ type: 'view/select-path', pathId: res.session.pathId });
-      dispatch({ type: 'view/select-session', sessionId: res.session.id });
+      // session 创建后:乐观 dispatch sessions/created 立即写入 state + 选中它
+      // (reducer 同时设 selectedPathId + 展开)。替代原先的 view/select-path +
+      // view/select-session —— 后者在 hideTopTabBar 模式下会因 select-path 清空
+      // selectedSessionId 而闪一下 EmptyPathState(广播晚于 invoke 返回时)。
+      dispatch({ type: 'sessions/created', session: res.session });
       if (res.warning) {
         toast.push({ kind: 'warn', message: res.warning });
       }
@@ -721,10 +719,15 @@ function PathItem({
           rows: dims.rows,
         },
       );
-      // 先切 path (会自动选 my-owned firstSid,但新创建的可能不是 firstSid),
-      // 再显式 select 新创建的 session。两次 dispatch 在 React 18 自动 batch。
-      dispatch({ type: 'view/select-path', pathId: node.id });
-      dispatch({ type: 'view/select-session', sessionId: res.session.id });
+      // 乐观 dispatch sessions/created:把新 session 立即写入 state 并选中它
+      // (reducer 同时设 selectedPathId + 展开 path)。
+      //
+      // 为什么不用 view/select-path + view/select-session:在 hideTopTabBar 模式下
+      // view/select-path 会清空 selectedSessionId(强制进 EmptyPathState);若此时
+      // evt:session:created 广播还没到(远程 session / 慢机),select-session 设的
+      // id 尚不在 sessions 里,getDisplayableSession 返回 null → 主区闪一下新建页。
+      // 乐观 sessions/created 直接补进 state + 选中,广播后到达再幂等覆盖,全程无空窗。
+      dispatch({ type: 'sessions/created', session: res.session });
       if (res.warning) {
         toast.push({ kind: 'warn', message: res.warning });
       }

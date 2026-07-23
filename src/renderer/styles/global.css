@@ -2915,6 +2915,42 @@ html[data-maximized='true'] .app-root.with-shell {
   overflow: hidden;
 }
 
+/* hideTopTabBar 模式下的常驻工具栏(fix ②):TabBar 整块移除后,主区补一个极简
+ * 「新建 / 关闭」入口。视觉与 .tab-bar 同高同背景(占住原来那一行高度),按钮
+ * 取 tab 的色调语言,只放 icon+文字两个,左对齐。 */
+.tabless-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 6px;
+  min-height: 32px;
+  background-color: var(--color-bg-secondary, #f0f);
+}
+
+.tabless-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted, #f0f);
+  font-size: 12px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.tabless-toolbar-btn:hover:not(:disabled) {
+  background: var(--color-bg-elevated, #f0f);
+  color: var(--color-text-primary, #f0f);
+}
+
+.tabless-toolbar-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* 简易模式 app-body — 之前的浮动工具栏已迁入 terminal-statusbar */
 .app-body.simple-mode {
   position: relative;
