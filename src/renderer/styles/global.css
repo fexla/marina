@@ -2352,7 +2352,13 @@ html[data-maximized='true'] .app-root.with-shell {
 /* 当前聚焦匹配行:整行高亮(scrollIntoView 跳转到的行)。VS Code 同款视觉。 */
 .file-text-line.search-current,
 .diff-line.search-current {
-  background-color: color-mix(in srgb, var(--color-info, #9ccfd8) 22%, transparent);
+  /* 底色用 bg-primary 而非 transparent:行号 gutter background:inherit 需要不透明底
+   * 才能挡住横向滚过来的代码(半透明会让代码穿透行号列)。 */
+  background-color: color-mix(
+    in srgb,
+    var(--color-info, #9ccfd8) 22%,
+    var(--color-bg-primary, #f0f)
+  );
 }
 
 /* 行号槽(v0.3.2 A4):固定宽行号,user-select:none 避免复制时带进行号。
@@ -2486,7 +2492,13 @@ html[data-maximized='true'] .app-root.with-shell {
 
 /* add:绿底(复用 --color-success) */
 .diff-line-add {
-  background-color: color-mix(in srgb, var(--color-success, #4d8a5e) 16%, transparent);
+  /* 底色用 bg-primary 而非 transparent:让行底不透明,供 .diff-line-gutter 的
+   * background:inherit 遮挡横向滚过来的代码(否则半透明会让代码穿透行号列)。 */
+  background-color: color-mix(
+    in srgb,
+    var(--color-success, #4d8a5e) 16%,
+    var(--color-bg-primary, #f0f)
+  );
 }
 
 .diff-line-add .diff-line-sign {
@@ -2496,7 +2508,11 @@ html[data-maximized='true'] .app-root.with-shell {
 
 /* del:红底(复用 --color-danger) */
 .diff-line-del {
-  background-color: color-mix(in srgb, var(--color-danger, #e91e63) 16%, transparent);
+  background-color: color-mix(
+    in srgb,
+    var(--color-danger, #e91e63) 16%,
+    var(--color-bg-primary, #f0f)
+  );
 }
 
 .diff-line-del .diff-line-sign {
@@ -2507,7 +2523,11 @@ html[data-maximized='true'] .app-root.with-shell {
 /* hunk header @@ ... @@:蓝/info 色 + 淡蓝底 + 粗体 */
 .diff-line-hunk {
   color: var(--color-info, #b89cd9);
-  background-color: color-mix(in srgb, var(--color-info, #b89cd9) 10%, transparent);
+  background-color: color-mix(
+    in srgb,
+    var(--color-info, #b89cd9) 10%,
+    var(--color-bg-primary, #f0f)
+  );
   font-weight: 600;
 }
 
