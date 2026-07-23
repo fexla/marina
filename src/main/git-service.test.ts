@@ -23,6 +23,7 @@ import {
   parsePorcelainV2,
   type GitStatusSnapshot,
 } from './git-service';
+import { logger } from './logger';
 
 interface SessionEntry {
   pathId: string;
@@ -120,6 +121,22 @@ describe('GitService', () => {
     await expect(service.getStatus('nope', 'owner-1')).rejects.toMatchObject({
       code: 'SessionMissing',
     });
+  });
+
+  it('NotOwner / SessionMissing 命中时打 warn 日志(诊断面板 race 的关键信号)', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn');
+    await expect(service.getStatus('s1', 'other-window')).rejects.toMatchObject({
+      code: 'NotOwner',
+    });
+    expect(warnSpy).toHaveBeenCalledWith('GitService', expect.stringContaining('NotOwner'));
+    expect(warnSpy.mock.calls[0]?.[1]).toContain('requester=other-window');
+    expect(warnSpy.mock.calls[0]?.[1]).toContain('owner=owner-1');
+
+    await expect(service.getStatus('nope', 'owner-1')).rejects.toMatchObject({
+      code: 'SessionMissing',
+    });
+    expect(warnSpy).toHaveBeenCalledWith('GitService', expect.stringContaining('SessionMissing'));
+    warnSpy.mockRestore();
   });
 
   it('getStatus:SSH session 返回 ssh-unsupported(不抛错,由 UI 表现为 tab 不出现)', async () => {

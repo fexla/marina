@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FilePanelService } from './file-panel-service';
 import { FileTreeService } from './file-tree-service';
+import { logger } from './logger';
 
 // file-tree-service 在 v0.3.0 起调 electron shell.showItemInFolder(revealPath)。
 // 测试环境不跑 electron,需 mock 出 spy 以断言「调过」且拿到 canonical 路径。
@@ -53,6 +54,28 @@ describe('FileTreeService', () => {
     showItemInFolderMock.mockClear();
     await filePanelService.stop();
     await rm(baseDir, { recursive: true, force: true });
+  });
+
+  it('NotOwner / SessionMissing 命中时打 warn 日志(诊断面板 race 的关键信号)', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn');
+    // owner 不匹配 → NotOwner;记录 requester 与真实 owner,区分「同窗口 race」
+    // (owner=null)与「跨窗口」(owner=别的窗口)。
+    await expect(service.getRoots('s1', 'another-window')).rejects.toMatchObject({
+      code: 'NotOwner',
+    });
+    expect(warnSpy).toHaveBeenCalledWith('FileTreeService', expect.stringContaining('NotOwner'));
+    expect(warnSpy.mock.calls[0]?.[1]).toContain('requester=another-window');
+    expect(warnSpy.mock.calls[0]?.[1]).toContain('owner=owner-1');
+
+    // SessionMissing 也应留诊断日志。
+    await expect(service.getRoots('missing', 'owner-1')).rejects.toMatchObject({
+      code: 'SessionMissing',
+    });
+    expect(warnSpy).toHaveBeenCalledWith(
+      'FileTreeService',
+      expect.stringContaining('SessionMissing'),
+    );
+    warnSpy.mockRestore();
   });
 
   it('声明 currentCwd 与 managed workspace 两个可用的 session 局部根', async () => {
@@ -216,7 +239,9 @@ describe('FileTreeService', () => {
   it('revealPath 拒绝非 owner、绝对路径、.. 与 symlink 越界(与 openFile 同一套校验)', async () => {
     await writeFile(join(cwdDir, 'note.md'), 'x');
     // 非 owner 不调 shell
-    await expect(service.revealPath('s1', 'other-window', 'session-cwd', 'note.md')).rejects.toMatchObject({
+    await expect(
+      service.revealPath('s1', 'other-window', 'session-cwd', 'note.md'),
+    ).rejects.toMatchObject({
       code: 'NotOwner',
     });
     expect(showItemInFolderMock).not.toHaveBeenCalled();

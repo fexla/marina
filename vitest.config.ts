@@ -34,9 +34,11 @@ export default defineConfig({
       'src/shared/**/*.{test,spec}.ts',
       'src/preload/**/*.{test,spec}.ts',
       // renderer 侧只纳入「纯逻辑」(UI 不测,见 AGENTS.md §5.1):
-      // store(reducer/selector)+ common(菜单生成器等纯函数)。
+      // store(reducer/selector)+ common(菜单生成器等纯函数) +
+      // claim-gate(模块级 race gate,纯 Promise 逻辑无 DOM/React)。
       'src/renderer/store.test.ts',
       'src/renderer/components/common/**/*.test.ts',
+      'src/renderer/hooks/claim-gate.test.ts',
     ],
     exclude: ['node_modules', 'out', 'dist', 'release'],
     coverage: {
