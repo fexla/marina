@@ -86,7 +86,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
-import { Check, Maximize2, Minimize2, X } from 'lucide-react';
+import { Check, Maximize2, Minimize2, Plus, X } from 'lucide-react';
 import {
   COMMAND_CHANNELS,
   EVENT_CHANNELS,
@@ -109,6 +109,7 @@ import {
 import { isDeviceAttributesResponse } from '@shared/terminal-input-filter';
 import { activateMarinaUnicodeWidth } from '@shared/terminal-unicode-width';
 import { useAppDispatch, useAppState } from '../store';
+import { useCloseSession } from '../hooks/useCloseSession';
 import { readClipboardText, writeClipboardText } from '../clipboard';
 import { Icon } from './icons';
 import { useContextMenuApi, type ContextMenuItem } from './ContextMenu';
@@ -653,6 +654,9 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
   const dispatch = useAppDispatch();
   const { t, tx } = useTranslation();
   const simpleMode = appState.simpleMode;
+  const hideTopTabBar = appState.settings.appearance?.hideTopTabBar === true;
+  // hideTopTabBar 模式下底部 statusbar 补「新建/关闭」(不新增行,复用已有 statusbar)。
+  const closeSession = useCloseSession();
   const themeId = appState.settings.appearance?.theme;
   const fontSize = appState.settings.appearance?.terminalFontSize ?? 13;
   // 终端字体栈:主字体 → 用户自定义回退 → 内置 Symbols Nerd Font Mono → monospace。
@@ -1949,6 +1953,32 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         </span>
         {session.state === 'exited' && session.pathId.startsWith('ssh:') && (
           <ReconnectButton session={session} />
+        )}
+        {hideTopTabBar && (
+          <>
+            {/* hideTopTabBar 模式下复用底部 statusbar 放「新建/关闭」,不新增行。 */}
+            <button
+              type="button"
+              className="status-simple-toggle"
+              onClick={() => {
+                dispatch({ type: 'view/select-session', sessionId: null });
+                (document.activeElement as HTMLElement | null)?.blur();
+              }}
+              title={tx('新建终端 — 选择 Shell 或模板', 'New terminal — pick a shell or template')}
+              aria-label={tx('新建终端', 'New terminal')}
+            >
+              <Plus size={12} />
+            </button>
+            <button
+              type="button"
+              className="status-simple-toggle"
+              onClick={() => void closeSession(session.id)}
+              title={tx('关闭当前终端', 'Close current terminal')}
+              aria-label={tx('关闭当前终端', 'Close current terminal')}
+            >
+              <X size={12} />
+            </button>
+          </>
         )}
         <button
           type="button"

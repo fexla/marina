@@ -113,18 +113,12 @@ function filterShellsForWslPath(
 export function MainPane(): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
-  const { tx } = useTranslation();
   const sessions = getSessionsInSelectedPath(state);
   const displayable = getDisplayableSession(state);
 
   const containerRef = useRef<HTMLElement | null>(null);
   const fontSize = state.settings.appearance?.terminalFontSize ?? 13;
   const lineHeight = state.settings.appearance?.terminalLineHeight ?? 1.2;
-
-  // 关闭终端的统一入口(所有路径通用):关掉当前正在看的终端时,若同目录有
-  // 无主(orphan)终端就接管它续看,否则才进 EmptyPathState。逻辑见
-  // hooks/useCloseSession.ts。tab 的 × / hideTopTabBar 工具栏的「关闭」都走它。
-  const closeSession = useCloseSession();
 
   // FOC-6:selectedSessionId 变化时(托盘点击 / 跨窗口聚焦 /
   // evt:window:focus-requested / view/select-session 等任意路径)
@@ -189,36 +183,6 @@ export function MainPane(): JSX.Element {
           selectedSessionId={state.selectedSessionId}
           showBlankTab={!displayable}
         />
-      )}
-      {/* hideTopTabBar 模式下的常驻入口(fix ②):TabBar 被隐藏后,主区没有「新建/
-          关闭」按钮。这里补一个极简工具栏,「新建」进 EmptyPathState 选模板(与原
-          TabBar 的 + 行为一致),「关闭」关闭当前终端并自动续看到同 path 下另一个
-          无主 session(fix ①)。简易模式不渲染(它有自己的 statusbar 入口)。 */}
-      {!state.simpleMode && state.settings.appearance?.hideTopTabBar && (
-        <div className="tabless-toolbar">
-          <button
-            type="button"
-            className="tabless-toolbar-btn"
-            onClick={() => {
-              dispatch({ type: 'view/select-session', sessionId: null });
-              (document.activeElement as HTMLElement | null)?.blur();
-            }}
-            title={tx('新建终端 — 选择 Shell 或模板', 'New terminal — pick a shell or template')}
-          >
-            <Icon name="plus" size={16} aria-hidden="true" />
-            <span>{tx('新建', 'New')}</span>
-          </button>
-          <button
-            type="button"
-            className="tabless-toolbar-btn"
-            onClick={() => displayable && void closeSession(displayable.id)}
-            disabled={!displayable}
-            title={tx('关闭当前终端', 'Close current terminal')}
-          >
-            <Icon name="close" size={16} aria-hidden="true" />
-            <span>{tx('关闭', 'Close')}</span>
-          </button>
-        </div>
       )}
       <div className="terminal-area">
         {displayable ? (
@@ -521,7 +485,7 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
   const toast = useToast();
   const modal = useModal();
   // tab 的 × 关闭走统一续看逻辑:关掉当前正在看的终端时自动切到同目录另一个
-  // 无主终端(见 useCloseSession)。与 hideTopTabBar 工具栏「关闭」一致。
+  // 无主终端(见 useCloseSession)。与 statusbar「关闭」/ 右键菜单「关闭」一致。
   const closeSession = useCloseSession();
 
   // Variant 由 session.ownerWindowId 自决,不再由父级分组传入。这样 tab

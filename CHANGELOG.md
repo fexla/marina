@@ -13,8 +13,8 @@
 
 ### 修复
 
-- **关闭当前终端后自动续看(通用,不限 hideTopTabBar)。** 此前关掉正在看的终端,主区直接掉进「新建终端」页(即使同目录还有别的终端)——因为一个窗口同一时刻只持有 1 个 session,销毁后本窗口不再持有任何 session。现 tab 的 × / 右键菜单「关闭」/ hideTopTabBar 工具栏「关闭」统一走续看逻辑:关掉当前终端时,若同目录有无主(orphan)终端就接管并切过去,没有才进新建页。乐观先选候选再 SESSION_CLOSE,避免中间闪一下新建页;claim 失败回滚到新建页。
-- **hideTopTabBar 模式补常驻「新建 / 关闭」工具栏。** 顶部 TabBar 整块移除后带走了 `+ 新建` / `× 关闭` 两个入口;现主区补一条极简工具栏(hideTopTabBar 模式可见),就地新建 / 关闭不再依赖侧栏。「关闭」即上面的通用续看逻辑。
+- **关闭当前终端后自动续看(通用,不限 hideTopTabBar)。** 此前关掉正在看的终端,主区直接掉进「新建终端」页(即使同目录还有别的终端)——因为一个窗口同一时刻只持有 1 个 session,销毁后本窗口不再持有任何 session。现 tab 的 × / 右键菜单「关闭」/ statusbar「关闭」统一走续看逻辑:关掉当前终端时,若同目录有无主(orphan)终端就接管并切过去,没有才进新建页。乐观先选候选再 SESSION_CLOSE,避免中间闪一下新建页;claim 失败回滚到新建页。
+- **hideTopTabBar 模式下「新建 / 关闭」放到底部 statusbar,不新增行。** TabBar 隐藏是为了省掉那一行,不能再用一条几乎全空的工具栏把它吃回去。改为复用终端底部已有的 statusbar(pid 那条,本就带简易模式切换等交互按钮),hideTopTabBar 模式下补「新建 / 关闭」两个小图标按钮。statusbar 仅在显示终端时存在,而 EmptyPathState(新建页)本身就有模板按钮,不重复。
 - **新建终端不再闪一下「新建终端」页。** 双击侧栏目录 / EmptyPathState 模板按钮新建时,旧逻辑在 invoke 返回早于 `evt:session:created` 广播时选中的 id 尚未进入 state → 闪一下新建页。改用乐观 dispatch `sessions/created`(直接把 res.session 写入 state + 选中),广播后到达再幂等覆盖,全程无空窗。
 
 ## [0.3.2-dev.2] — 2026-07-23
