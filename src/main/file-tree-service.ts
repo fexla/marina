@@ -239,9 +239,7 @@ export class FileTreeService {
     this.requireOwner(sessionId, requesterId);
     const root = await this.resolveRoot(sessionId, rootId);
     // BFS:queue 存 {absPath, depth}。从 root 开始。
-    const queue: Array<{ absPath: string; depth: number }> = [
-      { absPath: root.realPath, depth: 0 },
-    ];
+    const queue: Array<{ absPath: string; depth: number }> = [{ absPath: root.realPath, depth: 0 }];
     const entries: FileTreeEntry[] = [];
     let dirCount = 0;
     let truncated = false;
@@ -313,7 +311,9 @@ export class FileTreeService {
     }
 
     // 同 listDirectory 的稳定排序:文件夹在前、同类按名排序。
-    entries.sort((a, b) => a.kind.localeCompare(b.kind) || a.relativePath.localeCompare(b.relativePath));
+    entries.sort(
+      (a, b) => a.kind.localeCompare(b.kind) || a.relativePath.localeCompare(b.relativePath),
+    );
     return { rootId, entries, truncated, dirCount };
   }
 
@@ -362,10 +362,7 @@ export class FileTreeService {
     const target = await this.resolveInsideRoot(root, relativePath);
     const stat = await this.statOrThrow(target, '文件定位');
     if (!stat.isFile() && !stat.isDirectory()) {
-      throw new FileTreeError(
-        'NotFile',
-        '请求目标不是文件或目录，无法在文件管理器中定位。',
-      );
+      throw new FileTreeError('NotFile', '请求目标不是文件或目录，无法在文件管理器中定位。');
     }
     // showItemInFolder 对文件和目录都有效：文件会高亮选中，目录会打开该目录窗口。
     // Electron 在 Win/macOS/Linux 上分别调用 explorer/Finder/xdg-open。
@@ -393,10 +390,7 @@ export class FileTreeService {
     const target = await this.resolveInsideRoot(root, relativePath);
     const stat = await this.statOrThrow(target, '文件打开');
     if (!stat.isFile() && !stat.isDirectory()) {
-      throw new FileTreeError(
-        'NotFile',
-        '请求目标不是文件或目录，无法打开。',
-      );
+      throw new FileTreeError('NotFile', '请求目标不是文件或目录，无法打开。');
     }
     await shell.openPath(target);
   }
@@ -405,12 +399,23 @@ export class FileTreeService {
   private requireOwner(sessionId: string, requesterId: string): void {
     const session = this.sessionLookup.get(sessionId);
     if (!session) {
+      logger.warn(
+        MODULE,
+        `requireOwner: SessionMissing sessionId=${sessionId} requester=${requesterId}`,
+      );
       throw new FileTreeError(
         'SessionMissing',
         '会话不存在或已关闭，无法浏览其文件。请切换到仍在运行的终端。',
       );
     }
     if (!requesterId || session.ownerWindowId !== requesterId) {
+      // 这是诊断面板 NotOwner 问题的关键信号:记录 requester 与真实 owner,
+      // 区分「同窗口乐观接管 race」(owner=null,claim 在途) 与「跨窗口未接管」
+      // (owner=别的窗口)。只记 id,不记路径/命令(附录 H 隐私)。
+      logger.warn(
+        MODULE,
+        `requireOwner: NotOwner sessionId=${sessionId} requester=${requesterId} owner=${session.ownerWindowId}`,
+      );
       throw new FileTreeError(
         'NotOwner',
         '当前窗口不持有该会话，无法浏览其文件。请先在会话标签页中接管或切换到 owner 窗口。',

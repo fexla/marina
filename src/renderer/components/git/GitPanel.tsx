@@ -40,6 +40,7 @@ import { HighlightedText } from '../common/HighlightedText';
 import { Icon } from '../icons';
 import { useTranslation } from '../LanguageProvider';
 import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
+import { waitForClaim } from '../../hooks/claim-gate';
 import { useToast } from '../Toast';
 import type { ContextMenuItem } from '../ContextMenu';
 import {
@@ -145,6 +146,9 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
   const toast = useToast();
 
   const loadStatus = useCallback(async (): Promise<void> => {
+    // 若该 session 正在被 claim(乐观接管 orphan),等 claim 完成(main 端 owner 就位)
+    // 再发请求,消除 NotOwner race。常规切换(已持有)时立即返回。
+    await waitForClaim(sessionId);
     // 关键:后台刷新时不把已有 snapshot 清掉(避免秒显后闪烁)。
     // loading 标志用于指示"后台正在刷",但 UI 分支里只要 snapshot/unavailable 还在
     // 就继续显示旧值,不回到 loading 占位。

@@ -46,6 +46,7 @@ import { useToast } from './Toast';
 import { useModal } from './Modal';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { useCloseSession } from '../hooks/useCloseSession';
+import { claimSession } from '../hooks/claim-gate';
 import { buildSessionContextMenu } from './sessionContextMenu';
 import { useTranslation } from './LanguageProvider';
 
@@ -574,7 +575,10 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
       });
       dispatch({ type: 'view/select-session', sessionId: session.id });
 
-      window.api.invoke(COMMAND_CHANNELS.SESSION_CLAIM, { sessionId: session.id }).catch((err) => {
+      // claimSession 内部把 claim promise 登记进 claim-gate,让面板首次数据请求
+      // await 它,消除「乐观 select 触发面板重挂 → 立即请求 → main 端 owner 还是 null →
+      // NotOwner」的 race。详见 hooks/claim-gate.ts。
+      claimSession(session.id).catch((err) => {
         console.error('[Tab] claim failed, rolling back', err);
         // 回滚:目标变回 orphan,旧持有变回 myWindow
         dispatch({

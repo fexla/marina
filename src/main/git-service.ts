@@ -670,12 +670,22 @@ export class GitService extends EventEmitter {
   ): { pathId: string; currentCwd: string; ownerWindowId: string | null } {
     const session = this.sessionLookup.get(sessionId);
     if (!session) {
+      logger.warn(
+        MODULE,
+        `requireOwnerSession: SessionMissing sessionId=${sessionId} requester=${requesterId}`,
+      );
       throw new GitError(
         'SessionMissing',
         '会话不存在或已关闭,无法浏览 Git 变更。请切换到仍在运行的终端。',
       );
     }
     if (!requesterId || session.ownerWindowId !== requesterId) {
+      // 诊断信号:区分「同窗口乐观接管 race」(owner=null) 与「跨窗口未接管」(owner=别窗口)。
+      // 只记 id,不记路径/命令(附录 H 隐私)。
+      logger.warn(
+        MODULE,
+        `requireOwnerSession: NotOwner sessionId=${sessionId} requester=${requesterId} owner=${session.ownerWindowId}`,
+      );
       throw new GitError(
         'NotOwner',
         '当前窗口不持有该会话,无法浏览 Git 变更。请先在会话标签页中接管或切换到 owner 窗口。',

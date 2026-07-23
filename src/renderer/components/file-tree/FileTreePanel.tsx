@@ -35,6 +35,7 @@ import { HighlightedText } from '../common/HighlightedText';
 import { Icon } from '../icons';
 import { useTranslation } from '../LanguageProvider';
 import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
+import { waitForClaim } from '../../hooks/claim-gate';
 import { useToast } from '../Toast';
 import type { ContextMenuItem } from '../ContextMenu';
 
@@ -153,26 +154,31 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
     // 变化会触发组件重挂(LayoutHost key 含 sessionId),新 mount 自动读新 session 缓存;
     // 在这里 setDirectories({}) 反而会清掉刚从缓存恢复的展开态(需求3)。
     setRecursiveResults({});
-    window.api
-      .invoke<{ sessionId: string }, GetFileTreeRootsResponse>(
-        COMMAND_CHANNELS.FILE_TREE_GET_ROOTS,
-        {
-          sessionId,
-        },
-      )
-      .then((response) => {
-        if (cancelled) return;
-        setRoots(response.roots);
-        // 每个可用根各自懒加载第一级；不会递归，也不会因一个根不可用阻断另一个。
-        response.roots
-          .filter((root) => root.available)
-          .forEach((root) => void loadDirectory(root.id, ''));
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        console.warn('[FileTreePanel] get roots failed', err);
-        setRootError(err instanceof Error ? err.message : String(err));
-      });
+    // 若该 session 正在被 claim(乐观接管 orphan),等 claim 完成(main 端 owner 就位)
+    // 再发请求,消除 NotOwner race。常规切换(已持有)时 waitForClaim 立即返回。
+    void waitForClaim(sessionId).then(() => {
+      if (cancelled) return;
+      window.api
+        .invoke<{ sessionId: string }, GetFileTreeRootsResponse>(
+          COMMAND_CHANNELS.FILE_TREE_GET_ROOTS,
+          {
+            sessionId,
+          },
+        )
+        .then((response) => {
+          if (cancelled) return;
+          setRoots(response.roots);
+          // 每个可用根各自懒加载第一级；不会递归，也不会因一个根不可用阻断另一个。
+          response.roots
+            .filter((root) => root.available)
+            .forEach((root) => void loadDirectory(root.id, ''));
+        })
+        .catch((err: unknown) => {
+          if (cancelled) return;
+          console.warn('[FileTreePanel] get roots failed', err);
+          setRootError(err instanceof Error ? err.message : String(err));
+        });
+    });
     return () => {
       cancelled = true;
     };
@@ -184,16 +190,15 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
   useEffect(() => {
     if (!isSearching || !roots) return;
     let cancelled = false;
-    const missing = roots.filter(
-      (r) => r.available && !recursiveResults[r.id],
-    );
+    const missing = roots.filter((r) => r.available && !recursiveResults[r.id]);
     if (missing.length === 0) return;
     Promise.all(
       missing.map((r) =>
-        window.api.invoke<
-          { sessionId: string; rootId: FileTreeRootId },
-          ListFileTreeRecursiveResponse
-        >(COMMAND_CHANNELS.FILE_TREE_LIST_RECURSIVE, { sessionId, rootId: r.id })
+        window.api
+          .invoke<{ sessionId: string; rootId: FileTreeRootId }, ListFileTreeRecursiveResponse>(
+            COMMAND_CHANNELS.FILE_TREE_LIST_RECURSIVE,
+            { sessionId, rootId: r.id },
+          )
           .then((res) => [r.id, res] as const)
           .catch((err: unknown) => {
             console.warn('[FileTreePanel] list-recursive failed', r.id, err);
@@ -260,10 +265,7 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
       if (res.truncated) anyTruncated = true;
       totalDirCount += res.dirCount;
       for (const entry of res.entries) {
-        if (
-          matchText(entry.name, q, cs) ||
-          matchText(entry.relativePath, q, cs)
-        ) {
+        if (matchText(entry.name, q, cs) || matchText(entry.relativePath, q, cs)) {
           out.push({ rootId: root.id, entry, truncated: res.truncated, dirCount: res.dirCount });
         }
       }
@@ -278,10 +280,7 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
   // 偏好命中且可用 → 用它,否则回退第一个可用 root(异常兑底:workspace 创建中 /
   // cwd 丢失时自动落到另一个)。单 available root 不显示 toolbar(切无可切);
   // 零 available(SSH 会话等)在根渲染显示不可用提示。
-  const availableRoots = useMemo(
-    () => (roots ?? []).filter((r) => r.available),
-    [roots],
-  );
+  const availableRoots = useMemo(() => (roots ?? []).filter((r) => r.available), [roots]);
   const [activeRootId, setActiveRootId] = usePanelPreference<FileTreeRootId | null>(
     'file-tree',
     'activeRootId',
@@ -373,7 +372,12 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
 
 /** searchMatches useMemo 的返回型。 */
 interface SearchMatches {
-  items: Array<{ rootId: FileTreeRootId; entry: FileTreeEntry; truncated: boolean; dirCount: number }>;
+  items: Array<{
+    rootId: FileTreeRootId;
+    entry: FileTreeEntry;
+    truncated: boolean;
+    dirCount: number;
+  }>;
   truncated: boolean;
   dirCount: number;
 }
@@ -410,12 +414,12 @@ function SearchResultsList({
   const cs = search.caseSensitive;
 
   // 某个 available root 还没拉到递归缓存 → 显示 loading(通常很快,一次 IPC)。
-  const stillLoading = roots.some(
-    (r) => r.available && !recursiveResults[r.id],
-  );
+  const stillLoading = roots.some((r) => r.available && !recursiveResults[r.id]);
 
   if (stillLoading) {
-    return <div className="file-tree-loading">{tx('正在扫描全目录…', 'Scanning all directories…')}</div>;
+    return (
+      <div className="file-tree-loading">{tx('正在扫描全目录…', 'Scanning all directories…')}</div>
+    );
   }
 
   if (matches.items.length === 0) {
@@ -429,13 +433,9 @@ function SearchResultsList({
           key={`${rootId}:${entry.relativePath}`}
           variant="list"
           icon={entry.kind === 'directory' ? 'folder' : fileIconFor(entry.name)}
-          label={
-            <HighlightedText text={entry.relativePath} query={q} caseSensitive={cs} />
-          }
+          label={<HighlightedText text={entry.relativePath} query={q} caseSensitive={cs} />}
           title={entry.relativePath}
-          {...(entry.kind === 'file'
-            ? { onClick: () => onOpen(rootId, entry.relativePath) }
-            : {})}
+          {...(entry.kind === 'file' ? { onClick: () => onOpen(rootId, entry.relativePath) } : {})}
           buildContextMenu={() =>
             buildFileEntryMenu(
               {
@@ -606,9 +606,7 @@ function FileTreeEntryRow({
         primary: {
           label: isDirectory ? tx('展开/收起', 'Expand/Collapse') : tx('打开', 'Open'),
           run: () =>
-            isDirectory
-              ? onToggle(rootId, entry.relativePath)
-              : onOpen(rootId, entry.relativePath),
+            isDirectory ? onToggle(rootId, entry.relativePath) : onOpen(rootId, entry.relativePath),
         },
         // file-tree 不提供 openFile(primary 已是"打开");不提供 resolveAbsolutePath
         // (保持 rootId 抽象,不向 renderer 暴露绝对路径)。
@@ -677,7 +675,10 @@ function FileTreeEntryRow({
         buildContextMenu={buildContextMenu}
         leading={
           isDirectory ? (
-            <Icon name={state?.expanded || isSearching ? 'chevronDown' : 'chevronRight'} size={12} />
+            <Icon
+              name={state?.expanded || isSearching ? 'chevronDown' : 'chevronRight'}
+              size={12}
+            />
           ) : (
             <span className="file-tree-leaf-spacer" />
           )

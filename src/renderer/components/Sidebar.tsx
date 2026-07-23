@@ -44,6 +44,7 @@ import { useContextMenuApi, type ContextMenuItem } from './ContextMenu';
 import { useModal } from './Modal';
 import { useToast } from './Toast';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
+import { claimSession } from '../hooks/claim-gate';
 import { buildSessionContextMenu } from './sessionContextMenu';
 import { closeSessionWithContinue } from '../hooks/useCloseSession';
 import { SkillInstallDialog } from './SkillInstallDialog';
@@ -1090,7 +1091,7 @@ function SessionItemImpl({ session, myWindowId, selected }: SessionItemProps): J
     dispatch({ type: 'view/select-path', pathId: session.pathId });
     dispatch({ type: 'view/select-session', sessionId: session.id });
 
-    window.api.invoke(COMMAND_CHANNELS.SESSION_CLAIM, { sessionId: session.id }).catch((err) => {
+    claimSession(session.id).catch((err) => {
       console.error('[Sidebar] claim failed, rolling back', err);
       dispatch({
         type: 'sessions/owner-changed',

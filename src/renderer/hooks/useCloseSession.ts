@@ -30,6 +30,7 @@
  */
 import { useCallback, type Dispatch } from 'react';
 import { COMMAND_CHANNELS } from '@shared/protocol';
+import { claimSession } from './claim-gate';
 import {
   type AppAction,
   type AppState,
@@ -73,17 +74,15 @@ export async function closeSessionWithContinue(
     await window.api.invoke(COMMAND_CHANNELS.SESSION_CLOSE, { sessionId });
     if (candidate) {
       // 当前 session 已关,本窗口已无持有;claim 候选(幂等,乐观已设 owner)。
-      await window.api
-        .invoke(COMMAND_CHANNELS.SESSION_CLAIM, { sessionId: candidate.id })
-        .catch((err) => {
-          console.error('[useCloseSession] claim-after-close failed, rollback', err);
-          dispatch({
-            type: 'sessions/owner-changed',
-            sessionId: candidate.id,
-            ownerWindowId: null,
-          });
-          dispatch({ type: 'view/select-session', sessionId: null });
+      await claimSession(candidate.id).catch((err) => {
+        console.error('[useCloseSession] claim-after-close failed, rollback', err);
+        dispatch({
+          type: 'sessions/owner-changed',
+          sessionId: candidate.id,
+          ownerWindowId: null,
         });
+        dispatch({ type: 'view/select-session', sessionId: null });
+      });
     }
   } catch (err) {
     console.error('[useCloseSession] close session failed', err);

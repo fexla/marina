@@ -11,13 +11,13 @@
  */
 import { useEffect, useState } from 'react';
 import {
-  COMMAND_CHANNELS,
   EVENT_CHANNELS,
   PROTOCOL_VERSION,
   type GitStatusUpdatedPayload,
   type SessionDestroyedPayload,
 } from '@shared/protocol';
 import { clearCachedStatus, setCachedStatus } from '@shared/git-status-cache';
+import { claimSession } from './hooks/claim-gate';
 import { AppStateProvider, useAppDispatch, useAppState, useIpcSync } from './store';
 import { Sidebar } from './components/Sidebar';
 import { MainPane } from './components/MainPane';
@@ -267,8 +267,7 @@ function ConnectedShell({
     };
 
     if (target.ownerWindowId === null) {
-      void window.api
-        .invoke(COMMAND_CHANNELS.SESSION_CLAIM, { sessionId: initialSessionId })
+      void claimSession(initialSessionId)
         .then(() => {
           // owner-changed 广播通常先到；本地补一次同值更新保证即使事件延迟,
           // getDisplayableSession 也能立即让 TerminalView 挂载。

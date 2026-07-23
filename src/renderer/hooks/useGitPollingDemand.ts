@@ -12,6 +12,7 @@
  */
 import { useCallback, useEffect, useRef } from 'react';
 import { COMMAND_CHANNELS, type BackgroundDemandLevel } from '@shared/protocol';
+import { waitForClaim } from './claim-gate';
 
 interface GitPollingDemandOptions {
   sessionId: string;
@@ -34,13 +35,18 @@ export function useGitPollingDemand({
     (level: BackgroundDemandLevel, force = false): void => {
       if (!force && lastSentRef.current === level) return;
       lastSentRef.current = level;
-      void window.api
-        .invoke(COMMAND_CHANNELS.GIT_SET_POLLING_DEMAND, { sessionId, level })
-        .catch((error: unknown) => {
-          // 失败不影响面板；清 lastSent 让下一次 focus/visibility/state 变化可重试。
-          if (lastSentRef.current === level) lastSentRef.current = null;
-          console.warn('[useGitPollingDemand] demand update failed', error);
-        });
+      // 若该 session 正在被 claim(乐观接管 orphan),等 claim 完成(main 端 owner 就位)
+      // 再报 demand,消除 NotOwner。常规(已持有)时立即返回。demand 是 best-effort
+      // (失败已在内部 catch 吞掉),延迟到 claim 后不影响语义。
+      void waitForClaim(sessionId).then(() =>
+        window.api
+          .invoke(COMMAND_CHANNELS.GIT_SET_POLLING_DEMAND, { sessionId, level })
+          .catch((error: unknown) => {
+            // 失败不影响面板；清 lastSent 让下一次 focus/visibility/state 变化可重试。
+            if (lastSentRef.current === level) lastSentRef.current = null;
+            console.warn('[useGitPollingDemand] demand update failed', error);
+          }),
+      );
     },
     [sessionId],
   );
