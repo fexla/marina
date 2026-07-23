@@ -45,6 +45,7 @@ import { useModal } from './Modal';
 import { useToast } from './Toast';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { buildSessionContextMenu } from './sessionContextMenu';
+import { closeSessionWithContinue } from '../hooks/useCloseSession';
 import { SkillInstallDialog } from './SkillInstallDialog';
 
 /**
@@ -1044,6 +1045,9 @@ function SessionItemImpl({ session, myWindowId, selected }: SessionItemProps): J
         variant,
         pathTree: stateRef.current.pathTree,
         copyToClipboard,
+        // 关闭走统一续看逻辑(关掉当前终端时自动切到同目录另一个无主终端)。
+        // SessionItem 刻意不订阅 useAppState(防抖动),这里用 stateRef.current。
+        onClose: (sid) => void closeSessionWithContinue(stateRef.current, dispatch, sid),
         toastError: (message) => toast.push({ kind: 'error', message }),
         // Sidebar 端走"行内编辑"重命名(Tab 端走 Modal.prompt)
         onRename: beginRename,

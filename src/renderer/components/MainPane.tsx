@@ -45,6 +45,7 @@ import { useContextMenuApi } from './ContextMenu';
 import { useToast } from './Toast';
 import { useModal } from './Modal';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
+import { useCloseSession } from '../hooks/useCloseSession';
 import { buildSessionContextMenu } from './sessionContextMenu';
 import { useTranslation } from './LanguageProvider';
 
@@ -120,50 +121,10 @@ export function MainPane(): JSX.Element {
   const fontSize = state.settings.appearance?.terminalFontSize ?? 13;
   const lineHeight = state.settings.appearance?.terminalLineHeight ?? 1.2;
 
-  // hideTopTabBar 模式下「关闭当前终端」的续看逻辑(fix ①):
-  // 一个窗口同一时刻只持有 1 个 session(createSession/claimOwner 都会
-  // releaseAllOwnedBy)。关掉当前终端后,若同 path 下还有「无主」(orphan)
-  // 的 session,就接管它作为下一个显示目标;否则才落到 EmptyPathState。
-  // 「他人窗口持有」的 session 不能接管(只能 focus-owner),故不作为候选。
-  //
-  // 时序要点:先乐观 dispatch 选中候选(owner-changed + select-session),
-  // 再发起 SESSION_CLOSE。这样随后到达的 sessions/destroyed(被关的那个)
-  // 不会命中 selectedSessionId(selectedSessionId 已是候选),避免中间闪一下
-  // EmptyPathState。SESSION_CLAIM 失败(候选被别的窗口抢先接管)时回滚到
-  // EmptyPathState —— 与「没有候选」的兜底一致。
-  const handleCloseCurrent = async (): Promise<void> => {
-    const current = getDisplayableSession(state);
-    if (!current) return; // 当前没有可显示的终端(已在 EmptyPathState),无操作
-    const pathId = current.pathId;
-    // 在同 path 下找一个无主 session 作为续看候选(优先顺序与侧栏/Tab 一致)。
-    const node = pathId ? findPathNode(state.pathTree, pathId) : null;
-    const candidate = node?.sessionIds
-      .map((sid) => state.sessions.get(sid))
-      .find((s) => !!s && s.id !== current.id && s.ownerWindowId === null);
-    if (candidate) {
-      // 乐观接管 + 选中,抢在 destroyed 事件之前
-      dispatch({ type: 'sessions/owner-changed', sessionId: candidate.id, ownerWindowId: state.myWindowId });
-      dispatch({ type: 'view/select-session', sessionId: candidate.id });
-    }
-    try {
-      await window.api.invoke(COMMAND_CHANNELS.SESSION_CLOSE, { sessionId: current.id });
-      if (candidate) {
-        // 当前 session 已关,本窗口已无持有;claim 候选(幂等,乐观已设 owner)。
-        await window.api.invoke(COMMAND_CHANNELS.SESSION_CLAIM, { sessionId: candidate.id }).catch((err) => {
-          console.error('[MainPane] claim-after-close failed, rollback', err);
-          dispatch({ type: 'sessions/owner-changed', sessionId: candidate.id, ownerWindowId: null });
-          dispatch({ type: 'view/select-session', sessionId: null });
-        });
-      }
-    } catch (err) {
-      console.error('[MainPane] close current session failed', err);
-      // close 失败:回滚乐观的接管(候选还给别人/变回 orphan)
-      if (candidate) {
-        dispatch({ type: 'sessions/owner-changed', sessionId: candidate.id, ownerWindowId: null });
-        dispatch({ type: 'view/select-session', sessionId: current.id });
-      }
-    }
-  };
+  // 关闭终端的统一入口(所有路径通用):关掉当前正在看的终端时,若同目录有
+  // 无主(orphan)终端就接管它续看,否则才进 EmptyPathState。逻辑见
+  // hooks/useCloseSession.ts。tab 的 × / hideTopTabBar 工具栏的「关闭」都走它。
+  const closeSession = useCloseSession();
 
   // FOC-6:selectedSessionId 变化时(托盘点击 / 跨窗口聚焦 /
   // evt:window:focus-requested / view/select-session 等任意路径)
@@ -250,7 +211,7 @@ export function MainPane(): JSX.Element {
           <button
             type="button"
             className="tabless-toolbar-btn"
-            onClick={() => void handleCloseCurrent()}
+            onClick={() => displayable && void closeSession(displayable.id)}
             disabled={!displayable}
             title={tx('关闭当前终端', 'Close current terminal')}
           >
@@ -559,6 +520,9 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
   const ctxMenu = useContextMenuApi();
   const toast = useToast();
   const modal = useModal();
+  // tab 的 × 关闭走统一续看逻辑:关掉当前正在看的终端时自动切到同目录另一个
+  // 无主终端(见 useCloseSession)。与 hideTopTabBar 工具栏「关闭」一致。
+  const closeSession = useCloseSession();
 
   // Variant 由 session.ownerWindowId 自决,不再由父级分组传入。这样 tab
   // 即使移动 (虽然现在不再重排) 也不会丢 variant。
@@ -583,6 +547,7 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
         variant,
         pathTree: state.pathTree,
         copyToClipboard,
+        onClose: (sid) => void closeSession(sid),
         toastError: (message) => toast.push({ kind: 'error', message }),
         onRename: async () => {
           // Tab 端走 Modal.prompt(Sidebar 端走行内编辑,两者菜单"内容"对齐
@@ -680,9 +645,7 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
 
   const handleClose = (e: MouseEvent<HTMLSpanElement>): void => {
     e.stopPropagation();
-    window.api
-      .invoke(COMMAND_CHANNELS.SESSION_CLOSE, { sessionId: session.id })
-      .catch((err) => console.error('[Tab] close failed', err));
+    void closeSession(session.id);
   };
 
   // ADR-008:cwd 漂移提示。session.pathId 永久不变,只有 currentCwd 与

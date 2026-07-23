@@ -17,6 +17,10 @@ export interface SessionMenuDeps {
   copyToClipboard: (text: string, label: string) => void;
   /** 触发重命名 UX。Tab 端走 Modal.prompt;Sidebar 端走行内编辑。 */
   onRename: () => void;
+  /** 关闭终端(带「自动续看」):关掉当前正在看的终端时切到同目录另一个无主
+   *  终端。两端的关闭都走它,保证标签栏可见/隐藏行为一致。不传则退回直接
+   *  SESSION_CLOSE(向后兼容)。 */
+  onClose?: (sessionId: string) => void;
   /** 失败 toast 推送器。给一个统一签名,内部包装 toast.push。 */
   toastError: (msg: string) => void;
 }
@@ -101,6 +105,10 @@ export function buildSessionContextMenu(
       danger: true,
       disabled: isOther,
       onSelect: () => {
+        if (deps.onClose) {
+          deps.onClose(session.id);
+          return;
+        }
         invoke(COMMAND_CHANNELS.SESSION_CLOSE, {
           sessionId: session.id,
         }).catch((err: unknown) =>
