@@ -42,6 +42,9 @@ const DEFAULT_SAMPLE_INTERVAL_MS = 10_000;
 const DEFAULT_STALL_INTERVAL_MS = 250;
 const DEFAULT_FLUSH_INTERVAL_MS = 5 * 60_000;
 const EVENT_LOOP_RESOLUTION_MS = 100;
+/** 采样窗口吞吐速率超此阈值计为“突发窗口”。固定阈值(非路径/非 ID),用于
+ * 区分“偶尔突发”与“持续重流”,不做精确量化。 */
+const PTY_BURST_BYTES_PER_SECOND = 1024 * 1024;
 const MAX_RECENT_SAMPLES = 180;
 const MAX_RECENT_STALLS = 200;
 const MAX_REPORT_RUNS = 30;
@@ -133,6 +136,14 @@ export class PerformanceDiagnostics {
   private peakMainCpuPercent = 0;
   private peakRssBytes = 0;
   private peakElectronWorkingSetKb = 0;
+  private peakPtyBytesPerSecond = 0;
+  private peakPtyChunksPerSecond = 0;
+  private ptyBurstWindows = 0;
+  /** 上一次采样快照里的 pty.outputBytes 计数器值,用于 delta 推导速率。 */
+  private previousPtyBytes = 0;
+  private previousPtyChunks = 0;
+  /** 最近一个采样窗口的吞吐速率,供 stall 关联与 gauge 暴露。 */
+  private latestPtyBytesPerSecond = 0;
   private started = false;
   private finalized = false;
   private endedWallMs: number | null = null;
@@ -343,6 +354,9 @@ export class PerformanceDiagnostics {
         peakMainCpuPercent: round(this.peakMainCpuPercent),
         peakRssBytes: this.peakRssBytes,
         peakElectronWorkingSetKb: this.peakElectronWorkingSetKb,
+        peakPtyBytesPerSecond: round(this.peakPtyBytesPerSecond),
+        peakPtyChunksPerSecond: round(this.peakPtyChunksPerSecond),
+        ptyBurstWindows: this.ptyBurstWindows,
       },
       latestSample: this.latestSample ? clone(this.latestSample) : null,
       firstSample: this.firstSample ? clone(this.firstSample) : null,
@@ -372,6 +386,23 @@ export class PerformanceDiagnostics {
     const elu = performance.eventLoopUtilization(currentElu, this.previousElu);
     this.previousElu = currentElu;
     const metricSnapshot = this.metrics.snapshot();
+    // 吞吐速率:从 pty.outputBytes/outputChunks 的 counter delta 推导,零热路径开销
+    // (PTY 逐字节热路径里只做 increment;此处采样点统一算速率)。远程/重负载场景
+    // 的关键信号——总量看不出是否突发,速率能区分平稳流 vs 突发流。
+    const currentPtyBytes = metricSnapshot.counters['pty.outputBytes'] ?? 0;
+    const currentPtyChunks = metricSnapshot.counters['pty.outputChunks'] ?? 0;
+    const ptyBytesDelta = Math.max(0, currentPtyBytes - this.previousPtyBytes);
+    const ptyChunksDelta = Math.max(0, currentPtyChunks - this.previousPtyChunks);
+    this.previousPtyBytes = currentPtyBytes;
+    this.previousPtyChunks = currentPtyChunks;
+    const ptyBytesPerSecond = elapsedMs > 0 ? (ptyBytesDelta * 1000) / elapsedMs : 0;
+    const ptyChunksPerSecond = elapsedMs > 0 ? (ptyChunksDelta * 1000) / elapsedMs : 0;
+    this.latestPtyBytesPerSecond = ptyBytesPerSecond;
+    this.peakPtyBytesPerSecond = Math.max(this.peakPtyBytesPerSecond, ptyBytesPerSecond);
+    this.peakPtyChunksPerSecond = Math.max(this.peakPtyChunksPerSecond, ptyChunksPerSecond);
+    if (ptyBytesPerSecond >= PTY_BURST_BYTES_PER_SECOND) this.ptyBurstWindows += 1;
+    // 暴露为 gauge:stall 发生时 detectStall 能读到最近窗口速率,做 stall↔流量关联。
+    this.metrics.setGauge('pty.recentBytesPerSecond', Math.round(ptyBytesPerSecond));
     const eventLoopDelayMs = histogramSnapshot(this.histogram);
     this.histogram.reset();
     const electronProcesses = aggregateElectronMetrics(this.safeGetAppMetrics());
@@ -388,6 +419,8 @@ export class PerformanceDiagnostics {
       arrayBuffersBytes: memory.arrayBuffers,
       eventLoopUtilization: round(elu.utilization),
       eventLoopDelayMs,
+      ptyBytesPerSecond: round(ptyBytesPerSecond),
+      ptyChunksPerSecond: round(ptyChunksPerSecond),
       resourceCounts: activeResourceCounts(),
       electronProcesses,
       gauges,
@@ -424,6 +457,7 @@ export class PerformanceDiagnostics {
         mainCpuPercent: latest?.mainCpuPercent ?? 0,
         rssBytes: latest?.rssBytes ?? process.memoryUsage.rss(),
         eventLoopUtilization: latest?.eventLoopUtilization ?? 0,
+        ptyBytesPerSecond: round(this.latestPtyBytesPerSecond),
         activeOperations: metricSnapshot.activeOperations.slice(0, 20),
         gauges: { ...metricSnapshot.gauges, ...this.safeRuntimeGauges() },
       },
@@ -632,6 +666,7 @@ export function renderPerformanceMarkdown(report: PerformanceReport): string {
     `- main RSS 峰值：${formatBytes(report.summary.peakRssBytes)}`,
     `- Electron 进程 working set 峰值：${formatBytes(report.summary.peakElectronWorkingSetKb * 1024)}`,
     `- 采样数：${report.summary.sampleCount}`,
+    `- PTY 吞吐峰值：${formatRate(report.summary.peakPtyBytesPerSecond)}（突发窗口 ${report.summary.ptyBurstWindows} 次）`,
     '',
   ];
   if (report.latestSample) {
@@ -643,8 +678,34 @@ export function renderPerformanceMarkdown(report: PerformanceReport): string {
       `- RSS / heap：${formatBytes(report.latestSample.rssBytes)} / ${formatBytes(report.latestSample.heapUsedBytes)}`,
       `- event-loop utilization：${(report.latestSample.eventLoopUtilization * 100).toFixed(2)}%`,
       `- event-loop delay p50/p95/p99/max：${delay.p50}/${delay.p95}/${delay.p99}/${delay.max} ms`,
+      `- 近窗口 PTY 吞吐：${formatRate(report.latestSample.ptyBytesPerSecond)}（${report.latestSample.ptyChunksPerSecond} chunks/s）`,
       '',
     );
+  }
+  // PTY 吞吐与背压段(远程/重负载场景的核心诊断):从 heatmap 拿 dispatch 耗时分布,
+  // 从 gauges 拿 pendingEmit 峰值,从 summary 拿峰值速率与突发窗口。
+  const dispatch = report.operationHeatmap.find((o) => o.name === 'pty.sessionOutputDispatch');
+  const pendingPeak = report.gauges['pty.peakPendingEmitBytes'] ?? 0;
+  const totalBytes = report.counters['pty.outputBytes'] ?? 0;
+  const totalChunks = report.counters['pty.outputChunks'] ?? 0;
+  const avgRate = report.durationMs > 0 ? (totalBytes * 1000) / report.durationMs : 0;
+  lines.push(
+    '## PTY 数据吞吐与背压',
+    '',
+    `- 总输出：${formatBytes(totalBytes)}（${totalChunks} chunks）`,
+    `- 全程平均速率：${formatRate(avgRate)}`,
+    `- 单窗口峰值速率：${formatRate(report.summary.peakPtyBytesPerSecond)}（突发窗口 ${report.summary.ptyBurstWindows} 次，阈值 ${formatRate(PTY_BURST_BYTES_PER_SECOND)}）`,
+    `- 8ms 聚合窗口吸收字节峰值：${formatBytes(pendingPeak)}`,
+  );
+  if (dispatch) {
+    lines.push(
+      `- sessionOutput IPC 发送：${dispatch.count} 次，平均 ${dispatch.averageMs} ms，近似 p95 ${dispatch.approximateP95Ms} ms，最大 ${dispatch.maxMs} ms，错误 ${dispatch.errors}`,
+      '',
+      '> dispatch 耗时上升或出现于 stall 的活跃操作里 = renderer(xterm 解析/GC)跟不上 = 背压。',
+      '',
+    );
+  } else {
+    lines.push('', '> sessionOutput IPC 发送：暂无采样（尚无终端输出）。', '');
   }
   if (report.latestSample) {
     lines.push(
@@ -694,12 +755,12 @@ export function renderPerformanceMarkdown(report: PerformanceReport): string {
     lines.push('- 无 >=100ms stall。');
   } else {
     lines.push(
-      '| 启动后 ms | drift ms | main CPU % | RSS | 活跃操作 |',
-      '|---:|---:|---:|---:|---|',
+      '| 启动后 ms | drift ms | main CPU % | 近 PTY 速率 | RSS | 活跃操作 |',
+      '|---:|---:|---:|---:|---:|---|',
     );
     for (const stall of report.recentStalls.slice(-50)) {
       lines.push(
-        `| ${stall.atMs} | ${stall.driftMs} | ${stall.mainCpuPercent} | ${formatBytes(stall.rssBytes)} | ${stall.activeOperations.join(', ') || '无'} |`,
+        `| ${stall.atMs} | ${stall.driftMs} | ${stall.mainCpuPercent} | ${formatRate(stall.ptyBytesPerSecond)} | ${formatBytes(stall.rssBytes)} | ${stall.activeOperations.join(', ') || '无'} |`,
       );
     }
   }
@@ -805,6 +866,15 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`;
   if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
   return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
+}
+
+/** 把 bytes/s 格式化成人类可读速率。纯数值,不含路径/内容。 */
+function formatRate(bytesPerSecond: number): string {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return '0 B/s';
+  if (bytesPerSecond < 1024) return `${Math.round(bytesPerSecond)} B/s`;
+  if (bytesPerSecond < 1024 ** 2) return `${(bytesPerSecond / 1024).toFixed(1)} KiB/s`;
+  if (bytesPerSecond < 1024 ** 3) return `${(bytesPerSecond / 1024 ** 2).toFixed(1)} MiB/s`;
+  return `${(bytesPerSecond / 1024 ** 3).toFixed(2)} GiB/s`;
 }
 
 function formatDuration(ms: number): string {

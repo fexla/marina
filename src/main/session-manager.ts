@@ -1688,6 +1688,7 @@ export class SessionManager extends EventEmitter {
         data: bytes.toString('base64'),
         seq,
       };
+      this.trackEmitVolume(bytes.byteLength);
       this.emit('sessionOutput', payload);
       return;
     }
@@ -1719,7 +1720,23 @@ export class SessionManager extends EventEmitter {
       data: bytes.toString('base64'),
       seq: lastSeq,
     };
+    this.trackEmitVolume(bytes.byteLength);
     this.emit('sessionOutput', payload);
+  }
+
+  /**
+   * 0.3.2 性能诊断:跟踪单次 sessionOutput 发送(8ms 聚合窗口吸收后)的字节峰值。
+   *
+   * 远程/重负载场景的突发背压信号——当远端一次刷出大量字节(如 cat GB 文件),
+   * 8ms 窗口内 pendingEmit 会 concat 出一个大 buffer,base64 后同步发给 renderer。
+   * 峰值越大,说明单次 IPC payload 越重,越可能在 main 事件循环造成一个尖峰。
+   *
+   * 只记 gauge 峰值(隐私安全:纯数值,不含内容/路径);零额外分配。
+   */
+  private trackEmitVolume(byteLength: number): void {
+    if (byteLength <= 0) return;
+    const prev = performanceMetrics.getGauge('pty.peakPendingEmitBytes') ?? 0;
+    if (byteLength > prev) performanceMetrics.setGauge('pty.peakPendingEmitBytes', byteLength);
   }
 
   /**

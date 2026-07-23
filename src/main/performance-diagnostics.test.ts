@@ -404,6 +404,87 @@ describe('PerformanceDiagnostics', () => {
     const profiles = (await readdir(reportDir)).filter((name) => name.endsWith('.cpuprofile'));
     expect(profiles).toHaveLength(5);
   });
+
+  it('sample 从 pty counter delta 推导吞吐速率并更新 peak/burst', async () => {
+    const diagnostics = createDiagnostics();
+    await diagnostics.start(); // 首次 sample（无流量）
+    const sample = (diagnostics as unknown as { sample: () => Promise<void> }).sample.bind(
+      diagnostics,
+    );
+    // 模拟采样窗口内进入 2 MiB → 远超 1 MiB/s 突发阈值
+    metrics.increment('pty.outputBytes', 2 * 1024 * 1024);
+    metrics.increment('pty.outputChunks', 200);
+    mono += 10_000; // 窗口 10s → 速率 = 2 MiB / 10s = ~209 KiB/s
+    await sample();
+    const report = diagnostics.snapshot();
+    expect(report.latestSample?.ptyBytesPerSecond).toBeGreaterThan(0);
+    expect(report.latestSample?.ptyChunksPerSecond).toBeGreaterThan(0);
+    // 2 MiB / 10s ≈ 209715 B/s，远低于 1 MiB/s 突发阈值 → 本窗口不算突发
+    expect(report.summary.ptyBurstWindows).toBe(0);
+    expect(report.summary.peakPtyBytesPerSecond).toBeCloseTo((2 * 1024 * 1024 * 1000) / 10_000, 1);
+    // 暴露给 stall 关联的 gauge
+    expect(report.gauges['pty.recentBytesPerSecond']).toBeGreaterThan(0);
+    await diagnostics.stop();
+  });
+
+  it('突窗口（速率 >= 1 MiB/s）计入 burstWindows，peak 取最大', async () => {
+    const diagnostics = createDiagnostics();
+    await diagnostics.start();
+    const sample = (diagnostics as unknown as { sample: () => Promise<void> }).sample.bind(
+      diagnostics,
+    );
+    // 窗口 1：1s 内 5 MiB → 5 MiB/s 突发
+    metrics.increment('pty.outputBytes', 5 * 1024 * 1024);
+    mono += 1000;
+    await sample();
+    // 窗口 2：1s 内 1 MiB → 1 MiB/s 也算突发
+    metrics.increment('pty.outputBytes', 1024 * 1024);
+    mono += 1000;
+    await sample();
+    const report = diagnostics.snapshot();
+    expect(report.summary.ptyBurstWindows).toBe(2);
+    expect(report.summary.peakPtyBytesPerSecond).toBeCloseTo((5 * 1024 * 1024 * 1000) / 1000, 1);
+    await diagnostics.stop();
+  });
+
+  it('stall 记录携带近窗口 PTY 速率用于相关性诊断', async () => {
+    const diagnostics = createDiagnostics();
+    await diagnostics.start();
+    const sample = (diagnostics as unknown as { sample: () => Promise<void> }).sample.bind(
+      diagnostics,
+    );
+    metrics.increment('pty.outputBytes', 3 * 1024 * 1024);
+    mono += 1000;
+    await sample(); // 3 MiB/s 窗口
+    const detect = (diagnostics as unknown as { detectStall: () => void }).detectStall.bind(
+      diagnostics,
+    );
+    mono += 500; // drift >100ms 触发 stall
+    detect();
+    const report = diagnostics.snapshot();
+    expect(report.recentStalls).toHaveLength(1);
+    expect(report.recentStalls[0]!.ptyBytesPerSecond).toBeGreaterThan(0);
+    await diagnostics.stop();
+  });
+
+  it('Markdown 含 PTY 吞吐与背压段及 stall 近 PTY 速率列', async () => {
+    const diagnostics = createDiagnostics();
+    await diagnostics.start();
+    const sample = (diagnostics as unknown as { sample: () => Promise<void> }).sample.bind(
+      diagnostics,
+    );
+    metrics.increment('pty.outputBytes', 2 * 1024 * 1024);
+    metrics.recordDuration('pty.sessionOutputDispatch', 0.3);
+    mono += 1000;
+    await sample();
+    const markdown = renderPerformanceMarkdown(diagnostics.snapshot());
+    expect(markdown).toContain('## PTY 数据吞吐与背压');
+    expect(markdown).toContain('总输出：');
+    expect(markdown).toContain('平均速率');
+    expect(markdown).toContain('sessionOutput IPC 发送');
+    expect(markdown).toContain('8ms 聚合窗口吸收字节峰值');
+    await diagnostics.stop();
+  });
 });
 
 describe('aggregateElectronMetrics', () => {

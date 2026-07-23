@@ -81,4 +81,14 @@ describe('PerformanceMetrics', () => {
     expect(() => metrics.increment('C:\\Users\\me\\repo')).toThrow('Invalid metric name');
     expect(() => metrics.setGauge('repo/foo', 1)).toThrow('Invalid metric name');
   });
+
+  it('getGauge 读取当前值,不存在返回 0', () => {
+    const metrics = new PerformanceMetrics();
+    expect(metrics.getGauge('pty.peakPendingEmitBytes')).toBe(0);
+    metrics.setGauge('pty.peakPendingEmitBytes', 4096);
+    expect(metrics.getGauge('pty.peakPendingEmitBytes')).toBe(4096);
+    // setGauge 只更新现有名,不重走校验路径;getGauge 始终 O(1)
+    metrics.setGauge('pty.peakPendingEmitBytes', 2048);
+    expect(metrics.getGauge('pty.peakPendingEmitBytes')).toBe(2048);
+  });
 });

@@ -161,6 +161,11 @@ export class PerformanceMetrics {
     this.gauges.set(name, safeValue);
   }
 
+  /** 读取当前 gauge 值(不存在返回 0)。O(1) Map 查找。 */
+  getGauge(name: string): number {
+    return this.gauges.get(name) ?? 0;
+  }
+
   snapshot(): {
     operations: PerformanceOperationMetric[];
     counters: Record<string, number>;

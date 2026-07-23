@@ -65,6 +65,11 @@ export interface PerformanceSample {
     p99: number;
     max: number;
   };
+  /** 本采样窗口(上一个 sample→当前)的 PTY 输出吞吐速率。从 counter delta 推导,
+   * 零热路径开销。远程/重负载场景(远程编译、tail 日志、cat 大文件)的关键指标——
+   * 总量看不出是否突发,速率能区分平稳流 vs 突发流。 */
+  ptyBytesPerSecond: number;
+  ptyChunksPerSecond: number;
   resourceCounts: Record<string, number>;
   electronProcesses: PerformanceElectronProcessMetric[];
   gauges: Record<string, number>;
@@ -76,6 +81,9 @@ export interface PerformanceStallRecord {
   mainCpuPercent: number;
   rssBytes: number;
   eventLoopUtilization: number;
+  /** stall 发生时最近一个采样窗口的 PTY 吞吐速率,用于判断 stall 是否由
+   * 流量突发(背压)引起。与 activeOperations 互补:后者显示“当时在跑什么操作”。 */
+  ptyBytesPerSecond: number;
   activeOperations: string[];
   gauges: Record<string, number>;
 }
@@ -104,6 +112,13 @@ export interface PerformanceReport {
     peakMainCpuPercent: number;
     peakRssBytes: number;
     peakElectronWorkingSetKb: number;
+    /** 整次 run 中单采样窗口(默认 10s)PTTY 吞吐峰值。远程重负载下能看出是否
+     * 出现突发流(如一次性 cat GB 级文件)。 */
+    peakPtyBytesPerSecond: number;
+    peakPtyChunksPerSecond: number;
+    /** 采样窗口中吞吐速率超过突发阈值的次数。阈值固定为 1 MiB/s;用于区分
+     * “偶尔突发”与“持续重流”,不做精确量化。 */
+    ptyBurstWindows: number;
   };
   latestSample: PerformanceSample | null;
   firstSample: PerformanceSample | null;

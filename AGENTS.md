@@ -1101,10 +1101,11 @@ package.json: "version": "0.3.1"(保持,直到下次 dev 构建或正式 bump)
 
 ### H.4 开销纪律
 
-- 不对逐字节/逐字符热函数做 duration timer；PTY 热路径只允许 O(1) counter。
+- 不对逐字节/逐字符热函数做 duration timer；PTY 逐字节热路径只允许 O(1) counter（`pty.outputBytes`/`pty.outputChunks`）。**吞吐速率只在采样点从 counter delta 推导，零热路径开销**；sessionOutput dispatch 的 duration 只在 8ms 聚合点记录，非逐字节。
 - timeline/ring/sample/report/run 数必须有硬上限。
 - report 平时 5 分钟聚合写盘并做 in-flight 防重；>=1 秒严重 stall 可按 60 秒限频额外刷新，不能每事件写盘。
 - main event-loop stall 只能按本义展示，不能称作 renderer FPS 或 Windows DPC 卡顿。
+- throughput/backpressure 指标（bytes/s、突发窗口、dispatch 耗时、pendingEmit 峰值）只用纯数值 + 固定阈值，不含路径/sessionId/终端内容。
 
 ---
 

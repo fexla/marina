@@ -2101,11 +2101,22 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   sessionManager.on('sessionOutput', (payload: SessionOutputPayload) => {
     const session = sessionManager.get(payload.sessionId);
     if (!session?.ownerWindowId) return; // 无 owner 不推 (CP-3 写 scrollback)
-    sendEventTo<SessionOutputPayload>(
-      session.ownerWindowId,
-      EVENT_CHANNELS.SESSION_OUTPUT,
-      payload,
-    );
+    // 0.3.2 性能诊断:把 renderer 终端字节流的 IPC 发送记为一个 operation。这是
+    // 远程/重负载场景的**背压信号**——sendEventTo 同步序列化 base64 payload +
+    // 拷贝给 renderer,若 renderer(xterm 解析/GC)跟不上,该调用变慢会卡住 main
+    // 事件循环,体现为 operation duration 上升,且 stall 的 activeOperations 里
+    // 会出现本操作(此前 stall 全显示“活跃操作:无”就是这个盲点)。
+    // 低开销:只在聚合点(8ms/窗口)记录,非逐字节;begin/finish 是 Map 查找 + now()。
+    const finish = performanceMetrics.begin('pty.sessionOutputDispatch');
+    try {
+      sendEventTo<SessionOutputPayload>(
+        session.ownerWindowId,
+        EVENT_CHANNELS.SESSION_OUTPUT,
+        payload,
+      );
+    } finally {
+      finish();
+    }
   });
 
   // 窗口列表变化 → 广播 evt:window:list-updated
