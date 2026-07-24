@@ -174,7 +174,16 @@ export class WsServer {
   start(port: number): Promise<number> {
     if (this.wss) throw new Error('[transport-ws] WsServer 已启动');
     return new Promise((resolve, reject) => {
-      const wss = new WebSocketServer({ port });
+      // permessage-deflate (RFC 7692):PTY 字节流与 scrollback replay 都是高度可压缩
+      // 的文本(大量 ANSI 转义/重复字符/空格),开启后远程流量典型可减 50–70%,
+      // 2MB scrollback 压完常只剩几百 KB。ws 库默认 threshold=1024(小于 1KB 的消息
+      // 不压缩,省 CPU),对终端场景正好:小 chunk 跳过、大 scrollback/密集输出压缩。
+      //
+      // 协商性:client 不请求 deflate 则不启用,故 ws 库 client 的测试(默认 false)
+      // 行为不变;生产 client 是 preload 的浏览器原生 WebSocket,Chromium 默认会发起
+      // permessage-deflate 协商,server 这里响应即可生效。CPU 换流量,终端文本压缩极快。
+      // (对齐 docs/方案-远程后端 R3 风险 + transport-ws.ts 顶部 binary frame TODO)
+      const wss = new WebSocketServer({ port, perMessageDeflate: true });
       this.wss = wss;
       wss.on('error', reject);
       wss.on('listening', () => {

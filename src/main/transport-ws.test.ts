@@ -98,6 +98,23 @@ describe('WsServer — 连接生命周期', () => {
     expect(port).toBeGreaterThan(0);
   });
 
+  it('server 开启 permessage-deflate:client 协商成功后 ws.extensions 含该扩展', async () => {
+    // P0 远程流量优化(对齐 docs/方案-远程后端 R3):PTY 字节流与 scrollback 是高度
+    // 可压缩文本,开启 deflate 可减 50–70% 远程流量。本测试是回归保护 —— 确认
+    // transport-ws 的 WebSocketServer 确实启用了 permessage-deflate,防止未来
+    // 误删这个配置。生产 client(preload 浏览器原生 WebSocket)Chromium 默认会
+    // 发起 deflate 协商;这里用 ws client 显式请求来验证 server 响应。
+    const { port } = await startServer();
+    const ws = await new Promise<WebSocket>((resolve, reject) => {
+      const c = new WebSocket(`ws://127.0.0.1:${port}`, { perMessageDeflate: true });
+      c.on('open', () => resolve(c));
+      c.on('error', reject);
+    });
+    // 协商成功后,ws.extensions 会是 'permessage-deflate'(可能带参数)。
+    expect(ws.extensions).toContain('permessage-deflate');
+    ws.close();
+  });
+
   it('client 连接 → onClientConnected 触发,transport.clientId 非空', async () => {
     const { server, port } = await startServer();
     const connected = new Promise<{ clientId: string }>((resolve) => {
