@@ -2330,6 +2330,14 @@ html[data-maximized='true'] .app-root.with-shell {
   height: 100%;
 }
 
+/* .file-text-lines:所有行的共同包裹层。width:max-content + min-width:100% 让所有
+ * .file-text-line(block 子元素)对齐到「最长行」宽度,而非各自 = 视口宽。这是横向滚动
+ * 长代码时行背景覆盖到 scrollWidth 右端的关键(与 .diff-lines 同构)。 */
+.file-text-lines {
+  width: max-content;
+  min-width: 100%;
+}
+
 /* v0.3.1:文件内查找(C3)。每行一个 div,支持 data-line 定位 + 跳转。
  * v0.3.3:改 grid 两列(行号 | 代码)。给行设不透明底色,供行号 background:inherit 跟随。 */
 .file-text-line {
@@ -2458,6 +2466,16 @@ html[data-maximized='true'] .app-root.with-shell {
   color: var(--color-text-primary, #f0f);
   overflow: auto;
   height: 100%;
+}
+
+/* .diff-lines:所有行的共同包裹层。width:max-content 让本层宽 = 最宽行的固有宽度,
+ * 子 .diff-line(block, fill 本层)宽度随之统一到该最大值,行背景覆盖到 scrollWidth
+ * 右端;min-width:100% 保证内容都短时也铺满视口(不留左下空白)。若缺这一层、每行
+ * 直接做 .diff-viewer 的 block grid 子项,行背景只画在视口宽 box 上,横向滚动后右侧
+ * 裸露无底色(见 DiffViewer.tsx return 处注释)。 */
+.diff-lines {
+  width: max-content;
+  min-width: 100%;
 }
 
 .diff-line {

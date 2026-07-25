@@ -197,7 +197,7 @@ interface ViewerProps {
 export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Element {
   const { tx } = useTranslation();
   const content = useFileContent(sessionId, file.path, file.mtimeMs);
-  const containerRef = useRef<HTMLPreElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
 
   const { rows, truncatedClient } = useMemo(() => {
     if (!content || content.kind !== 'diff') return { rows: null, truncatedClient: false };
@@ -238,35 +238,39 @@ export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
   const displayRows = rows as DiffRow[];
 
   return (
-    <pre className="diff-viewer" ref={containerRef}>
-      {displayRows.map((row) => (
-        <div key={row.key} data-line={row.key} className={`diff-line diff-line-${row.kind}`}>
-          {/* gutter(行号 + 行首符号):sticky left:0 水平滚动时钉住。background:inherit
-           * 取所在 .diff-line-* 行底色,挡住横向滚过来的代码。 */}
-          <span className="diff-line-gutter">
-            {row.lineNum != null && (
-              <span className="file-line-number">{row.lineNum}</span>
-            )}
-            <span className="diff-line-sign">{signFor(row.kind)}</span>
-          </span>
-          {/* hljs 输出只含 class span,无脚本/事件,安全。来源是 GitService 受控文件。 */}
-          <span
-            className="diff-line-body"
-            dangerouslySetInnerHTML={{ __html: row.html || ' ' }}
-          />
-        </div>
-      ))}
-      {(content.truncated || truncatedClient) && (
-        <span className="file-truncated-mark">
-          {'\n'}
-          {truncatedClient
-            ? tx(
-                `…(diff 过大,仅显示前 ${MAX_RENDER_ROWS} 行)`,
-                `…(diff too large, showing first ${MAX_RENDER_ROWS} lines only)`,
-              )
-            : tx('…(diff 过大,仅显示前 2MB)', '…(diff too large, showing first 2MB only)')}
-        </span>
-      )}
-    </pre>
+    <div className="diff-viewer" ref={containerRef}>
+      {/* .diff-lines 包裹层:width:max-content + min-width:100%。让所有 .diff-line
+       * 行对齐到「最长行」的宽度(block 子元素 fill 此包裹层),而非各自 = 视口宽。
+       * 这是横向滚动时行背景能一直覆盖到 scrollWidth 右端的关键——若每行直接做
+       * .diff-viewer 的 block grid 子项,其背景只画在视口宽 box 上,滚动后右侧裸露
+       * 无底色。gutter 仍 sticky left:0 相对本滚动容器钉住。 */}
+      <div className="diff-lines">
+        {displayRows.map((row) => (
+          <div key={row.key} data-line={row.key} className={`diff-line diff-line-${row.kind}`}>
+            {/* gutter(行号 + 行首符号):sticky left:0 水平滚动时钉住。background:inherit
+             * 取所在 .diff-line-* 行底色,挡住横向滚过来的代码。 */}
+            <span className="diff-line-gutter">
+              {row.lineNum != null && <span className="file-line-number">{row.lineNum}</span>}
+              <span className="diff-line-sign">{signFor(row.kind)}</span>
+            </span>
+            {/* hljs 输出只含 class span,无脚本/事件,安全。来源是 GitService 受控文件。 */}
+            <span
+              className="diff-line-body"
+              dangerouslySetInnerHTML={{ __html: row.html || ' ' }}
+            />
+          </div>
+        ))}
+        {(content.truncated || truncatedClient) && (
+          <div className="file-truncated-mark">
+            {truncatedClient
+              ? tx(
+                  `…(diff 过大,仅显示前 ${MAX_RENDER_ROWS} 行)`,
+                  `…(diff too large, showing first ${MAX_RENDER_ROWS} lines only)`,
+                )
+              : tx('…(diff 过大,仅显示前 2MB)', '…(diff too large, showing first 2MB only)')}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

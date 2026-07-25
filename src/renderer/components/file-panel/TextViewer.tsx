@@ -94,26 +94,31 @@ export function TextViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
 
   return (
     <div className="file-text-viewer" ref={containerRef}>
-      {lines.map((_line, i) => (
-        <div key={i} data-line={i} className="file-text-line">
-          <span className="file-line-number">{i + 1}</span>
-          {/* hljs 输出只含 class span,无脚本/事件,安全。来源是受控文件读取。 */}
-          <span
-            className="file-text-line-content"
-            dangerouslySetInnerHTML={{ __html: htmlLines[i] || ' ' }}
-          />
-        </div>
-      ))}
-      {(content.truncated || truncatedClient) && (
-        <div className="file-truncated-mark">
-          {truncatedClient
-            ? tx(
-                `…(文件过大,仅显示前 ${MAX_RENDER_LINES} 行)`,
-                `…(file too large, showing first ${MAX_RENDER_LINES} lines only)`,
-              )
-            : tx('…(文件过大,仅显示前 2MB)', '…(file too large, showing first 2MB only)')}
-        </div>
-      )}
+      {/* .file-text-lines 包裹层:width:max-content + min-width:100%。让所有 .file-text-line
+       * 行对齐到「最长行」的宽度(block 子元素 fill 本层),而非各自 = 视口宽。这是横向
+       * 滚动长代码时行背景能覆盖到 scrollWidth 右端的关键(与 DiffViewer 同构)。 */}
+      <div className="file-text-lines">
+        {lines.map((_line, i) => (
+          <div key={i} data-line={i} className="file-text-line">
+            <span className="file-line-number">{i + 1}</span>
+            {/* hljs 输出只含 class span,无脚本/事件,安全。来源是受控文件读取。 */}
+            <span
+              className="file-text-line-content"
+              dangerouslySetInnerHTML={{ __html: htmlLines[i] || ' ' }}
+            />
+          </div>
+        ))}
+        {(content.truncated || truncatedClient) && (
+          <div className="file-truncated-mark">
+            {truncatedClient
+              ? tx(
+                  `…(文件过大,仅显示前 ${MAX_RENDER_LINES} 行)`,
+                  `…(file too large, showing first ${MAX_RENDER_LINES} lines only)`,
+                )
+              : tx('…(文件过大,仅显示前 2MB)', '…(file too large, showing first 2MB only)')}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
