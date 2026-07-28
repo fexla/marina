@@ -644,6 +644,31 @@ function focusTerminal(
   termRef.current?.focus();
 }
 
+/**
+ * 每个 session 的终端视口滚动位置缓存(组件外缓存,AGENTS.md 附录 G L1 模式)。
+ *
+ * 为什么放组件外:TerminalView 用 `key={session.id}`,切 session 会把旧
+ * xterm 实例整块卸载重建。如果位置存在组件 state/useRef 里,卸载就丢了。
+ * 模块级 Map 跨 mount/unmount 存活,切走再切回能恢复到离开前的滚动位置。
+ *
+ * 记什么:`{ topLine, wasAtBottom }`。
+ * - topLine = 离开时视口顶部的绝对行号(term.buffer.active.baseY)。
+ * - wasAtBottom = 离开时是否贴在底部(贴底 = 自动跟随新输出)。
+ *
+ * 恢复策略(replay fence 内):
+ * - wasAtBottom=true → scrollToBottom(同旧行为,贴底继续跟随)。
+ * - wasAtBottom=false → scrollToLine(topLine),用户停在哪里就回哪里,
+ *   不被切 session / 后台输出强制拉到底部。
+ * - 缓存里的 topLine 若超出当前 buffer 长度(session 没了 / 输出被清),
+ *   scrollToLine 会被 xterm 钳制到合法范围,不会报错,安全降级。
+ *
+ * 清理:session destroyed 时在单独 effect 里删条目,避免无界累积。
+ */
+const terminalScrollMemory = new Map<
+  string,
+  { topLine: number; wasAtBottom: boolean }
+>();
+
 export function TerminalView({ session }: TerminalViewProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -1105,6 +1130,24 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       });
     });
 
+    // 终端视口滚动位置记忆:每次滚动(用户拖滚动条 / 键盘翻页 / 新输出自动跟随)
+    // 都把当前 topLine + 是否贴底写进组件外缓存。切走 session 再切回时,重放
+    // 完成的 fence 会读这份缓存恢复位置(见下方 replay fence)。
+    //
+    // 必须 gate 在 replayed 之后:重放写 scrollback 时 xterm 会自动滚到底,
+    // 连发一串 onScroll(baseY 递增、wasAtBottom=true),若此时也写缓存会把
+    // 用户离开时存的 wasAtBottom=false 覆盖掉,fence 恢复就会误判"贴底"而拉
+    // 到底。replayed 完成后才开始记录,保证缓存里始终是用户真实交互后的状态。
+    // (replayed 在下方 replay 协议里声明,同为 effect 作用域;onScroll 回调
+    //  在滚动时才调用,那时 replayed 已初始化,闭包按引用读取安全。)
+    const scrollMemoryDisposable = term.onScroll(() => {
+      if (!replayed) return;
+      const buf = term.buffer.active;
+      const topLine = buf.baseY;
+      const wasAtBottom = buf.baseY + term.rows >= buf.length;
+      terminalScrollMemory.set(session.id, { topLine, wasAtBottom });
+    });
+
     // CURSOR-1 根治后(state-replay 架构),BETA-019 workaround 已删除:
     // 此处原有 `term.buffer.onBufferChange` listener 强行在 alt-buffer 期间
     // 关 cursorBlink,启发式错且实测 5% 出错。
@@ -1441,7 +1484,14 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         // 详见 docs/issues/scroll-1-session-switch-progressive-refresh.md。
         term.write('', () => {
           if (disposed) return;
-          term.scrollToBottom();
+          // 滚动位置记忆:若有缓存且离开时不贴底,恢复到当时的 topLine;
+          // 贴底(或无缓存 = 首次打开)走原 scrollToBottom 继续自动跟随。
+          const mem = terminalScrollMemory.get(session.id);
+          if (mem && !mem.wasAtBottom) {
+            term.scrollToLine(mem.topLine);
+          } else {
+            term.scrollToBottom();
+          }
           requestAnimationFrame(() => {
             if (disposed) return;
             setHostRevealed(true);
@@ -1460,7 +1510,12 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         // 永远是隐藏的,用户看不到任何输出。
         term.write('', () => {
           if (disposed) return;
-          term.scrollToBottom();
+          const mem = terminalScrollMemory.get(session.id);
+          if (mem && !mem.wasAtBottom) {
+            term.scrollToLine(mem.topLine);
+          } else {
+            term.scrollToBottom();
+          }
           requestAnimationFrame(() => {
             if (disposed) return;
             setHostRevealed(true);
@@ -1652,6 +1707,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       container.removeEventListener('paste', pasteInterceptor, true);
       dataHandler.dispose();
       searchResultsDisposable?.dispose();
+      scrollMemoryDisposable.dispose();
       searchAddon.dispose();
       // PER-1:WebGL addon 必须在 term.dispose 之前释放,否则 GL context
       // 句柄泄漏(显存累积,大量切 session 后会触发显卡警告)
@@ -1705,6 +1761,23 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       term.options.cursorBlink = true;
     }
   }, [session.state]);
+
+  // 终端滚动位置记忆的清理:sessions 集合变化(新建 / 销毁)时,把缓存里
+  // 已不存在的 session 条目删掉,避免无界累积。deps 只依赖 id 列表的拼接
+  // 字符串 —— 它只在 session 增删时变(sessions/created / sessions/destroyed
+  // 会重建 Map),而 state-changed / owner-changed 等高频更新虽也重建 Map,
+  // 但 key 集合不变 → 拼接字符串不变 → effect 不重跑,零额外开销。
+  const sessionKeyList = useMemo(
+    () => [...appState.sessions.keys()].join('\u0000'),
+    [appState.sessions],
+  );
+  useEffect(() => {
+    if (terminalScrollMemory.size === 0) return;
+    const live = new Set(sessionKeyList.split('\u0000').filter(Boolean));
+    for (const sid of terminalScrollMemory.keys()) {
+      if (!live.has(sid)) terminalScrollMemory.delete(sid);
+    }
+  }, [sessionKeyList]);
 
   // 字体 / 字号 / 行高 运行时切换 + 重新 fit
   useEffect(() => {

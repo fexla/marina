@@ -10,6 +10,8 @@
 ### 修复
 
 - **侧栏双击新建终端不再先闪一下「新建终端」页。** 0.3.2-dev.3 只修了 invoke 返回早于广播的时序类闪屏,漏了一个更根本的来源:双击序列里的第一击 `click` 会先派发 `view/select-path`,该 reducer 在 hideTopTabBar 模式下无条件清空 `selectedSessionId`,于是主区在 `dblclick` 触发 SESSION_CREATE 并返回之前一直显示 EmptyPathState。现给侧栏 `PathItem` 的单击选中加一个双击阈值窗口(230ms)的去抖:`click` 不立即派发选中,而是延后;若在该窗口内收到 `dblclick` 则取消这次选中,双击就只「直接新建终端」而不先切到新建页(标签栏可见模式同样受益)。这是文件管理器/终端启动器的标准 click-vs-dblclick 消歧模式。
+- **关闭终端续看按最近使用顺序选候选。** 关掉当前终端后,若同目录有多个无主(orphan)终端,此前按侧栏/tab 的创建顺序取第一个,不贴合「关一个、看下一个」的直觉。现 store 记每个 session 的最后选中时间戳(`view/select-session` / `sessions/created` 写,`sessions/destroyed` 清),续看选候选改为按该时间戳降序——用户最近还看过的那个终端优先;无记录的(从未在本窗口选过的 orphan)排末尾,之间回退到原顺序做稳定兜底。
+- **切换终端记住各自的滚动位置。** 切走再切回一个终端,此前总是重放 scrollback 后错到底部,用户停在历史位置浏览时被强制拉回最新输出。现 `TerminalView` 用组件外缓存记每个 session 离开时的视口顶行 + 是否贴底:贴底的切回仍错到底部继续自动跟随;停在历史位置的切回恢复到当时的顶行,不被切 session 或后台输出拉到底。缓存随 session 销毁清理,无界累积。
 
 ## [0.3.2-dev.3] — 2026-07-26
 
