@@ -30,6 +30,7 @@
  */
 import { useCallback, type Dispatch } from 'react';
 import { COMMAND_CHANNELS } from '@shared/protocol';
+import type { SessionInfo } from '@shared/types';
 import { claimSession } from './claim-gate';
 import {
   type AppAction,
@@ -54,12 +55,23 @@ export async function closeSessionWithContinue(
   const current = getDisplayableSession(state);
   const isCurrent = current?.id === sessionId;
 
-  // 同 path 下找一个无主 session 作为续看候选(顺序与侧栏/Tab 一致)。
+  // 同 path 下的无主(orphan)session 都是续看候选。选哪个？按「最近使用的优先」
+  // 排序(lastSelectedAt 大者先),而不是侧栏/tab 的创建顺序 —— 贴合「关一个、
+  // 看下一个」的直觉:用户最近还看过那个终端,切过去上下文最熟。被关的那个
+  // 自然排除。没有 lastSelectedAt 记录的(如从未在本窗口选中过的 orphan)排末尾,
+  // 它们之间回退到 sessionIds 顺序做稳定兑底。
   const pathId = isCurrent ? current!.pathId : null;
   const node = pathId ? findPathNode(state.pathTree, pathId) : null;
-  const candidate = node?.sessionIds
+  const orphans = node?.sessionIds
     .map((sid) => state.sessions.get(sid))
-    .find((s) => !!s && s.id !== sessionId && s.ownerWindowId === null);
+    .filter((s): s is SessionInfo => !!s && s.id !== sessionId && s.ownerWindowId === null)
+    ?? [];
+  orphans.sort((a, b) => {
+    const ta = state.lastSelectedAt.get(a.id) ?? -1;
+    const tb = state.lastSelectedAt.get(b.id) ?? -1;
+    return tb - ta;
+  });
+  const candidate = orphans[0];
 
   if (candidate) {
     // 乐观接管 + 选中,抢在 destroyed 事件之前

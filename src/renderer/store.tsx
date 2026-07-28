@@ -133,6 +133,15 @@ export interface AppState {
   activePanels: Map<string, RegisteredPanelId>;
 
   /**
+   * 每个 session 最后被选中(成为本窗口正在看的终端)的时间戳(ms)。本窗口私有
+   * view state(不上 main)。用于「关闭当前终端后自动续看」时在同目录多个无主
+   * orphan 候选里按「最近使用的优先」排序(见 useCloseSession),而不是按侧栏/
+   * tab 的创建顺序,更贴合「关一个、看下一个」的直觉。每次 select-session /
+   * sessions/created(新终端选中)写一次;session 销毁时清理。
+   */
+  lastSelectedAt: Map<string, number>;
+
+  /**
    * 自定义 markdown 面板主题列表(扫 userData/markdown-themes/*.css)。evt:md-
    * theme:list-updated 推来时整体替换;启动时 cmd:md-theme:list 拉一次。设置页
    * 下拉据此渲染选项;CSS 内容不存 state(按需 cmd:md-theme:get-css 注入)。
@@ -275,6 +284,10 @@ function reducer(state: AppState, action: AppAction): AppState {
         if (action.session.pathId) {
           expandedPathIds.add(action.session.pathId);
         }
+        // 新建即选中 → 记录最后选中时间,与 view/select-session 一致
+        // (关闭当前终端续看时按最近使用排序,新终端现在就是最近使用的)。
+        const lastSelectedAt = new Map(state.lastSelectedAt);
+        lastSelectedAt.set(action.session.id, Date.now());
         return {
           ...state,
           sessions,
@@ -282,6 +295,7 @@ function reducer(state: AppState, action: AppAction): AppState {
           // 同时确保 selectedPathId 是新 session 的 path
           selectedPathId: action.session.pathId || state.selectedPathId,
           expandedPathIds,
+          lastSelectedAt,
         };
       }
       return { ...state, sessions };
@@ -343,7 +357,9 @@ function reducer(state: AppState, action: AppAction): AppState {
       filePanels.delete(action.sessionId);
       const activePanels = new Map(state.activePanels);
       activePanels.delete(action.sessionId);
-      const next: AppState = { ...state, sessions, filePanels, activePanels };
+      const lastSelectedAt = new Map(state.lastSelectedAt);
+      lastSelectedAt.delete(action.sessionId);
+      const next: AppState = { ...state, sessions, filePanels, activePanels, lastSelectedAt };
       // 当前选中的 session 被销毁 → 取消选中
       if (state.selectedSessionId === action.sessionId) {
         next.selectedSessionId = null;
@@ -438,8 +454,19 @@ function reducer(state: AppState, action: AppAction): AppState {
       };
     }
 
-    case 'view/select-session':
+    case 'view/select-session': {
+      // 记录「最后选中时间」,供关闭当前终端后按最近使用顺序续看(useCloseSession)。
+      if (action.sessionId) {
+        const lastSelectedAt = new Map(state.lastSelectedAt);
+        lastSelectedAt.set(action.sessionId, Date.now());
+        return {
+          ...state,
+          selectedSessionId: action.sessionId,
+          lastSelectedAt,
+        };
+      }
       return { ...state, selectedSessionId: action.sessionId };
+    }
 
     case 'view/toggle-path-expand': {
       const expanded = new Set(state.expandedPathIds);
@@ -549,6 +576,7 @@ export function makeDefaultState(myWindowId: string, myWindowNumber: number): Ap
     simpleMode: false,
     filePanels: new Map(),
     activePanels: new Map(),
+    lastSelectedAt: new Map(),
     mdThemes: [],
   };
 }
