@@ -696,9 +696,33 @@ function PathItem({
       });
   };
 
+  // 双击去抖:单击选中 path 不能立即派发,否则双击序列里的第一击会先派发
+  // view/select-path —— 在 hideTopTabBar 模式下该 reducer 会无条件清空
+  // selectedSessionId,于是主区在 dblclick 触发 SESSION_CREATE 并返回之前
+  // 一直显示 EmptyPathState(新建终端页),表现为“先闪一下新建页再创建终端”。
+  // 把单击选中延后一个双击阈值窗口,DBLCLICK 在窗口内到达时取消这次选中,
+  // 双击就只会“直接新建终端”而不会先切到新建页。
+  // 这是文件管理器/终端启动器的标准 click-vs-dblclick 消歧模式。
+  const pendingSelectTimer = useRef<number | null>(null);
+  const DBLCLICK_DISAMBIG_MS = 230;
+  // 组件卸载时清掉挂起的 timer,避免卸载后派发 dispatch(React 会告警)。
+  useEffect(() => {
+    return () => {
+      if (pendingSelectTimer.current !== null) {
+        window.clearTimeout(pendingSelectTimer.current);
+      }
+    };
+  }, []);
+
   const handleSelect = (): void => {
     if (renaming) return;
-    dispatch({ type: 'view/select-path', pathId: node.id });
+    if (pendingSelectTimer.current !== null) {
+      window.clearTimeout(pendingSelectTimer.current);
+    }
+    pendingSelectTimer.current = window.setTimeout(() => {
+      pendingSelectTimer.current = null;
+      dispatch({ type: 'view/select-path', pathId: node.id });
+    }, DBLCLICK_DISAMBIG_MS);
   };
 
   const handleToggleExpand = (e: MouseEvent<HTMLSpanElement>): void => {
@@ -708,6 +732,12 @@ function PathItem({
 
   const handleDoubleClick = async (): Promise<void> => {
     // 双击 = 在该 path 下用默认模板新建 session
+    // 取消挂起的单击选中(view/select-path),否则它会在 SESSION_CREATE
+    // 期间把 selectedSessionId 清空,闪一下新建页(见 handleSelect 注释)。
+    if (pendingSelectTimer.current !== null) {
+      window.clearTimeout(pendingSelectTimer.current);
+      pendingSelectTimer.current = null;
+    }
     // 优先级:bookmark.defaultTemplateId > 全局 defaultTemplateId > 'shell' 兜底
     const templateId = node.defaultTemplateId ?? state.defaultTemplateId ?? 'shell';
     try {

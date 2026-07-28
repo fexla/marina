@@ -7,6 +7,26 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+### 修复
+
+- **侧栏双击新建终端不再先闪一下「新建终端」页。** 0.3.2-dev.3 只修了 invoke 返回早于广播的时序类闪屏,漏了一个更根本的来源:双击序列里的第一击 `click` 会先派发 `view/select-path`,该 reducer 在 hideTopTabBar 模式下无条件清空 `selectedSessionId`,于是主区在 `dblclick` 触发 SESSION_CREATE 并返回之前一直显示 EmptyPathState。现给侧栏 `PathItem` 的单击选中加一个双击阈值窗口(230ms)的去抖:`click` 不立即派发选中,而是延后;若在该窗口内收到 `dblclick` 则取消这次选中,双击就只「直接新建终端」而不先切到新建页(标签栏可见模式同样受益)。这是文件管理器/终端启动器的标准 click-vs-dblclick 消歧模式。
+
+## [0.3.2-dev.3] — 2026-07-26
+
+> **开发构建**(AGENTS.md 附录 F)。0.3.2-dev.2 后积累的一批改动:Git 轮询按 repo 去重、
+> Nerd Font 兑底、远程 permessage-deflate、面板 race / 续看 / 新建闪屏 / 代码查看器滚动等修复,
+> 以及 show-in-marina 技能的僵尸 tab 检测 + 批量 close + 文档增强。仍预告版本号 `0.3.2`,
+> dev 构建标识递增为 `-dev.3`。SemVer 上 `0.3.2-dev.2 < 0.3.2-dev.3 < 0.3.2`。
+> 产物 `Marina-Portable-0.3.2-dev.3-x64.exe`。
+
+### show-in-marina 技能
+
+- **僵尸 tab 检测。** 面板里的 tab 指向的文件被从磁盘删除后,此前 tab 会无限期残留且用户无从发现。现 `FilePanelService` 为每个已打开文件维护 `missing` 标记:`fs.watch` 检测到删除时立即置 true(文件重现则清回 false),`GET /opening-files` 拉取前先 `refreshStale` 重刷磁盘真值(补 watcher 漏掉的事件,如 Marina 关闭期间被删)。CLI `marina list` 给僵尸 tab 打 `!` 前缀与 `(deleted)` 标记,并在末尾提示 `marina close --stale`;`list --json` 输出 `"missing": true`。
+- **批量 close。** CLI `marina close` 新增三种批量形态:`--all`(关全部)、`--stale`(只关僵尸 tab)、`--glob <PATTERN>`(按 basename 通配关,支持 `*`/`?`)。路径参数含 `*`/`?` 自动当 glob(如 `close *.md`)。服务端新增 `POST /close-files {terminal, mode, pattern?}` 端点 + `closeAllFiles` / `closeMatchingFiles` / `refreshStale` 方法,返回体带 `closed` 路径列表供 CLI 输出「关了哪些」。glob 匹配为内置极简实现(不新增依赖)。
+- **close 路径模糊匹配。** 此前 `close <PATH>` 必须与 `list` 输出的完整路径精确一致才关得掉,容易传错。现服务端 `closeFile` 精确路径未中时回退到大小写不敏感的 basename 匹配——只给文件名(如 `close report.md`)也能关;多个同名时报错并提示用完整路径或 glob,不猜不误关。renderer 的 tab 关闭恒走精确路径,行为不变。
+- **文档:文档作为任务沟通界面。** SKILL.md 新增「Use one document as the task dashboard」一节,固化一个高频用法模式:跨多轮的同一任务用一份文档当与用户的沟通面(进展/选项/待确认项/用户批注集中在该文件,每轮覆写 + re-show 同一路径,CLI 只留状态 + 「详见文档」),比把长内容堆在 CLI 多轮里稳定得多。
+- **安装的 skill 同步。** `.pi/skills/show-in-marina/`(项目级安装快照)此前落后于源(`src/skills/show-in-marina/`,缺 bash 封装、旧版 SKILL.md/ps1)。已与源同步,含上述全部改动与 bash 封装。
+
 ### 性能
 
 - **Git 后台轮询按 repo 去重(ADR-021 方案 A)。** 此前每个 Git 仓库 session 各注册一个 3 秒/60 秒 polling task，同一 repo 开 N 个终端就重复轮询 N 次 `git status`（并占满全局并发预算，大仓库下制造 stall）。现改为按 repo 去重：一个 repo 只注册一个 task，run 时跑一次 git status 再 fan-out emit 给该 repo 下所有 session；每个 session 作为该 task 的一个 scheduler consumer（demand 由 scheduler 自动取各 session 最高）。同 repo 的 GitPanel mount / HOT immediate / 后台 poll 共享同一个 repo 级 in-flight，同 repo 任何时刻最多一个 git status 在跑。removePollingConsumer 改为枚举该窗口持有的 session 逐个撤 demand（demand consumerId 从 windowId 改为 sessionId）。
