@@ -1118,6 +1118,9 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     let scrollFlushTimer: ReturnType<typeof setTimeout> | null = null;
     const flushScroll = (): void => {
       if (!latestScroll) return;
+      console.log(
+        `[scrollmem] save sid=${session.id.slice(0, 8)} topLine=${latestScroll.topLine} wasAtBottom=${latestScroll.wasAtBottom}`,
+      );
       dispatch({
         type: 'view/terminal-scroll',
         sessionId: session.id,
@@ -1483,8 +1486,14 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
           // 不贴底 → scrollToLine(topLine) 回到离开时的位置,不被切 session /
           // 后台输出拉到底。topLine 超出现 buffer 时 xterm 会钳制到合法范围。
           const mem = appState.terminalScroll.get(session.id);
+          console.log(
+            `[scrollmem] restore(ok) sid=${session.id.slice(0, 8)} mem=${JSON.stringify(mem)} viewportYNow=${term.buffer.active.viewportY} len=${term.buffer.active.length}`,
+          );
           if (mem && !mem.wasAtBottom) {
             term.scrollToLine(mem.topLine);
+            console.log(
+              `[scrollmem]   → scrollToLine(${mem.topLine}) → viewportY=${term.buffer.active.viewportY}`,
+            );
           } else {
             term.scrollToBottom();
           }
@@ -1507,6 +1516,9 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         term.write('', () => {
           if (disposed) return;
           const mem = appState.terminalScroll.get(session.id);
+          console.log(
+            `[scrollmem] restore(catch) sid=${session.id.slice(0, 8)} mem=${JSON.stringify(mem)}`,
+          );
           if (mem && !mem.wasAtBottom) {
             term.scrollToLine(mem.topLine);
           } else {
