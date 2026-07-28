@@ -248,9 +248,15 @@ export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
         {displayRows.map((row) => (
           <div key={row.key} data-line={row.key} className={`diff-line diff-line-${row.kind}`}>
             {/* gutter(行号 + 行首符号):sticky left:0 水平滚动时钉住。background:inherit
-             * 取所在 .diff-line-* 行底色,挡住横向滚过来的代码。 */}
+             * 取所在 .diff-line-* 行底色,挡住横向滚过来的代码。
+             * 行号槽始终渲染(无行号的 hunk/header/meta 行留空):.file-line-number
+             * 有固定 min-width,这样每行 grid 的 auto 首列宽度一致,代码体起始终
+             * 对齐到同一 x;否则无行号的行首列只有符号槽(很窄),hunk 文本会左
+             * 移、与代码错位,且左侧「该有数字的地方」留空看着怪(验收 E)。 */}
             <span className="diff-line-gutter">
-              {row.lineNum != null && <span className="file-line-number">{row.lineNum}</span>}
+              <span className="file-line-number">
+                {row.lineNum != null ? row.lineNum : ''}
+              </span>
               <span className="diff-line-sign">{signFor(row.kind)}</span>
             </span>
             {/* hljs 输出只含 class span,无脚本/事件,安全。来源是 GitService 受控文件。 */}
