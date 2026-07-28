@@ -142,6 +142,22 @@ export interface AppState {
   lastSelectedAt: Map<string, number>;
 
   /**
+   * 每个 session 的终端视口滚动位置(topLine + 是否贴底)。本窗口私有 view state。
+   *
+   * 为什么放 store 而不是组件内/模块级:位置是「显示什么」的一部分(正如
+   * selectedSessionId 决定显示哪个 session),应当是一等 view state,走同一条
+   * 数据流——与 activePanels / lastSelectedAt / filePanels 等 per-session view
+   * state 一致。TerminalView 用 key={session.id},切 session 会卸载重建 xterm,
+   * 位置必须跨 mount 存活,放 store 天然跨 mount(模块级隐藏 Map 是不进数据流的
+   * 旁路,与既有模式不一致且难观测/测试)。
+   *
+   * 写:TerminalView onScroll(累积到本地 ref,trailing debounce 写 store +
+   * unmount 立即 flush,避免每帧 dispatch 重渲染)。读:mount/replay fence 读一次
+   * 用于恢复。sessions/destroyed 清理,无界累积。
+   */
+  terminalScroll: Map<string, { topLine: number; wasAtBottom: boolean }>;
+
+  /**
    * 自定义 markdown 面板主题列表(扫 userData/markdown-themes/*.css)。evt:md-
    * theme:list-updated 推来时整体替换;启动时 cmd:md-theme:list 拉一次。设置页
    * 下拉据此渲染选项;CSS 内容不存 state(按需 cmd:md-theme:get-css 注入)。
@@ -176,6 +192,12 @@ export type AppAction =
   | { type: 'templates/update'; templates: Template[]; defaultTemplateId: string }
   | { type: 'view/select-path'; pathId: string | null }
   | { type: 'view/select-session'; sessionId: string | null }
+  | {
+      type: 'view/terminal-scroll';
+      sessionId: string;
+      topLine: number;
+      wasAtBottom: boolean;
+    }
   | { type: 'view/toggle-path-expand'; pathId: string }
   | { type: 'view/toggle-simple-mode' }
   | { type: 'view/set-simple-mode'; value: boolean }
@@ -359,7 +381,16 @@ function reducer(state: AppState, action: AppAction): AppState {
       activePanels.delete(action.sessionId);
       const lastSelectedAt = new Map(state.lastSelectedAt);
       lastSelectedAt.delete(action.sessionId);
-      const next: AppState = { ...state, sessions, filePanels, activePanels, lastSelectedAt };
+      const terminalScroll = new Map(state.terminalScroll);
+      terminalScroll.delete(action.sessionId);
+      const next: AppState = {
+        ...state,
+        sessions,
+        filePanels,
+        activePanels,
+        lastSelectedAt,
+        terminalScroll,
+      };
       // 当前选中的 session 被销毁 → 取消选中
       if (state.selectedSessionId === action.sessionId) {
         next.selectedSessionId = null;
@@ -466,6 +497,18 @@ function reducer(state: AppState, action: AppAction): AppState {
         };
       }
       return { ...state, selectedSessionId: action.sessionId };
+    }
+
+    case 'view/terminal-scroll': {
+      // 终端视口滚动位置记忆(一等 view state)。TerminalView onScroll 累积后
+      // trailing debounce 写进来;切 session 重挂时 replay fence 读一次恢复。
+      // 写频率已在外层限制,这里只做幂等覆盖。
+      const terminalScroll = new Map(state.terminalScroll);
+      terminalScroll.set(action.sessionId, {
+        topLine: action.topLine,
+        wasAtBottom: action.wasAtBottom,
+      });
+      return { ...state, terminalScroll };
     }
 
     case 'view/toggle-path-expand': {
@@ -577,6 +620,7 @@ export function makeDefaultState(myWindowId: string, myWindowNumber: number): Ap
     filePanels: new Map(),
     activePanels: new Map(),
     lastSelectedAt: new Map(),
+    terminalScroll: new Map(),
     mdThemes: [],
   };
 }
