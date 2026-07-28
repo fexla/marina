@@ -7,11 +7,18 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+## [0.3.2-dev.4] — 2026-07-29
+
+> **开发构建**(AGENTS.md 附录 F)。0.3.2-dev.3 验收后的一批修复:侧栏双击新建闪屏根治、
+> 关闭终端续看按最近使用、切换终端记住滚动位置(重构为一等 view state)、Diff 无行号行 gutter。
+> 仍预告版本号 `0.3.2`,dev 构建标识递增为 `-dev.4`。SemVer 上 `0.3.2-dev.3 < 0.3.2-dev.4 < 0.3.2`。
+> 产物 `Marina-Portable-0.3.2-dev.4-x64.exe`。
+
 ### 修复
 
 - **侧栏双击新建终端不再先闪一下「新建终端」页。** 0.3.2-dev.3 只修了 invoke 返回早于广播的时序类闪屏,漏了一个更根本的来源:双击序列里的第一击 `click` 会先派发 `view/select-path`,该 reducer 在 hideTopTabBar 模式下无条件清空 `selectedSessionId`,于是主区在 `dblclick` 触发 SESSION_CREATE 并返回之前一直显示 EmptyPathState。现给侧栏 `PathItem` 的单击选中加一个双击阈值窗口(230ms)的去抖:`click` 不立即派发选中,而是延后;若在该窗口内收到 `dblclick` 则取消这次选中,双击就只「直接新建终端」而不先切到新建页(标签栏可见模式同样受益)。这是文件管理器/终端启动器的标准 click-vs-dblclick 消歧模式。
 - **关闭终端续看按最近使用顺序选候选。** 关掉当前终端后,若同目录有多个无主(orphan)终端,此前按侧栏/tab 的创建顺序取第一个,不贴合「关一个、看下一个」的直觉。现 store 记每个 session 的最后选中时间戳(`view/select-session` / `sessions/created` 写,`sessions/destroyed` 清),续看选候选改为按该时间戳降序——用户最近还看过的那个终端优先;无记录的(从未在本窗口选过的 orphan)排末尾,之间回退到原顺序做稳定兜底。
-- **切换终端记住各自的滚动位置。** 切走再切回一个终端,此前总是重放 scrollback 后错到底部,用户停在历史位置浏览时被强制拉回最新输出。现 `TerminalView` 用组件外缓存记每个 session 离开时的视口顶行 + 是否贴底:贴底的切回仍错到底部继续自动跟随;停在历史位置的切回恢复到当时的顶行,不被切 session 或后台输出拉到底。缓存随 session 销毁清理,无界累积。
+- **切换终端记住各自的滚动位置(重构为一等 view state)。** 切走再切回一个终端,此前总是重放 scrollback 后错到底部,用户停在历史位置浏览时被强制拉回最新输出。现把位置做成一等 view state 进 store(`terminalScroll: Map<sessionId,{topLine,wasAtBottom}>`),与 activePanels/lastSelectedAt/filePanels 等 per-session view state 同一条数据流——此前曾用模块级隐藏 Map,不进数据流、与既有模式不一致,本轮重构修正。`TerminalView` onScroll 累积到本地 ref + trailing debounce(120ms)写 store,卸载立即 flush;replay fence 读 mount 时快照恢复:贴底的切回仍错到底部继续自动跟随,停在历史位置的切回恢复到当时的顶行,不被切 session / 后台输出拉到底;session 销毁时清理。
 - **Diff 查看 hunk/header 等无行号行不再与代码错位、左侧留突兀空白。** DiffViewer 每行 grid 的首列(gutter)是 auto 宽:有行号的代码行 gutter = 行号槽(固定宽)+ 符号槽,无行号的 hunk header / 文件头行 gutter 只剩符号槽(很窄),导致这些行的文本整体左移、与代码不对齐,且“左侧本该有行号的地方”是空的,看着像漏了内容(验收 E)。改为行号槽始终渲染(无行号时留空),首列宽度在所有行一致,代码体起始终对齐到同一 x,空位变成有意义的「无行号列」而非错位。TextViewer 本就每行都有行号,不受影响。
 
 ## [0.3.2-dev.3] — 2026-07-26
