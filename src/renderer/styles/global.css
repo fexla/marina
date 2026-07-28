@@ -2489,7 +2489,11 @@ html[data-maximized='true'] .app-root.with-shell {
 }
 
 /* gutter(行号 + 行首符号):sticky left:0 水平滚动时钉住。background:inherit 跟随
- * 行底色(add 绿/del 红/hunk 蓝/search-current),挡住横向滚过来的代码。 */
+ * 行底色(add 绿/del 红/hunk 蓝/search-current),挡住横向滚过来的代码。
+ * min-width 保证「无行号行」(hunk header / 文件头等)与「有行号行」的首列宽度一致:
+ * = 行号槽(file-line-number, border-box min-width 3.5em)+ 符号槽(1.5ch)+
+ *   本槽 padding-left(0.5ch)= 3.5em + 2ch。不靠空 span 的 min-width 撑(那在
+ * 某些布局里不可靠),直接给 gutter 本体定 min-width,几何一致才能代码体对齐。 */
 .diff-line-gutter {
   position: sticky;
   left: 0;
@@ -2498,6 +2502,7 @@ html[data-maximized='true'] .app-root.with-shell {
   display: inline-flex;
   align-items: baseline;
   padding-left: 0.5ch;
+  min-width: calc(3.5em + 2ch);
 }
 
 /* 行首 +/- 符号槽:固定宽 + user-select:none → 选中复制行内容不带符号 */

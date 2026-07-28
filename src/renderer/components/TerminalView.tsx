@@ -1130,9 +1130,13 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     const scrollMemoryDisposable = term.onScroll(() => {
       if (!replayed) return;
       const buf = term.buffer.active;
+      // 注意用 viewportY(视口顶部行)而非 baseY:ybase 是「滚动历史总量」
+      // (恒定,随输出增长但不随拖动变),viewportY 才是当前视口顶部行。早期
+      // 实现误用 baseY → 存的值恒等于底部、scrollToLine 永远到底,记忆失效。
+      // (用 node + @xterm/headless 实测确认,scripts/probe-xterm-scroll.mjs。)
       latestScroll = {
-        topLine: buf.baseY,
-        wasAtBottom: buf.baseY + term.rows >= buf.length,
+        topLine: buf.viewportY,
+        wasAtBottom: buf.viewportY + term.rows >= buf.length,
       };
       if (scrollFlushTimer !== null) clearTimeout(scrollFlushTimer);
       scrollFlushTimer = setTimeout(flushScroll, SCROLL_FLUSH_DEBOUNCE_MS);
