@@ -7,6 +7,16 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+## [0.3.2-dev.6] — 2026-07-29
+
+> **开发构建**(AGENTS.md 附录 F)。dev.5 后按人工复验纠正 Diff 查看器的基础布局，
+> 不再用 sticky 遮罩修补正文穿透。SemVer 上 `0.3.2-dev.5 < 0.3.2-dev.6 < 0.3.2`。
+> 产物 `Marina-Portable-0.3.2-dev.6-x64.exe`。
+
+### 修复
+
+- **Diff 行号栏与代码栏改为物理分离的双 pane。** dev.4/dev.5 的根本错误不是某个宽/高 CSS 值,而是布局把 gutter 放在代码横向滚动层里,再靠 sticky + 不透明背景遮住从下面滚过的正文；这让“穿透”成为设计上始终存在、只能打补丁掩盖的问题。现重构为 sibling panes:左 pane 只渲染数字/符号并固定不参与横向滚动,右 pane 独占代码横/纵滚动,两者只同步 `scrollTop`；数字栏有独立边界线,代码在 DOM clipping/布局层就不可能进入数字栏。中键平移、搜索 `scrollIntoView` 都作用于右 pane；鼠标停在左栏滚轮时转发给右 pane。水平滚动条实际高度会补入 gutter 尾部,保证滚到最底两边仍严格对齐。Chromium 几何探针确认横滚 140px 后左侧命中元素仍是 gutter、代码只在右 pane 的 clip 区内显示；100 行滚到底 `lastRowDelta=0`。
+
 ## [0.3.2-dev.5] — 2026-07-29
 
 > **开发构建**(AGENTS.md 附录 F)。dev.4 人工复验确认终端滚动位置与 Diff gutter
@@ -17,7 +27,7 @@
 ### 修复
 
 - **终端滚动恢复改读 live store,焦点不再覆盖 viewport。** dev.4 已把位置重构为 store 一等 view state并改用正确的 `viewportY`,但 replay fence 仍读取 mount 时 `appState` 闭包。旧实例的 passive-effect cleanup 可能晚于新实例 render,导致刚 flush 的位置不在闭包里,恢复分支仍当作“无缓存”到底。现通过 `useAppStateRef()` 在异步 fence 当下读取最新 `terminalScroll`；直接聚焦 xterm helper textarea 统一使用 `preventScroll:true`,防止浏览器为了露出底部光标而把刚恢复的 viewport 再拉到底。
-- **Diff 行号栏与代码栏改为物理分离的双 pane。** dev.4 的根本错误不是某个宽/高 CSS 值,而是布局把 gutter 放在代码横向滚动层里,再靠 sticky + 不透明背景遮住从下面滚过的正文；这让“穿透”成为设计上始终存在、只能打补丁掩盖的问题。现重构为 sibling panes:左 pane 只渲染数字/符号并固定不参与横向滚动,右 pane 独占代码横/纵滚动,两者只同步 `scrollTop`；数字栏有独立边界线,代码在 DOM clipping/布局层就不可能进入数字栏。中键平移、搜索 `scrollIntoView` 都作用于右 pane；鼠标停在左栏滚轮时转发给右 pane。Chromium 几何探针确认横滚 140px 后左侧命中元素仍是 gutter、代码只在右 pane 的 clip 区内显示。
+- **Diff 空 gutter 高度补齐(中间修正,dev.6 进一步改结构)。** 根据截图确认无行号 hunk 在 baseline grid 中 gutter 高度为 0,先用 `align-self:stretch` 补齐不透明背景。后续复盘确认“代码滚在 gutter 下方、靠背景遮住”本身就是错误布局,dev.6 改为真正分离的双 pane。
 
 ## [0.3.2-dev.4] — 2026-07-29
 
