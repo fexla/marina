@@ -7,6 +7,18 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+## [0.3.2-dev.7] — 2026-07-29
+
+> **开发构建**(AGENTS.md 附录 F)。dev.6 人工复验确认 Diff 双 pane 布局正确，
+> 但终端滚动仍未修复；本版停止继续修 replay 标量，改为保留真实 xterm 实例。
+> SemVer 上 `0.3.2-dev.6 < 0.3.2-dev.7 < 0.3.2`。
+> 产物 `Marina-Portable-0.3.2-dev.7-x64.exe`。
+
+### 修复
+
+- **Session 切换改为持久 TerminalDeck，不再销毁/重建 xterm。** dev.4–dev.6 的 `viewportY`、live store、`preventScroll` 都未改变根因：MainPane 每次切换仍按 session key 卸载 TerminalView、`term.dispose()`，再从另一个 headless Terminal 的序列化结果重建，单个行号不可能表达真实 viewport/buffer/reflow 状态。现最多缓存 10 个访问过的 xterm slot，A→B→A 只切换 `visibility/inert/active`；同一 Terminal、DOM node、buffer、viewport 和 selection 原样存活。Main 新增每 Session 唯一只读 view lease：owner=null 时 parked xterm 仍定向接收后台输出，但无 input/resize/文件/Git 权限；跨 client 漏输出时 `continuous=false`，只重建该 slot。parked slot 释放 WebGL、active 再加载，避免 GL context 累积。真实 Electron smoke 创建 A/B、滚 A、让 A parked 期间继续输出、再切回 A，断言 viewport DOM identity 不变、`viewportY` 不变且后台 token 已收到，连续两次通过。
+- **Diff 双栏分隔线不再亮粉。** dev.6 使用了不存在的 `--color-border`，命中调试 fallback `#f0f`。改用项目既有主题策略：`color-mix(var(--color-text-muted) 18%, transparent)`，七套主题均为低对比 hairline。
+
 ## [0.3.2-dev.6] — 2026-07-29
 
 > **开发构建**(AGENTS.md 附录 F)。dev.5 后按人工复验纠正 Diff 查看器的基础布局，
