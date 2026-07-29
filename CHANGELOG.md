@@ -17,7 +17,7 @@
 ### 修复
 
 - **终端滚动恢复改读 live store,焦点不再覆盖 viewport。** dev.4 已把位置重构为 store 一等 view state并改用正确的 `viewportY`,但 replay fence 仍读取 mount 时 `appState` 闭包。旧实例的 passive-effect cleanup 可能晚于新实例 render,导致刚 flush 的位置不在闭包里,恢复分支仍当作“无缓存”到底。现通过 `useAppStateRef()` 在异步 fence 当下读取最新 `terminalScroll`；直接聚焦 xterm helper textarea 统一使用 `preventScroll:true`,防止浏览器为了露出底部光标而把刚恢复的 viewport 再拉到底。
-- **Diff 横向滚动时 hunk/header 正文不再穿透 sticky gutter。** 现场截图确认 dev.4 误把问题当成宽度错位；真正问题是 `.diff-line { align-items:baseline }` 下,无行号 hunk 的 number/sign 都为空,sticky gutter 实测高度为 **0px**,因此横向滚动的蓝色正文直接露进行号区。现给外层 gutter 加 `align-self:stretch`(Chromium 探针:0px → 与行同高 18px),由它作为唯一 sticky/opaque paint layer；嵌套共享行号在 DiffViewer 内复位为非 sticky,避免双重 stacking context。固定宽度只负责几何对齐。
+- **Diff 行号栏与代码栏改为物理分离的双 pane。** dev.4 的根本错误不是某个宽/高 CSS 值,而是布局把 gutter 放在代码横向滚动层里,再靠 sticky + 不透明背景遮住从下面滚过的正文；这让“穿透”成为设计上始终存在、只能打补丁掩盖的问题。现重构为 sibling panes:左 pane 只渲染数字/符号并固定不参与横向滚动,右 pane 独占代码横/纵滚动,两者只同步 `scrollTop`；数字栏有独立边界线,代码在 DOM clipping/布局层就不可能进入数字栏。中键平移、搜索 `scrollIntoView` 都作用于右 pane；鼠标停在左栏滚轮时转发给右 pane。Chromium 几何探针确认横滚 140px 后左侧命中元素仍是 gutter、代码只在右 pane 的 clip 区内显示。
 
 ## [0.3.2-dev.4] — 2026-07-29
 

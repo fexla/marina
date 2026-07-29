@@ -2455,65 +2455,84 @@ html[data-maximized='true'] .app-root.with-shell {
  * business/ubuntu/windows-terminal)自适应。浓度 16%:深浅主题都不刺眼。
  * ───────────────────────────────────────────────────────────────── */
 
-/* v0.3.3:改 grid 双列(gutter | body)。gutter 含行号+符号,sticky left:0
- * 水平滚动时钉住;background:inherit 取所在行底色(add 绿/del 红/hunk 蓝)。
- * body white-space:pre 不换行 → 超宽出水平滚动条(与 TextViewer 同构)。 */
+/* dev.5 验收纠偏:数字/符号栏与代码栏是两个物理分离的 pane,不再把 gutter
+ * 做成代码滚动层里的 sticky 遮罩。右 pane 独占横/纵滚动,左 pane 仅由 React
+ * 同步 scrollTop；因此代码在布局上永远不可能进入数字栏。 */
 .diff-viewer {
   margin: 0;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
   font-family: ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
   font-size: 12px;
   line-height: 1.5;
   color: var(--color-text-primary, #f0f);
-  overflow: auto;
-  height: 100%;
 }
 
-/* .diff-lines:所有行的共同包裹层。width:max-content 让本层宽 = 最宽行的固有宽度,
- * 子 .diff-line(block, fill 本层)宽度随之统一到该最大值,行背景覆盖到 scrollWidth
- * 右端;min-width:100% 保证内容都短时也铺满视口(不留左下空白)。若缺这一层、每行
- * 直接做 .diff-viewer 的 block grid 子项,行背景只画在视口宽 box 上,横向滚动后右侧
- * 裸露无底色(见 DiffViewer.tsx return 处注释)。 */
-.diff-lines {
+/* 左栏不显示自己的滚动条,但可由代码 pane 的 onScroll 设置 scrollTop。
+ * 边界线明确表达“这是独立栏”,不是盖在正文上方的蒙层。 */
+.diff-gutter-pane {
+  min-height: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--color-border, #f0f);
+  background-color: var(--color-bg-primary, #f0f);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 所有用户滚动(横向、纵向、中键平移、搜索 scrollIntoView)只发生在右栏。 */
+.diff-code-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background-color: var(--color-bg-primary, #f0f);
+}
+
+/* 右栏统一到最长行宽,保证 add/del/hunk 行底色覆盖完整 scrollWidth。 */
+.diff-code-lines {
   width: max-content;
   min-width: 100%;
 }
 
-.diff-line {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  align-items: baseline;
-  min-height: 1.5em; /* 空行也占高,保对齐 */
+/* 右栏水平滚动条占用的高度由 useLayoutEffect 实测写入。补到左栏 scrollHeight,
+ * 让两边 maxScrollTop 完全一致,滚到最底也不发生一行左右错位。 */
+.diff-gutter-lines {
+  padding-bottom: var(--diff-horizontal-scrollbar-height, 0);
+}
 
-  /* 基础不透明底:供 gutter background:inherit。各 diff-line-* 下游覆盖。 */
+.diff-gutter-truncated-spacer {
+  min-height: 1.5em;
+}
+
+/* 左右两边都按同一行模型渲染:固定 line-height + min-height,且正文不换行,
+ * 所以对应行高度严格一致,只需同步 scrollTop 不需逐行测量。 */
+.diff-gutter-row,
+.diff-line {
+  min-height: 1.5em;
   background-color: var(--color-bg-primary, #f0f);
 }
 
-/* gutter(行号 + 行首符号):sticky left:0 水平滚动时钉住。
- *
- * 这里必须同时保证「宽」和「高」:
- * - min-width 让无行号的 hunk/header 与普通代码行首列等宽;
- * - align-self:stretch 让空 gutter 仍铺满整行高度并用不透明行底色盖住横向
- *   滚过来的正文。只修宽度会留下验收 E 的穿透:普通行因数字有文字盒所以
- *   看似正常,空 hunk gutter 在 baseline grid 中高度不足,蓝色正文露进行号区。
- *
- * 外层 gutter 是 DiffViewer 唯一的 sticky/paint layer。内层共享
- * .file-line-number 在 TextViewer 里仍 sticky,但在这里下方显式复位。 */
-.diff-line-gutter {
-  position: sticky;
-  left: 0;
-  z-index: 2;
-  align-self: stretch;
-  background-color: inherit;
-  display: inline-flex;
+.diff-gutter-row {
+  display: flex;
   align-items: baseline;
   padding-left: 0.5ch;
-  min-width: calc(3.5em + 2ch);
 }
 
-.diff-line-gutter > .file-line-number {
-  position: static;
-  z-index: auto;
-  background: transparent;
+.diff-gutter-number {
+  display: inline-block;
+  box-sizing: border-box;
+  min-width: 3.5em;
+  padding: 0 12px 0 8px;
+  text-align: right;
+  color: var(--color-text-muted, #f0f);
+  white-space: pre;
+}
+
+.diff-line {
+  display: block;
 }
 
 /* 行首 +/- 符号槽:固定宽 + user-select:none → 选中复制行内容不带符号 */
@@ -2530,10 +2549,9 @@ html[data-maximized='true'] .app-root.with-shell {
   padding-right: 8px;
 }
 
-/* add:绿底(复用 --color-success) */
+/* add:绿底(复用 --color-success)。同一个 kind class 同时用于左 gutter 行与右代码行,
+ * 两个 pane 的行色保持一致,但 DOM/滚动层完全分离。 */
 .diff-line-add {
-  /* 底色用 bg-primary 而非 transparent:让行底不透明,供 .diff-line-gutter 的
-   * background:inherit 遮挡横向滚过来的代码(否则半透明会让代码穿透行号列)。 */
   background-color: color-mix(
     in srgb,
     var(--color-success, #4d8a5e) 16%,

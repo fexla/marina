@@ -38,7 +38,13 @@
  *
  * @对应文档:docs/方案-diff高亮-20260719.md(方案 B 双层高亮)、ADR-017、ADR-019
  */
-import { useMemo, useRef } from 'react';
+import {
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  type UIEvent as ReactUIEvent,
+  type WheelEvent as ReactWheelEvent,
+} from 'react';
 import type { OpenedFile } from '@shared/types';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { useFileContent } from './useFileContent';
@@ -197,7 +203,26 @@ interface ViewerProps {
 export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Element {
   const { tx } = useTranslation();
   const content = useFileContent(sessionId, file.path, file.mtimeMs);
-  const containerRef = useRef<HTMLDivElement | null>(null);
+  // 行号/符号与代码是两个物理分离的滚动 pane。代码 pane 独占横/纵滚动,
+  // gutter 只镜像 scrollTop；这样正文从布局层就不可能滚进行号栏,不需要
+  // sticky + 不透明背景“遮住”正文。
+  const bodyScrollRef = useRef<HTMLDivElement | null>(null);
+  const gutterScrollRef = useRef<HTMLDivElement | null>(null);
+
+  const syncGutterScroll = (event: ReactUIEvent<HTMLDivElement>): void => {
+    if (gutterScrollRef.current) {
+      gutterScrollRef.current.scrollTop = event.currentTarget.scrollTop;
+    }
+  };
+
+  // 鼠标停在 gutter 上滚轮时仍应滚代码 pane；水平滚轮也只交给代码 pane。
+  const forwardGutterWheel = (event: ReactWheelEvent<HTMLDivElement>): void => {
+    const body = bodyScrollRef.current;
+    if (!body) return;
+    // 不 preventDefault:React/Chromium 的 wheel root listener 可能是 passive。
+    // gutter/outer 都是 overflow:hidden,浏览器默认滚动不会产生第二次位移。
+    body.scrollBy({ left: event.deltaX, top: event.deltaY });
+  };
 
   const { rows, truncatedClient } = useMemo(() => {
     if (!content || content.kind !== 'diff') return { rows: null, truncatedClient: false };
@@ -208,20 +233,43 @@ export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
     return { rows: all, truncatedClient: false };
   }, [content]);
 
-  // 文件内查找:CSS Custom Highlight overlay(补 v0.3.1 没做的行内字符高亮)。
-  // skipSelector 跳过行首符号 + 行号槽,只搜代码内容。
+  // 右 pane 的水平滚动条会占掉自身 clientHeight；左 pane 没有滚动条。
+  // 若不补同高的尾部空间,滚到最底时两边 maxScrollTop 不同,最后一行会错位。
+  // 把实际 scrollbar 高度写成 CSS 变量,由 gutter-lines 作为 bottom padding。
+  useLayoutEffect(() => {
+    const body = bodyScrollRef.current;
+    const gutter = gutterScrollRef.current;
+    if (!body || !gutter) return undefined;
+    const updateInset = (): void => {
+      const horizontalScrollbarHeight = Math.max(0, body.offsetHeight - body.clientHeight);
+      gutter.style.setProperty(
+        '--diff-horizontal-scrollbar-height',
+        `${horizontalScrollbarHeight}px`,
+      );
+    };
+    updateInset();
+    const frame = requestAnimationFrame(updateInset);
+    const observer = new ResizeObserver(updateInset);
+    observer.observe(body);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [content, rows]);
+
+  // 文件内查找:只遍历右侧代码 pane。数字/符号栏已是 sibling pane,
+  // 从 DOM 结构上不在搜索容器里,无需 skipSelector 排除。
   useDomTextHighlight({
     sessionId,
-    containerRef,
+    containerRef: bodyScrollRef,
     query: search.query,
     caseSensitive: search.caseSensitive,
     active: search.visible,
     contentVersion: content,
-    skipSelector: '.diff-line-sign, .file-line-number',
   });
 
   // 中键拖动平移(v0.3.3):与 TextViewer 一致,上下左右自动滚动。
-  useMiddleClickPan(containerRef);
+  useMiddleClickPan(bodyScrollRef);
 
   if (!content) {
     return <div className="file-viewer-loading">{tx('加载中…', 'Loading…')}</div>;
@@ -236,46 +284,58 @@ export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
     );
   }
   const displayRows = rows as DiffRow[];
+  const showTruncated = content.truncated || truncatedClient;
 
   return (
-    <div className="diff-viewer" ref={containerRef}>
-      {/* .diff-lines 包裹层:width:max-content + min-width:100%。让所有 .diff-line
-       * 行对齐到「最长行」的宽度(block 子元素 fill 此包裹层),而非各自 = 视口宽。
-       * 这是横向滚动时行背景能一直覆盖到 scrollWidth 右端的关键——若每行直接做
-       * .diff-viewer 的 block grid 子项,其背景只画在视口宽 box 上,滚动后右侧裸露
-       * 无底色。gutter 仍 sticky left:0 相对本滚动容器钉住。 */}
-      <div className="diff-lines">
-        {displayRows.map((row) => (
-          <div key={row.key} data-line={row.key} className={`diff-line diff-line-${row.kind}`}>
-            {/* gutter(行号 + 行首符号):sticky left:0 水平滚动时钉住。background:inherit
-             * 取所在 .diff-line-* 行底色,挡住横向滚过来的代码。
-             * 行号槽始终渲染(无行号的 hunk/header/meta 行留空):.file-line-number
-             * 有固定 min-width,这样每行 grid 的 auto 首列宽度一致,代码体起始终
-             * 对齐到同一 x;否则无行号的行首列只有符号槽(很窄),hunk 文本会左
-             * 移、与代码错位,且左侧「该有数字的地方」留空看着怪(验收 E)。 */}
-            <span className="diff-line-gutter">
-              <span className="file-line-number">
+    <div className="diff-viewer">
+      {/* gutter 与正文是物理分离的 sibling pane。gutter 不参与正文的横向滚动,
+       * 因而不存在“正文滚到下面、再靠 sticky 背景遮住”的重叠关系。 */}
+      <div
+        ref={gutterScrollRef}
+        className="diff-gutter-pane"
+        aria-hidden="true"
+        onWheel={forwardGutterWheel}
+      >
+        <div className="diff-gutter-lines">
+          {displayRows.map((row) => (
+            <div key={row.key} className={`diff-gutter-row diff-line-${row.kind}`}>
+              <span className="diff-gutter-number">
                 {row.lineNum != null ? row.lineNum : ''}
               </span>
               <span className="diff-line-sign">{signFor(row.kind)}</span>
-            </span>
-            {/* hljs 输出只含 class span,无脚本/事件,安全。来源是 GitService 受控文件。 */}
-            <span
-              className="diff-line-body"
-              dangerouslySetInnerHTML={{ __html: row.html || ' ' }}
-            />
-          </div>
-        ))}
-        {(content.truncated || truncatedClient) && (
-          <div className="file-truncated-mark">
-            {truncatedClient
-              ? tx(
-                  `…(diff 过大,仅显示前 ${MAX_RENDER_ROWS} 行)`,
-                  `…(diff too large, showing first ${MAX_RENDER_ROWS} lines only)`,
-                )
-              : tx('…(diff 过大,仅显示前 2MB)', '…(diff too large, showing first 2MB only)')}
-          </div>
-        )}
+            </div>
+          ))}
+          {showTruncated && <div className="diff-gutter-truncated-spacer" />}
+        </div>
+      </div>
+
+      {/* 右 pane 独占横/纵滚动。onScroll 只把 scrollTop 镜像给左 pane；
+       * scrollLeft 永远只存在于此处，所以代码不可能进入数字栏。 */}
+      <div ref={bodyScrollRef} className="diff-code-pane" onScroll={syncGutterScroll}>
+        <div className="diff-code-lines">
+          {displayRows.map((row) => (
+            <div key={row.key} data-line={row.key} className={`diff-line diff-line-${row.kind}`}>
+              {/* hljs 输出只含 class span,无脚本/事件,安全。来源是 GitService 受控文件。 */}
+              <span
+                className="diff-line-body"
+                dangerouslySetInnerHTML={{ __html: row.html || ' ' }}
+              />
+            </div>
+          ))}
+          {showTruncated && (
+            <div className="file-truncated-mark">
+              {truncatedClient
+                ? tx(
+                    `…(diff 过大,仅显示前 ${MAX_RENDER_ROWS} 行)`,
+                    `…(diff too large, showing first ${MAX_RENDER_ROWS} lines only)`,
+                  )
+                : tx(
+                    '…(diff 过大,仅显示前 2MB)',
+                    '…(diff too large, showing first 2MB only)',
+                  )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
