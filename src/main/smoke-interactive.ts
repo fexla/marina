@@ -33,7 +33,8 @@
 import { app, ipcMain, type BrowserWindow } from 'electron';
 
 const MAX_WAIT_FIRST_WINDOW_MS = 8000;
-const TEST_TIMEOUT_MS = 12_000;
+const TEST_TIMEOUT_MS =
+  process.env['MARINA_SMOKE_TERMINAL_DECK'] === '1' ? 22_000 : 12_000;
 
 interface SmokeReport {
   pass: boolean;
@@ -110,7 +111,11 @@ export function installSmokeInteractiveHarness(
       finish(false, `render-process-gone: ${JSON.stringify(details)}`);
     });
     const inject = (): void => {
-      wc.executeJavaScript(buildTestScript(), true).catch((err) => {
+      const script =
+        process.env['MARINA_SMOKE_TERMINAL_DECK'] === '1'
+          ? buildTerminalDeckTestScript()
+          : buildTestScript();
+      wc.executeJavaScript(script, true).catch((err) => {
         finish(false, `executeJavaScript failed: ${err?.message ?? String(err)}`);
       });
     };
@@ -221,6 +226,137 @@ function buildTestScript(): string {
     }, 8000);
   } catch (err) {
     report(false, 'exception: ' + (err && err.message ? err.message : String(err)));
+  }
+})();
+`;
+}
+
+/**
+ * 真实 Electron 终端 deck 冒烟:验证 A→B→A 使用同一个 xterm viewport DOM,
+ * 且 A parked(owner=null)期间仍收到输出、滚动位置不被拉到底。
+ * 启用:MARINA_SMOKE_INTERACTIVE=1 + MARINA_SMOKE_TERMINAL_DECK=1。
+ */
+function buildTerminalDeckTestScript(): string {
+  return `
+(async () => {
+  var t0 = Date.now();
+  var done = false;
+  function report(pass, reason) {
+    if (done) return;
+    done = true;
+    window.api.invoke('smoke:report', {
+      pass: pass,
+      reason: reason,
+      durationMs: Date.now() - t0,
+    }).catch(function () {});
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  async function waitFor(fn, label, timeout) {
+    var end = Date.now() + (timeout || 8000);
+    while (Date.now() < end) {
+      var value = fn();
+      if (value) return value;
+      await sleep(40);
+    }
+    throw new Error('waitFor timeout: ' + label);
+  }
+  async function create(name) {
+    var res = await window.api.invoke('cmd:session:create', { cols: 80, rows: 24 });
+    if (!res || !res.session || !res.session.id) throw new Error('create failed');
+    await window.api.invoke('cmd:session:rename', {
+      sessionId: res.session.id,
+      newDisplayName: name,
+    });
+    return res.session.id;
+  }
+  async function send(sid, text) {
+    var res = await window.api.invoke('cmd:session:send-input', {
+      sessionId: sid,
+      data: btoa(text),
+    });
+    if (!res || res.accepted !== true) throw new Error('send rejected: ' + JSON.stringify(res));
+  }
+  try {
+    var a = await create('DECK_A');
+    var aSlot = await waitFor(function () {
+      return document.querySelector('.terminal-deck-slot[data-session-id="' + a + '"][data-terminal-active="true"]');
+    }, 'A active slot');
+    var aViewport = await waitFor(function () {
+      return aSlot.querySelector('.xterm-viewport');
+    }, 'A viewport');
+
+    var capturedA = '';
+    var offA = window.api.on('evt:session:output', function (payload) {
+      if (payload && payload.sessionId === a) {
+        try { capturedA += atob(payload.data); } catch (_) {}
+      }
+    });
+    await sleep(1500);
+    await send(a, '1..140 | ForEach-Object { Write-Output ("DECK_INIT_" + $_) }\\r');
+    await waitFor(function () {
+      return capturedA.indexOf('DECK_INIT_140') >= 0;
+    }, 'A PTY output token');
+    // xterm 6 使用自绘 scrollbar,原生 viewport.scrollTop 恒定。smoke 通过
+    // TerminalView 的临时 CustomEvent 调公开 scrollLines,再读纯数值 data attr。
+    window.dispatchEvent(
+      new CustomEvent('marina:smoke-terminal-scroll', {
+        detail: { sessionId: a, lines: -40 },
+      }),
+    );
+    await waitFor(function () {
+      var host = aSlot.querySelector('.terminal-host');
+      return (
+        host &&
+        Number(host.dataset.baseY) > 0 &&
+        Number(host.dataset.viewportY) < Number(host.dataset.baseY)
+      );
+    }, 'A scrolled above bottom');
+    var aHost = aSlot.querySelector('.terminal-host');
+    var topBefore = Number(aHost.dataset.viewportY);
+    var baseBefore = Number(aHost.dataset.baseY);
+
+    // 先排入大量 A 输出,立刻创建 B 令 A owner=null。后续 A 输出必须走 parked view。
+    await send(
+      a,
+      '1..40 | ForEach-Object { Write-Output ("DECK_BG_" + $_); Start-Sleep -Milliseconds 25 }\\r',
+    );
+    var b = await create('DECK_B');
+    await waitFor(function () {
+      return document.querySelector('.terminal-deck-slot[data-session-id="' + b + '"][data-terminal-active="true"]');
+    }, 'B active slot');
+    await waitFor(function () {
+      return capturedA.indexOf('DECK_BG_40') >= 0;
+    }, 'A parked output token');
+    await waitFor(function () {
+      return Number(aHost.dataset.baseY) > baseBefore;
+    }, 'A parked xterm parsed output');
+
+    if (!aViewport.isConnected) throw new Error('A viewport DOM was destroyed after switching to B');
+    var parkedTop = Number(aHost.dataset.viewportY);
+    if (parkedTop !== topBefore) {
+      throw new Error('A viewport moved while parked: before=' + topBefore + ' after=' + parkedTop);
+    }
+
+    var aItem = Array.from(document.querySelectorAll('.session-item')).find(function (item) {
+      var name = item.querySelector('.session-name');
+      return name && name.textContent === 'DECK_A';
+    });
+    if (!aItem) throw new Error('A sidebar item not found');
+    aItem.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0 }));
+    var activeA = await waitFor(function () {
+      return document.querySelector('.terminal-deck-slot[data-session-id="' + a + '"][data-terminal-active="true"]');
+    }, 'A reactivated');
+    await sleep(250);
+    var viewportAfter = activeA.querySelector('.xterm-viewport');
+    if (viewportAfter !== aViewport) throw new Error('A viewport node identity changed on A→B→A');
+    var topAfter = Number(activeA.querySelector('.terminal-host').dataset.viewportY);
+    if (topAfter !== topBefore) {
+      throw new Error('A viewport not preserved on return: before=' + topBefore + ' after=' + topAfter);
+    }
+    try { offA && offA(); } catch (_) {}
+    report(true, 'TerminalDeck preserved xterm node + viewportY and consumed parked output');
+  } catch (err) {
+    report(false, 'terminal-deck exception: ' + (err && err.stack ? err.stack : String(err)));
   }
 })();
 `;

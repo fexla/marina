@@ -27,58 +27,42 @@ const RIGHT_DOCK_MIN_WIDTH = 280;
 const RIGHT_DOCK_MAX_WIDTH = 900;
 
 interface LayoutHostProps {
-  session: SessionInfo;
-  /** 由 MainPane 传入的终端主内容；terminal 不走 PanelRegistry。 */
+  /** null = 当前没有 owner session；TerminalDeck 仍必须留在稳定 leaf 中。 */
+  session: SessionInfo | null;
+  /** 由 MainPane 传入的稳定 TerminalDeck；terminal 不走 PanelRegistry。 */
   terminal: ReactNode;
+  /** 设置页/简易模式/功能关闭时只卸载 panel subtree，不移动 terminal leaf。 */
+  panelsEnabled: boolean;
 }
 
-export function LayoutHost({ session, terminal }: LayoutHostProps): JSX.Element {
+/** 受控布局只允许一个 right dock stack；损坏/旧树找不到时降级为纯终端。 */
+function findPanelStack(
+  node: LayoutNode | undefined,
+): Extract<LayoutNode, { kind: 'stack' }> | null {
+  if (!node) return null;
+  if (node.kind === 'stack') return node;
+  if (node.kind !== 'split') return null;
+  for (const child of node.children) {
+    const found = findPanelStack(child);
+    if (found) return found;
+  }
+  return null;
+}
+
+export function LayoutHost({ session, terminal, panelsEnabled }: LayoutHostProps): JSX.Element {
+  const stack = session && panelsEnabled ? findPanelStack(session.uiLayout?.tree) : null;
   return (
     <div className="layout-host">
-      <LayoutNodeView node={session.uiLayout?.tree} session={session} terminal={terminal} />
+      {/* terminal leaf 永远是同一个第一子节点。切 session / blank tab / simple mode /
+       * filePanel enabled 都不能改变它的父链,否则 TerminalDeck 会整体 unmount。 */}
+      <div className="layout-split layout-split-horizontal">
+        <div className="layout-terminal-leaf">{terminal}</div>
+        {stack && session && (
+          <PanelStack key={session.id} node={stack} session={session} />
+        )}
+      </div>
     </div>
   );
-}
-
-function LayoutNodeView({
-  node,
-  session,
-  terminal,
-}: {
-  node: LayoutNode | undefined;
-  session: SessionInfo;
-  terminal: ReactNode;
-}): JSX.Element {
-  // 不应发生（SessionManager 创建时必带树）；保守降级到 terminal，绝不因为一个
-  // 旧/损坏 snapshot 让用户失去 xterm。
-  if (!node) return <div className="layout-terminal-leaf">{terminal}</div>;
-
-  switch (node.kind) {
-    case 'leaf':
-      if (node.panelId === 'terminal')
-        return <div className="layout-terminal-leaf">{terminal}</div>;
-      return <div className="layout-invalid-leaf">Unknown panel: {node.panelId}</div>;
-    case 'split':
-      return (
-        <div className={`layout-split layout-split-${node.direction}`}>
-          {node.children.map((child, index) => (
-            <LayoutNodeView
-              // 树是 main 端静态产品规则，index 在这里稳定；leaf 自身没有可重排 UI。
-              key={`${child.kind}-${index}`}
-              node={child}
-              session={session}
-              terminal={terminal}
-            />
-          ))}
-        </div>
-      );
-    case 'stack':
-      return <PanelStack node={node} session={session} />;
-    default: {
-      const unreachable: never = node;
-      return <div className="layout-invalid-leaf">Unknown layout node: {String(unreachable)}</div>;
-    }
-  }
 }
 
 function panelIdsFromStack(node: Extract<LayoutNode, { kind: 'stack' }>): RegisteredPanelId[] {

@@ -55,13 +55,15 @@ if (typeof electronPath !== 'string') {
 
 // 独立 user-data-dir,避免污染开发者本机 marina 配置;每次跑用新目录,
 // 跑完清理。
+const terminalDeckMode =
+  process.argv.includes('--terminal-deck') || process.env.MARINA_SMOKE_TERMINAL_DECK === '1';
 const userDataDir = mkdtempSync(join(tmpdir(), 'marina-smoke-'));
 console.log(`[smoke-interactive] user-data-dir=${userDataDir}`);
 console.log(`[smoke-interactive] entry=${mainEntry}`);
 console.log(`[smoke-interactive] electron=${electronPath}`);
 
 // 总超时,比 main harness 内部超时(12s)宽 8s,留给子进程清理空间
-const OUTER_TIMEOUT_MS = 20_000;
+const OUTER_TIMEOUT_MS = terminalDeckMode ? 30_000 : 20_000;
 
 let resolved = false;
 let timeoutHandle = null;
@@ -141,6 +143,7 @@ const child = spawn(
     env: {
       ...process.env,
       MARINA_SMOKE_INTERACTIVE: '1',
+      ...(terminalDeckMode ? { MARINA_SMOKE_TERMINAL_DECK: '1' } : {}),
       FORCE_COLOR: '0',
     },
     stdio: ['ignore', 'pipe', 'pipe'],

@@ -4,10 +4,10 @@
  *   (本窗口持有的 session 显示 xterm,否则显示新建终端页面)。
  *
  * @关键设计 (CP-2 勘误后):
- * - "持有 = 显示" 不变量:TerminalView 只在 displayableSession (即 selected
- *   且 owner=myWindow 的) 不为 null 时挂载。selected 但 owner != myWindow
- *   (orphan / 他人持有) 时显示 EmptyPathState 新建终端页 — 没有"接管会话"
- *   占位 UI (用户勘误反思 #3)
+ * - "持有 = 激活" 不变量:displayableSession(selected 且 owner=myWindow)是唯一
+ *   active TerminalView；访问过的其他 xterm 由 TerminalDeck parked 保留(只读、
+ *   inert),切回不销毁/replay。selected 但 owner != myWindow 时仍显示
+ *   EmptyPathState,没有"接管会话"占位 UI (用户勘误反思 #3)
  * - TabBar 顺序稳定:本窗口持有的 + orphan 按 path 下 sessions 的原始顺序
  *   排列;只把"其他窗口持有"的单独抽到最右端灰显 (用户勘误 #1)
  *   Tab 自己根据 session.ownerWindowId 决定 variant
@@ -36,7 +36,7 @@ import {
   useAppDispatch,
   useAppState,
 } from '../store';
-import { TerminalView } from './TerminalView';
+import { TerminalDeck } from './TerminalDeck';
 import { LayoutHost } from './layout/LayoutHost';
 import { focusTerminalDom } from '../focus';
 import { Icon, type IconName } from './icons';
@@ -166,19 +166,13 @@ export function MainPane(): JSX.Element {
     dispatch({ type: 'view/update-terminal-dims', dims: { cols, rows } });
   }, [dispatch, fontSize, lineHeight]);
 
-  if (!state.selectedPathId) {
-    return (
-      <main className="main-pane" ref={containerRef}>
-        <WelcomeState />
-      </main>
-    );
-  }
-
   return (
     <main className="main-pane" ref={containerRef}>
       {/* BETA-027:简易模式下 Tab bar 隐藏(浮动工具栏由 App.tsx 直接渲染)
           issue #4:appearance.hideTopTabBar=true 时也隐藏 TabBar(Sidebar 仍在) */}
-      {!state.simpleMode && !state.settings.appearance?.hideTopTabBar && (
+      {state.selectedPathId &&
+        !state.simpleMode &&
+        !state.settings.appearance?.hideTopTabBar && (
         <TabBar
           sessions={sessions}
           selectedSessionId={state.selectedSessionId}
@@ -186,21 +180,31 @@ export function MainPane(): JSX.Element {
         />
       )}
       <div className="terminal-area">
-        {displayable ? (
-          !state.simpleMode && state.settings.filePanel?.enabled ? (
-            <LayoutHost
-              // LayoutHost 按 session 的 main 端 tree 渲染终端主区 + 固定右 dock。
-              // sessionId 改变时整体重挂，避免 FileTree/FilePanel 暂态串到新 terminal。
-              key={`layout-${displayable.id}`}
-              session={displayable}
-              terminal={<TerminalView key={displayable.id} session={displayable} />}
-            />
-          ) : (
-            <TerminalView key={displayable.id} session={displayable} />
-          )
-        ) : (
-          <EmptyPathState pathId={state.selectedPathId} />
-        )}
+        <LayoutHost
+          session={displayable}
+          panelsEnabled={
+            !!displayable &&
+            !state.inSettingsView &&
+            !state.simpleMode &&
+            state.settings.filePanel?.enabled === true
+          }
+          terminal={
+            <div className="terminal-workspace">
+              <TerminalDeck
+                activeSessionId={state.inSettingsView ? null : (displayable?.id ?? null)}
+              />
+              {!displayable && (
+                <div className="terminal-workspace-overlay">
+                  {state.selectedPathId ? (
+                    <EmptyPathState pathId={state.selectedPathId} />
+                  ) : (
+                    <WelcomeState />
+                  )}
+                </div>
+              )}
+            </div>
+          }
+        />
       </div>
     </main>
   );

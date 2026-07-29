@@ -1094,10 +1094,37 @@ html[data-maximized='true'] .app-root.with-shell {
   opacity: 1;
 }
 
-.app-body {
+.app-content-shell {
+  position: relative;
   flex: 1 1 0;
-  display: flex;
+  min-width: 0;
   min-height: 0;
+  overflow: hidden;
+}
+
+.app-body {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* 设置页覆盖 workspace，而不是替换它。hidden workspace 保留终端几何/输出，
+ * inert 阻止焦点和输入；panel subtree 由 MainPane panelsEnabled=false 卸载。 */
+.app-body.workspace-hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.settings-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  background-color: var(--color-bg-primary, #f0f);
 }
 
 /* ── Sidebar ── */
@@ -1615,6 +1642,65 @@ html[data-maximized='true'] .app-root.with-shell {
   flex: 1 1 0;
   min-width: 0;
   min-height: 0;
+}
+
+/* workspace 外壳/父链永久稳定：Welcome/EmptyPath 只是 overlay，设置/简易模式
+ * 只卸载 panel dock，不得把 TerminalDeck 从 DOM 树挪走。 */
+.terminal-workspace {
+  position: relative;
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.terminal-workspace-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  background-color: var(--color-bg-primary, #f0f);
+}
+
+.terminal-workspace-overlay > * {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* 终端 deck:所有缓存 slot 共用同一真实几何；切 session 只切 visibility,
+ * 不销毁 xterm/viewport。inactive 用 inert + pointer-events:none 保证无输入。
+ * visibility:hidden 保留 layout 尺寸,比 display:none 更适合重新激活时直接 fit。 */
+.terminal-deck {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.terminal-deck-slot {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+.terminal-deck-slot > * {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.terminal-deck-slot.parked {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.terminal-deck-slot.active {
+  visibility: visible;
+  pointer-events: auto;
 }
 
 .panel-dock {
@@ -2477,7 +2563,8 @@ html[data-maximized='true'] .app-root.with-shell {
 .diff-gutter-pane {
   min-height: 0;
   overflow: hidden;
-  border-right: 1px solid var(--color-border, #f0f);
+  border-right: 1px solid
+    color-mix(in srgb, var(--color-text-muted, #888) 18%, transparent);
   background-color: var(--color-bg-primary, #f0f);
   user-select: none;
   -webkit-user-select: none;
@@ -3031,9 +3118,9 @@ html[data-maximized='true'] .app-root.with-shell {
   overflow: hidden;
 }
 
-/* 简易模式 app-body — 之前的浮动工具栏已迁入 terminal-statusbar */
+/* 简易模式仍占满 app-content-shell；只隐藏 Sidebar/Tab bar。 */
 .app-body.simple-mode {
-  position: relative;
+  position: absolute;
 }
 
 /* 状态栏内的"简易模式切换"小按钮 — 紧贴 pid 之后,尺寸服从 11px 状态栏高度 */

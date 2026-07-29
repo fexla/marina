@@ -383,20 +383,25 @@ function ConnectedShell({
                 buildVersion={buildVersion}
                 buildType={buildType}
               />
-              {state.inSettingsView ? (
-                <SettingsView />
-              ) : state.simpleMode ? (
-                // BETA-027:简易页面 — 隐藏 Sidebar / Tab bar,只保留 WindowChrome
-                // + 终端区。退出简易模式的入口现在嵌在 terminal-statusbar 里(pid 之后)。
-                <div className="app-body simple-mode">
-                  <MainPane />
+              {/* MainPane/TerminalDeck 永久挂载。设置页只是 overlay；简易模式只
+               * 增删 keyed Sidebar，不移动 MainPane，避免任何 UI 模式切换销毁 xterm。 */}
+              <div className="app-content-shell">
+                <div
+                  className={`app-body${state.simpleMode ? ' simple-mode' : ''}${
+                    state.inSettingsView ? ' workspace-hidden' : ''
+                  }`}
+                  inert={state.inSettingsView ? '' : undefined}
+                  aria-hidden={state.inSettingsView ? true : undefined}
+                >
+                  {!state.simpleMode && <Sidebar key="sidebar" />}
+                  <MainPane key="main-pane" />
                 </div>
-              ) : (
-                <div className="app-body">
-                  <Sidebar />
-                  <MainPane />
-                </div>
-              )}
+                {state.inSettingsView && (
+                  <div className="settings-layer">
+                    <SettingsView />
+                  </div>
+                )}
+              </div>
             </div>
           </ContextMenuProvider>
         </ModalProvider>

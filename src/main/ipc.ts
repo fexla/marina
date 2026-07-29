@@ -9,7 +9,7 @@
  * - 错误统一通过 throw 让 ipcMain.handle 在 renderer 端 reject promise
  *   (renderer 用 try/catch 捕获带 code 的错误)
  * - Manager 事件 → broadcast/sendTo:广播策略按 ipc-protocol 2.5
- *   (path/settings/window 列表广播全部窗口;session output 仅 owner)
+ *   (path/settings/window 列表广播全部窗口;session output 单目标发 owner 或 parked view)
  *
  * @对应文档章节: docs/ipc-protocol.md 全部
  *
@@ -36,6 +36,7 @@ import {
   getPsCommands,
 } from './explorer-integration';
 import type { ClientRegistry, ClientTransport } from './client-registry';
+import type { TerminalViewRegistry } from './terminal-view-registry';
 import { promises as fs } from 'node:fs';
 import { join as joinPath, isAbsolute as isAbsolutePath } from 'node:path';
 import {
@@ -63,6 +64,9 @@ import {
   type BookmarksUpdatedPayload,
   type ClaimSessionPayload,
   type ClaimSessionResponse,
+  type AttachTerminalViewPayload,
+  type AttachTerminalViewResponse,
+  type DetachTerminalViewPayload,
   type ClipboardReadTextResponse,
   type ClipboardWriteTextPayload,
   type ClipboardWriteTextResponse,
@@ -228,6 +232,8 @@ export interface IpcLayerDeps {
    * 由调用方(index.ts)创建并注入,与 daemon 协调器(remote-daemon.ts)共享同一实例。
    */
   clientRegistry: ClientRegistry;
+  /** 只读终端视图租约；interactive owner 仍由 SessionManager 管理。 */
+  terminalViewRegistry: TerminalViewRegistry;
   /** BETA-031:可选,未注入时 AI_TEST_CONNECTION 返回 ok:false */
   aiClient?: AIClient;
 }
@@ -267,6 +273,7 @@ export function installIpcLayer(deps: IpcLayerDeps): void {
     } satisfies ClientTransport);
   });
   wm.onWindowClosed((windowId) => {
+    deps.terminalViewRegistry.removeClient(windowId);
     reg.remove(windowId);
   });
 
@@ -655,6 +662,52 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   );
 
   registerHandle(
+    COMMAND_CHANNELS.SESSION_ATTACH_TERMINAL_VIEW,
+    async (
+      _e,
+      envelope: CommandEnvelope<AttachTerminalViewPayload>,
+    ): Promise<AttachTerminalViewResponse> => {
+      const { sessionId, viewId } = envelope.payload;
+      const session = sessionManager.get(sessionId);
+      if (!session) {
+        throw new Error(
+          `[ipc] attach terminal view failed: sessionId="${sessionId}" not found. ` +
+            'Possible causes: session was closed, renderer snapshot is stale. Refresh app state.',
+        );
+      }
+      // view 是只读输出租约,但首次/重新 attach 仍只允许当前 interactive owner,
+      // 防止任意窗口订阅另一个窗口正在操作的终端字节流。
+      if (session.ownerWindowId !== envelope.windowId) {
+        throw new Error(
+          `[ipc] attach terminal view rejected: sessionId="${sessionId}" ` +
+            `requester="${envelope.windowId}" owner="${session.ownerWindowId}". ` +
+            'Possible causes: owner changed during tab switch, another window claimed the session. ' +
+            'Wait for the owner snapshot and retry only when this window owns the session.',
+        );
+      }
+      if (typeof viewId !== 'string' || viewId.length < 8 || viewId.length > 128) {
+        throw new Error(
+          `[ipc] attach terminal view rejected: invalid viewId length for sessionId="${sessionId}". ` +
+            'Possible causes: renderer protocol mismatch, corrupted payload. Reload the window.',
+        );
+      }
+      return deps.terminalViewRegistry.attach(sessionId, envelope.windowId, viewId);
+    },
+  );
+
+  registerHandle(
+    COMMAND_CHANNELS.SESSION_DETACH_TERMINAL_VIEW,
+    async (_e, envelope: CommandEnvelope<DetachTerminalViewPayload>): Promise<{ ok: true }> => {
+      deps.terminalViewRegistry.detach(
+        envelope.payload.sessionId,
+        envelope.windowId,
+        envelope.payload.viewId,
+      );
+      return { ok: true };
+    },
+  );
+
+  registerHandle(
     COMMAND_CHANNELS.SESSION_EXPORT_SCROLLBACK,
     async (_e, envelope: CommandEnvelope<{ sessionId: string }>): Promise<{ text: string }> => {
       // BETA-028:工具栏"复制全部"按钮 → 返回 UTF-8 字符串。
@@ -766,15 +819,11 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       // 一个已不归本窗口的 session 仍接受写入(用户视觉上"打字了但没回显",
       // 因为 sessionOutput 推给了真 owner)。
       //
-      // 允许放行的情况:
-      //   - 调用方就是 owner — 正常情况
-      //   - session.ownerWindowId === null(orphan)— renderer 即将 claim,
-      //     允许写入避免乱码丢字符;一旦 claim 成功 sessionOutput 自然推回
-      //
-      // 拒绝的情况:
-      //   - session.ownerWindowId 是其他窗口 — 真的不该写,返回 not-owner
+      // 只有 interactive owner 能写。旧实现放行 owner=null 的“即将 claim”窗口，
+      // 但 TerminalDeck 引入 parked view 后这会让切换边界的延迟 paste/drop 写进
+      // 已隐藏 session；宁可在 claim 完成前拒绝一次，也不能写错终端。
       const sess = sessionManager.get(envelope.payload.sessionId);
-      if (sess && sess.ownerWindowId !== null && sess.ownerWindowId !== envelope.windowId) {
+      if (sess && sess.ownerWindowId !== envelope.windowId) {
         return { accepted: false, reason: 'not-owner' };
       }
       return sessionManager.sendInput(envelope.payload.sessionId, envelope.payload.data);
@@ -784,6 +833,10 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   registerHandle(
     COMMAND_CHANNELS.SESSION_RESIZE,
     (_e, envelope: CommandEnvelope<ResizeSessionPayload>): ResizeSessionResponse => {
+      const session = sessionManager.get(envelope.payload.sessionId);
+      if (session && session.ownerWindowId !== envelope.windowId) {
+        return { accepted: false, reason: 'not-owner' };
+      }
       return sessionManager.resize(
         envelope.payload.sessionId,
         envelope.payload.cols,
@@ -2057,6 +2110,8 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   );
 
   sessionManager.on('sessionDestroyed', (e: SessionDestroyedPayload) => {
+    // 终端视图租约随 session 销毁；renderer cleanup 随后再 detach 也幂等。
+    deps.terminalViewRegistry.removeSession(e.sessionId);
     // 文件面板:session 没了,清掉它的已打开文件 + fs.watch 句柄
     filePanelService.onSessionDestroyed(e.sessionId);
     // v0.3.0:Git 面板同理清掋 watcher + 防抖 timer。
@@ -2097,10 +2152,17 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     broadcastEvent<MdThemeListUpdatedPayload>(EVENT_CHANNELS.MD_THEME_LIST_UPDATED, { themes });
   });
 
-  // Session output → 仅推 owner
+  // Session output → interactive owner 或唯一的 parked TerminalView。
+  // parked view 只维持 xterm 渲染状态,没有 input/resize 权限；每 session 最多
+  // 一个目标,绝不广播。owner 属于其他 client 时 registry 会把旧 view 标记断流。
   sessionManager.on('sessionOutput', (payload: SessionOutputPayload) => {
     const session = sessionManager.get(payload.sessionId);
-    if (!session?.ownerWindowId) return; // 无 owner 不推 (CP-3 写 scrollback)
+    if (!session) return;
+    const targetClientId = deps.terminalViewRegistry.resolveOutputTarget(
+      payload.sessionId,
+      session.ownerWindowId,
+    );
+    if (!targetClientId) return; // 无 owner/view:只保留 main headless 真值
     // 0.3.2 性能诊断:把 renderer 终端字节流的 IPC 发送记为一个 operation。这是
     // 远程/重负载场景的**背压信号**——sendEventTo 同步序列化 base64 payload +
     // 拷贝给 renderer,若 renderer(xterm 解析/GC)跟不上,该调用变慢会卡住 main
@@ -2110,7 +2172,7 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     const finish = performanceMetrics.begin('pty.sessionOutputDispatch');
     try {
       sendEventTo<SessionOutputPayload>(
-        session.ownerWindowId,
+        targetClientId,
         EVENT_CHANNELS.SESSION_OUTPUT,
         payload,
       );

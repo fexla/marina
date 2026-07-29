@@ -286,7 +286,9 @@ v2.0 引入 `clientId` 后,两个字段名容易混淆,明确边界:
 | `cmd:session:resize` | 通知 session 终端尺寸变化 |
 | `cmd:session:rename` | **(M1-C)** 重命名 session 的显示名 |
 | `cmd:session:update-ui-layout` | 更新 session 专属的临时 UI 布局（文件面板宽度/折叠态） |
-| `cmd:session:get-scrollback` | 获取 session 的 scrollback 缓冲(切换 owner 时用) |
+| `cmd:session:get-scrollback` | 获取 session 的完整终端状态重建流(首次 mount/断流恢复) |
+| `cmd:session:attach-terminal-view` | 注册唯一只读终端视图租约(不授予 input/resize owner 权限) |
+| `cmd:session:detach-terminal-view` | 释放匹配 viewId 的终端视图租约 |
 | `cmd:bookmark:add` | 添加收藏路径 |
 | `cmd:bookmark:remove` | 移除收藏 |
 | `cmd:bookmark:rename` | 重命名收藏的显示名 |
@@ -977,22 +979,52 @@ GitPanel 的 unavailable 分支。
 ---
 
 #### `cmd:session:get-scrollback`
-获取 session 的 scrollback 缓冲。一般用于 owner 切换或窗口刷新。
+获取 main 端 headless xterm 序列化的完整终端状态重建流。首次 mount、窗口刷新或
+terminal view 租约断流时使用；同窗口普通 session 切换命中 TerminalDeck 缓存，
+不应调用本命令。
 
 ```typescript
-// Payload
 interface GetScrollbackPayload {
   sessionId: string;
 }
-// Response
 interface GetScrollbackResponse {
-  scrollback: string;           // base64 编码
-  byteCount: number;            // 解码后字节数
+  data: string;                 // 完整 ANSI 状态重建流,base64 编码
+  lastSeq: number;              // 快照时已 emit 的最后 output seq
 }
 ```
 
-**Errors**:
-- `SessionNotFound`
+**Errors**: `SessionNotFound`
+
+#### `cmd:session:attach-terminal-view` (v0.3.2-dev.7)
+当前 owner 注册一个只读 xterm view lease。每 session 最多一个 lease；同一
+`clientId + viewId` 重新 attach 且期间未漏输出时返回 `continuous=true`，renderer
+可直接复用原 Terminal/viewport。lease 与 interactive owner 分离，不能输入、resize
+或访问文件/Git。
+
+```typescript
+interface AttachTerminalViewPayload {
+  sessionId: string;
+  viewId: string;               // renderer mount UUID
+}
+interface AttachTerminalViewResponse {
+  continuous: boolean;
+}
+```
+
+owner=null 时 PTY 输出定向给连续的 parked view；若其他 owner 收过输出，旧 lease
+标记断流，下次 attach 返回 false，renderer 必须换 generation 完整 replay。
+
+#### `cmd:session:detach-terminal-view` (v0.3.2-dev.7)
+
+```typescript
+interface DetachTerminalViewPayload {
+  sessionId: string;
+  viewId: string;
+}
+// Response: { ok: true }
+```
+
+仅当前 lease 的 `clientId + viewId` 完全匹配时删除，旧组件 cleanup 不会误删新租约。
 
 #### `cmd:skill:install-marina` (v2.2)
 将 Marina 内置、受控的 `show-in-marina` skill 复制到选中本地项目。目标目录：Pi
@@ -1870,9 +1902,13 @@ PTY 会产生大量小包(每次 PTY 写都触发 onData)。直接每次都通�
 **Main 端实现**:
 - 每个 session 有一个 16ms 的聚合窗口
 - 16ms 内的所有 onData 字节合并成一个 buffer
-- 每 16ms 发一次 `evt:session:output`,只发给 owner
-- 若 owner 是 null,**不发送但仍写 scrollback**
-- 若 owner 切换,新 owner 通过 `cmd:session:get-scrollback` 拉取历史,再开始接收增量
+- 每个聚合批次发一次 `evt:session:output`,目标严格至多一个:
+  - 有 interactive owner → 发 owner；
+  - owner=null 且有连续的 TerminalView lease → 发 parked view；
+  - 两者都无 → 不发送,但 main headless xterm 仍持续维护真值。
+- parked view 只有只读字节流,不获得输入/resize/文件/Git 权限。
+- 同窗口普通 session 切换保留同一 xterm；跨 client 接管造成断流时才通过
+  `cmd:session:get-scrollback` 完整重建。
 
 ### 8.2 数据格式
 
@@ -1895,11 +1931,12 @@ PTY 会产生大量小包(每次 PTY 写都触发 onData)。直接每次都通�
 
 ### 8.3 Scrollback 大小限制
 
-每个 session 的 scrollback 上限为 **2MB(原始字节)**。超过后旧字节被环形覆盖。
+main 端每个 session 的 headless xterm 使用 **5000 行** scrollback；超出后由 xterm
+按行淘汰旧内容。`cmd:session:get-scrollback` 返回该状态机经 SerializeAddon 生成的完整
+ANSI 重建流(含 normal/alternate buffer、cursor/modes)，不是旧版原始字节 ring。
 
-`cmd:session:get-scrollback` 返回的就是当前的环形 buffer 内容。
-
-V1 不暴露 scrollback 大小给用户配置,V1.1 可加。
+renderer TerminalDeck 也使用 5000 行并最多缓存 10 个终端；真实淘汰或终端应用主动清除的
+历史不由 Marina 额外归档。
 
 ### 8.4 输入方向(Renderer → Main)
 

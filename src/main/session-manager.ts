@@ -11,8 +11,8 @@
  * - **砍掉 5 分钟墓地** (ADR-008):PTY 退出后 session 进入 'exited' 状态,
  *   scrollback 保留,owner 不变,**无时限自动消失**;只能由用户右键关闭
  *   或应用退出销毁。重启功能不再提供。
- * - PTY 字节流仅推送给 owner;新 owner 通过 cmd:session:get-scrollback 拉
- *   历史,渲染端用 lastSeq 去重 evt:session:output
+ * - PTY 字节流由 IPC 层单目标路由给 interactive owner 或唯一 parked view;
+ *   首次 mount/断流才通过 cmd:session:get-scrollback 重建,用 lastSeq 去重
  * - **OSC 1337 解析器**每个 session 一份,从字节流剥离序列后再转发
  *   xterm,避免 OSC 在终端里渲染成乱码
  * - **active / idle 计时**:每次有 passthrough 字节 → state=active + 重置

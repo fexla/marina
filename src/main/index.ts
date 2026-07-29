@@ -32,6 +32,7 @@ import { TemplatesManager } from './templates-manager';
 import { JsonStore } from './persistence';
 import { installIpcLayer, dispatchCommand } from './ipc';
 import { ClientRegistry } from './client-registry';
+import { TerminalViewRegistry } from './terminal-view-registry';
 import { RemoteDaemonController } from './remote-daemon-controller';
 import {
   loadOrGenerateDaemonCredentials,
@@ -549,6 +550,9 @@ function bootstrap(): void {
       // v2.0 dispatcher 基座:本地窗口 + 远程 WS client 都注册于此。
       // 在 installIpcLayer 前创建,远程后端模式下与 daemon 协调器(remote-daemon.ts)共享。
       const clientRegistry = new ClientRegistry();
+      // 每 session 单一只读终端视图租约。与 interactive owner 分离,用于让
+      // 同窗口隐藏 xterm 在 owner=null 期间继续吃输出并保留真实 viewport。
+      const terminalViewRegistry = new TerminalViewRegistry();
 
       // v2.0 远程服务端:加载/生成配对密码(safeStorage 加密持久化)。提前到此处
       // 因为 controller 创建需要 getCredentialsToken。daemon 重启密码不变(client
@@ -582,11 +586,15 @@ function bootstrap(): void {
         },
         // 网络断开立刻撤 demand，避免重连宽限期内继续 HOT poll；Session owner
         // 仍由 RemoteDaemon 原有 10 秒宽限期管理，两套生命周期互不混淆。
-        onClientGone: (clientId) => gitService.removePollingConsumer(clientId),
+        onClientGone: (clientId) => {
+          gitService.removePollingConsumer(clientId);
+          terminalViewRegistry.removeClient(clientId);
+        },
       });
 
       installIpcLayer({
         clientRegistry,
+        terminalViewRegistry,
         windowManager,
         pathManager,
         settingsManager,

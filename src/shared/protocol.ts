@@ -79,6 +79,10 @@ export const COMMAND_CHANNELS = {
   SESSION_SEND_INPUT: 'cmd:session:send-input',
   SESSION_RESIZE: 'cmd:session:resize',
   SESSION_GET_SCROLLBACK: 'cmd:session:get-scrollback',
+  /** 注册一个只读终端视图租约；不授予 input/resize owner 权限。 */
+  SESSION_ATTACH_TERMINAL_VIEW: 'cmd:session:attach-terminal-view',
+  /** 释放匹配 viewId 的终端视图租约(cache eviction / renderer unmount)。 */
+  SESSION_DETACH_TERMINAL_VIEW: 'cmd:session:detach-terminal-view',
   /** BETA-028:导出 scrollback 为 UTF-8 字符串,供终端工具栏"复制全部"按钮 */
   SESSION_EXPORT_SCROLLBACK: 'cmd:session:export-scrollback',
   /** BETA-028:清空 main 端的 scrollback ring buffer(配合 term.clear() 使用) */
@@ -570,6 +574,22 @@ export interface GetScrollbackPayload {
   sessionId: string;
 }
 
+export interface AttachTerminalViewPayload {
+  sessionId: string;
+  /** renderer mount 实例 UUID；防旧 cleanup 删除替代租约。 */
+  viewId: string;
+}
+
+export interface AttachTerminalViewResponse {
+  /** true 表示该 xterm 自上次 attach 起从未漏输出,可原样复用 viewport。 */
+  continuous: boolean;
+}
+
+export interface DetachTerminalViewPayload {
+  sessionId: string;
+  viewId: string;
+}
+
 export interface GetScrollbackResponse {
   /**
    * Base64 编码的 ANSI 重建流(UTF-8 字节)。
@@ -638,7 +658,7 @@ export interface SendInputResponse {
 
 export interface ResizeSessionResponse {
   accepted: boolean;
-  reason?: 'session-not-found' | 'pty-exited' | 'invalid-dimensions';
+  reason?: 'session-not-found' | 'pty-exited' | 'invalid-dimensions' | 'not-owner';
 }
 
 export interface ResizeSessionPayload {

@@ -4,8 +4,10 @@
 > 你正在 YOLO 模式下工作,大部分时间不需要打扰开发者。但有少数情况你必须立刻停下来。
 > 仔细读完整份文件再开始工作。
 
-文档版本:1.9 · 最后更新:2026-07-22
+文档版本:1.10 · 最后更新:2026-07-29
 
+> **v1.10 变更**:新增附录 J「终端视图生命周期规范」—— 对齐 ADR-022，普通 Session 切换必须保留真实 xterm/viewport；固定 TerminalDeck 有界缓存、active/parked 权限边界、单 view lease 输出路由、断流 replay 与本地/远程清理纪律。
+>
 > **v1.9 变更**:新增附录 I「昂贵周期后台任务规范」—— 对齐 ADR-021，固定 HOT/WARM/NONE demand、recursive timeout、全局并发预算、renderer 绝对状态上报及本地/远程 consumer 生命周期清理；禁止昂贵后台工作自行新增固定 `setInterval`。
 >
 > **v1.8 变更**:新增附录 H「性能指标命名 / 隐私 / 开销规范」—— 对齐 ADR-020 与 0.3.2 飞行记录器，固定自动报告只记录数值和固定低基数标签、禁止路径/命令/PTY/IPC payload/stack，operation name 上限与深度 profile 显式确认规则。
@@ -1157,6 +1159,42 @@ package.json: "version": "0.3.1"(保持,直到下次 dev 构建或正式 bump)
 - status 拉取的 in-flight 合并也按 repo 维度：同 repo 任何时刻最多一个 git status。
 - `removePollingConsumer(windowId)` 枚举该窗口持有的 session 逐个撤 demand（demand
   consumerId 是 sessionId，不是 windowId）；detach 后 repo 无 session 时注销 task。
+
+---
+
+## 附录 J:终端视图生命周期规范（ADR-022）
+
+### J.1 普通切换禁止销毁 xterm
+
+- A→B→A 普通 Session 切换必须复用同一个 Terminal、DOM node、buffer 与 viewport。
+- 禁止用 `key=sessionId` 每次重建后再用单个 `viewportY` 猜测恢复；state replay 只用于
+  首次 mount、cache eviction、窗口刷新或 view lease 断流。
+- TerminalDeck 最多缓存 10 个访问过的终端；LRU 淘汰、Session destroy 才可 dispose。
+- LayoutHost/File/Git panel 不进 deck，隐藏 panel 必须 unmount 并维持 NONE demand。
+
+### J.2 active / parked 权限边界
+
+- active slot 是唯一可 focus、input、fit、resize 的终端。
+- parked slot 必须 `visibility:hidden + inert + pointer-events:none`，但继续解析定向输出。
+- WebGL 只允许 active slot 持有；parked 释放 addon 回退 DOM renderer，但不销毁 Terminal core。
+- 全局 focus selector 必须限定 `[data-terminal-active="true"]`，不得命中第一个隐藏 textarea。
+
+### J.3 只读 view lease
+
+- interactive owner 仍是单一真值；view lease 只获得 PTY 输出，绝不放行 input/resize/文件/Git。
+- 每 Session 最多一个 lease；有 owner 发 owner，owner=null 发连续 parked view，绝不广播。
+- `clientId + viewId` 必须匹配；旧 cleanup 不能删除新 lease。
+- 其他 client 接管并产生输出后旧 view 标记 discontinuous；再次 attach 必须换 generation replay。
+- Session destroy、本地窗口关闭、远程 client 断线与 cache eviction 都必须显式清 lease。
+
+### J.4 验证
+
+终端生命周期改动至少跑真实 Electron smoke，断言：
+- A→B→A 的 `.xterm-viewport` DOM identity 不变；
+- A parked 期间仍收到后台 output；
+- 用户停在历史位置时 `viewportY` 切前/parked/切回一致；
+- cache hit 不调用完整 state replay；
+- 原 PTY round-trip smoke、typecheck、lint、全量测试仍通过。
 
 ---
 

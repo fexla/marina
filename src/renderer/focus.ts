@@ -52,7 +52,7 @@ export function focusTerminalDom(): void {
     // 设置视图打开时跳过(用户在编辑设置)
     if (document.querySelector('.settings-view')) return;
     const ta = document.querySelector<HTMLTextAreaElement>(
-      '.xterm-helper-textarea',
+      '[data-terminal-active="true"] .xterm-helper-textarea',
     );
     // helper textarea 跟随终端光标放在当前 cursor 行。若用户停在历史位置,
     // 裸 focus() 会让浏览器为“把 textarea 滚进视口”而移动 xterm viewport,

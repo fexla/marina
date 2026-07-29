@@ -44,8 +44,9 @@
  *      docs/issues/scroll-1-session-switch-progressive-refresh.md 与
  *      docs/键盘交互规范.md(replay 期间 focus 行为不变式)。
  *   后续到达的 output 直接 term.write,无需去重 (lastSeq 为快照时刻)
- * - 用 sessionId 作 React key,session 切换时强制重建 xterm 实例
- *   (避免 viewport / 滚动状态错乱)
+ * - TerminalDeck 以 sessionId:generation 作 key:普通 session 切换只切 slot
+ *   visibility,保留同一个 xterm/viewport；仅 cache eviction、session 销毁或
+ *   view lease 断流时换 generation 重建并 replay
  * - 第一次 fit 后把真实 cols/rows 写回 store.lastTerminalDims,后续
  *   SESSION_CREATE 的初始尺寸用此值,避免 ConPTY spawn-then-resize 的
  *   PowerShell 横幅重画 quirk (用户勘误 #2)
@@ -90,6 +91,7 @@ import { Check, Maximize2, Minimize2, Plus, X } from 'lucide-react';
 import {
   COMMAND_CHANNELS,
   EVENT_CHANNELS,
+  type AttachTerminalViewResponse,
   type CreateSessionResponse,
   type GetScrollbackPayload,
   type GetScrollbackResponse,
@@ -610,13 +612,12 @@ const LIGHT_THEME_MIN_CONTRAST = 4.5;
 const SSH_STARTUP_DA_FILTER_MS = 5000;
 
 interface TerminalViewProps {
-  /**
-   * 必须满足 session.ownerWindowId === state.myWindowId — 父组件 MainPane 通过
-   * getDisplayableSession 强制保证。这里不再做 isOwner=false 的占位 UI。
-   * (myWindowId prop 已删除:本窗口生命周期内不变,不参与 effect deps;
-   *  契约由父组件强制,不需要在本组件运行时再判断。)
-   */
+  /** 首次 mount 时必须是本窗口 owner；进入 deck 后可在 owner=null 时 parked。 */
   session: SessionInfo;
+  /** 只有选中的 slot 可 focus/input/fit/resize；inactive 仍解析定向输出。 */
+  active: boolean;
+  /** view lease 已断流(曾被其他 client 持有)时让 deck 换 key,完整 replay 一次。 */
+  onContinuityLost: (sessionId: string) => void;
 }
 
 /**
@@ -644,11 +645,22 @@ function focusTerminal(
   termRef.current?.focus();
 }
 
-export function TerminalView({ session }: TerminalViewProps): JSX.Element {
+export function TerminalView({
+  session,
+  active,
+  onContinuityLost,
+}: TerminalViewProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
+  const webglRef = useRef<WebglAddon | null>(null);
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const viewIdRef = useRef(crypto.randomUUID());
+  const firstAttachRef = useRef(true);
+  const continuityLostRef = useRef(false);
+  const unmountedRef = useRef(false);
 
   const appState = useAppState();
   // xterm 生命周期 effect 刻意不依赖整个 appState(否则任何 store 更新都会
@@ -677,6 +689,16 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
   const bracketedPaste = appState.settings.behavior?.bracketedPaste ?? true;
   // 终端渲染器选择(mount 时决定,运行时切换需关 tab 重开)
   const terminalRenderer = appState.settings.advanced?.terminalRenderer ?? 'auto';
+  const isLinuxRenderer =
+    typeof navigator !== 'undefined' &&
+    /linux/i.test(navigator.userAgent) &&
+    !/android/i.test(navigator.userAgent);
+  const useWebGLRenderer =
+    terminalRenderer === 'webgl'
+      ? true
+      : terminalRenderer === 'dom'
+        ? false
+        : !isLinuxRenderer;
 
   // 把"创建期"读到的初始值用 useMemo 锁定 (terminal 创建后只用 mutator 调整),
   // 否则每次 settings 引用变化都会重建 xterm 实例。
@@ -700,7 +722,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
   // 这样用户在切换 session 的 100-500ms 间隙敲键,不会误进 Sidebar 改名 /
   // 触发任何 keybinding — replay 完 reveal 后焦点立即归还终端可继续敲。
   //
-  // key={session.id} 强制重建,挂载默认 false → reveal 后 true,无残留。
+  // 首次 mount/断流重建时默认 false → replay 后 true；普通 deck 切换不重建。
   // 详见 docs/issues/scroll-1-session-switch-progressive-refresh.md 与
   // docs/键盘交互规范.md 中"replay 期间按键不响应"决定。
   const [hostRevealed, setHostRevealed] = useState(false);
@@ -764,6 +786,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
 
   const handlePaste = useCallback(async () => {
     try {
+      if (!activeRef.current) return;
       const text = await readClipboardText();
       if (!text) return;
 
@@ -847,6 +870,9 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         }
       }
 
+      // 读剪贴板/等 modal 期间用户可能已切到别的 session。发送前必须再查
+      // active 真值,不能把延迟完成的 paste 写进 parked/orphan 终端。
+      if (!activeRef.current) return;
       // bracketed paste 包裹(可通过 settings.behavior.bracketedPaste 关闭,
       // cmd.exe 等不支持 readline 的 shell 用户应当关闭以免看到字面 marker)
       const payload = bracketedPaste ? `\x1b[200~${text}\x1b[201~` : text;
@@ -858,8 +884,8 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     } catch (err) {
       console.warn('[TerminalView] paste failed', err);
     } finally {
-      // CPB-P1:粘贴完成无论成功失败都归还焦点。
-      focusTerminal(termRef, searchVisibleRef);
+      // CPB-P1:粘贴完成归还焦点；若期间已 parked,绝不能聚焦隐藏 textarea。
+      if (activeRef.current) focusTerminal(termRef, searchVisibleRef);
     }
   }, [session.id, modal, bracketedPaste, tx]);
 
@@ -953,6 +979,91 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     handleCloseSearch,
   };
 
+  // TerminalDeck view lease:inactive 时不 detach,main 在 owner=null 期间仍把输出
+  // 定向给这个唯一 parked view。再次 active 时 attach 返回 continuous=false
+  // 说明曾被别的 client 替换/漏输出,deck 必须换 key 走一次完整 replay。
+  useEffect(() => {
+    if (!active) return;
+    // attach=false 的远程响应可能在用户已切走后才回来。不能因 effect cleanup
+    // 丢掉这个断流事实；下次 active 先换 generation，再做任何 attach。
+    if (continuityLostRef.current) {
+      continuityLostRef.current = false;
+      onContinuityLost(session.id);
+      return;
+    }
+    const firstAttach = firstAttachRef.current;
+    firstAttachRef.current = false;
+    void window.api
+      .invoke<unknown, AttachTerminalViewResponse>(
+        COMMAND_CHANNELS.SESSION_ATTACH_TERMINAL_VIEW,
+        { sessionId: session.id, viewId: viewIdRef.current },
+      )
+      .then((result) => {
+        if (unmountedRef.current) {
+          // cleanup 可能早于远程 attach response；补发 detach,避免幽灵 lease。
+          return window.api.invoke(COMMAND_CHANNELS.SESSION_DETACH_TERMINAL_VIEW, {
+            sessionId: session.id,
+            viewId: viewIdRef.current,
+          });
+        }
+        if (!firstAttach && !result.continuous) {
+          if (activeRef.current) onContinuityLost(session.id);
+          else continuityLostRef.current = true;
+        }
+        return undefined;
+      })
+      .catch((err) => {
+        if (!unmountedRef.current) {
+          // owner 可能在 click/claim 竞态里刚变化；app-state 广播会移除 active。
+          console.warn('[TerminalView] attach terminal view failed', err);
+        }
+      });
+  }, [active, onContinuityLost, session.id]);
+
+  // 只有真正 unmount(cache eviction/session destroy/window teardown)才 detach。
+  // active→inactive 是 parked,必须保留租约和 xterm。
+  useEffect(() => {
+    const sessionId = session.id;
+    const viewId = viewIdRef.current;
+    return () => {
+      unmountedRef.current = true;
+      void window.api
+        .invoke(COMMAND_CHANNELS.SESSION_DETACH_TERMINAL_VIEW, { sessionId, viewId })
+        .catch(() => {});
+    };
+  }, [session.id]);
+
+  // 缓存 slot 重新激活:恢复 WebGL/尺寸/焦点。普通 A→B→A 不重建 Terminal,
+  // xterm 自己保留 viewportY/isUserScrolling,这才是滚动位置的一等真值。
+  useEffect(() => {
+    if (!active) return undefined;
+    const frame = requestAnimationFrame(() => {
+      const term = termRef.current;
+      const fit = fitRef.current;
+      if (!term || !fit) return;
+      try {
+        fit.fit();
+      } catch {
+        return;
+      }
+      if (term.cols >= 20 && term.rows >= 5) {
+        dispatch({
+          type: 'view/update-terminal-dims',
+          dims: { cols: term.cols, rows: term.rows },
+        });
+        void window.api
+          .invoke(COMMAND_CHANNELS.SESSION_RESIZE, {
+            sessionId: session.id,
+            cols: term.cols,
+            rows: term.rows,
+          })
+          .catch(() => {});
+      }
+      if (!searchVisibleRef.current) term.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [active, dispatch, session.id]);
+
   // ── xterm 实例生命周期 ──
   useEffect(() => {
     const container = containerRef.current;
@@ -1015,8 +1126,8 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     // onContextLoss 回退:GPU 被系统抢占 / 显卡驱动崩溃 → WebGL context
     // lost,dispose addon 后 xterm 自动回退 DOM renderer。
 
-    // ↓ 这一段 effect 内部先占位,真正 load 放到 term.open 之后(见下面)
-    let webglAddon: WebglAddon | null = null;
+    // WebGL 实例放 webglRef,active/parked effect 会按 slot 可见性加载/释放；
+    // Terminal core/viewport 不因此销毁。
 
     // disposed 标志在 cleanup 内被置 true,其他异步路径(webfont ready /
     // scrollback chunked write / replay then)读它决定要不要继续 — 必须
@@ -1132,6 +1243,13 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       latestScroll = null;
     };
     const SCROLL_FLUSH_DEBOUNCE_MS = 120;
+    // 真实 Electron deck smoke 临时入口；只调公开 scrollLines,不参与生产交互。
+    const onSmokeScroll = (event: Event): void => {
+      const detail = (event as CustomEvent<{ sessionId: string; lines: number }>).detail;
+      if (detail?.sessionId === session.id) term.scrollLines(detail.lines);
+    };
+    window.addEventListener('marina:smoke-terminal-scroll', onSmokeScroll);
+
     const scrollMemoryDisposable = term.onScroll(() => {
       if (!replayed) return;
       const buf = term.buffer.active;
@@ -1143,6 +1261,10 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         topLine: buf.viewportY,
         wasAtBottom: buf.viewportY + term.rows >= buf.length,
       };
+      // DOM data 只暴露纯数值,供真实 Electron smoke 验证同一 xterm viewport
+      // 在 A→B→A 中未变化；不含 session/path/终端内容。
+      container.dataset.viewportY = String(buf.viewportY);
+      container.dataset.baseY = String(buf.baseY);
       if (scrollFlushTimer !== null) clearTimeout(scrollFlushTimer);
       scrollFlushTimer = setTimeout(flushScroll, SCROLL_FLUSH_DEBOUNCE_MS);
     });
@@ -1327,38 +1449,35 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     //
     // mount 时决定,运行时改设置需重建 xterm 实例(关 tab 重开),因为
     // addon 在 term.open 之后只 load 一次。
-    const isLinux =
-      typeof navigator !== 'undefined' &&
-      /linux/i.test(navigator.userAgent) &&
-      !/android/i.test(navigator.userAgent);
-    const useWebGL =
-      terminalRenderer === 'webgl' ? true : terminalRenderer === 'dom' ? false : !isLinux; // 'auto'
-    if (!useWebGL) {
+    if (!useWebGLRenderer) {
       console.info(
-        `[TerminalView] using DOM renderer (settings.advanced.terminalRenderer=${terminalRenderer}${terminalRenderer === 'auto' && isLinux ? ', Linux auto' : ''})`,
+        `[TerminalView] using DOM renderer (settings.advanced.terminalRenderer=${terminalRenderer}${terminalRenderer === 'auto' && isLinuxRenderer ? ', Linux auto' : ''})`,
       );
-    } else {
+    } else if (activeRef.current) {
       try {
-        webglAddon = new WebglAddon();
-        webglAddon.onContextLoss(() => {
+        const addon = new WebglAddon();
+        webglRef.current = addon;
+        addon.onContextLoss(() => {
           try {
-            webglAddon?.dispose();
+            webglRef.current?.dispose();
           } catch {
             /* ignore */
           }
-          webglAddon = null;
+          webglRef.current = null;
         });
-        term.loadAddon(webglAddon);
+        term.loadAddon(addon);
       } catch (err) {
         console.warn('[TerminalView] WebGL renderer unavailable, falling back to DOM', err);
-        webglAddon = null;
+        webglRef.current = null;
       }
     }
 
-    try {
-      fitAddon.fit();
-    } catch {
-      /* 忽略极小窗口 fit 错误 */
+    if (activeRef.current) {
+      try {
+        fitAddon.fit();
+      } catch {
+        /* 忽略极小窗口 fit 错误 */
+      }
     }
 
     // XTM-9:webfont 首次加载完成时 measure 字符宽度才准。用户切自定义
@@ -1367,7 +1486,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     // document.fonts.ready 是 promise,resolve 时所有 @font-face 已就位。
     if (typeof document !== 'undefined' && document.fonts?.ready) {
       void document.fonts.ready.then(() => {
-        if (disposed) return;
+        if (disposed || !activeRef.current) return;
         try {
           fitAddon.fit();
         } catch {
@@ -1381,30 +1500,27 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     // 在 open() 后才存在,所以 focus 必须在 open() 之后调。
     // 不走 focusTerminal helper:searchVisibleRef 在 mount 时尚未与上层
     // hook 绑定,直接 term.focus() 即可,且 mount 时不可能 search 是开的。
-    term.focus();
+    if (activeRef.current) term.focus();
 
     const cols = term.cols;
     const rows = term.rows;
 
-    // fit 后把精确 cols/rows 写回 store。后续 SESSION_CREATE 调用读
-    // store.lastTerminalDims,确保 spawn PTY 时尺寸已经接近 fit 值,
-    // 避免 ConPTY 的 spawn-then-resize 重画 banner quirk (用户勘误 #2)。
-    dispatch({ type: 'view/update-terminal-dims', dims: { cols, rows } });
+    // fit 后把精确 cols/rows 写回 store并同步 PTY。parked slot 即使因
+    // terminalRenderer 设置变化重建，也不能 fit/resize；重新 active 的 effect
+    // 会在真实可见几何下完成这一步。
+    if (activeRef.current) {
+      dispatch({ type: 'view/update-terminal-dims', dims: { cols, rows } });
 
-    // 启动后无条件同步初始尺寸给 PTY。
-    //
-    // 这里**不**做 "cols/rows 等于 session.cols/session.rows 就跳过" 的短路 —
-    // 该 IPC 同时承担"我刚被显示"的信号功能:主进程 resize() 即便接到 no-op
-    // 尺寸也会打开 RESIZE_QUIET_MS 窗口,压住切 tab / 重挂时 ConPTY 重发屏内容
-    // 引起的 idle session 闪绿(见 session-manager.ts:resize 的勘误注释)。
-    // 跳过 IPC 会让该兜底窗口永远开不起来 — 抖动源 A 的根因。
-    window.api
-      .invoke(COMMAND_CHANNELS.SESSION_RESIZE, {
-        sessionId: session.id,
-        cols,
-        rows,
-      })
-      .catch(() => {});
+      // 不做相同尺寸短路:main resize(no-op)仍会打开 RESIZE_QUIET_MS,
+      // 压住切换时 ConPTY 重发屏内容引起的 idle 闪绿。
+      window.api
+        .invoke(COMMAND_CHANNELS.SESSION_RESIZE, {
+          sessionId: session.id,
+          cols,
+          rows,
+        })
+        .catch(() => {});
+    }
 
     // ── Scrollback replay 协议 ──
     // (replayed 已在上方与 disposed 一起提前声明,onScroll 闭包需读它判 gate)
@@ -1534,7 +1650,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     const RESIZE_DEBOUNCE_MS = 150;
 
     const performResize = (): void => {
-      if (disposed) return;
+      if (disposed || !activeRef.current) return;
       try {
         fitAddon.fit();
       } catch (err) {
@@ -1613,6 +1729,9 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       ? Date.now() + SSH_STARTUP_DA_FILTER_MS
       : 0;
     const dataHandler = term.onData((data) => {
+      // hidden parked slot 永远没有输入权；即使浏览器焦点切换边界漏来一个 onData,
+      // 也不把字节送给 owner=null/别的 session。
+      if (!activeRef.current) return;
       // [IME-1 PROBE A] 临时探针 — 检测 onData 收到的 data 是否疑似
       // "textarea 累积历史被冲刷出去"。判定下沉到 isLikelyHistoryFlush
       // (依赖 data.length + taLen 两个字段,不依赖子串比较,边界稳健):
@@ -1712,6 +1831,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       dataHandler.dispose();
       searchResultsDisposable?.dispose();
       scrollMemoryDisposable.dispose();
+      window.removeEventListener('marina:smoke-terminal-scroll', onSmokeScroll);
       // 滚动位置记忆:卸载前立即 flush 最后一帧(取消 pending debounce timer,
       // 同步把最新位置写 store),保证切走的 session 重挂时能精确恢复。
       if (scrollFlushTimer !== null) {
@@ -1723,10 +1843,11 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
       // PER-1:WebGL addon 必须在 term.dispose 之前释放,否则 GL context
       // 句柄泄漏(显存累积,大量切 session 后会触发显卡警告)
       try {
-        webglAddon?.dispose();
+        webglRef.current?.dispose();
       } catch {
         /* ignore */
       }
+      webglRef.current = null;
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
@@ -1734,6 +1855,38 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.id, terminalRenderer]);
+
+  // parked slot 不保留 WebGL context(否则 10 个缓存终端会累积 GL 句柄)；
+  // 只释放/重装 renderer addon,Terminal core、DOM 与 viewport 原样保留。
+  useEffect(() => {
+    if (!active) {
+      try {
+        webglRef.current?.dispose();
+      } catch {
+        /* ignore */
+      }
+      webglRef.current = null;
+      return;
+    }
+    const term = termRef.current;
+    if (!term || !useWebGLRenderer || webglRef.current) return;
+    try {
+      const addon = new WebglAddon();
+      webglRef.current = addon;
+      addon.onContextLoss(() => {
+        try {
+          webglRef.current?.dispose();
+        } catch {
+          /* ignore */
+        }
+        webglRef.current = null;
+      });
+      term.loadAddon(addon);
+    } catch (err) {
+      console.warn('[TerminalView] WebGL reactivate failed, staying on DOM renderer', err);
+      webglRef.current = null;
+    }
+  }, [active, useWebGLRenderer]);
 
   // 主题运行时切换
   useEffect(() => {
@@ -1748,12 +1901,12 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
   // 才能让 focus 落上。不走 focusTerminalDom(它有 Modal/Settings/searchBar
   // guard,reveal 时这些 guard 通常不该挡 — 直接 termRef.focus 更明确)。
   useEffect(() => {
-    if (!hostRevealed) return;
+    if (!hostRevealed || !active) return;
     if (searchVisibleRef.current) return; // 搜索栏在,焦点留搜索 input
     requestAnimationFrame(() => {
       termRef.current?.focus();
     });
-  }, [hostRevealed]);
+  }, [active, hostRevealed]);
 
   // FLK-10:session.state='exited' 时 stop 光标闪烁,避免"会话已死但光标
   // 在闪"误导用户以为还能交互(配合 TYP-1 的 toast,死后输入有可见反馈)。
@@ -1781,7 +1934,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     term.options.fontFamily = fontFamily;
     term.options.fontSize = fontSize;
     term.options.lineHeight = lineHeight;
-    if (fit) {
+    if (fit && activeRef.current) {
       try {
         fit.fit();
       } catch {
@@ -1893,6 +2046,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
   const handleTerminalDrop = useCallback(
     async (e: ReactDragEvent<HTMLDivElement>) => {
       e.preventDefault();
+      if (!activeRef.current) return;
       e.stopPropagation();
       const files = Array.from(e.dataTransfer.files);
       if (files.length === 0) return;
@@ -1920,6 +2074,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         });
         if (!ok) return;
       }
+      if (!activeRef.current) return;
       const quoted = paths
         // Windows 路径不允许包含 ",所以只需对含空白的路径加双引号即可。
         .map((p) => (/\s/.test(p) ? `"${p}"` : p))
@@ -1931,10 +2086,8 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
           data: base64,
         })
         .catch((err) => console.error('[TerminalView] drop send-input failed', err));
-      // CPB-DROP-1:统一走 focusTerminal helper(原 termRef.current?.focus()
-      // 是 paste/copy 之外开发者偶尔记得的不一致情况;现在所有副作用都走
-      // 同一接口,搜索栏可见时自动跳过)。
-      focusTerminal(termRef, searchVisibleRef);
+      // CPB-DROP-1:统一走 focusTerminal helper；异步期间若已 parked 则不抢焦点。
+      if (activeRef.current) focusTerminal(termRef, searchVisibleRef);
     },
     [session.id, modal],
   );
