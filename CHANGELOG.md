@@ -7,6 +7,18 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+## [0.3.2-dev.5] — 2026-07-29
+
+> **开发构建**(AGENTS.md 附录 F)。dev.4 人工复验确认终端滚动位置与 Diff gutter
+> 两项旧修均未命中真正运行时问题；本版依据现场截图、React effect 时序与 Chromium
+> 几何探针重新定位。SemVer 上 `0.3.2-dev.4 < 0.3.2-dev.5 < 0.3.2`。
+> 产物 `Marina-Portable-0.3.2-dev.5-x64.exe`。
+
+### 修复
+
+- **终端滚动恢复改读 live store,焦点不再覆盖 viewport。** dev.4 已把位置重构为 store 一等 view state并改用正确的 `viewportY`,但 replay fence 仍读取 mount 时 `appState` 闭包。旧实例的 passive-effect cleanup 可能晚于新实例 render,导致刚 flush 的位置不在闭包里,恢复分支仍当作“无缓存”到底。现通过 `useAppStateRef()` 在异步 fence 当下读取最新 `terminalScroll`；直接聚焦 xterm helper textarea 统一使用 `preventScroll:true`,防止浏览器为了露出底部光标而把刚恢复的 viewport 再拉到底。
+- **Diff 横向滚动时 hunk/header 正文不再穿透 sticky gutter。** 现场截图确认 dev.4 误把问题当成宽度错位；真正问题是 `.diff-line { align-items:baseline }` 下,无行号 hunk 的 number/sign 都为空,sticky gutter 实测高度为 **0px**,因此横向滚动的蓝色正文直接露进行号区。现给外层 gutter 加 `align-self:stretch`(Chromium 探针:0px → 与行同高 18px),由它作为唯一 sticky/opaque paint layer；嵌套共享行号在 DiffViewer 内复位为非 sticky,避免双重 stacking context。固定宽度只负责几何对齐。
+
 ## [0.3.2-dev.4] — 2026-07-29
 
 > **开发构建**(AGENTS.md 附录 F)。0.3.2-dev.3 验收后的一批修复:侧栏双击新建闪屏根治、
@@ -18,8 +30,8 @@
 
 - **侧栏双击新建终端不再先闪一下「新建终端」页。** 0.3.2-dev.3 只修了 invoke 返回早于广播的时序类闪屏,漏了一个更根本的来源:双击序列里的第一击 `click` 会先派发 `view/select-path`,该 reducer 在 hideTopTabBar 模式下无条件清空 `selectedSessionId`,于是主区在 `dblclick` 触发 SESSION_CREATE 并返回之前一直显示 EmptyPathState。现给侧栏 `PathItem` 的单击选中加一个双击阈值窗口(230ms)的去抖:`click` 不立即派发选中,而是延后;若在该窗口内收到 `dblclick` 则取消这次选中,双击就只「直接新建终端」而不先切到新建页(标签栏可见模式同样受益)。这是文件管理器/终端启动器的标准 click-vs-dblclick 消歧模式。
 - **关闭终端续看按最近使用顺序选候选。** 关掉当前终端后,若同目录有多个无主(orphan)终端,此前按侧栏/tab 的创建顺序取第一个,不贴合「关一个、看下一个」的直觉。现 store 记每个 session 的最后选中时间戳(`view/select-session` / `sessions/created` 写,`sessions/destroyed` 清),续看选候选改为按该时间戳降序——用户最近还看过的那个终端优先;无记录的(从未在本窗口选过的 orphan)排末尾,之间回退到原顺序做稳定兜底。
-- **切换终端记住各自的滚动位置(重构为一等 view state,修字段 bug)。** 切走再切回一个终端,此前总是重放 scrollback 后错到底部,用户停在历史位置浏览时被强制拉回最新输出。现把位置做成一等 view state 进 store(`terminalScroll: Map<sessionId,{topLine,wasAtBottom}>`),与 activePanels/lastSelectedAt/filePanels 等 per-session view state 同一条数据流——此前曾用模块级隐藏 Map,不进数据流、与既有模式不一致,本轮重构修正。`TerminalView` onScroll 累积到本地 ref + trailing debounce(120ms)写 store,卸载立即 flush;replay fence 从 `useAppStateRef()` 读取**当下最新**状态再恢复:旧实例的 passive-effect cleanup 可能晚于新实例 render,若读 mount 时闭包会看不到刚 flush 的位置并走默认到底。贴底的切回仍到底继续自动跟随,停在历史位置的切回恢复到当时顶行;session 销毁时清理。焦点归还 helper textarea 统一加 `preventScroll:true`,避免浏览器为了露出底部光标而覆盖刚恢复的 viewport。另修正字段:`buf.baseY` 是滚动历史总量、不随拖动变;正确视口顶行是 `buf.viewportY`(用 `@xterm/headless` 探针验证,scripts/probe-xterm-scroll.mjs)。
-- **Diff 横向滚动时 hunk/header 正文不再穿透 sticky gutter。** 用户截图确认真正问题不是“空行号槽宽度”:蓝色 `@@ ... @@` hunk 行横向滚动后,正文会露进行号区;此前只加空行号 span / `min-width` 所以视觉完全不变。根因是 `.diff-line { align-items:baseline }`:无行号 hunk 的 number/sign 都为空,整个 gutter 实测高度为 **0px**,虽有宽度却没有不透明背景可挡正文;普通数字行因有文字盒而正常。现给外层 gutter 加 `align-self:stretch`(Chromium 探针:0px → 与行同高 18px),由它作为唯一 sticky/opaque paint layer;嵌套的共享 `.file-line-number` 在 DiffViewer 内复位为非 sticky,避免双重 stacking context。保留固定宽度只负责几何对齐。
+- **切换终端滚动位置进入 store(首次实现,dev.5 继续纠偏)。** 将位置做成一等 view state(`terminalScroll: Map<sessionId,{topLine,wasAtBottom}>`),onScroll debounce 写、卸载 flush、session 销毁清理；修正 `baseY`/`viewportY` 字段误用。人工复验发现异步 fence 仍读取 mount 时闭包,所以本版并未真正解决切换后恢复,后续由 dev.5 修复。
+- **Diff 无行号 gutter 首次宽度修正(dev.5 继续纠偏)。** 始终渲染空行号槽并固定 gutter 宽度,保证 hunk/header 与普通代码行的正文起点一致。人工复验截图确认真正问题是空 gutter 高度为 0 导致横向正文穿透,所以宽度修正视觉上没有解决主诉；后续由 dev.5 修复。
 
 ## [0.3.2-dev.3] — 2026-07-26
 
