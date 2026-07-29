@@ -108,7 +108,7 @@ import {
 } from '@shared/ime-probe-ring';
 import { isDeviceAttributesResponse } from '@shared/terminal-input-filter';
 import { activateMarinaUnicodeWidth } from '@shared/terminal-unicode-width';
-import { useAppDispatch, useAppState } from '../store';
+import { useAppDispatch, useAppState, useAppStateRef } from '../store';
 import { useCloseSession } from '../hooks/useCloseSession';
 import { readClipboardText, writeClipboardText } from '../clipboard';
 import { Icon } from './icons';
@@ -651,6 +651,11 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
   const searchRef = useRef<SearchAddon | null>(null);
 
   const appState = useAppState();
+  // xterm 生命周期 effect 刻意不依赖整个 appState(否则任何 store 更新都会
+  // dispose/recreate 终端)。异步 replay fence 必须从此 ref 读最新 store,
+  // 不能读 mount 时闭包:旧 TerminalView 的 cleanup dispatch 可能晚于新实例
+  // render,闭包会看不到刚 flush 的 terminalScroll。
+  const appStateRef = useAppStateRef();
   const dispatch = useAppDispatch();
   const { t, tx } = useTranslation();
   const simpleMode = appState.simpleMode;
@@ -1118,9 +1123,6 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
     let scrollFlushTimer: ReturnType<typeof setTimeout> | null = null;
     const flushScroll = (): void => {
       if (!latestScroll) return;
-      console.log(
-        `[scrollmem] save sid=${session.id.slice(0, 8)} topLine=${latestScroll.topLine} wasAtBottom=${latestScroll.wasAtBottom}`,
-      );
       dispatch({
         type: 'view/terminal-scroll',
         sessionId: session.id,
@@ -1482,18 +1484,15 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         term.write('', () => {
           if (disposed) return;
           // 滚动位置记忆(位置是一等 view state,在 store.terminalScroll):
-          // 取 mount 时的快照恢复。贴底/无缓存 → scrollToBottom 继续跟随;
-          // 不贴底 → scrollToLine(topLine) 回到离开时的位置,不被切 session /
-          // 后台输出拉到底。topLine 超出现 buffer 时 xterm 会钳制到合法范围。
-          const mem = appState.terminalScroll.get(session.id);
-          console.log(
-            `[scrollmem] restore(ok) sid=${session.id.slice(0, 8)} mem=${JSON.stringify(mem)} viewportYNow=${term.buffer.active.viewportY} len=${term.buffer.active.length}`,
-          );
+          // 贴底/无缓存 → scrollToBottom 继续跟随;不贴底 →
+          // scrollToLine(topLine) 回到离开时的位置。topLine 超出现 buffer 时
+          // xterm 会钳制到合法范围。
+          // 必须在 fence 当下读 live ref。旧实例 cleanup 的最后一次 scroll
+          // flush 发生在 keyed replacement 的 passive-effect cleanup；新实例在
+          // 此前已 render，若读 appState 闭包就可能永远得到「无缓存」并到底。
+          const mem = appStateRef.current.terminalScroll.get(session.id);
           if (mem && !mem.wasAtBottom) {
             term.scrollToLine(mem.topLine);
-            console.log(
-              `[scrollmem]   → scrollToLine(${mem.topLine}) → viewportY=${term.buffer.active.viewportY}`,
-            );
           } else {
             term.scrollToBottom();
           }
@@ -1515,10 +1514,7 @@ export function TerminalView({ session }: TerminalViewProps): JSX.Element {
         // 永远是隐藏的,用户看不到任何输出。
         term.write('', () => {
           if (disposed) return;
-          const mem = appState.terminalScroll.get(session.id);
-          console.log(
-            `[scrollmem] restore(catch) sid=${session.id.slice(0, 8)} mem=${JSON.stringify(mem)}`,
-          );
+          const mem = appStateRef.current.terminalScroll.get(session.id);
           if (mem && !mem.wasAtBottom) {
             term.scrollToLine(mem.topLine);
           } else {

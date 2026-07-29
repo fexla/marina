@@ -38,7 +38,7 @@
  *
  * @对应文档:docs/方案-diff高亮-20260719.md(方案 B 双层高亮)、ADR-017、ADR-019
  */
-import { useEffect, useMemo, useRef } from 'react';
+import { useMemo, useRef } from 'react';
 import type { OpenedFile } from '@shared/types';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { useFileContent } from './useFileContent';
@@ -207,22 +207,6 @@ export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
     }
     return { rows: all, truncatedClient: false };
   }, [content]);
-
-  // [诊断,临时] 统计每类行有多少、其中多少有行号。排查「无行号行」验收 E。
-  useEffect(() => {
-    if (!rows) return;
-    const byKind: Record<string, number> = {};
-    let withNum = 0;
-    let withoutNum = 0;
-    for (const r of rows) {
-      byKind[r.kind] = (byKind[r.kind] ?? 0) + 1;
-      if (r.lineNum != null) withNum++;
-      else withoutNum++;
-    }
-    console.log(
-      `[diffdiag] ${file.path.split(/[\\/]/).pop()} rows=${rows.length} withNum=${withNum} withoutNum=${withoutNum} byKind=${JSON.stringify(byKind)}`,
-    );
-  }, [rows, file.path]);
 
   // 文件内查找:CSS Custom Highlight overlay(补 v0.3.1 没做的行内字符高亮)。
   // skipSelector 跳过行首符号 + 行号槽,只搜代码内容。

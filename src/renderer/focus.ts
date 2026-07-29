@@ -54,6 +54,9 @@ export function focusTerminalDom(): void {
     const ta = document.querySelector<HTMLTextAreaElement>(
       '.xterm-helper-textarea',
     );
-    ta?.focus();
+    // helper textarea 跟随终端光标放在当前 cursor 行。若用户停在历史位置,
+    // 裸 focus() 会让浏览器为“把 textarea 滚进视口”而移动 xterm viewport,
+    // 把刚恢复的位置重新拉到底。xterm 自身 focus() 也明确使用同一选项。
+    ta?.focus({ preventScroll: true });
   });
 }
