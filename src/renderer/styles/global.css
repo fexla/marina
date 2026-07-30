@@ -1898,6 +1898,13 @@ html[data-maximized='true'] .app-root.with-shell {
   -webkit-user-select: text;
 }
 
+/* Text/Diff 有自己的双轴 scroller，外层必须彻底不滚，避免两个 scrollTop 叠加。
+ * Markdown/Image/Unknown 继续由 file-panel-body 负责文档级纵向滚动。 */
+.file-panel-body[data-viewer-kind='text'],
+.file-panel-body[data-viewer-kind='diff'] {
+  overflow: hidden;
+}
+
 /* body 里是自带背景的 .markdown-body 时,去掉本容器 padding,让 .markdown-body
  * 撑满整个可视区 —— 它的自带背景(github 白/深、custom 用户的米黄…)覆盖整片,
  * 不再"内容区周围一圈 marina 主题色",短内容时下方也不露 marina。
@@ -2563,8 +2570,7 @@ html[data-maximized='true'] .app-root.with-shell {
 .diff-gutter-pane {
   min-height: 0;
   overflow: hidden;
-  border-right: 1px solid
-    color-mix(in srgb, var(--color-text-muted, #888) 18%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--color-text-muted, #888) 18%, transparent);
   background-color: var(--color-bg-primary, #f0f);
   user-select: none;
   -webkit-user-select: none;

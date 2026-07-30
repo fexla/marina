@@ -31,10 +31,15 @@
  * @对应文档章节: AGENTS.md 5.3 必测项的"端到端冒烟"补强
  */
 import { app, ipcMain, type BrowserWindow } from 'electron';
+import { writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 const MAX_WAIT_FIRST_WINDOW_MS = 8000;
 const TEST_TIMEOUT_MS =
-  process.env['MARINA_SMOKE_TERMINAL_DECK'] === '1' ? 22_000 : 12_000;
+  process.env['MARINA_SMOKE_TERMINAL_DECK'] === '1' ||
+  process.env['MARINA_SMOKE_FILE_VIEWER_SCROLL'] === '1'
+    ? 22_000
+    : 12_000;
 
 interface SmokeReport {
   pass: boolean;
@@ -49,9 +54,7 @@ interface SmokeReport {
  *   BrowserWindow 的 getter。main 启动期 createWindowFromFactory 后窗口
  *   就在了,但 contents 加载是异步的,因此这里轮询等 first window 出现。
  */
-export function installSmokeInteractiveHarness(
-  getFirstWindow: () => BrowserWindow | null,
-): void {
+export function installSmokeInteractiveHarness(getFirstWindow: () => BrowserWindow | null): void {
   const t0 = Date.now();
   let finished = false;
   const finish = (pass: boolean, reason: string): void => {
@@ -59,9 +62,7 @@ export function installSmokeInteractiveHarness(
     finished = true;
     const ms = Date.now() - t0;
     // stdout 单行 token,外部 scripts/smoke-interactive.mjs 据此判断结果
-    process.stdout.write(
-      `[smoke-interactive] ${pass ? 'PASS' : 'FAIL'} ${ms}ms — ${reason}\n`,
-    );
+    process.stdout.write(`[smoke-interactive] ${pass ? 'PASS' : 'FAIL'} ${ms}ms — ${reason}\n`);
     // 给 stdout flush + Electron 内部清理一点时间再退
     setTimeout(() => app.exit(pass ? 0 : 1), 100);
   };
@@ -103,18 +104,18 @@ export function installSmokeInteractiveHarness(
     // 把 renderer 的 console.log / warn / error 全转到 main stdout,
     // smoke 失败时 stack trace 可见
     wc.on('console-message', (_e, level, message, line, sourceId) => {
-      process.stdout.write(
-        `[renderer console L${level} ${sourceId}:${line}] ${message}\n`,
-      );
+      process.stdout.write(`[renderer console L${level} ${sourceId}:${line}] ${message}\n`);
     });
     wc.on('render-process-gone', (_e, details) => {
       finish(false, `render-process-gone: ${JSON.stringify(details)}`);
     });
     const inject = (): void => {
       const script =
-        process.env['MARINA_SMOKE_TERMINAL_DECK'] === '1'
-          ? buildTerminalDeckTestScript()
-          : buildTestScript();
+        process.env['MARINA_SMOKE_FILE_VIEWER_SCROLL'] === '1'
+          ? buildFileViewerScrollTestScript()
+          : process.env['MARINA_SMOKE_TERMINAL_DECK'] === '1'
+            ? buildTerminalDeckTestScript()
+            : buildTestScript();
       wc.executeJavaScript(script, true).catch((err) => {
         finish(false, `executeJavaScript failed: ${err?.message ?? String(err)}`);
       });
@@ -357,6 +358,271 @@ function buildTerminalDeckTestScript(): string {
     report(true, 'TerminalDeck preserved xterm node + viewportY and consumed parked output');
   } catch (err) {
     report(false, 'terminal-deck exception: ' + (err && err.stack ? err.stack : String(err)));
+  }
+})();
+`;
+}
+
+/**
+ * 真实 Electron 文件预览滚动冒烟：覆盖用户实际的三条切换路径——
+ * panel tab、同 session 文件 tab、终端 session。每次返回 Markdown 都断言
+ * .file-panel-body 的真实 scrollTop，而不是只断言 store 里的数字。
+ *
+ * 启用:MARINA_SMOKE_INTERACTIVE=1 + MARINA_SMOKE_FILE_VIEWER_SCROLL=1。
+ */
+function buildFileViewerScrollTestScript(): string {
+  const projectRoot = JSON.stringify(resolve(process.cwd()));
+  const markdownPath = JSON.stringify(resolve(process.cwd(), 'AGENTS.md'));
+  const secondMarkdownPath = JSON.stringify(resolve(process.cwd(), 'README.md'));
+  const textPath = JSON.stringify(resolve(process.cwd(), 'src/renderer/styles/global.css'));
+  // fixture 只写 smoke 独占 userData；外层 runner 退出后递归删除，不碰项目/用户数据。
+  const diffFixturePath = resolve(app.getPath('userData'), 'file-scroll-fixture.diff');
+  const diffRows = Array.from(
+    { length: 260 },
+    (_, index) => ` context_${index + 1}_${'long_column_'.repeat(24)}`,
+  );
+  writeFileSync(
+    diffFixturePath,
+    [
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -1,260 +1,260 @@',
+      ...diffRows,
+    ].join('\n'),
+    'utf8',
+  );
+  const diffPath = JSON.stringify(diffFixturePath);
+  return `
+(async () => {
+  var t0 = Date.now();
+  var done = false;
+  var projectRoot = ${projectRoot};
+  var markdownPath = ${markdownPath};
+  var secondMarkdownPath = ${secondMarkdownPath};
+  var textPath = ${textPath};
+  var diffPath = ${diffPath};
+  function report(pass, reason) {
+    if (done) return;
+    done = true;
+    window.api.invoke('smoke:report', {
+      pass: pass,
+      reason: reason,
+      durationMs: Date.now() - t0,
+    }).catch(function () {});
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  async function waitFor(fn, label, timeout) {
+    var end = Date.now() + (timeout || 8000);
+    while (Date.now() < end) {
+      var value = fn();
+      if (value) return value;
+      await sleep(40);
+    }
+    throw new Error('waitFor timeout: ' + label);
+  }
+  async function create(name, pathId) {
+    var res = await window.api.invoke('cmd:session:create', {
+      pathId: pathId,
+      cols: 80,
+      rows: 24,
+    });
+    if (!res || !res.session || !res.session.id) throw new Error('create failed');
+    await window.api.invoke('cmd:session:rename', {
+      sessionId: res.session.id,
+      newDisplayName: name,
+    });
+    return res.session.id;
+  }
+  async function show(sid, path, command) {
+    var result = await window.api.invoke(command, { sessionId: sid, path: path });
+    if (!result) throw new Error(command + ' returned empty response for ' + path);
+    return result;
+  }
+  async function markdownBody(path, label) {
+    return waitFor(function () {
+      var body = document.querySelector('.file-panel-body[data-viewer-kind="markdown"]');
+      if (!body || body.dataset.viewerPath !== path) return null;
+      if (!body.querySelector('.markdown-body, .file-markdown-viewer')) return null;
+      if (body.scrollHeight <= body.clientHeight + 400) return null;
+      return body;
+    }, label);
+  }
+  async function setAndSave(element, top, left) {
+    // 先发真实用户意图信号；hook 会据此取消尚未结束的双 RAF restore fence。
+    element.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: top }));
+    element.scrollTop = top;
+    element.scrollLeft = left || 0;
+    element.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await waitFor(function () {
+      return Math.abs(element.scrollTop - top) <= 2 && Math.abs(element.scrollLeft - (left || 0)) <= 2;
+    }, 'scroll=' + top + ',' + (left || 0));
+    await sleep(220); // > useFileViewerScroll 120ms trailing debounce
+  }
+  async function expectRestored(path, top, label) {
+    return waitFor(function () {
+      var body = document.querySelector('.file-panel-body[data-viewer-kind="markdown"]');
+      return body && body.dataset.viewerPath === path && Math.abs(body.scrollTop - top) <= 2
+        ? body
+        : null;
+    }, label);
+  }
+  try {
+    var bookmark = await window.api.invoke('cmd:bookmark:add', {
+      path: projectRoot,
+      displayName: 'SMOKE_PROJECT',
+    });
+    if (!bookmark || !bookmark.bookmark || !bookmark.bookmark.id) {
+      throw new Error('bookmark:add failed: ' + JSON.stringify(bookmark));
+    }
+    // Session pathId 的协议值就是规范化绝对路径；Bookmark.id 是持久化记录 UUID，
+    // 不能当 cwd 使用。
+    var pathId = projectRoot;
+    var a = await create('SCROLL_A', pathId);
+    await show(a, markdownPath, 'cmd:file-panel:open');
+    var body = await markdownBody(markdownPath, 'initial markdown');
+    await setAndSave(body, 720);
+
+    // 1) 切到「文件」面板再回「已打开」。FilePanel 会卸载/重挂。
+    var filesTab = Array.from(document.querySelectorAll('.panel-dock-tab')).find(function (tab) {
+      return tab.title === '文件' || tab.title === 'Files';
+    });
+    if (!filesTab) throw new Error('Files panel tab not found');
+    filesTab.click();
+    await waitFor(function () { return document.querySelector('.file-tree-panel'); }, 'file-tree active');
+    var openedTab = Array.from(document.querySelectorAll('.panel-dock-tab')).find(function (tab) {
+      return tab.title === '已打开' || tab.title === 'Opened';
+    });
+    if (!openedTab) throw new Error('Opened panel tab not found');
+    // 先把 Markdown 内容强制压短：第一次 restore 只能 clamp 到 0。200ms 后放开
+    // 触发 ResizeObserver，必须仍以原 saved=720 为目标，不能被程序化 scroll 事件覆盖。
+    var delayedLayoutStyle = document.createElement('style');
+    delayedLayoutStyle.textContent =
+      '.file-markdown-viewer,.markdown-body{height:200px!important;max-height:200px!important;overflow:hidden!important}';
+    document.head.appendChild(delayedLayoutStyle);
+    openedTab.click();
+    await waitFor(function () {
+      var delayedBody = document.querySelector('.file-panel-body[data-viewer-kind="markdown"]');
+      return delayedBody && delayedBody.dataset.viewerPath === markdownPath &&
+        delayedBody.querySelector('.markdown-body, .file-markdown-viewer') &&
+        delayedBody.scrollHeight <= delayedBody.clientHeight + 5;
+    }, 'markdown constrained before delayed layout');
+    await sleep(200);
+    delayedLayoutStyle.remove();
+    body = await expectRestored(markdownPath, 720, 'restore after delayed panel layout');
+
+    // restore 的双 RAF 尚未执行完就再次卸载，不能把已有 target 覆盖成 0。
+    filesTab.click();
+    await waitFor(function () { return document.querySelector('.file-tree-panel'); }, 'rapid switch setup');
+    openedTab.click();
+    await Promise.resolve();
+    filesTab.click();
+    await waitFor(function () { return document.querySelector('.file-tree-panel'); }, 'rapid unmount');
+    openedTab.click();
+    body = await expectRestored(markdownPath, 720, 'restore after rapid unmount');
+
+    // 2) 同 kind 文件各自独立：README 首次打开从 0 开始，之后 A/B 各自恢复。
+    await show(a, secondMarkdownPath, 'cmd:file-panel:open');
+    body = await markdownBody(secondMarkdownPath, 'second markdown');
+    await waitFor(function () { return body.scrollTop === 0; }, 'second markdown starts at zero');
+    await setAndSave(body, 360);
+    await show(a, markdownPath, 'cmd:file-panel:show');
+    body = await expectRestored(markdownPath, 720, 'restore first markdown');
+    await show(a, secondMarkdownPath, 'cmd:file-panel:show');
+    body = await expectRestored(secondMarkdownPath, 360, 'restore second markdown');
+    await show(a, markdownPath, 'cmd:file-panel:show');
+    body = await expectRestored(markdownPath, 720, 'restore first markdown again');
+
+    // 搜索 active + 无匹配时不会产生后续 scrollIntoView。A→B→A 的 loading clamp
+    // 事件仍必须被 identity fence 吞掉；关搜索后两个文件应恢复各自原坐标。
+    var dockBody = document.querySelector('.panel-dock-body');
+    if (!dockBody) throw new Error('panel dock body not found');
+    dockBody.focus();
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { bubbles: true, ctrlKey: true, key: 'f' }),
+    );
+    var searchInput = await waitFor(function () {
+      return document.querySelector('.search-bar-input');
+    }, 'search input');
+    var valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    valueSetter.call(searchInput, '__NO_MATCH_SCROLL_SMOKE__');
+    searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(100);
+    await show(a, secondMarkdownPath, 'cmd:file-panel:show');
+    await markdownBody(secondMarkdownPath, 'second markdown while search active');
+    await show(a, markdownPath, 'cmd:file-panel:show');
+    await markdownBody(markdownPath, 'first markdown while search active');
+    searchInput = document.querySelector('.search-bar-input');
+    if (!searchInput) throw new Error('search input disappeared before close');
+    searchInput.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }));
+    await waitFor(function () { return !document.querySelector('.search-bar-input'); }, 'search closed');
+    body = await expectRestored(markdownPath, 720, 'restore after search-active file switch');
+    await show(a, secondMarkdownPath, 'cmd:file-panel:show');
+    body = await expectRestored(secondMarkdownPath, 360, 'second markdown survives search switch');
+    await show(a, markdownPath, 'cmd:file-panel:show');
+    body = await expectRestored(markdownPath, 720, 'first markdown survives search switch');
+
+    // 3) Text 内层 scroller 保存 Y；Diff 内层 scroller 同时保存 X/Y，并恢复 gutter 同步。
+    await show(a, textPath, 'cmd:file-panel:open');
+    var textScroller = await waitFor(function () {
+      var panelBody = document.querySelector('.file-panel-body[data-viewer-kind="text"]');
+      if (!panelBody || panelBody.dataset.viewerPath !== textPath) return null;
+      var scroller = panelBody.querySelector('.file-text-viewer');
+      return scroller && scroller.scrollHeight > scroller.clientHeight + 400 ? scroller : null;
+    }, 'text active');
+    await setAndSave(textScroller, 640, 0);
+
+    await show(a, diffPath, 'cmd:file-panel:open');
+    var diffScroller = await waitFor(function () {
+      var panelBody = document.querySelector('.file-panel-body[data-viewer-kind="diff"]');
+      if (!panelBody || panelBody.dataset.viewerPath !== diffPath) return null;
+      var scroller = panelBody.querySelector('.diff-code-pane');
+      return scroller && scroller.scrollHeight > scroller.clientHeight + 400 &&
+        scroller.scrollWidth > scroller.clientWidth + 200 ? scroller : null;
+    }, 'diff active');
+    await setAndSave(diffScroller, 480, 180);
+
+    await show(a, markdownPath, 'cmd:file-panel:show');
+    body = await expectRestored(markdownPath, 720, 'restore after file switch');
+    await show(a, textPath, 'cmd:file-panel:show');
+    await waitFor(function () {
+      var panelBody = document.querySelector('.file-panel-body[data-viewer-kind="text"]');
+      if (!panelBody || panelBody.dataset.viewerPath !== textPath) return null;
+      var scroller = panelBody.querySelector('.file-text-viewer');
+      return scroller && Math.abs(scroller.scrollTop - 640) <= 2 ? scroller : null;
+    }, 'restore text position');
+    await show(a, diffPath, 'cmd:file-panel:show');
+    await waitFor(function () {
+      var panelBody = document.querySelector('.file-panel-body[data-viewer-kind="diff"]');
+      if (!panelBody || panelBody.dataset.viewerPath !== diffPath) return null;
+      var scroller = panelBody.querySelector('.diff-code-pane');
+      var gutter = panelBody.querySelector('.diff-gutter-pane');
+      return scroller && gutter && Math.abs(scroller.scrollTop - 480) <= 2 &&
+        Math.abs(scroller.scrollLeft - 180) <= 2 && Math.abs(gutter.scrollTop - 480) <= 2
+        ? scroller : null;
+    }, 'restore diff X/Y + gutter');
+    await show(a, markdownPath, 'cmd:file-panel:show');
+    body = await expectRestored(markdownPath, 720, 'restore markdown after text/diff');
+    await setAndSave(body, 1080);
+
+    // 4) A → B → A session 切换；返回后恢复 A 当前文件及其位置。
+    await create('SCROLL_B', pathId);
+    await waitFor(function () {
+      return Array.from(document.querySelectorAll('.session-name')).some(function (name) {
+        return name.textContent === 'SCROLL_B';
+      });
+    }, 'B selected');
+    var aItem = Array.from(document.querySelectorAll('.session-item')).find(function (item) {
+      var name = item.querySelector('.session-name');
+      return name && name.textContent === 'SCROLL_A';
+    });
+    if (!aItem) throw new Error('A sidebar item not found');
+    aItem.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0 }));
+    await expectRestored(markdownPath, 1080, 'restore after session switch');
+
+    report(true, 'file viewer scrollTop isolated per file and restored after panel/file/session switches');
+  } catch (err) {
+    report(false, 'file-viewer-scroll exception: ' + (err && err.stack ? err.stack : String(err)));
   }
 })();
 `;

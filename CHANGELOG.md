@@ -7,6 +7,23 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+## [0.3.2-dev.8] — 2026-07-30
+
+> **开发构建**（AGENTS.md 附录 F）。人工复验澄清此前所说的“滚动位置”指右侧
+> Markdown / 文本 / Diff 等文件预览，不是中间 xterm；本版修复正确的状态对象。
+> dev.7 的 TerminalDeck 保留为独立的终端生命周期修正。SemVer 上
+> `0.3.2-dev.7 < 0.3.2-dev.8 < 0.3.2`。
+> 产物 `Marina-Portable-0.3.2-dev.8-x64.exe`。
+
+### 修复
+
+- **右侧文件预览按终端、文件分别记住真实滚动位置。** 新增 renderer L1 view state `fileViewerScroll`，以 `sessionId + OpenedFile.path + kind` 隔离 Markdown、Text、Diff、Image/Unknown；切换工作区面板、文件 tab 或终端 Session 后恢复，关闭文件、清空面板或销毁 Session 时同步清理。Markdown/Image 使用 `.file-panel-body` 的文档级坐标，Text/Diff 使用各自内层双轴 scroller；Diff 同时恢复 `scrollLeft` / `scrollTop` 并同步左侧 gutter。滚动事件 120ms trailing debounce 写 store，切换前立即 flush，不使用模块级隐藏 Map，也不跨应用重启持久化。
+- **异步加载、快速切换和搜索不再覆盖正确位置。** `useFileContent` 给响应绑定 request identity，同 kind 文件切换时同步隐藏上一文件内容；恢复走双 RAF + `ResizeObserver`（最多 4 秒），Markdown 图片等布局尚短时保留原目标，不能被浏览器 clamp 后的程序化 scroll 事件覆写。React DOM mutation 已先把复用容器归零时，cleanup 只 flush 事件阶段的 pending 真值，不重读 DOM；另对跨文件迟到 scroll、快速卸载和搜索 `scrollIntoView` 设置独立 fence，避免位置串档或互相抢滚动。
+
+### 验证
+
+- 新增真实 Electron `smoke:file-viewer-scroll`：覆盖初始 `maxTop=0` 后延迟长高、双 RAF 前快速卸载、搜索 active 且无匹配时 A→B→A、两个 Markdown 文件独立位置、Text 纵向恢复、Diff 横纵向 + gutter 同步，以及 panel / file / session 三类切换。最终 typecheck、ESLint、Stylelint、63 个测试文件（1000/1000）和该 smoke 全部通过。
+
 ## [0.3.2-dev.7] — 2026-07-29
 
 > **开发构建**(AGENTS.md 附录 F)。dev.6 人工复验确认 Diff 双 pane 布局正确，

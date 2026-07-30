@@ -21,6 +21,7 @@ import type { PanelSearchProps } from '../layout/panel-registry';
 import { useFileContent } from './useFileContent';
 import { useDomTextHighlight } from '../../hooks/useDomTextHighlight';
 import { useMiddleClickPan } from '../../hooks/useMiddleClickPan';
+import { useFileViewerScroll } from '../../hooks/useFileViewerScroll';
 import { useTranslation } from '../LanguageProvider';
 import { highlightLine, detectLanguageByExt } from './highlight';
 
@@ -38,6 +39,7 @@ export function TextViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
   const { tx } = useTranslation();
   const content = useFileContent(sessionId, file.path, file.mtimeMs);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const linesRef = useRef<HTMLDivElement | null>(null);
 
   // 行级切分 + hljs 语法高亮(按扩展名选语言)。useMemo 保证 content 不变时引用稳定。
   const { lines, htmlLines, truncatedClient } = useMemo(() => {
@@ -76,6 +78,17 @@ export function TextViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
     skipSelector: '.file-line-number',
   });
 
+  useFileViewerScroll({
+    sessionId,
+    path: file.path,
+    kind: file.kind,
+    scrollRef: containerRef,
+    layoutRef: linesRef,
+    ready: content?.kind === 'text',
+    restoreVersion: file.mtimeMs,
+    searchActive: search.visible && search.query.length > 0,
+  });
+
   // 中键拖动平移(v0.3.3):与浏览器/VS Code 手型工具一致,上下左右自动滚动。
   useMiddleClickPan(containerRef);
 
@@ -97,7 +110,7 @@ export function TextViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
       {/* .file-text-lines 包裹层:width:max-content + min-width:100%。让所有 .file-text-line
        * 行对齐到「最长行」的宽度(block 子元素 fill 本层),而非各自 = 视口宽。这是横向
        * 滚动长代码时行背景能覆盖到 scrollWidth 右端的关键(与 DiffViewer 同构)。 */}
-      <div className="file-text-lines">
+      <div className="file-text-lines" ref={linesRef}>
         {lines.map((_line, i) => (
           <div key={i} data-line={i} className="file-text-line">
             <span className="file-line-number">{i + 1}</span>

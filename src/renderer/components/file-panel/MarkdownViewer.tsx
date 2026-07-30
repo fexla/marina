@@ -22,6 +22,7 @@ import {
   useState,
   type AnchorHTMLAttributes,
   type ImgHTMLAttributes,
+  type RefObject,
 } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -29,6 +30,7 @@ import type { OpenedFile } from '@shared/types';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { useDomTextHighlight } from '../../hooks/useDomTextHighlight';
 import { useMiddleClickPan } from '../../hooks/useMiddleClickPan';
+import { useFileViewerScroll } from '../../hooks/useFileViewerScroll';
 import { COMMAND_CHANNELS, type ReadImagePayload, type ReadImageResponse } from '@shared/protocol';
 import { isRemoteUrl } from '@shared/url-scheme';
 import { useFileContent } from './useFileContent';
@@ -40,9 +42,11 @@ interface ViewerProps {
   file: OpenedFile;
   /** v0.3.1:dock 级搜索状态(C4 markdown 查找)。 */
   search: PanelSearchProps;
+  /** Markdown 文档真正的纵向滚动容器(.file-panel-body)。 */
+  scrollRef: RefObject<HTMLElement | null>;
 }
 
-export function MarkdownViewer({ sessionId, file, search }: ViewerProps): JSX.Element {
+export function MarkdownViewer({ sessionId, file, search, scrollRef }: ViewerProps): JSX.Element {
   const { tx } = useTranslation();
   const containerRef = useRef<HTMLDivElement | null>(null);
   // markdown 渲染风格(用户在设置页选):auto=marina 主题样式;github-*=GitHub 官方
@@ -91,8 +95,19 @@ export function MarkdownViewer({ sessionId, file, search }: ViewerProps): JSX.El
     contentVersion: normalizedText,
   });
 
-  // 中键拖动平移(v0.3.3):与 text/diff viewer 一致。
-  useMiddleClickPan(containerRef);
+  useFileViewerScroll({
+    sessionId,
+    path: file.path,
+    kind: file.kind,
+    scrollRef,
+    layoutRef: containerRef,
+    ready: content?.kind === 'markdown',
+    restoreVersion: file.mtimeMs,
+    searchActive: search.visible && search.query.length > 0,
+  });
+
+  // Markdown 根本身不滚动；文档级中键平移必须作用于外层 file-panel-body。
+  useMiddleClickPan(scrollRef);
 
   if (!content) {
     return <div className="file-viewer-loading">{tx('加载中…', 'Loading…')}</div>;

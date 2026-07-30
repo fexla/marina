@@ -17,7 +17,7 @@
  * - 不直接读本地文件系统；所有内容读取经 main IPC。
  * - 不保存 width/collapsed 等布局状态。
  */
-import { useEffect, useMemo } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { COMMAND_CHANNELS, type FilePanelSnapshot } from '@shared/protocol';
 import type { OpenedFile } from '@shared/types';
 import type { PanelSearchProps } from '../layout/panel-registry';
@@ -48,6 +48,7 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
   // 可能较多(打开 10+ 文件),统一取更简。buildContextMenu 闭包捕获即可。
   const copyToClipboard = useCopyToClipboard();
   const toast = useToast();
+  const bodyScrollRef = useRef<HTMLDivElement | null>(null);
   const snapshot: FilePanelSnapshot = state.filePanels.get(sessionId) ?? {
     files: [],
     activePath: null,
@@ -80,6 +81,14 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
 
   const activeFile: OpenedFile | null =
     snapshot.files.find((file) => file.path === snapshot.activePath) ?? null;
+
+  // Text/Diff 自己拥有内层双轴 scroller；清掉外层 body 可能由上一个
+  // Markdown/Image 留下的 scrollTop，避免出现两个滚动坐标叠加。
+  useLayoutEffect(() => {
+    if (activeFile?.kind === 'text' || activeFile?.kind === 'diff') {
+      bodyScrollRef.current?.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    }
+  }, [activeFile?.kind, activeFile?.path]);
 
   // v0.3.1 C2:tab 列表过滤(按文件名)。文件内容查找是 C3(在 FileViewer)。
   // 过滤不影响 activeFile —— 搜索时仍显示当前内容,只是 tab 列表收窄。
@@ -126,9 +135,7 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
             )}
           </span>
         ) : filteredFiles.length === 0 && isSearchingTabs ? (
-          <span className="file-panel-empty-hint">
-            {tx('无匹配文件', 'No matching files')}
-          </span>
+          <span className="file-panel-empty-hint">{tx('无匹配文件', 'No matching files')}</span>
         ) : (
           filteredFiles.map((file) => {
             const isActive = file.path === snapshot.activePath;
@@ -168,7 +175,11 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
                       );
                   },
                 },
-                { copyToClipboard, toastError: (m) => toast.push({ kind: 'error', message: m }), tx },
+                {
+                  copyToClipboard,
+                  toastError: (m) => toast.push({ kind: 'error', message: m }),
+                  tx,
+                },
               );
             return (
               <FileListRow
@@ -207,9 +218,19 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
           })
         )}
       </div>
-      <div className="file-panel-body">
+      <div
+        ref={bodyScrollRef}
+        className="file-panel-body"
+        data-viewer-kind={activeFile?.kind ?? 'none'}
+        data-viewer-path={activeFile?.path ?? ''}
+      >
         {activeFile ? (
-          <FileViewer sessionId={sessionId} file={activeFile} search={search} />
+          <FileViewer
+            sessionId={sessionId}
+            file={activeFile}
+            search={search}
+            outerScrollRef={bodyScrollRef}
+          />
         ) : (
           <div className="file-panel-placeholder">
             {tx('选择上方文件查看内容', 'Select a file above to view')}

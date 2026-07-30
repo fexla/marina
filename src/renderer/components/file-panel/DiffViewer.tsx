@@ -50,6 +50,7 @@ import type { PanelSearchProps } from '../layout/panel-registry';
 import { useFileContent } from './useFileContent';
 import { useDomTextHighlight } from '../../hooks/useDomTextHighlight';
 import { useMiddleClickPan } from '../../hooks/useMiddleClickPan';
+import { useFileViewerScroll } from '../../hooks/useFileViewerScroll';
 import { useTranslation } from '../LanguageProvider';
 import { highlightLine, detectLanguageFromPathLine } from './highlight';
 
@@ -208,6 +209,7 @@ export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
   // sticky + 不透明背景“遮住”正文。
   const bodyScrollRef = useRef<HTMLDivElement | null>(null);
   const gutterScrollRef = useRef<HTMLDivElement | null>(null);
+  const codeLinesRef = useRef<HTMLDivElement | null>(null);
 
   const syncGutterScroll = (event: ReactUIEvent<HTMLDivElement>): void => {
     if (gutterScrollRef.current) {
@@ -268,6 +270,20 @@ export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
     contentVersion: content,
   });
 
+  useFileViewerScroll({
+    sessionId,
+    path: file.path,
+    kind: file.kind,
+    scrollRef: bodyScrollRef,
+    layoutRef: codeLinesRef,
+    ready: content?.kind === 'diff',
+    restoreVersion: file.mtimeMs,
+    searchActive: search.visible && search.query.length > 0,
+    onApply: (scrollTop) => {
+      if (gutterScrollRef.current) gutterScrollRef.current.scrollTop = scrollTop;
+    },
+  });
+
   // 中键拖动平移(v0.3.3):与 TextViewer 一致,上下左右自动滚动。
   useMiddleClickPan(bodyScrollRef);
 
@@ -299,9 +315,7 @@ export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
         <div className="diff-gutter-lines">
           {displayRows.map((row) => (
             <div key={row.key} className={`diff-gutter-row diff-line-${row.kind}`}>
-              <span className="diff-gutter-number">
-                {row.lineNum != null ? row.lineNum : ''}
-              </span>
+              <span className="diff-gutter-number">{row.lineNum != null ? row.lineNum : ''}</span>
               <span className="diff-line-sign">{signFor(row.kind)}</span>
             </div>
           ))}
@@ -312,7 +326,7 @@ export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
       {/* 右 pane 独占横/纵滚动。onScroll 只把 scrollTop 镜像给左 pane；
        * scrollLeft 永远只存在于此处，所以代码不可能进入数字栏。 */}
       <div ref={bodyScrollRef} className="diff-code-pane" onScroll={syncGutterScroll}>
-        <div className="diff-code-lines">
+        <div className="diff-code-lines" ref={codeLinesRef}>
           {displayRows.map((row) => (
             <div key={row.key} data-line={row.key} className={`diff-line diff-line-${row.kind}`}>
               {/* hljs 输出只含 class span,无脚本/事件,安全。来源是 GitService 受控文件。 */}
@@ -329,10 +343,7 @@ export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
                     `…(diff 过大,仅显示前 ${MAX_RENDER_ROWS} 行)`,
                     `…(diff too large, showing first ${MAX_RENDER_ROWS} lines only)`,
                   )
-                : tx(
-                    '…(diff 过大,仅显示前 2MB)',
-                    '…(diff too large, showing first 2MB only)',
-                  )}
+                : tx('…(diff 过大,仅显示前 2MB)', '…(diff too large, showing first 2MB only)')}
             </div>
           )}
         </div>

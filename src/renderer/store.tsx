@@ -51,6 +51,7 @@ import {
 } from '@shared/protocol';
 import type {
   Bookmark,
+  FileKind,
   MdTheme,
   OpenedFile,
   PathNode,
@@ -63,6 +64,15 @@ import type {
   WindowInfo,
 } from '@shared/types';
 import type { RegisteredPanelId } from './components/layout/panel-registry';
+
+/** 右侧文件预览的像素滚动位置；按 sessionId + file.path + kind 隔离。 */
+export interface FileViewerScrollPosition {
+  kind: FileKind;
+  scrollTop: number;
+  scrollLeft: number;
+}
+
+export type FileViewerScrollState = Map<string, Map<string, FileViewerScrollPosition>>;
 
 // ──────────────────────────────────────────────────────────────────
 // State 定义
@@ -122,6 +132,13 @@ export interface AppState {
    * 按需 cmd:file-panel:read,不存进 state(避免大文件占内存 + 切 tab 浪费)。
    */
   filePanels: Map<string, FilePanelSnapshot>;
+
+  /**
+   * 右侧 Markdown/Diff/Text/Image 预览滚动位置。本窗口私有 L1 view state,
+   * 不写 main/localStorage；按 sessionId → OpenedFile.path → kind 保存。
+   * 切文件/面板/session 可恢复，文件关闭或 session 销毁即清理。
+   */
+  fileViewerScroll: FileViewerScrollState;
 
   /**
    * 每个 session 在右侧 dock stack 里最后激活的面板(file-tree / file-panel)，
@@ -197,6 +214,14 @@ export type AppAction =
       sessionId: string;
       topLine: number;
       wasAtBottom: boolean;
+    }
+  | {
+      type: 'view/file-viewer-scroll';
+      sessionId: string;
+      path: string;
+      kind: FileKind;
+      scrollTop: number;
+      scrollLeft: number;
     }
   | { type: 'view/toggle-path-expand'; pathId: string }
   | { type: 'view/toggle-simple-mode' }
@@ -373,10 +398,11 @@ function reducer(state: AppState, action: AppAction): AppState {
     case 'sessions/destroyed': {
       const sessions = new Map(state.sessions);
       sessions.delete(action.sessionId);
-      // 文件面板:session 没了,清掉它的快照(不再显示残留文件列表) + 活动面板
-      // 记录(防止 session 销毁后残留记录错误触发已不存在面板的激活)。
+      // 文件面板:session 没了,清掉快照、预览滚动位置与活动面板记录。
       const filePanels = new Map(state.filePanels);
       filePanels.delete(action.sessionId);
+      const fileViewerScroll = new Map(state.fileViewerScroll);
+      fileViewerScroll.delete(action.sessionId);
       const activePanels = new Map(state.activePanels);
       activePanels.delete(action.sessionId);
       const lastSelectedAt = new Map(state.lastSelectedAt);
@@ -387,6 +413,7 @@ function reducer(state: AppState, action: AppAction): AppState {
         ...state,
         sessions,
         filePanels,
+        fileViewerScroll,
         activePanels,
         lastSelectedAt,
         terminalScroll,
@@ -404,6 +431,23 @@ function reducer(state: AppState, action: AppAction): AppState {
         files: action.files,
         activePath: action.activePath,
       });
+
+      // 关闭文件时同步裁掉它的 view state；仅切 activePath 不清其他仍打开文件。
+      // kind 变化也视为另一个 viewer 身份。late unmount flush 到达后,下面的
+      // view/file-viewer-scroll 还会再次校验当前 snapshot,不会把已关条目复活。
+      let fileViewerScroll = state.fileViewerScroll;
+      const previousScroll = state.fileViewerScroll.get(action.sessionId);
+      if (previousScroll) {
+        const allowed = new Map(action.files.map((file) => [file.path, file.kind]));
+        const kept = new Map(
+          [...previousScroll].filter(([path, position]) => allowed.get(path) === position.kind),
+        );
+        if (kept.size !== previousScroll.size) {
+          fileViewerScroll = new Map(state.fileViewerScroll);
+          if (kept.size > 0) fileViewerScroll.set(action.sessionId, kept);
+          else fileViewerScroll.delete(action.sessionId);
+        }
+      }
       // requestActivation=true(openFile 成功)时把活动面板设为「已打开」。reducer
       // 在事件到达时即写 activePanels,无论 PanelStack 是否挂载:remount 后从 store
       // 读到正确值(不抢用户手动切回的焦点),PanelStack 卸载期间(设置页/简易模式)
@@ -412,21 +456,26 @@ function reducer(state: AppState, action: AppAction): AppState {
       if (action.requestActivation && state.activePanels.get(action.sessionId) !== 'file-panel') {
         const activePanels = new Map(state.activePanels);
         activePanels.set(action.sessionId, 'file-panel');
-        return { ...state, filePanels, activePanels };
+        return { ...state, filePanels, fileViewerScroll, activePanels };
       }
-      return { ...state, filePanels };
+      return { ...state, filePanels, fileViewerScroll };
     }
     case 'file-panel/clear': {
-      // filePanels / activePanels 两者都无记录才短路;任一有记录都继续统一清理,
-      // 保持 action 语义一致。
-      if (!state.filePanels.has(action.sessionId) && !state.activePanels.has(action.sessionId)) {
+      // 快照、viewer scroll、active panel 任一有记录都统一清理。
+      if (
+        !state.filePanels.has(action.sessionId) &&
+        !state.fileViewerScroll.has(action.sessionId) &&
+        !state.activePanels.has(action.sessionId)
+      ) {
         return state;
       }
       const filePanels = new Map(state.filePanels);
       filePanels.delete(action.sessionId);
+      const fileViewerScroll = new Map(state.fileViewerScroll);
+      fileViewerScroll.delete(action.sessionId);
       const activePanels = new Map(state.activePanels);
       activePanels.delete(action.sessionId);
-      return { ...state, filePanels, activePanels };
+      return { ...state, filePanels, fileViewerScroll, activePanels };
     }
 
     case 'view/set-active-panel': {
@@ -509,6 +558,33 @@ function reducer(state: AppState, action: AppAction): AppState {
         wasAtBottom: action.wasAtBottom,
       });
       return { ...state, terminalScroll };
+    }
+
+    case 'view/file-viewer-scroll': {
+      // late cleanup 防线:只有当前 snapshot 里仍打开且 kind 相同的文件能写。
+      // 文件已关闭/session 已清时直接拒绝,避免 unmount flush 复活陈旧条目。
+      const file = state.filePanels
+        .get(action.sessionId)
+        ?.files.find((candidate) => candidate.path === action.path);
+      if (!file || file.kind !== action.kind) return state;
+      if (!Number.isFinite(action.scrollTop) || !Number.isFinite(action.scrollLeft)) {
+        return state;
+      }
+      const scrollTop = Math.max(0, action.scrollTop);
+      const scrollLeft = Math.max(0, action.scrollLeft);
+      const existing = state.fileViewerScroll.get(action.sessionId)?.get(action.path);
+      if (
+        existing?.kind === action.kind &&
+        existing.scrollTop === scrollTop &&
+        existing.scrollLeft === scrollLeft
+      ) {
+        return state;
+      }
+      const sessionScroll = new Map(state.fileViewerScroll.get(action.sessionId) ?? []);
+      sessionScroll.set(action.path, { kind: action.kind, scrollTop, scrollLeft });
+      const fileViewerScroll = new Map(state.fileViewerScroll);
+      fileViewerScroll.set(action.sessionId, sessionScroll);
+      return { ...state, fileViewerScroll };
     }
 
     case 'view/toggle-path-expand': {
@@ -618,6 +694,7 @@ export function makeDefaultState(myWindowId: string, myWindowNumber: number): Ap
     // BETA-027:默认普通页面;Explorer 简易模式打开时在 startup 显式 dispatch set
     simpleMode: false,
     filePanels: new Map(),
+    fileViewerScroll: new Map(),
     activePanels: new Map(),
     lastSelectedAt: new Map(),
     terminalScroll: new Map(),

@@ -4,18 +4,35 @@
  *   居中、可滚动;超大图(超 MAX_READ_IMAGE_BYTES)在 main 端就被拒,这里收到
  *   unknown+message 时回退显示提示。
  */
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import type { OpenedFile } from '@shared/types';
 import { useFileContent } from './useFileContent';
 import { useTranslation } from '../LanguageProvider';
+import { useFileViewerScroll } from '../../hooks/useFileViewerScroll';
 
 interface ViewerProps {
   sessionId: string;
   file: OpenedFile;
+  scrollRef: RefObject<HTMLElement | null>;
 }
 
-export function ImageViewer({ sessionId, file }: ViewerProps): JSX.Element {
+export function ImageViewer({ sessionId, file, scrollRef }: ViewerProps): JSX.Element {
   const { tx } = useTranslation();
   const content = useFileContent(sessionId, file.path, file.mtimeMs);
+  const layoutRef = useRef<HTMLDivElement | null>(null);
+  const [imageLoaded, setImageLoaded] = useState(false);
+
+  useEffect(() => setImageLoaded(false), [file.path, file.mtimeMs]);
+
+  useFileViewerScroll({
+    sessionId,
+    path: file.path,
+    kind: file.kind,
+    scrollRef,
+    layoutRef,
+    ready: content?.kind === 'image' && imageLoaded,
+    restoreVersion: file.mtimeMs,
+  });
 
   if (!content) {
     return <div className="file-viewer-loading">{tx('加载中…', 'Loading…')}</div>;
@@ -30,8 +47,8 @@ export function ImageViewer({ sessionId, file }: ViewerProps): JSX.Element {
     );
   }
   return (
-    <div className="file-image-viewer">
-      <img src={content.dataUrl} alt={file.name} />
+    <div className="file-image-viewer" ref={layoutRef}>
+      <img src={content.dataUrl} alt={file.name} onLoad={() => setImageLoaded(true)} />
     </div>
   );
 }
