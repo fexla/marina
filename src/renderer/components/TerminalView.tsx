@@ -710,12 +710,20 @@ export function TerminalView({
     typeof navigator !== 'undefined' &&
     /linux/i.test(navigator.userAgent) &&
     !/android/i.test(navigator.userAgent);
+  // GPU 合成降级检测(PER-2,2026-07-30 性能修复): Chromium 在 GPU 进程
+  // 不稳定/显卡设备变化后,会自动给 renderer 加 --disable-gpu-compositing,
+  // 把网页合成从 GPU 降到 CPU 软件光栅。此时 WebGL renderer 仍在 GPU 进程
+  // 狂画光标,产物却要 CPU 合成 —— 实测 GPU 进程持续 400%+ 单核。
+  // preload 检测本 renderer 命令行,暴露 window.api.gpuCompositingDisabled;
+  // auto 模式下据此回退 DOM renderer,避开 “WebGL + CPU 合成” 最差组合。
+  // (用户显式选 webgl/dom 不受影响 —— 只有 auto “让环境决定最优” 才让步。)
+  const gpuCompositingDisabled = window.api.gpuCompositingDisabled;
   const useWebGLRenderer =
     terminalRenderer === 'webgl'
       ? true
       : terminalRenderer === 'dom'
         ? false
-        : !isLinuxRenderer;
+        : !isLinuxRenderer && !gpuCompositingDisabled;
 
   // 把"创建期"读到的初始值用 useMemo 锁定 (terminal 创建后只用 mutator 调整),
   // 否则每次 settings 引用变化都会重建 xterm 实例。
@@ -1460,6 +1468,11 @@ export function TerminalView({
     //             Mesa/EGL 经常不完整,WebGL context 会成功创建但走 CPU
     //             模拟,xterm 滚动秒级响应不可用;catch 不触发,只能按
     //             platform 直接跳)
+    //             *PER-2(2026-07-30)*: 另外检测 GPU 合成是否被 Chromium
+    //             自动降级(--disable-gpu-compositing, 常见诱因:GPU 进程崩溃/
+    //             显卡设备变化/AMD 驱动重装)。降级时强制 DOM, 否则 WebGL
+    //             在 GPU 进程画光标 + CPU 软件合成双重烧 CPU(GPU 进程
+    //             400%+ 单核)。详见 preload gpuCompositingDisabled。
     //   'webgl' = 强制 WebGL(Linux 上几乎必然慢得不可用,只在显式调研时用)
     //   'dom'   = 强制 DOM renderer(某些 TUI 在 WebGL 下光标渲染异常时
     //             用作回退手段;性能 10-50× 差但稳)
@@ -1467,8 +1480,16 @@ export function TerminalView({
     // mount 时决定,运行时改设置需重建 xterm 实例(关 tab 重开),因为
     // addon 在 term.open 之后只 load 一次。
     if (!useWebGLRenderer) {
+      const reason =
+        terminalRenderer === 'dom'
+          ? 'dom-force'
+          : isLinuxRenderer
+            ? 'linux-auto'
+            : gpuCompositingDisabled
+              ? 'gpu-compositing-disabled-auto'
+              : 'unknown';
       console.info(
-        `[TerminalView] using DOM renderer (settings.advanced.terminalRenderer=${terminalRenderer}${terminalRenderer === 'auto' && isLinuxRenderer ? ', Linux auto' : ''})`,
+        `[TerminalView] using DOM renderer (terminalRenderer=${terminalRenderer}, reason=${reason})`,
       );
     } else if (activeRef.current) {
       try {

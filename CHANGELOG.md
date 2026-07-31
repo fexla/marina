@@ -9,6 +9,21 @@
 
 ### 修复
 
+- **GPU 合成降级时自动回退 DOM renderer(PER-2),根治 WebGL 导致的持续高 CPU。**
+  Chromium 在 GPU 进程崩溃 / 显卡设备变化(如 AMD 驱动重装)后会自动给 renderer 加
+  `--disable-gpu-compositing`,把网页合成从 GPU 降级到 CPU 软件光栅。但 xterm 的
+  WebGL renderer(`advanced.terminalRenderer: auto`,Windows/macOS 默认)不感知这个
+  降级,继续用 WebGL 画光标(`cursorBlink` 每帧),产物却要交给 CPU 合成 ——
+  实测(真实 Electron,2026-07-31)GPU 进程持续烧 432–471% 单核(≈ 4 个核),整机体感
+  “卡”;切 DOM renderer 后 GPU 进程瞬间降至 7-8%(↓ 60 倍)。现 preload 检测本
+  renderer 命令行(`window.api.gpuCompositingDisabled`),auto 模式下据此强制回退 DOM,
+  避免 “WebGL + CPU 合成” 最差组合;用户显式选 `webgl` / `dom` 不受影响。
+- **飞行记录器不再低估 GPU 进程 CPU(PER-2)。** `aggregateElectronMetrics` 原用
+  `app.getAppMetrics().cpu.percentCPUUsage` 单点采样,对 GPU 进程实测可低估 40-60 倍
+  (报告显示 6.8%,实际 432%)。改用 `cumulativeCPUUsage`(Electron 22+ 运行时提供)
+  差分换算真实平均 CPU%,首采样无基线时 fallback `percentCPUUsage`。这类“GPU 烧核”
+  问题以后在自动报告里一目了然,不再隐藏。
+
 - **切换终端提速(REPLAY-1):claim 不再重复序列化 scrollback。** `cmd:session:claim`
   响应从"完整 base64 scrollback + lastSeq"改为仅 O(1) lastSeq —— renderer 从不消费
   claim 响应里的 scrollback(冷挂载走 `get-scrollback`,暖切换由 TerminalDeck 缓存 +

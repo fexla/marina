@@ -50,6 +50,34 @@ const windowsBuild = ((): number | null => {
 })();
 
 /**
+ * 检测当前 renderer 进程的 GPU 合成是否被 Chromium 自动降级禁用。
+ *
+ * 背景(2026-07-30 性能排查实证): Chromium 在 GPU 进程不稳定 / 显卡设备
+ * 变化(如 AMD 驱动重装) / 反复崩溃后,会自动给后续 renderer 命令行追加
+ * `--disable-gpu-compositing`,把网页合成从 GPU 降级到 CPU 软件光栅,防再崩。
+ * 但 xterm 的 WebGL renderer(TerminalView 默认 auto→WebGL)不感知这个降级:
+ * 它继续用 WebGL 画光标(cursorBlink 每帧),产物却要交给 CPU 软件合成 ——
+ * 实测让 GPU 进程持续烧 400%+ 单核(≈ 4 个核),整机体感“卡”。
+ *
+ * 这里只读 process.argv(本 renderer 进程的启动参数),一次性算好,通过
+ * contextBridge 暴露给 TerminalView。后者在 auto 模式下据此强制回退 DOM
+ * renderer,避免 “WebGL + CPU 合成” 这个最差组合(见 TerminalView PER-1)。
+ *
+ * 用户显式选择 webgl/dom 不受影响 —— 这只是 auto(“让环境决定最优”)的一个
+ * 环境信号,与 windowsBuild 同属“一次性环境能力探测”。
+ */
+const gpuCompositingDisabled = ((): boolean => {
+  try {
+    // preload 运行在 renderer 进程,process.argv 即本 renderer 的完整启动参数,
+    // 其中 Chromium 自动降级时会带 `--disable-gpu-compositing`。
+    return process.argv.includes('--disable-gpu-compositing');
+  } catch {
+    // 极端情况下 process 不可访问(沙箱),保守认为未降级,不改变默认 WebGL 行为。
+    return false;
+  }
+})();
+
+/**
  * 从 URL query string 提取窗口元数据。
  * Main 创建 BrowserWindow 时附加 ?windowId=...&windowNumber=...
  */
@@ -382,6 +410,12 @@ const api = {
    * TerminalView 构造 xterm 实例时传给 windowsPty.buildNumber。
    */
   windowsBuild,
+  /**
+   * 本 renderer 的 GPU 合成是否被 Chromium 自动降级到 CPU(命令行带
+   * --disable-gpu-compositing)。auto 终端渲染器据此回退 DOM,避免
+   * WebGL + CPU 合成的双重高负载(见 TerminalView PER-1 / 附录 J)。
+   */
+  gpuCompositingDisabled,
 
   /** 协议版本握手 — handshake 第一步 (ipc-protocol.md 第 4 章) */
   getProtocolVersion: (): Promise<{
