@@ -845,8 +845,13 @@ export type FileKind = 'text' | 'markdown' | 'image' | 'diff' | 'unknown';
  * cmd:file-panel:read 拉取(text/markdown 返回字符串,image 返回 base64 dataUrl)。
  * 这样切换 tab / 关闭文件时不浪费 IPC 带宽,也避免大文件一次性塞进 store。
  *
- * mtimeMs 是自动刷新的关键:main 端 fs.watch 检测到文件变化后更新它并广播,
+* mtimeMs 是自动刷新的关键:main 端 fs.watch 检测到文件变化后更新它并广播,
  * renderer 的 viewer 把 mtimeMs 列入 useEffect 依赖,变化即重新 read。
+ *
+ * missing 标记「僵尸 tab」:磁盘上文件已不存在,但面板 tab 仍保留(用户可能
+ * 还想看最后一次的 scrollback / 元数据)。fs.watch 检测到删除、或 list 拉取
+ * 时按需 stat 都会置 true;文件重新出现则置 false。undefined 等同 false
+ * (存在)。CLI `list` 用它打 `!`(deleted) 标记,`close --stale` 用它批量清理。
  */
 export interface OpenedFile {
   /** 规范化绝对路径(main 端 normalizePath 处理),也是面板里的去重/active 主键 */
@@ -859,6 +864,8 @@ export interface OpenedFile {
   size: number;
   /** fs.stat mtimeMs;变化驱动 viewer 重新 read(自动刷新) */
   mtimeMs: number;
+  /** 磁盘上文件已不存在(僵尸 tab)。undefined/false = 存在。见类型注释。 */
+  missing?: boolean;
 }
 
 /** FileTreePanel 可访问的 session 局部逻辑根；绝不是产品 Project / Workspace。 */

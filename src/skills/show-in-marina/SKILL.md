@@ -146,14 +146,56 @@ panel refreshes that tab in place instead of stacking a new one.
 ./marina show --quiet "$artifact"
 ```
 
+### Use one document as the task dashboard (multi-turn work)
+
+`show` is not only for a final result. Across the multiple turns of one task,
+keep **one** document as the shared surface between you and the user: the
+running progress, the options under consideration, the open questions, and the
+user's own annotations all live in that file. Each turn you overwrite it and
+re-`show` the same path; the tab refreshes in place and the chat stays a short
+status line plus "see the doc".
+
+This is far more stable than dropping long content into the chat across many
+turns — the chat does not scroll, the user reviews one place, and you keep the
+full current state without re-pasting. Concretely:
+
+1. On the first turn, write the doc to the managed workspace (see above) and
+   `show` it once. From then on that tab is the dashboard.
+2. Each later turn, **overwrite the same file** (same path) and re-run
+   `./marina show "$path"`. The panel refreshes the existing tab; it does not
+   open a new one.
+3. Keep the chat side short: a one-line status ("updated the plan, decision
+   needed on X") plus a pointer to the doc. Put the detail in the doc.
+4. Use clear sections in the doc (Status / Options / Open questions / Decided)
+   so the user can jump to what changed.
+
+Resolve the workspace once per terminal and reuse that concrete path for every
+overwrite (the path is stable for the session; you do not need to re-resolve it
+each turn).
+
 ## Other commands
 
 ```bash
 ./marina workspace              # print this terminal's managed scratch path
 ./marina list                   # files open in this terminal's panel
-./marina list --json            # machine-readable output
-./marina close "$artifact"      # close the previously resolved artifact
+./marina list --json            # machine-readable output (includes `missing`)
+./marina close "$artifact"      # close one file
+./marina close report.md        # ...or just the file name (basename match)
+./marina close --all            # close every file in this terminal's panel
+./marina close --stale          # close tabs whose file no longer exists on disk
+./marina close --glob '*.md'    # close files whose name matches a glob
+./marina close '*.md'           # a path containing * or ? is auto-treated as --glob
 ```
+
+**`list` marks zombie tabs.** A tab whose file has been deleted from disk is
+shown with a leading `!` and `(deleted)`, plus a `close --stale` hint at the
+bottom. `list --json` reports this as `"missing": true` on the file.
+
+**`close` matching.** A single `close <PATH>` first tries an exact path match,
+then falls back to a case-insensitive **basename** match — so you can pass just
+the file name as shown by `list` instead of the whole path. If several open
+files share that basename it errors (use the full path or a glob). A path or
+name containing `*` or `?` is treated as a glob and closes every match.
 
 (PowerShell/cmd.exe: use `.\marina.cmd`; resolve `$artifact` from the
 `workspace` command as shown above.)

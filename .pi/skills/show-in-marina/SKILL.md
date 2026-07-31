@@ -1,22 +1,32 @@
 ---
 name: show-in-marina
-description: Use Marina's terminal-side file panel to show the user Markdown, text, code, or image results. Use after producing a report, plan, review, research result, or other artifact worth reading outside chat. Requires Marina (the CLI checks; do not read env vars yourself).
+description: Use Marina's terminal-side file panel to show the user Markdown, text, code, or image results. Use after producing a report, plan, review, research result, or other artifact worth reading outside chat. Requires Marina (the CLI checks; never read service/token vars yourself; use the workspace command for scratch paths).
 ---
 
 # Show files in Marina
 
 Place a result in the active terminal's Marina file panel instead of pasting a
-long document into chat. This skill ships a small Windows CLI, `marina.cmd`,
-that handles env vars, HTTP, UTF-8 encoding, and Bearer auth for you.
+long document into chat. This skill ships a small Windows CLI that handles env
+vars, HTTP, UTF-8 encoding, and Bearer auth for you. There are three entry
+points, all in the same directory as this SKILL.md:
+
+- **`marina`** (no extension, a bash script) — use this when your shell is
+  **bash / Git Bash / MSYS** on Windows. It wraps the real logic and avoids a
+  silent-success trap with `cmd /c` (see "Bash / Git Bash" below).
+- **`marina.cmd`** — the launcher for **plain cmd.exe or PowerShell** (no bash
+  involved). It calls `powershell.exe -File marina.ps1` for you.
+- **`marina.ps1`** — the real logic. You normally do not call it directly; the
+  two launchers above do.
+
+All three live **in the same directory as this SKILL.md**. Always invoke them
+by that resolved path — never assume a bare `marina` is on PATH (it is not),
+and never modify PATH or create a launcher elsewhere.
 
 ## How to invoke the CLI (important)
 
-`marina.cmd` lives **in the same directory as this SKILL.md**. Always invoke it
-by that path — never assume a bare `marina` is on PATH (it is not), and never
-modify PATH or create a launcher elsewhere. Resolve `marina.cmd` next to this
-SKILL.md and call that explicit path.
+### PowerShell (or plain cmd.exe, no bash)
 
-In PowerShell, from the directory containing this SKILL.md:
+From the directory containing this SKILL.md:
 
 ```powershell
 .\marina.cmd ping
@@ -28,8 +38,30 @@ From any other working directory, pass the resolved path explicitly:
 & "<path-to-this-skill-directory>\marina.cmd" ping
 ```
 
-The examples below use `.\marina.cmd` for brevity; substitute the resolved path
-when your working directory differs.
+The PowerShell/cmd examples below use `.\marina.cmd` for brevity; substitute
+the resolved path when your working directory differs.
+
+### Bash / Git Bash / MSYS on Windows
+
+Use the **`marina`** wrapper in this directory, NOT `marina.cmd`.
+
+```bash
+./marina ping
+# or, if the file lacks the executable bit in your environment:
+bash marina ping
+```
+
+The bash examples below use `./marina` for brevity; substitute the resolved
+path when your working directory differs (e.g.
+`bash /abs/path/to/skill/marina ping`). The wrapper locates `marina.ps1` via
+its own location, so it works from any cwd.
+
+> **Do not** invoke the CLI from bash as `cmd /c "marina.cmd ..."`.
+> MSYS / Git Bash rewrites the `/c` flag into the path `C:/` before cmd.exe
+> sees it, so cmd.exe starts an **interactive** session instead of running
+> marina.cmd — and it returns **exit 0**, which makes a failed or never-run
+> command look successful. This is a silent trap. The `marina` wrapper sidesteps
+> cmd.exe entirely (it calls `powershell.exe -File marina.ps1` directly).
 
 **Do not** call `curl`, `Invoke-RestMethod`, or read `$MARINA_SERVICE` /
 `$MARINA_TOKEN` yourself. The CLI is the only supported entry point.
@@ -55,39 +87,127 @@ bytes to the console code page before the CLI sees them, corrupting non-ASCII).
 Instead:
 
 1. Write the artifact to a file with your normal file-writing tool, as UTF-8
-   (no BOM). Source-controlled deliverables belong in the project's `docs/`;
-   throwaway display-only artifacts can go in the system temp directory.
-2. Show that file's path:
+   (no BOM).
+2. Show that file's path.
+
+### Where to write the artifact: resolve the managed workspace first
+
+Marina injects a per-terminal scratch directory as `MARINA_WORKSPACE`.
+Throwaway display-only artifacts belong there; source-controlled deliverables
+still belong in the project's `docs/`. The managed directory is isolated per
+terminal and automatically reclaimed after the session closes (default
+retention 7 days, configurable; `0` deletes immediately).
+
+**Critical path rule:** shell variable syntax is expanded only by that shell.
+A file-writing API/tool (`write`, `edit`, Python `open`, Node `fs`, etc.) does
+**not** expand `$MARINA_WORKSPACE`, `$env:MARINA_WORKSPACE`, or
+`%MARINA_WORKSPACE%`. Passing one of those strings to such a tool creates a
+literal directory with that name under the current cwd — exactly the wrong
+behavior.
+
+Use the CLI to resolve the workspace to a concrete absolute path:
+
+PowerShell / cmd launcher:
 
 ```powershell
-.\marina.cmd show .\docs\architecture-review.md
+$workspace = & ".\marina.cmd" workspace
+$artifact = Join-Path $workspace 'architecture-review.md'
+Set-Content -LiteralPath $artifact -Value '# Architecture review' -Encoding utf8
+.\marina.cmd show $artifact
 ```
+
+Bash / Git Bash wrapper:
+
+```bash
+workspace="$(./marina workspace)" || exit $?
+artifact="${workspace}/architecture-review.md"
+printf '# Architecture review\n\n...' > "$artifact"
+./marina show "$artifact"
+```
+
+When using a non-shell file-writing tool, follow this exact sequence:
+
+1. Run the appropriate launcher with `workspace`.
+2. Capture the single absolute path printed to stdout.
+3. Append the filename to that concrete path.
+4. Pass the concrete absolute path to `write` / `edit` / Python / Node.
+5. Pass the same path to `show`.
+
+Resolve it again for each terminal/session; do not reuse a path captured from
+another terminal. Never construct `<cwd>/$MARINA_WORKSPACE/...`, and never
+pass an environment-variable symbol as a path to a non-shell tool.
 
 To iterate, overwrite the same file and re-run `show` with the same path — the
 panel refreshes that tab in place instead of stacking a new one.
 
 `-q` / `--quiet` suppresses the success line:
 
-```powershell
-.\marina.cmd show --quiet .\docs\architecture-review.md
+```bash
+./marina show --quiet "$artifact"
 ```
+
+### Use one document as the task dashboard (multi-turn work)
+
+`show` is not only for a final result. Across the multiple turns of one task,
+keep **one** document as the shared surface between you and the user: the
+running progress, the options under consideration, the open questions, and the
+user's own annotations all live in that file. Each turn you overwrite it and
+re-`show` the same path; the tab refreshes in place and the chat stays a short
+status line plus "see the doc".
+
+This is far more stable than dropping long content into the chat across many
+turns — the chat does not scroll, the user reviews one place, and you keep the
+full current state without re-pasting. Concretely:
+
+1. On the first turn, write the doc to the managed workspace (see above) and
+   `show` it once. From then on that tab is the dashboard.
+2. Each later turn, **overwrite the same file** (same path) and re-run
+   `./marina show "$path"`. The panel refreshes the existing tab; it does not
+   open a new one.
+3. Keep the chat side short: a one-line status ("updated the plan, decision
+   needed on X") plus a pointer to the doc. Put the detail in the doc.
+4. Use clear sections in the doc (Status / Options / Open questions / Decided)
+   so the user can jump to what changed.
+
+Resolve the workspace once per terminal and reuse that concrete path for every
+overwrite (the path is stable for the session; you do not need to re-resolve it
+each turn).
 
 ## Other commands
 
-```powershell
-.\marina.cmd list              # files open in this terminal's panel
-.\marina.cmd list --json       # machine-readable output
-.\marina.cmd close .\docs\architecture-review.md   # close a file in the panel
+```bash
+./marina workspace              # print this terminal's managed scratch path
+./marina list                   # files open in this terminal's panel
+./marina list --json            # machine-readable output (includes `missing`)
+./marina close "$artifact"      # close one file
+./marina close report.md        # ...or just the file name (basename match)
+./marina close --all            # close every file in this terminal's panel
+./marina close --stale          # close tabs whose file no longer exists on disk
+./marina close --glob '*.md'    # close files whose name matches a glob
+./marina close '*.md'           # a path containing * or ? is auto-treated as --glob
 ```
+
+**`list` marks zombie tabs.** A tab whose file has been deleted from disk is
+shown with a leading `!` and `(deleted)`, plus a `close --stale` hint at the
+bottom. `list --json` reports this as `"missing": true` on the file.
+
+**`close` matching.** A single `close <PATH>` first tries an exact path match,
+then falls back to a case-insensitive **basename** match — so you can pass just
+the file name as shown by `list` instead of the whole path. If several open
+files share that basename it errors (use the full path or a glob). A path or
+name containing `*` or `?` is treated as a glob and closes every match.
+
+(PowerShell/cmd.exe: use `.\marina.cmd`; resolve `$artifact` from the
+`workspace` command as shown above.)
 
 ## Exit codes
 
-| code | meaning                                          | what to do                       |
-|------|-------------------------------------------------|----------------------------------|
-| 0    | success                                         | continue                         |
+| code | meaning                                                                 | what to do           |
+| ---- | ----------------------------------------------------------------------- | -------------------- |
+| 0    | success                                                                 | continue             |
 | 1    | Marina offline / not in Marina / panel disabled / health marker missing | paste result in chat |
-| 2    | usage error (unknown option, missing path, unknown command) | fix the command        |
-| 3    | Marina online but rejected (file missing, not a regular file, ...) | read stderr   |
+| 2    | usage error (unknown option, missing path, unknown command)             | fix the command      |
+| 3    | Marina online but rejected (file missing, not a regular file, ...)      | read stderr          |
 
 ## Notes
 

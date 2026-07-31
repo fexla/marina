@@ -31,6 +31,14 @@
                           status_500    {"error": "internal"} 500
                         Any HTTP 200 that is not exactly the Marina marker
                         must be reported as offline by the CLI under test.
+  argv[5] list_mode   - optional. Controls GET /opening-files so the CLI's
+                        `list` formatting (incl. the zombie `(deleted)` marker)
+                        can be tested without a real filesystem. Default 'empty'.
+                          empty   {"files": [], "activePath": None}
+                          mixed   two files: a.md (live) + gone.md (missing=True).
+                        The /close-files response is echoed back with a `closed`
+                        list built from the recorded mode/pattern so the CLI's
+                        batch output can be asserted too.
 """
 import http.server
 import json
@@ -41,6 +49,65 @@ PORT = int(sys.argv[1])
 LOG = sys.argv[2]
 TOKEN = sys.argv[3]
 HEALTH_MODE = sys.argv[4] if len(sys.argv) > 4 else "marina"
+LIST_MODE = sys.argv[5] if len(sys.argv) > 5 else "empty"
+
+
+# Fixed fixture for GET /opening-files when LIST_MODE != "empty". Paths are
+# deliberately fake (no real file needed) -- the CLI only formats the JSON.
+FIXTURE_FILES = [
+    {"path": "C:/fake/a.md", "name": "a.md", "kind": "markdown", "size": 3, "mtimeMs": 1.0},
+    {"path": "C:/fake/gone.md", "name": "gone.md", "kind": "markdown", "size": 4, "mtimeMs": 2.0, "missing": True},
+]
+
+
+def opening_files_response():
+    if LIST_MODE == "mixed":
+        return {"files": FIXTURE_FILES, "activePath": "C:/fake/a.md"}
+    return {"files": [], "activePath": None}
+
+
+# Minimal in-memory state for /close-files so the batch response's `closed`
+# list reflects the mode/pattern. Starts from the same fixture as `mixed` so
+# close --all / --stale / --glob have something to act on when the test seeds
+# it via LIST_MODE=mixed. Mutated in place on each /close-files call.
+STATE_FILES = list(FIXTURE_FILES) if LIST_MODE == "mixed" else []
+
+
+def close_files_response(body):
+    # body: {"terminal": ..., "mode": "all"|"stale"|"glob", "pattern": "..."}
+    mode = body.get("mode")
+    pattern = body.get("pattern", "")
+    closed = []
+    kept = []
+    for f in STATE_FILES:
+        if mode == "all":
+            close = True
+        elif mode == "stale":
+            close = bool(f.get("missing"))
+        elif mode == "glob":
+            close = _glob_match(pattern, f.get("name", ""))
+        else:
+            close = False
+        if close:
+            closed.append(f["path"])
+        else:
+            kept.append(f)
+    STATE_FILES[:] = kept
+    return {"files": list(kept), "activePath": None, "closed": closed}
+
+
+def _glob_match(pattern, name):
+    # mirror the service's matchFileGlob: only * and ?, case-insensitive on name.
+    import re
+    p = pattern.lower()
+    n = name.lower()
+    if "*" not in p and "?" not in p:
+        return p == n
+    # escape regex metacharacters EXCEPT the glob chars * and ?, then turn the
+    # glob chars into regex. Order matters: escape first, then map.
+    escaped = re.sub(r"[.+^${}()|[\]\\]", lambda m: "\\" + m.group(0), p)
+    rx = escaped.replace("*", ".*").replace("?", ".")
+    return re.match("^" + rx + "$", n) is not None
 
 
 def health_response():
@@ -91,7 +158,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(401, {"error": "unauthorized"})
             return
         if p == "/opening-files":
-            self._send(200, {"files": [], "activePath": None})
+            self._send(200, opening_files_response())
             return
         self._send(404, {"error": "not found"})
 
@@ -103,8 +170,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not self._authed():
             self._send(401, {"error": "unauthorized"})
             return
+        try:
+            parsed = json.loads(body.decode("utf-8")) if body else {}
+        except Exception:
+            parsed = {}
         if p in ("/open-file", "/close-file"):
-            self._send(200, {"files": [], "activePath": None})
+            self._send(200, {"files": list(STATE_FILES), "activePath": None})
+            return
+        if p == "/close-files":
+            self._send(200, close_files_response(parsed))
             return
         self._send(404, {"error": "not found"})
 

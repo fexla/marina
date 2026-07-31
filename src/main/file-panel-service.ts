@@ -101,6 +101,28 @@ export interface FilePanelServiceOptions {
   port: number;
 }
 
+/**
+ * 极简 glob 匹配(只支持 `*` 与 `?`,大小写不敏感)。用于 `close --glob '*.md'`。
+ *
+ * @为什么不引 picomatch/minimatch:AGENTS.md 边界 2 禁止未授权新增依赖;
+ *   面板关文件的场景只需要最常见的 `*`/`?`,手写一个 30 行正则转换足够,
+ *   也避免引一个有自己语义(如 `**` 跨目录、brace 展开)的库带来意外。
+ *
+ * 匹配目标:OpenedFile.name(basename)。pattern 含 `*`/`?` 走通配;否则做
+ * basename 全等(大小写不敏感,对齐 Windows 文件系统)。返回是否命中。
+ */
+function matchFileGlob(pattern: string, fileName: string): boolean {
+  const p = pattern.toLowerCase();
+  const n = fileName.toLowerCase();
+  if (!p.includes('*') && !p.includes('?')) return n === p;
+  // 把 glob 转成正则:先转义所有正则元字符(**含 * 和 ?**),再把转义后的 \* / \?
+  // 还原成通配(.* / .)。\* / \? 也必须先转义,否则裸 * 会变成正则量词导致
+  // `Nothing to repeat`(曾让 /^*\.md$/ 报错)。
+  const escaped = p.replace(/[.+^${}()|[\]\\*?]/g, '\\$&');
+  const re = escaped.replace(/\\\*/g, '.*').replace(/\\\?/g, '.');
+  return new RegExp(`^${re}$`).test(n);
+}
+
 /** 构造 200 快照响应。 */
 function snapshot(state: PanelState | undefined): FilePanelSnapshot {
   if (!state) return { files: [], activePath: null };
@@ -268,19 +290,98 @@ export class FilePanelService extends EventEmitter {
     return snapshot(state);
   }
 
-  /** 关闭一个已打开文件;若关的是 active,回退到列表前一项(或 null)。 */
+  /**
+   * 关闭一个已打开文件;若关的是 active,回退到列表前一项(或 null)。
+   *
+   * 匹配顺序(对齐需求:CLI `close` 可只给文件名,不必给完整路径):
+   *   1. 规范化绝对路径精确匹配(renderer 的 tab × 关闭恒走这条,从不回退)。
+   *   2. 精确未中 → 按 basename 大小写不敏感匹配(只给文件名的场景)。
+   *      恰好一个命中 → 关它;多个同名 → 抛 NotFound("ambiguous"),提示用完整
+   *      路径或 glob;零命中 → 抛 NotFound。
+   *
+   * @设计理由:renderer 永远传 file.path(精确命中,行为与旧版一致);CLI/agent
+   *   常只拿得到文件名(用户从 list 里复制 name),basename 回退让它「关不掉」
+   *   的旧痛点消失。多个同名时报错而非猜,避免误关。
+   */
   closeFile(sessionId: string, rawPath: string): FilePanelSnapshot {
     const state = this.panels.get(sessionId);
-    if (!state) return snapshot(undefined);
+    if (!state) throw new FilePanelError('NotFound', `文件未在面板中: ${rawPath}`);
     const abs = this.normalizeForSession(sessionId, rawPath);
-    this.stopWatcher(state, abs);
-    const idx = state.files.findIndex((f) => f.path === abs);
-    if (idx < 0) return snapshot(state);
+    const target = this.resolveCloseTarget(state, abs, rawPath);
+    this.stopWatcher(state, target);
+    const idx = state.files.findIndex((f) => f.path === target);
+    if (idx < 0) return snapshot(state); // 理论不可达(resolveCloseTarget 已保证)
     state.files.splice(idx, 1);
-    if (state.activePath === abs) {
+    if (state.activePath === target) {
       state.activePath = state.files[idx - 1]?.path ?? state.files[0]?.path ?? null;
     }
     this.emitUpdated(sessionId, state);
+    return snapshot(state);
+  }
+
+  /**
+   * 关闭全部已打开文件(`close --all`)。返回剩余快照(恒为空)。每关一个都
+   * 停 watcher;一次性 splice 后发一次 emit(批量,不为每个文件各发一次)。
+   */
+  closeAllFiles(sessionId: string): FilePanelSnapshot {
+    const state = this.panels.get(sessionId);
+    if (!state) return snapshot(undefined);
+    for (const abs of [...state.watchers.keys()]) this.stopWatcher(state, abs);
+    state.files = [];
+    state.activePath = null;
+    this.emitUpdated(sessionId, state);
+    return snapshot(state);
+  }
+
+  /**
+   * 按条件批量关闭(`close --stale` / `close --glob`)。predicate 收 OpenedFile
+   * 返回是否关闭。先收集要关的路径(避免 splice 边遍历边改),再停 watcher +
+   * 移除,回退 active。返回关闭掉的路径列表(供 CLI 输出「关了哪些」)。
+   *
+   * stale 场景:调用方应先 await refreshStale(sessionId) 让 missing 字段反映
+   * 磁盘真值,再以 (f) => f.missing === true 调本方法。
+   */
+  closeMatchingFiles(
+    sessionId: string,
+    predicate: (f: OpenedFile) => boolean,
+  ): { snapshot: FilePanelSnapshot; closedPaths: string[] } {
+    const state = this.panels.get(sessionId);
+    if (!state) return { snapshot: snapshot(undefined), closedPaths: [] };
+    const toClose = state.files.filter(predicate).map((f) => f.path);
+    if (toClose.length === 0) return { snapshot: snapshot(state), closedPaths: [] };
+    for (const abs of toClose) this.stopWatcher(state, abs);
+    const set = new Set(toClose);
+    state.files = state.files.filter((f) => !set.has(f.path));
+    if (state.activePath && set.has(state.activePath)) {
+      state.activePath = state.files[0]?.path ?? null;
+    }
+    this.emitUpdated(sessionId, state);
+    return { snapshot: snapshot(state), closedPaths: toClose };
+  }
+
+  /**
+   * 同步面板里每个文件的 missing 标记(stat 磁盘真值)。用于:
+   *   - HTTP GET /opening-files:每次 list 拉取前刷一次,让 CLI `list` 标记
+   *     始终反映磁盘真值(补 fs.watch 可能漏掉的事件:例如 Marina 关闭期间
+   *     文件被删,或 watcher error 已停)。
+   *   - close --stale:关僵尸前先刷真值。
+   * 任一文件的 missing 翻转才 emit(避免每次 list 都触发空广播)。返回快照。
+   */
+  async refreshStale(sessionId: string): Promise<FilePanelSnapshot> {
+    const state = this.panels.get(sessionId);
+    if (!state) return snapshot(undefined);
+    let changed = false;
+    await Promise.all(
+      state.files.map(async (f) => {
+        const exists = await this.pathExistsAsFile(f.path);
+        const want = exists ? false : true;
+        if (!!f.missing !== want) {
+          f.missing = want;
+          changed = true;
+        }
+      }),
+    );
+    if (changed) this.emitUpdated(sessionId, state);
     return snapshot(state);
   }
 
@@ -446,6 +547,40 @@ export class FilePanelService extends EventEmitter {
     return normalizePath(resolve(base, rawPath));
   }
 
+  /**
+   * closeFile 的匹配核心:先精确,后 basename 回退。
+   * - 精确命中 → 返回该规范化路径。
+   * - 否则按 basename 大小写不敏感找;唯一命中 → 返回它;多个 → 抛 NotFound
+   *   (ambiguous);零 → 抛 NotFound。
+   * @param abs rawPath 规范化后的绝对路径(精确匹配用)
+   * @param rawPath 原始入参(basename 回退用,避免从 abs 反推 basename 被
+   *   resolve 改变大小写)。
+   */
+  private resolveCloseTarget(state: PanelState, abs: string, rawPath: string): string {
+    if (state.files.some((f) => f.path === abs)) return abs;
+    // basename 回退:rawPath 可能是相对名(report.md)。取其 basename 做比较。
+    const wantName = basename(abs).toLowerCase();
+    const byName = state.files.filter((f) => f.name.toLowerCase() === wantName);
+    if (byName.length === 1) return byName[0]!.path;
+    if (byName.length > 1) {
+      throw new FilePanelError(
+        'NotFound',
+        `多个已打开文件名为 "${wantName}"(${byName.length} 个),请用完整路径或 glob 指定: ${byName.map((f) => f.path).join(', ')}`,
+      );
+    }
+    throw new FilePanelError('NotFound', `文件未在面板中: ${rawPath}`);
+  }
+
+  /** stat 路径是否仍是普通文件(ENOENT / 目录 / 不可达 → false)。refreshStale 用。 */
+  private async pathExistsAsFile(abs: string): Promise<boolean> {
+    try {
+      const s = await fs.stat(abs);
+      return s.isFile();
+    } catch {
+      return false;
+    }
+  }
+
   private async toOpenedFile(abs: string): Promise<OpenedFile> {
     const stat = await fs.stat(abs);
     return {
@@ -511,18 +646,33 @@ export class FilePanelService extends EventEmitter {
     try {
       const stat = await fs.stat(abs);
       if (!stat.isFile()) return;
+      // 文件还在:刷新 size/mtime 并清掉可能的 missing 标记。
+      const before = state.files[idx]!;
       state.files[idx] = {
-        ...state.files[idx]!,
+        ...before,
         size: stat.size,
         mtimeMs: stat.mtimeMs,
+        // 之前被标 missing(僵尸)而文件又回来了 → 清除标记。
+        missing: false,
       };
       this.emitUpdated(sessionId, state);
     } catch (err) {
-      // 文件被删等:保留条目,下次 read 报错给用户。不主动移除(可能只是临时不可达)。
-      logger.warn(
-        MODULE,
-        `refresh stat failed for ${abs}: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      // 文件被删等:保留条目(可能只是临时不可达),标 missing 让 CLI `list`
+      // /面板能展示「该 tab 指向的文件已删」。文件重新出现会在下次 change 事件
+      // 或 refreshStale 里清回 false。ENOENT 是常态;其它异常也降级为 missing
+      // (用户会在 list 里看到,而不是一个静默陈旧的 mtime)。
+      const code = (err as NodeJS.ErrnoException).code;
+      const before = state.files[idx]!;
+      if (!before.missing) {
+        state.files[idx] = { ...before, missing: true };
+        this.emitUpdated(sessionId, state);
+      }
+      if (code !== 'ENOENT') {
+        logger.warn(
+          MODULE,
+          `refresh stat failed for ${abs}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }
 
@@ -570,9 +720,12 @@ export class FilePanelService extends EventEmitter {
     const terminal = u.searchParams.get('terminal') ?? undefined;
 
     // GET /opening-files?terminal=<id>
+    // 拉取前先 await refreshStale:让 CLI `list` 的「僵尸 tab」标记始终反映
+    // 磁盘真值(补 fs.watch 漏掉的事件:Marina 关闭期间被删、watcher error 已停)。
+    // 面板数小(N 个 stat),开销可忽。IPC 的 get-open-files 不走这条(保持同步快路径)。
     if (method === 'GET' && u.pathname === '/opening-files') {
       if (!terminal) return this.send(res, 400, { error: 'missing query: terminal' });
-      return this.send(res, 200, this.getOpenFiles(terminal));
+      return void this.handleOpeningFiles(res, terminal);
     }
 
     // POST /open-file | /show-file | /close-file  body {terminal, path}
@@ -584,7 +737,78 @@ export class FilePanelService extends EventEmitter {
       return;
     }
 
+    // POST /close-files  body {terminal, mode, pattern?} —— 批量关:`all` / `stale` / `glob`
+    if (method === 'POST' && u.pathname === '/close-files') {
+      void this.handleCloseFiles(req, res);
+      return;
+    }
+
     this.send(res, 404, { error: `not found: ${method} ${u.pathname}` });
+  }
+
+  /** GET /opening-files:先刷 missing 再返回快照。 */
+  private async handleOpeningFiles(res: ServerResponse, terminal: string): Promise<void> {
+    try {
+      const snap = await this.refreshStale(terminal);
+      this.send(res, 200, snap);
+    } catch (err) {
+      this.sendError(res, err);
+    }
+  }
+
+  /**
+   * POST /close-files 批量关。body:
+   *   { terminal, mode: 'all' | 'stale' | 'glob', pattern?: string }
+   * - all:关全部。
+   * - stale:先 refreshStale 刷磁盘真值,再关所有 missing===true。
+   * - glob:按 basename glob(pattern 必填,支持 `*`/`?`)。
+   * 返回 { files, activePath, closed } —— closed 是被关路径列表,供 CLI 输出。
+   */
+  private async handleCloseFiles(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    let body: { terminal?: string; mode?: string; pattern?: string };
+    try {
+      body = JSON.parse(await this.readBody(req)) as {
+        terminal?: string;
+        mode?: string;
+        pattern?: string;
+      };
+    } catch {
+      return this.send(res, 400, { error: 'invalid JSON body' });
+    }
+    const { terminal, mode, pattern } = body;
+    if (!terminal) return this.send(res, 400, { error: 'body 需要 { terminal }' });
+    if (mode !== 'all' && mode !== 'stale' && mode !== 'glob') {
+      return this.send(res, 400, { error: "body.mode 必须是 'all' | 'stale' | 'glob'" });
+    }
+    if (mode === 'glob' && !pattern) {
+      return this.send(res, 400, { error: "mode='glob' 需要 pattern" });
+    }
+    try {
+      if (mode === 'all') {
+        // 先抓当前列表再关(closeAllFiles 后 snap.files 已空),用于 closed 回包。
+        const before = this.getOpenFiles(terminal);
+        const snap = this.closeAllFiles(terminal);
+        this.send(res, 200, { ...snap, closed: before.files.map((f) => f.path) });
+        return;
+      }
+      if (mode === 'stale') {
+        await this.refreshStale(terminal);
+        const { snapshot: snap, closedPaths } = this.closeMatchingFiles(
+          terminal,
+          (f) => f.missing === true,
+        );
+        this.send(res, 200, { ...snap, closed: closedPaths });
+        return;
+      }
+      // glob
+      const pat = pattern as string;
+      const { snapshot: snap, closedPaths } = this.closeMatchingFiles(terminal, (f) =>
+        matchFileGlob(pat, f.name),
+      );
+      this.send(res, 200, { ...snap, closed: closedPaths });
+    } catch (err) {
+      this.sendError(res, err);
+    }
   }
 
   private async handlePost(

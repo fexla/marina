@@ -419,3 +419,284 @@ describe('FilePanelService - 销毁清理与自动刷新', () => {
     expect(after).toBeGreaterThanOrEqual(before);
   });
 });
+
+describe('FilePanelService - 僵尸 tab / stale 检测 (#3)', () => {
+  let dir: string;
+  let svc: FilePanelService;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'marina-fp-stale-'));
+    svc = new FilePanelService();
+    svc.attachSessionLookup(makeLookup({ s1: { currentCwd: dir, ownerWindowId: 'w1' } }));
+  });
+
+  afterEach(async () => {
+    await svc.stop();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('refreshStale 把已删文件标 missing=true(不删条目)', async () => {
+    await writeFile(join(dir, 'gone.md'), 'x');
+    await writeFile(join(dir, 'live.md'), 'y');
+    await svc.openFile('s1', 'gone.md');
+    await svc.openFile('s1', 'live.md');
+    // 删其中一个
+    await rm(join(dir, 'gone.md'));
+    const snap = await svc.refreshStale('s1');
+    const gone = snap.files.find((f) => f.name === 'gone.md');
+    const live = snap.files.find((f) => f.name === 'live.md');
+    expect(gone?.missing).toBe(true);
+    // live 文件从未被标过 missing(refreshStale 不改未变化的项) → undefined 等同 false。
+    expect(live?.missing ?? false).toBe(false);
+    expect(snap.files).toHaveLength(2); // 条目保留(僵尸 tab)
+  });
+
+  it('refreshStale 不改不变时不 emit(空广播防护)', async () => {
+    await writeFile(join(dir, 'a.md'), 'x');
+    await svc.openFile('s1', 'a.md');
+    const events: unknown[] = [];
+    svc.on('filePanelUpdated', (p) => events.push(p));
+    await svc.refreshStale('s1'); // 文件还在,nothing 改变
+    expect(events).toHaveLength(0);
+  });
+
+  it('refreshStale 文件重建后 missing 清回 false', async () => {
+    await writeFile(join(dir, 'b.md'), 'v1');
+    await svc.openFile('s1', 'b.md');
+    await rm(join(dir, 'b.md'));
+    expect((await svc.refreshStale('s1')).files[0]!.missing).toBe(true);
+    await writeFile(join(dir, 'b.md'), 'v2');
+    expect((await svc.refreshStale('s1')).files[0]!.missing).toBe(false);
+  });
+
+  it('openFile 新开的文件不带 missing(或为 false)', async () => {
+    await writeFile(join(dir, 'c.md'), 'x');
+    const snap = await svc.openFile('s1', 'c.md');
+    expect(snap.files[0]!.missing ?? false).toBe(false);
+  });
+});
+
+describe('FilePanelService - close basename 回退 (#5)', () => {
+  let dir: string;
+  let svc: FilePanelService;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'marina-fp-basename-'));
+    svc = new FilePanelService();
+    svc.attachSessionLookup(makeLookup({ s1: { currentCwd: dir, ownerWindowId: 'w1' } }));
+  });
+
+  afterEach(async () => {
+    await svc.stop();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('只给文件名也能关(basename 回退,大小写不敏感)', async () => {
+    // 文件在子目录,但 CLI 只传了 basename —— 模拟「从 list 里只看到 name」。
+    await mkdir(join(dir, 'sub'));
+    const real = join(dir, 'sub', 'Report.md');
+    await writeFile(real, 'x');
+    await svc.openFile('s1', real);
+    // 传小写 basename(磁盘是大写 Report.md)
+    const snap = svc.closeFile('s1', 'report.md');
+    expect(snap.files).toHaveLength(0);
+  });
+
+  it('多个同名 basename → 抛 NotFound(ambiguous),不猜', async () => {
+    await mkdir(join(dir, 'a'));
+    await mkdir(join(dir, 'b'));
+    await writeFile(join(dir, 'a', 'dup.md'), '1');
+    await writeFile(join(dir, 'b', 'dup.md'), '2');
+    await svc.openFile('s1', join('a', 'dup.md'));
+    await svc.openFile('s1', join('b', 'dup.md'));
+    expect(() => svc.closeFile('s1', 'dup.md')).toThrow(FilePanelError);
+    // 两个都还在(没误关)
+    expect(svc.getOpenFiles('s1').files).toHaveLength(2);
+  });
+
+  it('面板里没有的路径 → 抛 NotFound(不再静默 no-op)', async () => {
+    await writeFile(join(dir, 'x.md'), '1');
+    await svc.openFile('s1', 'x.md');
+    expect(() => svc.closeFile('s1', 'nope.md')).toThrow(FilePanelError);
+  });
+
+  it('精确路径仍命中(不触发 basename 回退;renderer 路径不受影响)', async () => {
+    await writeFile(join(dir, 'exact.md'), '1');
+    const opened = await svc.openFile('s1', 'exact.md');
+    const snap = svc.closeFile('s1', opened.files[0]!.path);
+    expect(snap.files).toHaveLength(0);
+  });
+});
+
+describe('FilePanelService - 批量 close (#4)', () => {
+  let dir: string;
+  let svc: FilePanelService;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'marina-fp-bulk-'));
+    svc = new FilePanelService();
+    svc.attachSessionLookup(makeLookup({ s1: { currentCwd: dir, ownerWindowId: 'w1' } }));
+  });
+
+  afterEach(async () => {
+    await svc.stop();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  async function seedStale(): Promise<void> {
+    await writeFile(join(dir, 'keep.md'), 'k');
+    await writeFile(join(dir, 'gone.md'), 'g');
+    await svc.openFile('s1', 'keep.md');
+    await svc.openFile('s1', 'gone.md');
+    await rm(join(dir, 'gone.md'));
+  }
+
+  it('closeAllFiles 清空全部', async () => {
+    await writeFile(join(dir, 'a.md'), '1');
+    await writeFile(join(dir, 'b.md'), '2');
+    await svc.openFile('s1', 'a.md');
+    await svc.openFile('s1', 'b.md');
+    const snap = svc.closeAllFiles('s1');
+    expect(snap.files).toHaveLength(0);
+    expect(snap.activePath).toBeNull();
+    expect(svc.getOpenFiles('s1').files).toHaveLength(0);
+  });
+
+  it('closeMatchingFiles(glob *.md) 只关匹配的', async () => {
+    await writeFile(join(dir, 'a.md'), '1');
+    await writeFile(join(dir, 'b.txt'), '2');
+    await svc.openFile('s1', 'a.md');
+    await svc.openFile('s1', 'b.txt');
+    // matchFileGlob 通过 name 匹配;这里直接用谓词模拟服务内部 glob 调用形态
+    const { snapshot: snap, closedPaths } = svc.closeMatchingFiles('s1', (f) =>
+      /\.md$/i.test(f.name),
+    );
+    expect(closedPaths).toHaveLength(1);
+    expect(snap.files).toHaveLength(1);
+    expect(snap.files[0]!.name).toBe('b.txt');
+  });
+
+  it('closeMatchingFiles(stale) 关所有 missing(配合 refreshStale)', async () => {
+    await seedStale();
+    await svc.refreshStale('s1');
+    const { snapshot: snap, closedPaths } = svc.closeMatchingFiles(
+      's1',
+      (f) => f.missing === true,
+    );
+    expect(closedPaths).toEqual(expect.arrayContaining([expect.stringContaining('gone.md')]));
+    expect(snap.files).toHaveLength(1);
+    expect(snap.files[0]!.name).toBe('keep.md');
+  });
+
+  it('closeMatchingFiles 没有匹配 → 不 emit,closedPaths 为空', async () => {
+    await writeFile(join(dir, 'a.md'), '1');
+    await svc.openFile('s1', 'a.md');
+    const events: unknown[] = [];
+    svc.on('filePanelUpdated', (p) => events.push(p));
+    const r = svc.closeMatchingFiles('s1', () => false);
+    expect(r.closedPaths).toHaveLength(0);
+    expect(events).toHaveLength(0);
+  });
+});
+
+describe('FilePanelService - HTTP /opening-files stale + /close-files (#3,#4)', () => {
+  let dir: string;
+  let svc: FilePanelService;
+  let baseUrl: string;
+  let token: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'marina-fp-http2-'));
+    svc = new FilePanelService();
+    svc.attachSessionLookup(makeLookup({ s1: { currentCwd: dir, ownerWindowId: 'w1' } }));
+    const url = await svc.start({ enabled: true, port: 0 });
+    baseUrl = url!.baseUrl;
+    token = url!.token;
+  });
+
+  afterEach(async () => {
+    await svc.stop();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  function authHeaders(): Record<string, string> {
+    return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  }
+
+  it('GET /opening-files 自动刷 stale:返回体里 missing 反映磁盘真值', async () => {
+    await writeFile(join(dir, 'gone.md'), 'x');
+    await svc.openFile('s1', 'gone.md');
+    await rm(join(dir, 'gone.md'));
+    const r = await fetch(`${baseUrl}/opening-files?terminal=s1`, { headers: authHeaders() });
+    const body = (await r.json()) as { files: { missing?: boolean; name: string }[] };
+    expect(body.files[0]!.missing).toBe(true);
+  });
+
+  it('POST /close-files mode=all 清空并返回 closed 列表', async () => {
+    await writeFile(join(dir, 'a.md'), '1');
+    await writeFile(join(dir, 'b.md'), '2');
+    await svc.openFile('s1', 'a.md');
+    await svc.openFile('s1', 'b.md');
+    const r = await fetch(`${baseUrl}/close-files`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ terminal: 's1', mode: 'all' }),
+    });
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { files: unknown[]; closed: string[] };
+    expect(body.files).toHaveLength(0);
+    expect(body.closed).toHaveLength(2);
+  });
+
+  it('POST /close-files mode=stale 先刷真值再关僵尸', async () => {
+    await writeFile(join(dir, 'keep.md'), 'k');
+    await writeFile(join(dir, 'gone.md'), 'g');
+    await svc.openFile('s1', 'keep.md');
+    await svc.openFile('s1', 'gone.md');
+    await rm(join(dir, 'gone.md'));
+    const r = await fetch(`${baseUrl}/close-files`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ terminal: 's1', mode: 'stale' }),
+    });
+    const body = (await r.json()) as { files: { name: string }[]; closed: string[] };
+    expect(body.closed).toHaveLength(1);
+    expect(body.files[0]!.name).toBe('keep.md');
+  });
+
+  it('POST /close-files mode=glob 按 basename 通配关', async () => {
+    await writeFile(join(dir, 'a.md'), '1');
+    await writeFile(join(dir, 'b.md'), '2');
+    await writeFile(join(dir, 'c.txt'), '3');
+    await svc.openFile('s1', 'a.md');
+    await svc.openFile('s1', 'b.md');
+    await svc.openFile('s1', 'c.txt');
+    const r = await fetch(`${baseUrl}/close-files`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ terminal: 's1', mode: 'glob', pattern: '*.md' }),
+    });
+    const body = (await r.json()) as { files: { name: string }[]; closed: string[] };
+    expect(body.closed).toHaveLength(2);
+    expect(body.files).toHaveLength(1);
+    expect(body.files[0]!.name).toBe('c.txt');
+  });
+
+  it('POST /close-files 非法 mode → 400', async () => {
+    const r = await fetch(`${baseUrl}/close-files`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ terminal: 's1', mode: 'bogus' }),
+    });
+    expect(r.status).toBe(400);
+  });
+
+  it('POST /close-files mode=glob 缺 pattern → 400', async () => {
+    const r = await fetch(`${baseUrl}/close-files`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ terminal: 's1', mode: 'glob' }),
+    });
+    expect(r.status).toBe(400);
+  });
+});

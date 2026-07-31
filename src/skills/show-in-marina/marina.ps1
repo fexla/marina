@@ -260,22 +260,100 @@ function Invoke-CmdShow {
   return $script:EXIT_OK
 }
 
+<#
+  close has four forms:
+    close --all                 close every file in this terminal's panel
+    close --stale              close only zombie tabs (file deleted on disk,
+                                i.e. missing == true)
+    close --glob <PATTERN>     close files whose basename matches a glob
+                                (PATTERN supports * and ?)
+    close <PATH>               single close via /close-file. The server first
+                                tries an exact path match, then falls back to a
+                                basename match (so passing just the file name
+                                works too).
+
+  A PATH argument containing `*` or `?` is automatically treated as --glob, so
+  the intuitive `close *.md` works. --quiet applies to all forms.
+#>
 function Invoke-CmdClose {
   param($Config, [string[]]$CmdArgs)
-  Assert-NoUnknownOptions -CmdArgs $CmdArgs -Allowed @('--quiet', '-q') -CmdName 'close'
-  $quiet = $false; $path = $null
+  Assert-NoUnknownOptions -CmdArgs $CmdArgs -Allowed @('--quiet', '-q', '--all', '--stale', '--glob') -CmdName 'close'
+  $quiet = $false; $all = $false; $stale = $false; $glob = $false
+  $globPattern = $null; $path = $null
   $i = 0
   while ($i -lt $CmdArgs.Count) {
     $a = [string]$CmdArgs[$i]
-    if ($a -eq '--quiet' -or $a -eq '-q') { $quiet = $true; $i++ }
-    else { $path = $a; $i++ }
+    switch -CaseSensitive ($a) {
+      '--quiet' { $quiet = $true; $i++ }
+      '-q' { $quiet = $true; $i++ }
+      '--all' { $all = $true; $i++ }
+      '--stale' { $stale = $true; $i++ }
+      '--glob' { $glob = $true; $i++; if ($i -lt $CmdArgs.Count) { $globPattern = [string]$CmdArgs[$i]; $i++ } }
+      default { $path = $a; $i++ }
+    }
   }
-  if (-not $path) { Die $script:EXIT_USAGE 'close: requires a PATH' }
+
   if (-not $Config.Terminal) { Die $script:EXIT_OFFLINE 'TERMINAL_ID is unset' }
+
+  # Mutual-exclusion: the batch flags are exclusive with each other and with
+  # a PATH (--all/--stale/--glob take no PATH).
+  $batchFlags = @($all, $stale, $glob) | Where-Object { $_ }
+  if ($batchFlags.Count -gt 1) {
+    Die $script:EXIT_USAGE 'close: --all / --stale / --glob are mutually exclusive'
+  }
+  if ($batchFlags.Count -eq 1 -and $path) {
+    Die $script:EXIT_USAGE 'close: --all / --stale / --glob do not take a PATH'
+  }
+  if ($glob -and -not $globPattern) {
+    Die $script:EXIT_USAGE 'close: --glob requires a PATTERN'
+  }
+  if (-not $all -and -not $stale -and -not $glob -and -not $path) {
+    Die $script:EXIT_USAGE 'close: requires a PATH (or use --all / --stale / --glob)'
+  }
+
+  # A PATH with wildcard chars is implicitly --glob, so `close *.md` is not
+  # treated as a literal path.
+  if ($path -and ($path.Contains('*') -or $path.Contains('?'))) {
+    $glob = $true; $globPattern = $path; $path = $null
+  }
+
+  if ($all) {
+    $resp = Send-MarinaRequest -Config $Config -Method 'POST' -Path '/close-files' -Body @{ terminal = $Config.Terminal; mode = 'all' }
+    if (-not $quiet) { Print-CloseResult -Resp $resp -Label 'all' }
+    return $script:EXIT_OK
+  }
+  if ($stale) {
+    $resp = Send-MarinaRequest -Config $Config -Method 'POST' -Path '/close-files' -Body @{ terminal = $Config.Terminal; mode = 'stale' }
+    if (-not $quiet) { Print-CloseResult -Resp $resp -Label 'stale' }
+    return $script:EXIT_OK
+  }
+  if ($glob) {
+    $resp = Send-MarinaRequest -Config $Config -Method 'POST' -Path '/close-files' -Body @{ terminal = $Config.Terminal; mode = 'glob'; pattern = $globPattern }
+    if (-not $quiet) { Print-CloseResult -Resp $resp -Label "glob '$globPattern'" }
+    return $script:EXIT_OK
+  }
+
+  # Single path via /close-file. The server does exact-path then basename
+  # fallback. We do NOT Test-Path here: the target may not be in cwd, and may
+  # even be deleted on disk while the tab still exists (that's the point).
   $p = Resolve-AbsPath -P $path
   Send-MarinaRequest -Config $Config -Method 'POST' -Path '/close-file' -Body @{ terminal = $Config.Terminal; path = $p } | Out-Null
   if (-not $quiet) { [Console]::Out.WriteLine("closed: $p") }
   return $script:EXIT_OK
+}
+
+# Batch-close output: `closed N file(s)` plus the path list. When closed is 0 we
+# print a note (e.g. `close --stale` with no zombies should not look like it
+# silently closed something).
+function Print-CloseResult($Resp, [string]$Label) {
+  $closed = $Resp.closed
+  $n = if ($closed) { @($closed).Count } else { 0 }
+  if ($n -eq 0) {
+    [Console]::Out.WriteLine("closed 0 file(s) [$Label] (nothing matched)")
+    return
+  }
+  [Console]::Out.WriteLine("closed $n file(s) [$Label]:")
+  foreach ($c in @($closed)) { [Console]::Out.WriteLine("  $c") }
 }
 
 function Invoke-CmdList {
@@ -296,10 +374,23 @@ function Invoke-CmdList {
     return $script:EXIT_OK
   }
   $active = $data.activePath
+  # missing=true = zombie tab: the file is gone from disk but the tab is kept.
+  # Mark it with a leading `!` and (deleted) so it stands out and can be bulk-
+  # cleaned via `marina close --stale`. The server already refreshStale'd on the
+  # GET /opening-files, so `missing` here reflects the live disk truth.
+  $staleCount = 0
   foreach ($f in $files) {
+    $isMissing = [bool]$f.missing
+    if ($isMissing) { $staleCount++ }
     $mark = if ([string]$f.path -eq [string]$active) { '*' } else { ' ' }
+    $staleMark = if ($isMissing) { '!' } else { ' ' }
     $kind = if ($f.kind) { "($($f.kind))" } else { '' }
-    [Console]::Out.WriteLine("$mark $($f.path)  $kind")
+    $deletedTag = if ($isMissing) { ' (deleted)' } else { '' }
+    [Console]::Out.WriteLine("$mark$staleMark $($f.path)  $kind$deletedTag")
+  }
+  if ($staleCount -gt 0) {
+    [Console]::Out.WriteLine("")
+    [Console]::Out.WriteLine("$staleCount deleted file(s) above no longer exist on disk. Run: marina close --stale")
   }
   return $script:EXIT_OK
 }
@@ -316,9 +407,15 @@ commands:
   workspace         print this session's managed scratch directory
   show <PATH>       open an existing file in the panel
                     -q, --quiet suppress success output
-  close <PATH>      close a file in the panel
+  close <PATH>      close one file (exact path, or just the file name)
+  close --all       close every file in this terminal's panel
+  close --stale     close only tabs whose file no longer exists on disk
+  close --glob <P>  close files whose name matches a glob (e.g. '*.md')
+                    (a PATH containing * or ? is treated as --glob)
+                    -q, --quiet suppress success output
   list              list files open in this terminal's panel
-                    --json      raw JSON output
+                    deleted files are marked with ! and (deleted)
+                    --json      raw JSON output (includes `missing`)
 
 There is no stdin mode. Run `marina workspace` to get the concrete scratch
 path, write the artifact there with your file-writing tool (UTF-8), then run

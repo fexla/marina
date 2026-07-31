@@ -213,13 +213,22 @@ function runMarinaBash(
   });
 }
 
-/** 启动 mock server,支持 health_mode 覆盖以测 ping 的标记严格性。 */
+/**
+ * 启动 mock server,支持 health_mode 覆盖以测 ping 的标记严格性。
+ * list_mode 可选(argv[5]):'mixed' 返回两个 fixture 文件(其一 missing=true),
+ * 用于测 CLI `list` 的僵尸标记与 `close --stale`。
+ */
 function startMock(
   healthMode?: string,
+  listMode?: string,
 ): Promise<{ proc: ChildProcess; baseUrl: string; logFile: string }> {
   const logFile = join(tmpdir(), `marina-cli-test-${Date.now()}-${Math.random()}.log`);
   const args = [MOCK_SERVER, '0', logFile, TOKEN];
-  if (healthMode) args.push(healthMode);
+  if (healthMode || listMode) {
+    // argv[4]=health_mode (默认 'marina');argv[5]=list_mode (可选)。
+    args.push(healthMode ?? 'marina');
+    if (listMode) args.push(listMode);
+  }
   const proc = spawn(PY as string, args, { stdio: ['ignore', 'pipe', 'pipe'] });
   proc.stderr?.on('data', (d) => {
     // eslint-disable-next-line no-console
@@ -271,8 +280,12 @@ describeOrSkip('marina.cmd launcher + marina.ps1 (requires PowerShell + Python m
   });
 
   function readRequests(): RecordedRequest[] {
-    if (!existsSync(mock.logFile)) return [];
-    const content = readFileSync(mock.logFile, 'utf-8');
+    return readRequestsFrom(mock.logFile);
+  }
+
+  function readRequestsFrom(logFile: string): RecordedRequest[] {
+    if (!existsSync(logFile)) return [];
+    const content = readFileSync(logFile, 'utf-8');
     return content
       .trim()
       .split('\n')
@@ -467,6 +480,143 @@ describeOrSkip('marina.cmd launcher + marina.ps1 (requires PowerShell + Python m
     });
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('no files open');
+  });
+
+  // ── list 僵尸标记 + close 批量(#3,#4,#5) ─────────────────────
+  // 这几例用独立的 mixed fixture mock(返回两个文件:一存一缺),不干扰共享 mock。
+  it('list marks deleted (zombie) tabs with ! and (deleted)', async () => {
+    const mixed = await startMock(undefined, 'mixed');
+    try {
+      const r = runMarina(['list'], {
+        env: { MARINA_SERVICE: mixed.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+      });
+      expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+      // gone.md 是 missing=true 的僵尸 tab
+      expect(r.stdout).toContain('gone.md');
+      expect(r.stdout).toContain('!');
+      expect(r.stdout).toContain('(deleted)');
+      // 提示 close --stale
+      expect(r.stdout).toContain('close --stale');
+      // live 的 a.md 不该带 (deleted)
+      const aLine = r.stdout.split(/\r?\n/).find((l) => l.includes('a.md'))!;
+      expect(aLine).not.toContain('(deleted)');
+    } finally {
+      mixed.proc.kill();
+    }
+  });
+
+  it('list --json includes missing flag for zombie tabs', async () => {
+    const mixed = await startMock(undefined, 'mixed');
+    try {
+      const r = runMarina(['list', '--json'], {
+        env: { MARINA_SERVICE: mixed.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+      });
+      expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+      const parsed = JSON.parse(r.stdout) as { files: { name: string; missing?: boolean }[] };
+      const gone = parsed.files.find((f) => f.name === 'gone.md');
+      const live = parsed.files.find((f) => f.name === 'a.md');
+      expect(gone?.missing).toBe(true);
+      expect(live?.missing ?? false).toBe(false);
+    } finally {
+      mixed.proc.kill();
+    }
+  });
+
+  it('close --all POSTs /close-files mode=all and reports count', async () => {
+    const mixed = await startMock(undefined, 'mixed');
+    try {
+      const r = runMarina(['close', '--all'], {
+        env: { MARINA_SERVICE: mixed.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't2' },
+      });
+      expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+      const req = readRequestsFrom(mixed.logFile).find((x) => x.path === '/close-files');
+      expect(req).toBeDefined();
+      expect(JSON.parse(req!.body)).toMatchObject({ terminal: 't2', mode: 'all' });
+      expect(r.stdout).toContain('closed 2 file(s)');
+    } finally {
+      mixed.proc.kill();
+    }
+  });
+
+  it('close --stale POSTs /close-files mode=stale', async () => {
+    const mixed = await startMock(undefined, 'mixed');
+    try {
+      const r = runMarina(['close', '--stale'], {
+        env: { MARINA_SERVICE: mixed.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't3' },
+      });
+      expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+      const req = readRequestsFrom(mixed.logFile).find((x) => x.path === '/close-files');
+      expect(JSON.parse(req!.body)).toMatchObject({ mode: 'stale' });
+      // mixed fixture: 只 gone.md 是 missing → 关 1 个
+      expect(r.stdout).toContain('closed 1 file(s)');
+      expect(r.stdout).toContain('gone.md');
+    } finally {
+      mixed.proc.kill();
+    }
+  });
+
+  it('close --glob PATTERN POSTs /close-files mode=glob + pattern', async () => {
+    const mixed = await startMock(undefined, 'mixed');
+    try {
+      const r = runMarina(['close', '--glob', '*.md'], {
+        env: { MARINA_SERVICE: mixed.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't4' },
+      });
+      expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+      const req = readRequestsFrom(mixed.logFile).find((x) => x.path === '/close-files');
+      expect(JSON.parse(req!.body)).toMatchObject({ mode: 'glob', pattern: '*.md' });
+    } finally {
+      mixed.proc.kill();
+    }
+  });
+
+  it('close with a wildcard arg is auto-treated as --glob', async () => {
+    const mixed = await startMock(undefined, 'mixed');
+    try {
+      const r = runMarina(['close', '*.md'], {
+        env: { MARINA_SERVICE: mixed.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't5' },
+      });
+      expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+      const req = readRequestsFrom(mixed.logFile).find((x) => x.path === '/close-files');
+      expect(JSON.parse(req!.body)).toMatchObject({ mode: 'glob', pattern: '*.md' });
+      // 不该走 /close-file
+      expect(readRequestsFrom(mixed.logFile).some((x) => x.path === '/close-file')).toBe(false);
+    } finally {
+      mixed.proc.kill();
+    }
+  });
+
+  it('close --all --stale are mutually exclusive (exit 2)', async () => {
+    const mixed = await startMock(undefined, 'mixed');
+    try {
+      const r = runMarina(['close', '--all', '--stale'], {
+        env: { MARINA_SERVICE: mixed.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't6' },
+      });
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain('mutually exclusive');
+    } finally {
+      mixed.proc.kill();
+    }
+  });
+
+  it('close --glob without pattern (exit 2)', () => {
+    const r = runMarina(['close', '--glob'], {
+      env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+    });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('PATTERN');
+  });
+
+  it('close --all --quiet suppresses output', async () => {
+    const mixed = await startMock(undefined, 'mixed');
+    try {
+      const r = runMarina(['close', '--all', '--quiet'], {
+        env: { MARINA_SERVICE: mixed.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't7' },
+      });
+      expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+      expect(r.stdout.trim()).toBe('');
+    } finally {
+      mixed.proc.kill();
+    }
   });
 
   // ── CLI 结构 / env 严格性 ─────────────────────────────────────
