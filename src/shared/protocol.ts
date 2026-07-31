@@ -562,11 +562,16 @@ export interface ClaimSessionPayload {
 }
 
 export interface ClaimSessionResponse {
-  /** Base64 编码的 scrollback 历史 (CP-2 修订:已实现 ring buffer)。
-   *  Renderer 通常通过 cmd:session:get-scrollback 单独拉取以避免与 claim
-   *  动作时序耦合,此返回值仍带数据保留协议自洽。 */
-  scrollback: string;
-  /** 与 scrollback 同时刻的 lastSeq,用于 renderer 去重。 */
+  /**
+   * 接管瞬间已 emit 的最后一条 PTY output seq(O(1) 读取)。
+   *
+   * REPLAY-1(2026-07-31):claim 不再序列化 / 返回全量 scrollback。历史实现
+   * 在 claim 响应里带完整 scrollback「保协议自洽」,但 renderer 从不消费它 —
+   * 冷挂载走 cmd:session:get-scrollback,暖切换由 TerminalDeck 缓存 + view
+   * lease 维持。每次切换在 main 重复 serialize(5000 行 ≈ 40-60ms)并传输
+   * 0.6-2MB base64 大 payload(远程模式还要 JSON/deflate/网络),是切换
+   * 终端慢的纯浪费点。
+   */
   lastSeq: number;
 }
 

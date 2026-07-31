@@ -655,9 +655,14 @@ interface ClaimSessionPayload {
 }
 // Response
 interface ClaimSessionResponse {
-  scrollback: string;           // base64 编码的 scrollback 字节流(让新 owner 重放)
+  lastSeq: number; // 接管瞬间已 emit 的最后一条 PTY output seq (O(1))
 }
 ```
+
+> **REPLAY-1(2026-07-31)**:响应不再携带 scrollback。历史实现返回完整
+> base64 字节流"保协议自洽",但 renderer 从不消费它 — 冷挂载走
+> `cmd:session:get-scrollback`,暖切换由 TerminalDeck 缓存 + view lease 维持。
+> 每次切换重复序列化 + 传输大 payload 是纯浪费。
 
 **Errors**:
 - `SessionNotFound`
@@ -2173,9 +2178,9 @@ async function handleSessionTabClick(sessionId: string) {
     // 其他 client 持有 → 聚焦那个 owner(本地)或提示"被占用,点这里抢"(远程)
     await ipc.invoke(Channels.CMD_SESSION_FOCUS_OWNER, { sessionId });
   } else {
-    // 无 owner → 接管
-    const { scrollback } = await ipc.invoke(Channels.CMD_SESSION_CLAIM, { sessionId });
-    terminalManager.replayScrollback(sessionId, scrollback);
+    // 无 owner → 接管(claim 响应只有 lastSeq,scrollback 由
+    // cmd:session:get-scrollback 单独拉取,见 TerminalView 冷挂载路径)
+    await ipc.invoke(Channels.CMD_SESSION_CLAIM, { sessionId });
     uiStore.selectSession(sessionId);
   }
 }

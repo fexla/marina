@@ -645,6 +645,23 @@ function focusTerminal(
   termRef.current?.focus();
 }
 
+// REPLAY-1(2026-07-31):scrollback 重放分片间的让出原用 setTimeout(0),
+// Chromium 对连续嵌套 timer 有 ~4ms clamp — 500KB→31 片≈130ms、1.7MB(宽屏
+// CJK)→107 片≈500ms 纯等待(真实 Electron 实测)。MessageChannel 是 macrotask
+// 但没有 timer clamp,~0.1-1ms 即可回来,同时仍给 xterm parser / RAF / IPC
+// 处理窗口,FLK-1 的「主线程可呼吸、敲键回显正常」目标不丢。
+function yieldToMainThread(): Promise<void> {
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      channel.port2.close();
+      resolve();
+    };
+    channel.port2.postMessage(null);
+  });
+}
+
 export function TerminalView({
   session,
   active,
@@ -1550,18 +1567,37 @@ export function TerminalView({
       .then(async (res) => {
         if (disposed) return;
         if (res.data) {
-          // FLK-1:分片 write 避免 2MB scrollback 同步阻塞主线程 100-300ms
-          // (用户看到的"切 session 后黑屏一下,然后内容瞬间涌出"卡顿)。
-          // 16KB 切片 + setTimeout(0) 让出主线程,让 xterm RAF 和 IPC 都有
-          // 机会运行,期间用户敲键的回显也能正常显示。
+          // FLK-1(2026-05-14):分片 write 避免 2MB scrollback 同步阻塞主线程
+          // 100-300ms(用户看到的"切 session 后黑屏一下,然后内容瞬间涌出"卡顿)。
+          //
+          // REPLAY-1(2026-07-31):原实现 16KB 一片 + 每片 await setTimeout(0),
+          // Chromium 对连续嵌套 timer 有 ~4ms clamp,实测 5000 行 120 列
+          // (≈590KB)重放约 206ms、240 列 CJK(≈1.7MB)约 578ms,其中 timer
+          // 链单独就占 130-500ms —— "切终端内容越多越久" 的主因是人为调度
+          // 等待,不是 xterm 解析(不插 timer 的完整重放只有 47-81ms)。
+          //
+          // 新策略(2026-07-31):
+          //  - 块大小 256KB:590KB 只 3 片、1.7MB 只 7 片,每片同步 parse
+          //    ~10-40ms,远低于单帧预算
+          //  - 让出用 MessageChannel(无 timer clamp)替代 setTimeout(0)
+          //  - 时间预算:连续写超过 8ms 才让出,小 scrollback 一次过完零让出
+          //
+          // 目标:重放总耗时从 ~200-580ms 降到 ~60-120ms,同时保留 FLK-1 的
+          // 「让 xterm RAF 和 IPC 有机会运行,期间用户敲键回显正常」收益。
           const all = decodeBase64ToBytes(res.data);
-          const CHUNK = 16 * 1024;
-          for (let i = 0; i < all.length; i += CHUNK) {
+          const REPLAY_CHUNK_BYTES = 256 * 1024;
+          const REPLAY_YIELD_BUDGET_MS = 8;
+          let budgetStart = performance.now();
+          for (let i = 0; i < all.length; i += REPLAY_CHUNK_BYTES) {
             if (disposed) return;
-            term.write(all.subarray(i, i + CHUNK));
-            // 大于一片才让出 — 小 scrollback 一次过完
-            if (all.length > CHUNK && i + CHUNK < all.length) {
-              await new Promise((r) => setTimeout(r, 0));
+            term.write(all.subarray(i, i + REPLAY_CHUNK_BYTES));
+            // 还有后续块且本段连续写已超时间预算 → 让出主线程一次
+            if (
+              i + REPLAY_CHUNK_BYTES < all.length &&
+              performance.now() - budgetStart >= REPLAY_YIELD_BUDGET_MS
+            ) {
+              await yieldToMainThread();
+              budgetStart = performance.now();
             }
           }
         }

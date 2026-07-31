@@ -642,13 +642,18 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     COMMAND_CHANNELS.SESSION_CLAIM,
     async (_e, envelope: CommandEnvelope<ClaimSessionPayload>): Promise<ClaimSessionResponse> => {
       sessionManager.claimOwner(envelope.payload.sessionId, envelope.windowId);
-      // CP-2 勘误后:scrollback ring buffer 已实现。带回历史以保协议自洽,
-      // 但 renderer 通常用 cmd:session:get-scrollback 单独拉,以避免 claim
-      // 动作和 history-replay 时序耦合 (TerminalView 重新挂载场景非 claim 触发)
-      // CURSOR-1 后:替换路径 = getScrollbackForReplay(state-replay 架构,
-      // 返回完整终端状态 ANSI 流),需 async + await。
-      const sb = await sessionManager.getScrollbackForReplay(envelope.payload.sessionId);
-      return { scrollback: sb.data, lastSeq: sb.lastSeq };
+      // REPLAY-1(2026-07-31):claim 只更新 owner + 返回 O(1) lastSeq,不再
+      // 序列化 / 返回全量 scrollback。历史沿革:
+      //   - CP-2 勘误后:带回 scrollback ring buffer 以保协议自洽,注释明说
+      //     renderer 通常用 cmd:session:get-scrollback 单独拉,避免 claim 动作
+      //     和 history-replay 时序耦合
+      //   - CURSOR-1 后:替换路径 = getScrollbackForReplay(完整终端状态 ANSI)
+      //   - 实测(2026-07-31):claim 的 scrollback 响应无人消费(冷挂载走
+      //     get-scrollback,暖切换走 TerminalDeck 缓存 + view lease),反而每次
+      //     切换都重复 serialize + 传输 0.6-2MB payload — 切终端慢的纯浪费点
+      // lastSeq 保留在响应里:claim-gate 只 await settle 不用它,但保留它让
+      // 协议形状稳定(以后 delta 同步可复用),且是零成本的字段。
+      return { lastSeq: sessionManager.getLastEmittedSeq(envelope.payload.sessionId) ?? -1 };
     },
   );
 

@@ -7,6 +7,20 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+### 修复
+
+- **切换终端提速(REPLAY-1):claim 不再重复序列化 scrollback。** `cmd:session:claim`
+  响应从"完整 base64 scrollback + lastSeq"改为仅 O(1) lastSeq —— renderer 从不消费
+  claim 响应里的 scrollback(冷挂载走 `get-scrollback`,暖切换由 TerminalDeck 缓存 +
+  view lease 维持),历史实现让每次切换都在 main 重复 serialize(5000 行 ≈ 40-60ms)
+  并传输 0.6-2MB 大 payload。协议、ipc-protocol.md、claim-gate 同步。
+- **冷挂载 scrollback 重放提速(REPLAY-1):分片从 16KB + 每片 `setTimeout(0)` 改为
+  256KB + 时间预算 + MessageChannel 让出。** 实测(真实 Electron,2026-07-31):
+  Chromium 对连续嵌套 timer 有 ~4ms clamp,5000 行 120 列(≈590KB)重放 214ms、
+  240 列 CJK(≈1.7MB)551ms,其中 timer 链单独占 130-500ms;不插 timer 的完整
+  重放仅 47-81ms。新策略实测 34/47/49ms(590KB / 1.19MB / 1.74MB),提速 6-11 倍,
+  保留 FLK-1 的"主线程可呼吸、敲键回显正常"收益。
+
 ## [0.3.2-dev.8] — 2026-07-30
 
 > **开发构建**（AGENTS.md 附录 F）。人工复验澄清此前所说的“滚动位置”指右侧

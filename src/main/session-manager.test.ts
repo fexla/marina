@@ -1759,6 +1759,29 @@ describe('SessionManager — owner 切换', () => {
     expect(mgr.get(info.id)?.ownerWindowId).toBe('w-2');
   });
 
+  // REPLAY-1:claim 响应改为 O(1) lastSeq(不再序列化 scrollback)。
+  // getLastEmittedSeq 必须:新 session 为 -1、输出 flush 后推进到已 emit seq。
+  it('getLastEmittedSeq:O(1) 返回已 emit 的最后 seq,不序列化', async () => {
+    const { mgr } = makeManager();
+    await mgr.createSession({
+      pathId: '/p',
+      templateId: 'shell',
+      ownerWindowId: '',
+      cols: 80,
+      rows: 24,
+    });
+    const info = mgr.get(mgr.list()[0]!.id)!;
+    expect(mgr.getLastEmittedSeq(info.id)).toBe(-1);
+    // 喂 PTY 输出(emitBatchMs=0 立即路径)后 seq 前进
+    const fp = FakePty.instances[0]!;
+    fp.emitData('hello\r\n');
+    expect(mgr.getLastEmittedSeq(info.id)).toBe(0);
+    fp.emitData('world\r\n');
+    expect(mgr.getLastEmittedSeq(info.id)).toBe(1);
+    // session 不存在 → undefined
+    expect(mgr.getLastEmittedSeq('no-such')).toBeUndefined();
+  });
+
   it('claimOwner 当前 owner 是别的窗口 → throw SessionAlreadyOwned', async () => {
     const { mgr } = makeManager();
     const info = await mgr.createSession({

@@ -1233,6 +1233,19 @@ export class SessionManager extends EventEmitter {
   // ──────────────────────────────────────────────────────────────────
 
   /**
+   * 返回已 emit 的最后一条 PTY output seq。O(1) 读取,不做任何序列化。
+   *
+   * REPLAY-1:claim 响应需要轻量 lastSeq(不再像历史实现那样序列化全量
+   * scrollback),让每次切换的 claim 路径从「40-60ms serialize + 大 payload
+   * 传输」降到亚毫秒。
+   *
+   * @returns session 不存在时返回 undefined(调用方自行决定默认值)
+   */
+  getLastEmittedSeq(sessionId: string): number | undefined {
+    return this.sessions.get(sessionId)?.scrollbackLastSeq;
+  }
+
+  /**
    * 把 sessionId 的 owner 改为 windowId。
    *
    * 单焦点 owner 不变量:一个窗口同时只能 owner 1 个 session。
