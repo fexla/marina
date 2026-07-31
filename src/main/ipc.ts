@@ -29,6 +29,7 @@ import type { GitService } from './git-service';
 import type { PerformanceDiagnostics } from './performance-diagnostics';
 import type { SkillInstaller } from './skill-installer';
 import type { MarkdownThemeManager } from './markdown-theme-manager';
+import type { CodeBlockRunner } from './code-block-runner';
 import {
   getExplorerIntegrationStatus,
   setClassicIntegration,
@@ -171,6 +172,11 @@ import {
   type ImeProbeDumpResponse,
   type InstallMarinaSkillPayload,
   type InstallMarinaSkillResponse,
+  type RunCodeBlockPayload,
+  type RunCodeBlockResponse,
+  type StopCodeBlockPayload,
+  type CodeBlockOutputPayload,
+  type CodeBlockExitedPayload,
 } from '@shared/protocol';
 import type { AppSnapshot, MdTheme, RemoteDaemonProfile, Settings, Template } from '@shared/types';
 import type { CaptureCpuProfilePayload } from '@shared/performance-types';
@@ -234,6 +240,11 @@ export interface IpcLayerDeps {
   clientRegistry: ClientRegistry;
   /** 只读终端视图租约；interactive owner 仍由 SessionManager 管理。 */
   terminalViewRegistry: TerminalViewRegistry;
+  /**
+   * Markdown 代码块一键执行服务(v0.3.3,ADR-023)。直接 spawn 系统命令,
+   * 不经 PTY。事件经 wireEventBroadcasts 定向回发起 client。
+   */
+  codeBlockRunner: CodeBlockRunner;
   /** BETA-031:可选,未注入时 AI_TEST_CONNECTION 返回 ok:false */
   aiClient?: AIClient;
 }
@@ -274,6 +285,9 @@ export function installIpcLayer(deps: IpcLayerDeps): void {
   });
   wm.onWindowClosed((windowId) => {
     deps.terminalViewRegistry.removeClient(windowId);
+    // v0.3.3:Markdown 代码块执行 —— 发起窗口关闭时杀掉它启动的全部运行,
+    // 避免向已销毁的 webContents 推事件 + 回收子进程。
+    deps.codeBlockRunner.removeClient(windowId);
     reg.remove(windowId);
   });
 
@@ -281,6 +295,7 @@ export function installIpcLayer(deps: IpcLayerDeps): void {
   registerFilePanelHandlers(deps);
   registerFileTreeHandlers(deps);
   registerGitHandlers(deps);
+  registerCodeBlockHandlers(deps);
   registerMdThemeHandlers(deps);
   wireEventBroadcasts(deps);
 }
@@ -1974,6 +1989,39 @@ function registerGitHandlers(deps: IpcLayerDeps): void {
   );
 }
 
+// ──────────────────────────────────────────────────────────────────
+// Markdown 代码块执行域 (v0.3.3,ADR-023)。
+// 直接 child_process.spawn 系统命令,不经 PTY。详见 code-block-runner.ts。
+// ──────────────────────────────────────────────────────────────────
+function registerCodeBlockHandlers(deps: IpcLayerDeps): void {
+  const { codeBlockRunner } = deps;
+
+  // envelope.windowId 即发起 client(本地窗口 = windowId,远程 = WS clientId),
+  // 透传给 runner 作为 output/exited 事件的定向目标。
+  registerHandle(
+    COMMAND_CHANNELS.SYSTEM_RUN_CODE_BLOCK,
+    async (_e, envelope: CommandEnvelope<RunCodeBlockPayload>): Promise<RunCodeBlockResponse> => {
+      // run 是 async(需等待 detectShells 解析绝对路径);registerHandle 支持
+      // Promise,成功 / 抛错都会正确回传 renderer。
+      return codeBlockRunner.run({
+        sourceSessionId: envelope.payload.sourceSessionId,
+        language: envelope.payload.language,
+        code: envelope.payload.code,
+        requestingClientId: envelope.windowId,
+      });
+    },
+  );
+
+  registerHandle(
+    COMMAND_CHANNELS.SYSTEM_STOP_CODE_BLOCK,
+    (_e, envelope: CommandEnvelope<StopCodeBlockPayload>): void => {
+      codeBlockRunner.stop(envelope.payload.runId);
+    },
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Markdown 主题域 (Typora 式可扩展)
 // - 拉主题列表(设置页下拉 + 启动初始化)
 // - 取某主题 CSS 文本(注入 <style>)
 // - 打开主题目录(放/编辑 .css)
@@ -2042,6 +2090,7 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     filePanelService,
     gitService,
     markdownThemeManager,
+    codeBlockRunner,
   } = deps;
 
   // Path 树变化 → 广播 evt:path:tree-updated
@@ -2117,6 +2166,9 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   sessionManager.on('sessionDestroyed', (e: SessionDestroyedPayload) => {
     // 终端视图租约随 session 销毁；renderer cleanup 随后再 detach 也幂等。
     deps.terminalViewRegistry.removeSession(e.sessionId);
+    // Markdown 代码块运行在普通 terminal 切换时继续,但源 session 真销毁后已无
+    // 可恢复 UI / stop 入口,必须停止并让仍存活窗口收到 exited 收口缓存。
+    deps.codeBlockRunner.removeSession(e.sessionId);
     // 文件面板:session 没了,清掉它的已打开文件 + fs.watch 句柄
     filePanelService.onSessionDestroyed(e.sessionId);
     // v0.3.0:Git 面板同理清掋 watcher + 防抖 timer。
@@ -2138,6 +2190,25 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   // map,不显示就不读)。
   filePanelService.on('filePanelUpdated', (p: FilePanelUpdatedPayload) => {
     broadcastEvent<FilePanelUpdatedPayload>(EVENT_CHANNELS.FILE_PANEL_UPDATED, p);
+  });
+
+  // v0.3.3:Markdown 代码块执行的 stdout/stderr 与退出。按 runId 对应的
+  // clientId 定向发送(发起窗口),不广播 —— 输出体量可能大且只该窗口关心。
+  // clientId 由 run() 从 envelope.windowId 带入(本地窗口 = windowId,
+  // 远程 = WS clientId),与 session output 的定向策略一致。
+  codeBlockRunner.on('output', (e: CodeBlockOutputPayload & { clientId: string }) => {
+    sendEventTo(e.clientId, EVENT_CHANNELS.CODE_BLOCK_OUTPUT, {
+      runId: e.runId,
+      stream: e.stream,
+      data: e.data,
+    } satisfies CodeBlockOutputPayload);
+  });
+  codeBlockRunner.on('exited', (e: CodeBlockExitedPayload & { clientId: string }) => {
+    sendEventTo(e.clientId, EVENT_CHANNELS.CODE_BLOCK_EXITED, {
+      runId: e.runId,
+      exitCode: e.exitCode,
+      signal: e.signal,
+    } satisfies CodeBlockExitedPayload);
   });
 
   // v0.3.0:Git 面板状态变化。两路触发:
@@ -2176,11 +2247,7 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     // 低开销:只在聚合点(8ms/窗口)记录,非逐字节;begin/finish 是 Map 查找 + now()。
     const finish = performanceMetrics.begin('pty.sessionOutputDispatch');
     try {
-      sendEventTo<SessionOutputPayload>(
-        targetClientId,
-        EVENT_CHANNELS.SESSION_OUTPUT,
-        payload,
-      );
+      sendEventTo<SessionOutputPayload>(targetClientId, EVENT_CHANNELS.SESSION_OUTPUT, payload);
     } finally {
       finish();
     }

@@ -2947,6 +2947,201 @@ html[data-maximized='true'] .app-root.with-shell {
   color: var(--color-accent-special, #f0f);
 }
 
+/* v0.3.3:Markdown 代码块可交互外壳(ADR-023)。三套 markdown 风格
+ * (marina / github-light / github-dark / custom)共享这套样式。
+ * 背景策略:外壳与 toolbar / output 全部透明,只靠 border 分层 —— 代码区背景
+ * 仍由各主题的 pre 规则提供(marina 的 file-markdown-viewer pre / github 的
+ * .markdown-body pre),外壳本身继承面板背景,明暗主题自适应,不会出现固定
+ * “黑条”。
+ *
+ * ⚠ 样式契约(被 global-css.test.ts 守护,别破坏):
+ * 本段所有规则禁止用 var(--color-bg-*) 系列 token 当背景 —— 这些 token 是
+ * 按“应用主背景”调色的,而代码块外壳是透明的,真正垫在下面的背景随面板/
+ * 主题未知(深色主题下 --color-bg-hover 会渲染成黑块,实测翻车过)。
+ * hover/选中反馈一律用 color-mix(in srgb, currentColor N%, transparent),
+ * currentColor 是元素自己的文字色,与任何背景都可读,永不变黑。 */
+.md-code-block {
+  position: relative;
+  margin: 8px 0;
+  border: 1px solid var(--color-border, rgba(128, 128, 128, 0.3));
+  border-radius: 6px;
+  overflow: hidden;
+  max-width: 100%;
+}
+
+.md-code-block-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 8px;
+  /* 透明:不额外上色,继承面板背景(避免明暗主题下出现“黑条”)。 */
+  background: transparent;
+  border-bottom: 1px solid var(--color-border, rgba(128, 128, 128, 0.2));
+  font-size: 11px;
+}
+
+.md-code-block-lang {
+  text-transform: lowercase;
+  letter-spacing: 0.3px;
+  opacity: 0.7;
+  font-family: ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
+}
+
+.md-code-block-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.md-code-block-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.md-code-block-btn:hover {
+  /* 通用 hover 反馈:用元素自身文字色的半透明 tint,而不是主题 bg token。
+   * 代码块外壳透明,底下背景未知;--color-bg-hover 绑定应用主背景,在深色
+   * 主题下渲染成黑块(实测)。currentColor = 按钮自己的颜色(run 是绿色、
+   * stop 是红色、复制是正文色),任何主题下都与背景可读 → tint 永不变黑。
+   * 用 color-mix 而非 opacity,避免按钮文字本身变半透明。 */
+  background-color: color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.md-code-block-run {
+  color: var(--color-success, #2ea043);
+}
+
+.md-code-block-run:hover {
+  border-color: var(--color-success, #2ea043);
+}
+
+.md-code-block-stop {
+  color: var(--color-danger, #e5484d);
+}
+
+.md-code-block-stop:hover {
+  border-color: var(--color-danger, #e5484d);
+}
+
+/* 内部 <pre>:去掉外层 wrapper 的 margin/border,背景仍走各主题 pre 规则
+ * (marina elevated / github 主题自带),不额外覆盖。 */
+.md-code-block > pre {
+  margin: 0;
+  padding: 8px;
+  border: none;
+  border-radius: 0;
+}
+
+/* 输出区:透明背景(继承面板背景),仅顶部 border 分隔。 */
+.md-code-block-output {
+  background: transparent;
+  border-top: 1px solid var(--color-border, rgba(128, 128, 128, 0.2));
+}
+
+.md-code-block-output pre {
+  margin: 0;
+  padding: 8px;
+  font-family: ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* 选中代码片段后浮出的“运行选中”按钮:absolute 定位在 .md-code-block 内部
+ * (top/left 由 inline style 提供),因此随 Markdown 页面一起滚动,不会钉在 viewport。
+ * 悬浮在内容上,位置不确定 → 必须不透明才看得清。用绿色不透明底 + 白色图标
+ * (Material FAB 风格),不依赖主题 bg token,任何背景上都鲜明。只显示三角图标。 */
+.md-code-block-run-float {
+  position: absolute;
+  z-index: 100;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 尺寸/内边距来自 md-code-block-btn,与顶部整块运行按钮保持完全一致。 */
+  border-radius: 4px;
+  cursor: pointer;
+  background-color: var(--color-success, #2ea043);
+  color: #ffffff;
+  border: 1px solid color-mix(in srgb, var(--color-success, #2ea043) 65%, #000);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  animation: md-code-block-float-in 120ms ease-out;
+}
+
+.md-code-block-run-float:hover {
+  background-color: color-mix(in srgb, var(--color-success, #2ea043) 82%, #000);
+}
+
+@keyframes md-code-block-float-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 运行中状态:输出区左侧给一条细微高亮条,提示“还在跑”。 */
+.md-code-block-output--running {
+  box-shadow: inset 2px 0 0 var(--color-accent-special, #4493f8);
+}
+
+.md-code-block-cursor {
+  animation: md-code-block-blink 1s steps(2, start) infinite;
+  opacity: 0.7;
+}
+
+@keyframes md-code-block-blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+/* 运行结果 footer:退出状态在左,清除操作在右。清除属于本次输出而非源代码,
+ * 放在这里比顶部代码工具栏更符合操作对象,也与用户标注位置一致。 */
+.md-code-block-footer {
+  min-height: 32px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid var(--color-border, rgba(128, 128, 128, 0.15));
+}
+
+.md-code-block-exitcode {
+  padding: 4px 0;
+  font-size: 11px;
+}
+
+.md-code-block-output-clear {
+  flex: none;
+}
+
+.md-code-block-exitcode--ok {
+  color: var(--color-success, #2ea043);
+}
+
+.md-code-block-exitcode--err {
+  color: var(--color-danger, #e5484d);
+}
+
 .file-markdown-viewer table {
   border-collapse: collapse;
   margin: 8px 0;

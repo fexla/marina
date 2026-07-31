@@ -163,6 +163,15 @@ export const COMMAND_CHANNELS = {
   SYSTEM_GET_BUILD_TYPE: 'cmd:system:get-build-type',
   /** BETA-039:返回 app.getPath('userData'),让设置页显示真实数据目录而非硬编码 */
   SYSTEM_GET_DATA_DIR: 'cmd:system:get-data-dir',
+  /**
+   * Markdown 代码块一键执行(v0.3.3,ADR-023)。main/daemon 根据 sourceSessionId
+   * 读 backend 与 currentCwd,直接 child_process.spawn 对应 shell,不经 PTY/xterm。
+   * 输出/退出经 evt:system:code-block-* 事件回推给发起 client。路由 = backend-data
+   * (远程窗口自动发到 daemon,本地/远程行为一致)。
+   */
+  SYSTEM_RUN_CODE_BLOCK: 'cmd:system:run-code-block',
+  /** 停止某次运行(SIGKILL 子进程)。幂等,未运行/未知 runId 静默。 */
+  SYSTEM_STOP_CODE_BLOCK: 'cmd:system:stop-code-block',
 
   // Explorer 集成域 —— 不进 settings.json,现场查 + 操作系统状态
   /** 综合查询:buildType + Win 版本 + 经典菜单 + Win11 新菜单 + 证书 + MSIX 包 */
@@ -394,6 +403,15 @@ export const EVENT_CHANNELS = {
    * 触发)。广播给所有窗口,renderer 更新设置页下拉。
    */
   MD_THEME_LIST_UPDATED: 'evt:md-theme:list-updated',
+
+  /**
+   * Markdown 代码块运行 stdout/stderr 流式输出(v0.3.3,ADR-023)。按 runId 定向
+   * 发给发起 client(本地窗口 = windowId,远程 = WS clientId)。后端事件,远程
+   * 自动从 daemon 回推。payload 见 CodeBlockOutputPayload。
+   */
+  CODE_BLOCK_OUTPUT: 'evt:system:code-block-output',
+  /** Markdown 代码块运行子进程退出。带 exitCode/signal,renderer 据此切状态。 */
+  CODE_BLOCK_EXITED: 'evt:system:code-block-exited',
 } as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
@@ -1125,8 +1143,62 @@ export interface ClipboardWriteTextResponse {
 }
 
 // ──────────────────────────────────────────────────────────────────
-// Explorer 集成域
+// Markdown 代码块执行域 (v0.3.3,ADR-023)
 // ──────────────────────────────────────────────────────────────────
+//
+// 设计要点(详见 docs/方案-markdown代码块执行-20260731.md):
+// - renderer 只传 sourceSessionId + 归一化后的 shell language + 代码原文;
+//   cwd / backend / 可执行路径一律由 main/daemon 根据 session 真值解析,
+//   renderer 不传也不信任 cwd。
+// - 执行不经 PTY/xterm,不创建 Marina session,不调用 SessionManager.sendInput;
+//   直接 child_process.spawn 对应 shell 一次性跑完整 code。当前终端是
+//   Claude Code / vim 等任何程序都不会受影响。
+// - 事件按 runId 定向回发起 client;runId 仅本进程内唯一即可。
+
+/** 归一化后支持的 shell 语言(与 src/shared/markdown-command.ts 同源)。 */
+export type CodeBlockLanguage =
+  | 'bash'
+  | 'sh'
+  | 'powershell'
+  | 'pwsh'
+  | 'cmd';
+
+/** cmd:system:run-code-block payload。 */
+export interface RunCodeBlockPayload {
+  /** Markdown 面板绑定的 session;main/daemon 据此读 backend 与 currentCwd。 */
+  sourceSessionId: string;
+  /** 归一化后的 shell 语言(由 shared/markdown-command.ts resolveLanguage 得到)。 */
+  language: CodeBlockLanguage;
+  /** 代码块原文(已 trim 尾部空白)。main 端做长度上限校验。 */
+  code: string;
+}
+
+/** cmd:system:run-code-block 返回。runId 用于后续 output/exited 事件匹配与 stop。 */
+export interface RunCodeBlockResponse {
+  runId: string;
+}
+
+/** cmd:system:stop-code-block payload。 */
+export interface StopCodeBlockPayload {
+  runId: string;
+}
+
+/**
+ * evt:system:code-block-output payload。data 为 stdout/stderr 的 UTF-8 文本片段
+ * (main 端已按 64KB 聚合切块,避免逐字符广播砸 IPC)。
+ */
+export interface CodeBlockOutputPayload {
+  runId: string;
+  stream: 'stdout' | 'stderr';
+  data: string;
+}
+
+/** evt:system:code-block-exited payload。exitCode=null 表示被信号杀掉。 */
+export interface CodeBlockExitedPayload {
+  runId: string;
+  exitCode: number | null;
+  signal: string | null;
+}
 
 export type BuildType = 'dev' | 'portable' | 'installed';
 

@@ -52,6 +52,8 @@ import {
   Sliders,
   Sparkles,
   Server,
+  Square,
+  Play,
   SquareTerminal,
   Terminal,
   TerminalSquare,
@@ -93,6 +95,9 @@ export const Icons = {
   paste: ClipboardPaste,
   clear: Eraser,
   search: Search,
+  // Markdown 代码块一键执行(ADR-023)
+  play: Play,
+  stop: Square,
 
   // 通用
   settings: Settings,

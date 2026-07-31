@@ -1,6 +1,6 @@
 ---
 name: show-in-marina
-description: Use Marina's terminal-side file panel to show the user Markdown, text, code, or image results. Use after producing a report, plan, review, research result, or other artifact worth reading outside chat. Requires Marina (the CLI checks; never read service/token vars yourself; use the workspace command for scratch paths).
+description: Use Marina's terminal-side file panel to show the user Markdown, text, code, or image results. Use after producing a report, plan, review, research result, or other artifact worth reading outside chat. Markdown files shown this way can include fenced code blocks (bash/powershell/cmd) that the user runs with one click — write actionable docs (setup guides, "try these" command menus, fix-verification steps). Requires Marina (the CLI checks; never read service/token vars yourself; use the workspace command for scratch paths).
 ---
 
 # Show files in Marina
@@ -172,6 +172,66 @@ full current state without re-pasting. Concretely:
 Resolve the workspace once per terminal and reuse that concrete path for every
 overwrite (the path is stable for the session; you do not need to re-resolve it
 each turn).
+
+## Runnable code blocks in Markdown you show
+
+Marina renders fenced code blocks in any Markdown file you `show` as
+**interactive**: each block gets a **Run** button. One click executes the
+block in the appropriate shell (`bash`/`sh` → Git Bash, `powershell`/`pwsh`
+→ PowerShell, `cmd` → cmd.exe), streams stdout/stderr into the document under
+the block, and shows the exit code. The terminal the user is working in is
+never disturbed — the command runs in an independent spawned process. The user
+can also **select lines inside a block** and run only the selection.
+
+This means you can write Markdown documents that are **directly actionable**,
+not just readable. Lean into it:
+
+- **Repro / setup guides** — each step is a fenced block the user runs in
+  sequence, seeing live output inline instead of copy-pasting into a separate
+  terminal.
+- **"Try these" command menus** — a few one-liners the user can click to
+  inspect state (`git status`, `Get-Process node`, `dir /s *.log`).
+- **Demos / tutorials** — narrate in prose, put the command in a block, the
+  user runs it and reads the result in place.
+- **Fix verification** — after applying a fix, put the verification command in
+  a block so the user can confirm with one click.
+
+Use these fenced languages (they get a Run button):
+
+````markdown
+```bash
+uname -a
+```
+
+```powershell
+Get-Date
+```
+
+```cmd
+dir
+```
+````
+
+Guidance:
+- **One logical step per block.** If a block does five unrelated things the
+  user can't run them independently. Prefer several small blocks over one big
+  one — the user can run / re-run / select-run each.
+- **Make output self-evident.** End commands with an `echo` / `Write-Host`
+  label, or print the value being inspected, so the inline result is
+  interpretable without the original command in view.
+- **Each block is independent.** State (cwd, env vars, shell history) does not
+  carry across blocks — each Run spawns a fresh shell. If a step depends on a
+  prior step, put them in the **same block**, or have the later step re-establish
+  what it needs.
+- **Don't put destructive commands in runnable blocks** in docs you hand to
+  the user unless that is clearly the intent. Prefer inspection commands in
+  "try these" menus.
+- Other fenced languages (e.g. ` ```js `, ` ```python `) render as static code
+  (no Run button) — fine for reference snippets.
+
+When you build a task-dashboard document (see above), consider making the
+verification / next-step commands runnable blocks so the user can act on the
+doc directly instead of switching to chat or a terminal.
 
 ## Other commands
 

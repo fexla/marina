@@ -35,6 +35,7 @@ import { COMMAND_CHANNELS, type ReadImagePayload, type ReadImageResponse } from 
 import { isRemoteUrl } from '@shared/url-scheme';
 import { useFileContent } from './useFileContent';
 import { useTranslation } from '../LanguageProvider';
+import { MarkdownCodeBlock, extractCodeBlockInfo } from './MarkdownCodeBlock';
 import { useAppState } from '../../store';
 
 interface ViewerProps {
@@ -53,9 +54,10 @@ export function MarkdownViewer({ sessionId, file, search, scrollRef }: ViewerPro
   const mdStyle = useAppState().settings.filePanel?.markdownStyle ?? 'auto';
   const content = useFileContent(sessionId, file.path, file.mtimeMs);
 
-  // 自定义 a/img 组件。img 需要 md 文件路径解析相对图片引用 → 用 useMemo 钉住
-  // components 对象(仅 file.path 变时才换新引用),否则每次渲染都让 react-markdown
-  // 重挂全部图片/链接,抖动 + 重复 IPC。
+  // 自定义 a/img/pre 组件。img 需要 md 文件路径解析相对图片引用、pre 需要
+  // sessionId 执行代码块 → 用 useMemo 钉住 components 对象(仅 file.path / sessionId
+  // 变时才换新引用),否则每次渲染都让 react-markdown 重挂全部图片/链接/代码块,
+  // 抖动 + 重复 IPC + 代码块状态丢失。
   const components = useMemo<Components>(
     () => ({
       a: MdLink,
@@ -68,6 +70,28 @@ export function MarkdownViewer({ sessionId, file, search, scrollRef }: ViewerPro
           mtimeMs={file.mtimeMs}
         />
       ),
+      // v0.3.3:fenced code block 包裹成可交互的 MarkdownCodeBlock(语言标签 /
+      // 复制 / 一键运行 / 输出区)。识别 pre 的唯一 code 子节点;非该结构
+      // (异常嵌套)回退默认 <pre> 保持容错。详见 MarkdownCodeBlock 头注。
+      pre: (props) => {
+        const info = extractCodeBlockInfo(props.children);
+        if (info) {
+          const start = props.node?.position?.start;
+          // source offset + code 摘要共同构成 cache identity:切 terminal/remount 后
+          // 同一块恢复输出;代码或源位置变化则不错误挂回旧运行结果。
+          const sourcePosition = start?.offset ?? `${start?.line ?? 0}:${start?.column ?? 0}`;
+          return (
+            <MarkdownCodeBlock
+              sessionId={sessionId}
+              documentPath={file.path}
+              sourcePosition={sourcePosition}
+              className={info.className}
+              code={info.code}
+            />
+          );
+        }
+        return <pre>{props.children}</pre>;
+      },
     }),
     [file.path, sessionId, file.mtimeMs],
   );

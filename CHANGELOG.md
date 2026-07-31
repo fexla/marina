@@ -9,6 +9,68 @@
 
 ### 修复
 
+- **代码块按钮 hover 不再出黑块:透明外壳组件禁用主题 bg token。** 根因是
+  `.md-code-block-btn:hover` 用了 `var(--color-bg-hover)` —— 该 token 按应用
+  主背景调色,而代码块外壳透明、底下背景随面板/主题未知,深色主题下渲染成
+  黑块。通用修复:透明外壳组件的 hover/选中反馈一律改
+  `color-mix(in srgb, currentColor N%, transparent)`(由元素自身文字色派生,
+  与任何背景都可读,永不变黑,明暗主题自适应)。新增样式契约守卫
+  `src/renderer/styles/global-css.test.ts`:`npm test` 自动拦截“代码块规则里
+  出现 var(--color-bg-\*)”与“hover 反馈色不用 currentColor”两类回归 ——
+  这类问题以后由 CI 抓,不需要逐个主题人工测。
+- **代码块支持运行选中片段:改为鼠标附近悬浮按钮。** 在代码块内选中文本后,
+  松开鼠标会在鼠标附近浮出一个“运行选中”按钮(类似 VS Code 的 lightbulb),
+  点它只跑选中部分。原工具栏“运行”按钮恢复成始终跑整块,两者职责独立。
+  实现:selectionchange 只维护 ref + 选区消失时隐藏(拖选过程零重渲染);
+  mouseup 时用鼠标坐标定位 fixed 浮层(贴合“鼠标附近”);onMouseDown
+  preventDefault 避免点按钮清空选区。样式走 currentColor tint + 阴影,
+  守样式契约(守卫测试覆盖)。
+- **悬浮“运行选中”按钮改为不透明绿色 FAB。** 按钮使用不透明绿色底 + 白色
+  三角图标(Material FAB 风格),只显示图标 —— 悬浮位置不确定,半透明在任意
+  背景上都不够清晰。mouseup 监听放在 document,保证代码块边缘外松手也能完成
+  归属校验;选中文本存 ref,点击按钮不会因浏览器先清空选区而丢失命令。
+- **选区必须唯一归属于一个代码块。** 用 Range.comparePoint 统计选区实际相交的
+  `.md-code-block > pre`:恰好一个且普通选区完整位于其中时才显示按钮;横跨两个
+  或更多代码块时所有块均拒绝,不会每块各显示一个。普通拖选超出代码块同样拒绝。
+  Chromium 三击末行会把 focus 自动扩到后续 H2,因此仅对 mouseup.detail >= 3
+  且“起点在 pre 内、终点越过 pre 尾部”的已确认浏览器行为裁掉多选部分,保留
+  三击最后一行的运行能力;该例外仍要求只相交一个代码块。
+- **修复三击末行显示按钮但点击后不执行。** 点击悬浮按钮自身会冒泡新的
+  document mouseup(detail=1),此前它在 click 之前把三击特殊选区按普通跨界选区
+  清空,导致运行处理器读不到命令。document 选区监听现在忽略悬浮按钮自身的
+  mouseup,保留 mousedown preventDefault 已保护的选区与命令 ref。
+- **悬浮按钮改为代码块内部绝对定位并随文档滚动。** 选区 viewport 坐标在
+  mouseup 时换算成 `.md-code-block` 内部坐标,wrapper 用 position:relative、按钮
+  用 position:absolute;滚轮滚动 Markdown 页面时按钮随所属代码块移动,不再像
+  fixed 元素一样钉在屏幕原位。位置同时钳在代码块边界内,不会浮到无关内容上。
+- **代码块运行状态改为组件外 L1 缓存,切 terminal 不再停进程或丢输出。** 删除
+  MarkdownCodeBlock 卸载时主动 stop 的旧逻辑;窗口级事件桥在组件不挂载时仍接收
+  output/exited,切回后按 sessionId + 文档路径 + 源位置 + 代码摘要恢复运行状态、
+  流式输出和退出码。缓存有 128 条 / 单条 2Mi 字符硬上限,只淘汰非 running 条目;
+  敏感输出仅存在 renderer 内存,不写 localStorage、磁盘或日志。窗口真正关闭时仍由
+  CodeBlockRunner.removeClient 终止该窗口启动的任务;源 Session 真正销毁时则由
+  removeSession 只停止该 Session 的任务并向存活窗口发 exited 收口 cache。
+- **代码块新增“清除”按钮。** 运行结束或启动失败后,在输出区底部 footer 的右侧
+  显示清除操作(退出状态留在左侧);点击删除缓存结果并回到 idle,输出区和退出码
+  一起消失。运行中不显示且 cache 拒绝误清,避免遗失存活任务的 runId;需要先停止
+  或等待退出。
+- **运行 / 停止 / 清除统一改为纯图标按钮。** 三个动作的图标语义已足够清晰,移除
+  重复文字以降低工具栏和输出 footer 的视觉噪音;保留 title 悬停提示并补 aria-label。
+- **所有代码块纯图标按钮统一为 24×24 正方形。** 复制 / 运行 / 停止 / 清除及
+  “运行选中”悬浮按钮共用 md-code-block-btn 的固定正方形尺寸和 12px 图标;修复
+  悬浮按钮继承横向 padding 后显示成长方形。定位仍测量顶部运行按钮的真实宽高。
+
+### 改进
+
+- **pwsh 代码块在未装 PowerShell 7 的机器上回退到 Windows PowerShell 5.1。**
+  之前 detectShells 找不到 pwsh → spawn pwsh.exe ENOENT → 友好报错但无法
+  运行。现在 pwsh 的 shell 偏好序改为 ['pwsh', 'powershell'],Windows 上
+  powershell.exe 必装,绝大多数代码块在 5.1 / 7 下行为一致。UTF-8 前缀通用。
+- **show-in-marina 预制 skill 提示词新增“可运行代码块”指引。** SKILL.md 新增
+  专节,告知 AI:经 `show` 展示的 Markdown 里 fenced 代码块(bash/powershell/
+  cmd)自带运行按钮,用户一键执行 / 选中片段执行。AI 可借此自发产出可操作
+  文档(分步 setup 指南、“试试这几条”命令菜单、修复验证步骤),而非仅可读文档。
+  description 同步更新。src 与 .pi 两份同步。
 - **GPU 合成降级时自动回退 DOM renderer(PER-2),根治 WebGL 导致的持续高 CPU。**
   Chromium 在 GPU 进程崩溃 / 显卡设备变化(如 AMD 驱动重装)后会自动给 renderer 加
   `--disable-gpu-compositing`,把网页合成从 GPU 降级到 CPU 软件光栅。但 xterm 的
@@ -23,7 +85,6 @@
   (报告显示 6.8%,实际 432%)。改用 `cumulativeCPUUsage`(Electron 22+ 运行时提供)
   差分换算真实平均 CPU%,首采样无基线时 fallback `percentCPUUsage`。这类“GPU 烧核”
   问题以后在自动报告里一目了然,不再隐藏。
-
 - **切换终端提速(REPLAY-1):claim 不再重复序列化 scrollback。** `cmd:session:claim`
   响应从"完整 base64 scrollback + lastSeq"改为仅 O(1) lastSeq —— renderer 从不消费
   claim 响应里的 scrollback(冷挂载走 `get-scrollback`,暖切换由 TerminalDeck 缓存 +
@@ -35,6 +96,54 @@
   240 列 CJK(≈1.7MB)551ms,其中 timer 链单独占 130-500ms;不插 timer 的完整
   重放仅 47-81ms。新策略实测 34/47/49ms(590KB / 1.19MB / 1.74MB),提速 6-11 倍,
   保留 FLK-1 的"主线程可呼吸、敲键回显正常"收益。
+
+## [0.3.2-dev.10] — 2026-08-01
+
+> **开发构建**(AGENTS.md 附录 F)。dev.9 的代码块执行在中文兼容性上翻车:Electron main
+> 的 PATH 没有 pwsh.exe / Git Bash(用户装了但不在 PATH),spawn 异步 ENOENT → 用户看到
+> 退出码 -4058;cmd 输出按系统 ANSI 代码页(GBK)解码乱码;代码块外壳背景误用 elevated
+> 导致“黑条”扩大。本版全部修复。SemVer 上 `0.3.2-dev.9 < 0.3.2-dev.10 < 0.3.2`。
+> 产物 `Marina-Portable-0.3.2-dev.10-x64.exe`。
+
+### 修复
+
+- **代码块执行不再依赖 PATH:shell 走应用自身 detectShells 的绝对路径。** pwsh / bash /
+  powershell / cmd 的 spawn 命令优先取 `detectShells` 结果(与 SessionManager 同一检测源,
+  覆盖 `Program Files\PowerShell\7\pwsh.exe` / `Program Files\Git\bin\bash.exe` 等),
+  Electron main 的 PATH 里没有这些可执行文件时不再报 ENOENT(退出码 -4058)。`run()`
+  改为 async(等待 shell 解析),getShells 失败回退 PATH 名不阻塞。spawn 后异步 ENOENT
+  也给出“找不到可执行命令”的友好提示而非裸的 -4058。
+- **cmd 输出中文乱码修复:GBK/UTF-8 自动检测解码。** cmd.exe 按系统 ANSI 代码页(中文
+  Windows = GBK)输出,`chcp 65001` 对管道输出无效(实测中文变问号)。新增
+  `DetectingOutputDecoder`:纯 ASCII 直接输出,首段非 ASCII 字节用 fatal UTF-8 判定,
+  失败则按 GBK 解码,TextDecoder(stream) 处理跨 chunk 多字节切分。同时移除 cmd 的
+  chcp 前缀。PowerShell/pwsh 仍用命令前缀强制 UTF-8(dev.9 已验证生效)。
+- **代码块外壳背景不再扩大“黑条”。** dev.9 把整块背景设为 elevated 变量导致黑区从
+  toolbar 扩大到整块;改为外壳 / toolbar / 输出区全透明、仅 border 分层,代码区背景
+  仍由各主题 pre 规则提供,明暗主题自适应。
+
+## [0.3.2-dev.9] — 2026-07-31
+
+### 新增
+
+- **Markdown 代码块一键执行(ADR-023)。** Markdown 面板里 `bash` / `sh` / `powershell` /
+  `pwsh` / `cmd` 等 fenced code block 现在带「复制」「运行」按钮。点击「运行」后
+  main/daemon 直接 `child_process.spawn` 对应 shell 跑整段代码,**不经 PTY / xterm**,因此
+  当前终端无论是 Claude Code / Codex / vim 还是普通 shell 都不会被干扰。工作目录取自
+  该终端的服务端 `currentCwd`,输出在代码块下方流式显示,运行中可「停止」(SIGKILL),
+  退出后显示 exit code。本地与远程后端行为一致(preload 自动路由);SSH 终端因命令需在
+  远程主机跑、本进程无法 spawn 而明确拒绝。无确认弹窗(产品决策移除风险分级)。
+  - 新增 `src/shared/markdown-command.ts`(语言归一化与可运行判定)、
+    `src/main/code-block-runner.ts`(spawn + 流式输出 + 生命周期)、
+    `src/renderer/components/file-panel/MarkdownCodeBlock.tsx`(工具栏 / 输出区)。
+  - 新增 IPC:`cmd:system:run-code-block` / `cmd:system:stop-code-block` /
+    `evt:system:code-block-output` / `evt:system:code-block-exited`。
+  - **编码**:`StringDecoder('utf8')` 处理多字节字符跨 chunk 切分;PowerShell / pwsh
+    命令前缀强制 `[Console]::OutputEncoding = UTF8`(中文 Windows 默认 GBK 输出会乱码);
+    cmd 前缀 `chcp 65001` 切 UTF-8 代码页。bash 用 `-c`(非登录非交互,避免登录 shell
+    profile 副作用导致的输出丢失)。
+  - **样式**:代码块外壳统一背景 + 透明 toolbar / output(明暗主题自适应,不再出现
+    固定黑条);无输出的运行也显示 exit code,不再“闪一下闪回”。
 
 ## [0.3.2-dev.8] — 2026-07-30
 

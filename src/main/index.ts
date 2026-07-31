@@ -33,6 +33,7 @@ import { JsonStore } from './persistence';
 import { installIpcLayer, dispatchCommand } from './ipc';
 import { ClientRegistry } from './client-registry';
 import { TerminalViewRegistry } from './terminal-view-registry';
+import { CodeBlockRunner } from './code-block-runner';
 import { RemoteDaemonController } from './remote-daemon-controller';
 import {
   loadOrGenerateDaemonCredentials,
@@ -266,6 +267,16 @@ function bootstrap(): void {
     gitBinaryPath: settingsManager.get().advanced.gitBinaryPath,
   });
   const trayManager = new TrayManager(windowManager, sessionManager, settingsManager);
+  // v0.3.3:Markdown 代码块一键执行(ADR-023)。直接 spawn 系统命令,不经 PTY;
+  // cwd 取自 session 服务端 currentCwd。sessionLookup 每请求回查,与 git/file-tree
+  // 一致地防 cwd 变更/接管后的陈旧授权。
+  const codeBlockRunner = new CodeBlockRunner(
+    (id) => sessionManager.get(id),
+    undefined,
+    // detectShells 绝对路径(与 SessionManager 同源缓存):解决 Electron main 的
+    // PATH 里没有 pwsh.exe / bash 时 spawn ENOENT(-4058)的问题。
+    () => sessionManager.listAvailableShells(),
+  );
   // 0.3.2 性能飞行记录器独立于 BrowserWindow 生命周期。关闭全部窗口后仍采样
   // main/GPU/utility 进程、event-loop stall 与固定业务操作；自动报告不含路径/
   // 命令/终端内容。对象在 ready 前构造,start 在 app.whenReady 内调用。
@@ -609,6 +620,7 @@ function bootstrap(): void {
         performanceDiagnostics,
         skillInstaller,
         markdownThemeManager,
+        codeBlockRunner,
         aiClient,
         remoteDaemonController,
       });

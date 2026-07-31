@@ -29,6 +29,7 @@ import type * as IpcModule from './ipc';
 import { FilePanelService } from './file-panel-service';
 import { GitService } from './git-service';
 import { MarkdownThemeManager } from './markdown-theme-manager';
+import { CodeBlockRunner } from './code-block-runner';
 import { ClientRegistry } from './client-registry';
 import { makePathId } from './path-manager';
 
@@ -304,6 +305,10 @@ function makeStubs() {
       // wireEventBroadcasts 只用到它的 on('listUpdated'),以及 registerMdThemeHandlers
       // 注册的 3 个方法。构造无副作用(懒 getter),EventEmitter 在不 watch 时也正常。
       markdownThemeManager: new MarkdownThemeManager(),
+      // v0.3.3:真实 CodeBlockRunner(注入 noop sessionLookup):ipc 层
+      // wireEventBroadcasts 用它的 on('output'/'exited'),registerCodeBlockHandlers
+      // 注册 run/stop。测试不触发真实 spawn(没有用例调 run-code-block)。
+      codeBlockRunner: new CodeBlockRunner(() => null),
       clientRegistry: new ClientRegistry(),
     },
     stubs: {
