@@ -142,6 +142,12 @@ export class PerformanceDiagnostics {
   /** 上一次采样快照里的 pty.outputBytes 计数器值,用于 delta 推导速率。 */
   private previousPtyBytes = 0;
   private previousPtyChunks = 0;
+  /**
+   * 上一次采样点每 type(GPU/renderer/...)的 cumulativeCPUUsage(秒)快照。
+   * 供 aggregateElectronMetrics 差分换算真实 CPU%,修正 GPU 进程被
+   * percentCPUUsage 单点严重低估的问题(PER-2, 2026-07-30)。
+   */
+  private readonly previousElectronCpuByType = new Map<string, number>();
   /** 最近一个采样窗口的吞吐速率,供 stall 关联与 gauge 暴露。 */
   private latestPtyBytesPerSecond = 0;
   private started = false;
@@ -405,7 +411,10 @@ export class PerformanceDiagnostics {
     this.metrics.setGauge('pty.recentBytesPerSecond', Math.round(ptyBytesPerSecond));
     const eventLoopDelayMs = histogramSnapshot(this.histogram);
     this.histogram.reset();
-    const electronProcesses = aggregateElectronMetrics(this.safeGetAppMetrics());
+    const electronProcesses = aggregateElectronMetrics(this.safeGetAppMetrics(), {
+      prevCumulativeByType: this.previousElectronCpuByType,
+      elapsedMs,
+    });
     const gauges = { ...metricSnapshot.gauges, ...this.safeRuntimeGauges() };
     const sample: PerformanceSample = {
       atMs: round(monoNow - this.startedMonoMs),
@@ -615,10 +624,23 @@ export class PerformanceDiagnostics {
   }
 }
 
+/**
+ * 聚合 Electron 各子进程指标(main/GPU/renderer/utility...)成按 type 分组的
+ * 总计。同时返回本次采样的“每 type 累计 CPU 秒数”,供调用方做差分。
+ */
 export function aggregateElectronMetrics(
   metrics: Electron.ProcessMetric[],
+  opts?: {
+    /** 上一采样点每 type 的累计 CPU 秒数快照(会被就地更新为本采样点的值)。 */
+    prevCumulativeByType?: Map<string, number>;
+    /** 距上一采样点的 elapsedMs,用于把累计 CPU 秒数差分换算成 CPU%。 */
+    elapsedMs?: number;
+  },
 ): PerformanceElectronProcessMetric[] {
+  const useCumulative =
+    !!opts && opts.prevCumulativeByType !== undefined && (opts.elapsedMs ?? 0) > 0;
   const byType = new Map<string, PerformanceElectronProcessMetric>();
+  const cumulativeNow = new Map<string, number>();
   for (const metric of metrics) {
     const type = String(metric.type || 'Unknown');
     const current = byType.get(type) ?? {
@@ -630,11 +652,46 @@ export function aggregateElectronMetrics(
       privateBytesKb: 0,
     };
     current.processCount += 1;
-    current.cpuPercent += finite(metric.cpu?.percentCPUUsage);
+    // CPU%:优先用 cumulativeCPUUsage(Electron 22+ 运行时提供,单位秒)差分
+    // —— 它是“进程累计 CPU 时间”,两次采样之差 / elapsedMs 即该 type 的真实
+    // 平均 CPU%,不漏尖峰。percentCPUUsage 是 Electron 算的“近 1s 瞬时”
+    // 单点,对 GPU 进程实测可低估 40-60 倍(见 PER-2 排查)。d.ts 未声明该
+    // 字段,这里用安全访问。
+    const cumulative = (metric.cpu as { cumulativeCPUUsage?: number } | undefined)
+      ?.cumulativeCPUUsage;
+    if (typeof cumulative === 'number' && Number.isFinite(cumulative)) {
+      cumulativeNow.set(type, (cumulativeNow.get(type) ?? 0) + cumulative);
+    }
+    // 只有当上一采样点已有该 type 的累计基线时,差分才有意义;否则(首次采样 /
+    // 新出现的进程 type)走 fallback percentCPUUsage,避免拿“无前值”当“从 0
+    // 开始”算出虚假的巨大 CPU%。
+    const hasBaseline = !!opts?.prevCumulativeByType?.has(type);
+    if (useCumulative && hasBaseline && typeof cumulative === 'number') {
+      // cpuPercent 在返回 map 收尾时按 type 算差分;此处先记累计,不加 percent。
+    } else {
+      // fallback:无 cumulative 数据(旧 Electron / 首次采样 / opts 未传)走
+      // percentCPUUsage,保持与历史行为一致。
+      current.cpuPercent += finite(metric.cpu?.percentCPUUsage);
+    }
     current.workingSetKb += finite(metric.memory?.workingSetSize);
     current.peakWorkingSetKb += finite(metric.memory?.peakWorkingSetSize);
     current.privateBytesKb += finite(metric.memory?.privateBytes);
     byType.set(type, current);
+  }
+  // 差分换算:把本 type 所有进程的累计秒数增量 / elapsedMs * 100 = 该 type 占单核的 %。
+  if (useCumulative) {
+    const elapsedMs = opts!.elapsedMs!;
+    for (const item of byType.values()) {
+      const prevSec = opts!.prevCumulativeByType!.get(item.type);
+      const nowSec = cumulativeNow.get(item.type);
+      // prev 无该 type 基线时上面已 fallback 走 percentCPUUsage,这里不覆盖。
+      if (prevSec === undefined || nowSec === undefined) continue;
+      const deltaSec = Math.max(0, nowSec - prevSec);
+      item.cpuPercent = elapsedMs > 0 ? (deltaSec * 1000) / elapsedMs * 100 : 0;
+    }
+    // 就地更新调用方的快照,供下一采样差分。
+    opts!.prevCumulativeByType!.clear();
+    for (const [t, v] of cumulativeNow) opts!.prevCumulativeByType!.set(t, v);
   }
   return [...byType.values()]
     .map((item) => ({

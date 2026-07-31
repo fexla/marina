@@ -499,4 +499,52 @@ describe('aggregateElectronMetrics', () => {
       workingSetKb: 200,
     });
   });
+
+  it('PER-2: 有 cumulativeCPUUsage 基线时用差分换算,不再低估 GPU CPU%', () => {
+    // 场景:GPU 进程在 1 秒采样窗口里累计 CPU 从 5.0s 涨到 8.0s(消耗 3s CPU)
+    // → 该窗口 GPU 平均 CPU = 3 / 1 * 100 = 300% 单核(烧 3 个核)。这是
+    // percentCPUUsage 单点实测会低估到个位数的“尖峰持续”场景。
+    const prev = new Map<string, number>([['GPU', 5.0]]);
+    const metrics = aggregateElectronMetrics(
+      [
+        {
+          pid: 2,
+          type: 'GPU',
+          cpu: { percentCPUUsage: 6.8, cumulativeCPUUsage: 8.0, idleWakeupsPerSecond: 0 },
+          memory: { workingSetSize: 200, peakWorkingSetSize: 220, privateBytes: 180 },
+          creationTime: 0,
+          sandboxed: true,
+          integrityLevel: 'medium',
+        },
+      ] as unknown as Electron.ProcessMetric[],
+      { prevCumulativeByType: prev, elapsedMs: 1000 },
+    );
+    const gpu = metrics.find((item) => item.type === 'GPU')!;
+    expect(gpu.cpuPercent).toBe(300);
+    // prev 快照被就地更新为本采样点的累计值,供下一轮差分。
+    expect(prev.get('GPU')).toBe(8.0);
+  });
+
+  it('PER-2: 首次采样(prev 无基线)走 fallback percentCPUUsage,不算虚假尖峰', () => {
+    // 首次采样 prevByType 为空:不能拿“无前值”当“从 0 开始”,否则会把首次
+    // 累计值当成窗口内全部增量,算出天文数字 CPU%。必须 fallback。
+    const prev = new Map<string, number>();
+    const metrics = aggregateElectronMetrics(
+      [
+        {
+          pid: 2,
+          type: 'GPU',
+          cpu: { percentCPUUsage: 7, cumulativeCPUUsage: 100, idleWakeupsPerSecond: 0 },
+          memory: { workingSetSize: 200, peakWorkingSetSize: 220, privateBytes: 180 },
+          creationTime: 0,
+          sandboxed: true,
+          integrityLevel: 'medium',
+        },
+      ] as unknown as Electron.ProcessMetric[],
+      { prevCumulativeByType: prev, elapsedMs: 1000 },
+    );
+    expect(metrics.find((item) => item.type === 'GPU')!.cpuPercent).toBe(7);
+    // 但本采样累计值仍写入 prev,为下一轮差分建立基线。
+    expect(prev.get('GPU')).toBe(100);
+  });
 });
