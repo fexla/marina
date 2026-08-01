@@ -1,34 +1,44 @@
 /**
  * @file session-workspace-manager.test.ts
- * @purpose 覆盖 session 临时展示工作区的创建、崩溃恢复、保留期和受管删除边界。
+ * @purpose 覆盖 workspace 生命周期：创建、命名/绑定复用(bind)、关闭保留、到期回收、
+ *   pinned 免回收、v1→v2 manifest 迁移、文件面板状态快照读写。
+ *
+ * v0.3.3 ADR-024：workspaceId 与 sessionId 解耦，API 改 workspaceId-keyed。
  *
  * @安全约束:每个 case 使用 createTempDataDir；绝不读写真实 Marina userData。
- * @对应文档章节: AGENTS.md 5.3 / 5.6、session-workspace-manager.ts 文件头。
+ * @对应文档章节: AGENTS.md 5.3 / 5.6、ADR-024、session-workspace-manager.ts 文件头。
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { createTempDataDir, removeTempDataDir } from './persistence';
 import { SessionWorkspaceManager } from './session-workspace-manager';
+import type { FilePanelSnapshotData } from './session-workspace-manager';
 
-const SID_1 = '11111111-1111-4111-8111-111111111111';
-const SID_2 = '22222222-2222-4222-8222-222222222222';
+/** 测试用确定性 UUID 序列（注入 uuid 选项）。 */
+const WS_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const WS_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const DAY_MS = 24 * 60 * 60 * 1000;
+const PATH_SCOPE = 'C:\\proj';
 
 describe('SessionWorkspaceManager', () => {
   let dir: string;
   let now: number;
   let retentionDays: number;
+  let uuidSeq: number;
+  const uuidPool = [WS_A, WS_B];
   let manager: SessionWorkspaceManager;
 
   beforeEach(async () => {
     dir = await createTempDataDir('marina-workspace-test-');
     now = 1_700_000_000_000;
     retentionDays = 7;
+    uuidSeq = 0;
     manager = new SessionWorkspaceManager({
       rootDir: join(dir, 'file-panel-workspaces'),
       getRetentionDays: () => retentionDays,
       now: () => now,
+      uuid: () => uuidPool[uuidSeq++ % uuidPool.length]!,
     });
     await manager.initialize();
   });
@@ -38,70 +48,381 @@ describe('SessionWorkspaceManager', () => {
     await removeTempDataDir(dir);
   });
 
-  it('为 UUID session 创建受管工作区并记录 active 状态', async () => {
-    const workspace = await manager.create(SID_1);
+  // ── 创建 / 生命周期 ──────────────────────────────────────────────
 
-    expect(workspace).toBe(join(dir, 'file-panel-workspaces', SID_1));
-    await expect(fs.stat(workspace)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
-    expect(manager.getPathForSession(SID_1)).toBe(workspace);
+  it('create 生成 workspaceId UUID + 受管目录，记录 active(closedAt=null)', async () => {
+    const created = await manager.create();
+
+    expect(created.workspaceId).toBe(WS_A);
+    expect(created.dir).toBe(join(dir, 'file-panel-workspaces', WS_A));
+    await expect(fs.stat(created.dir)).resolves.toMatchObject({
+      isDirectory: expect.any(Function),
+    });
+    expect(manager.getPathForWorkspace(WS_A)).toBe(created.dir);
 
     await manager.flush();
     const manifest = JSON.parse(
       await fs.readFile(join(dir, 'file-panel-workspaces', 'manifest.json'), 'utf8'),
-    ) as { workspaces: Record<string, { closedAt: number | null }> };
-    expect(manifest.workspaces[SID_1]).toEqual({ closedAt: null });
+    ) as {
+      version: number;
+      workspaces: Record<string, { closedAt: number | null; name: string | null; pinned: boolean }>;
+    };
+    expect(manifest.version).toBe(2);
+    expect(manifest.workspaces[WS_A]).toEqual({
+      name: null,
+      createdAt: now,
+      closedAt: null,
+      pinned: false,
+      pathScope: null,
+    });
   });
 
   it('关闭后在保留期内保留，到期才删除', async () => {
-    const workspace = await manager.create(SID_1);
-    manager.release(SID_1);
+    const created = await manager.create();
+    manager.release(WS_A);
 
     now += 7 * DAY_MS - 1;
     await manager.cleanupExpired();
-    await expect(fs.stat(workspace)).resolves.toBeDefined();
+    await expect(fs.stat(created.dir)).resolves.toBeDefined();
 
     now += 1;
     await manager.cleanupExpired();
-    await expect(fs.access(workspace)).rejects.toThrow();
-    expect(manager.getPathForSession(SID_1)).toBeNull();
+    await expect(fs.access(created.dir)).rejects.toThrow();
+    expect(manager.getPathForWorkspace(WS_A)).toBeNull();
   });
 
   it('保留期设为 0 时，关闭后的显式清理立即删除', async () => {
     retentionDays = 0;
-    const workspace = await manager.create(SID_1);
-    manager.release(SID_1);
+    const created = await manager.create();
+    manager.release(WS_A);
     await manager.cleanupExpired();
 
-    await expect(fs.access(workspace)).rejects.toThrow();
+    await expect(fs.access(created.dir)).rejects.toThrow();
   });
 
   it('启动恢复把崩溃前 active 的记录视为刚关闭，不会立即删除', async () => {
-    const workspace = await manager.create(SID_1);
+    const created = await manager.create();
     await manager.flush();
 
     const restarted = new SessionWorkspaceManager({
       rootDir: join(dir, 'file-panel-workspaces'),
       getRetentionDays: () => retentionDays,
       now: () => now + DAY_MS,
+      uuid: () => uuidPool[uuidSeq++ % uuidPool.length]!,
     });
     await restarted.initialize();
-    expect(restarted.getPathForSession(SID_1)).toBe(workspace);
+    expect(restarted.getPathForWorkspace(WS_A)).toBe(created.dir);
     await restarted.flush();
   });
 
-  it('discard 仅清理尚未启动 PTY 的指定目录，其他 session 不受影响', async () => {
-    const first = await manager.create(SID_1);
-    const second = await manager.create(SID_2);
+  it('discard 仅清理尚未启动 PTY 的指定目录，其他 workspace 不受影响', async () => {
+    const first = await manager.create();
+    const second = await manager.create();
 
-    await manager.discard(SID_1);
+    await manager.discard(WS_A);
 
-    await expect(fs.access(first)).rejects.toThrow();
-    await expect(fs.stat(second)).resolves.toBeDefined();
-    expect(manager.getPathForSession(SID_2)).toBe(second);
+    await expect(fs.access(first.dir)).rejects.toThrow();
+    await expect(fs.stat(second.dir)).resolves.toBeDefined();
+    expect(manager.getPathForWorkspace(WS_B)).toBe(second.dir);
   });
 
-  it('拒绝非 UUID session id，避免 manifest 或调用方把删除路径导向根目录外', async () => {
-    await expect(manager.create('../outside')).rejects.toThrow('Invalid session id');
+  it('拒绝非 UUID workspace id，避免 manifest 或调用方把删除路径导向根目录外', async () => {
+    // create 用注入 uuid，但 getPathForWorkspace / bind 等对非法 id 的拒绝仍要测。
+    // workspacePath 是 private 同步方法，非法 id 同步抛错（rejects 仅用于 await 性测试）。
+    expect(() =>
+      (manager as unknown as { workspacePath: (id: string) => string }).workspacePath('../outside'),
+    ).toThrow('Invalid workspace id');
     await expect(fs.access(join(dir, 'outside'))).rejects.toThrow();
+  });
+
+  // ── v0.3.3 ADR-024:bind / list / new / unpin ────────────────────
+
+  it('bind 新建路径：把当前 workspace 命名 + pinned=true + 记 pathScope', async () => {
+    const created = await manager.create();
+    const result = await manager.bind(WS_A, 'feature-x', PATH_SCOPE, false);
+
+    expect(result).toEqual({ kind: 'created', workspaceId: WS_A, dir: created.dir });
+    const rec = manager.getRecord(WS_A);
+    expect(rec?.name).toBe('feature-x');
+    expect(rec?.pinned).toBe(true);
+    expect(rec?.pathScope).toBe(PATH_SCOPE);
+  });
+
+  it('bind 切换路径：name 已存在(pathScope 匹配)→ 返回该 workspace + 元数据', async () => {
+    // 先建 WS_A 并命名为 'shared'
+    await manager.create();
+    await manager.bind(WS_A, 'shared', PATH_SCOPE, false);
+    // 再建 WS_B 作为"当前 session"的新临时
+    await manager.create();
+    // bind 同名 'shared'（WS_A 拥有它）→ 应切换到 WS_A
+    const result = await manager.bind(WS_B, 'shared', PATH_SCOPE, false);
+
+    expect(result.kind).toBe('switched');
+    if (result.kind === 'switched') {
+      expect(result.workspaceId).toBe(WS_A);
+      expect(result.dir).toBe(join(dir, 'file-panel-workspaces', WS_A));
+      expect(result.createdAt).toBe(manager.getRecord(WS_A)?.createdAt);
+      expect(result.fileCount).toBe(0);
+    }
+  });
+
+  it('bind --new(name 已存在)→ 抛 NameConflict', async () => {
+    await manager.create();
+    await manager.bind(WS_A, 'shared', PATH_SCOPE, false);
+    await manager.create();
+    await expect(manager.bind(WS_B, 'shared', PATH_SCOPE, true)).rejects.toMatchObject({
+      code: 'NameConflict',
+    });
+  });
+
+  it('bind name 唯一性是 pathScope 内：不同 pathScope 可重名', async () => {
+    await manager.create();
+    await manager.bind(WS_A, 'shared', PATH_SCOPE, false);
+    await manager.create();
+    // 不同 pathScope 同名 → 视为新建命名（不切换到 WS_A）
+    const result = await manager.bind(WS_B, 'shared', 'D:\\other', false);
+    expect(result.kind).toBe('created');
+    expect(result.workspaceId).toBe(WS_B);
+  });
+
+  it('bind name 校验：空 / 含分隔符 / 超长 → InvalidName', async () => {
+    await manager.create();
+    await expect(manager.bind(WS_A, '   ', PATH_SCOPE, false)).rejects.toMatchObject({
+      code: 'InvalidName',
+    });
+    await expect(manager.bind(WS_A, 'a/b', PATH_SCOPE, false)).rejects.toMatchObject({
+      code: 'InvalidName',
+    });
+    await expect(manager.bind(WS_A, 'a\\b', PATH_SCOPE, false)).rejects.toMatchObject({
+      code: 'InvalidName',
+    });
+    await expect(manager.bind(WS_A, 'x'.repeat(65), PATH_SCOPE, false)).rejects.toMatchObject({
+      code: 'InvalidName',
+    });
+  });
+
+  it('bind 当前 workspaceId 不在 manifest → WorkspaceNotFound', async () => {
+    await expect(manager.bind(WS_B, 'x', PATH_SCOPE, false)).rejects.toMatchObject({
+      code: 'WorkspaceNotFound',
+    });
+  });
+
+  it('list 返回当前 pathScope 下的命名 workspace（未命名不列），按 createdAt 倒序', async () => {
+    await manager.create(); // WS_A
+    now += 1000;
+    await manager.bind(WS_A, 'older', PATH_SCOPE, false);
+    now += 1000;
+    await manager.create(); // WS_B
+    await manager.bind(WS_B, 'newer', PATH_SCOPE, false);
+
+    const items = await manager.list(PATH_SCOPE);
+    expect(items.map((i) => i.name)).toEqual(['newer', 'older']);
+    expect(items.every((i) => i.pinned && i.pathScope === PATH_SCOPE)).toBe(true);
+  });
+
+  it('list 不含其它 pathScope 的命名 workspace', async () => {
+    await manager.create();
+    await manager.bind(WS_A, 'x', PATH_SCOPE, false);
+    await manager.create();
+    await manager.bind(WS_B, 'y', 'D:\\other', false);
+
+    const items = await manager.list(PATH_SCOPE);
+    expect(items.map((i) => i.name)).toEqual(['x']);
+  });
+
+  it('unpin 剥 name+pinned：无人占用→closedAt=now 可回收', async () => {
+    await manager.create();
+    await manager.bind(WS_A, 'shared', PATH_SCOPE, false);
+    await manager.unpin(WS_A, false);
+
+    const rec = manager.getRecord(WS_A);
+    expect(rec?.name).toBeNull();
+    expect(rec?.pinned).toBe(false);
+    expect(rec?.closedAt).toBe(now);
+    expect(rec?.pathScope).toBeNull();
+  });
+
+  it('unpin 剥 name+pinned：当前 session 仍占用→closedAt 保持 null', async () => {
+    await manager.create();
+    await manager.bind(WS_A, 'shared', PATH_SCOPE, false);
+    await manager.unpin(WS_A, true);
+
+    const rec = manager.getRecord(WS_A);
+    expect(rec?.closedAt).toBeNull();
+  });
+
+  it('pinned 的 workspace 即使 release 后 cleanupExpired 也不删（免回收）', async () => {
+    await manager.create();
+    await manager.bind(WS_A, 'keep', PATH_SCOPE, false);
+    manager.release(WS_A); // pinned 仍 true
+    now += 100 * DAY_MS; // 远超保留期
+    await manager.cleanupExpired();
+
+    // pinned 免回收，目录还在
+    await expect(fs.stat(manager.getPathForWorkspace(WS_A)!)).resolves.toBeDefined();
+    expect(manager.getRecord(WS_A)?.name).toBe('keep');
+  });
+
+  it('unpin 后再 release → 到期可正常回收', async () => {
+    const created = await manager.create();
+    await manager.bind(WS_A, 'tmp', PATH_SCOPE, false);
+    await manager.unpin(WS_A, false); // closedAt=now, 不再 pinned
+    now += 100 * DAY_MS;
+    await manager.cleanupExpired();
+
+    await expect(fs.access(created.dir)).rejects.toThrow();
+    expect(manager.getRecord(WS_A)).toBeNull();
+  });
+
+  it('resolveByName：按 name+pathScope 查 workspaceId', async () => {
+    await manager.create();
+    await manager.bind(WS_A, 'shared', PATH_SCOPE, false);
+    expect(manager.resolveByName('shared', PATH_SCOPE)).toBe(WS_A);
+    expect(manager.resolveByName('shared', 'D:\\other')).toBeNull();
+    expect(manager.resolveByName('nope', PATH_SCOPE)).toBeNull();
+  });
+
+  it('switchToNew 创建一个新空临时 workspace', async () => {
+    const created = await manager.switchToNew();
+    expect(created.workspaceId).toBe(WS_A);
+    const rec = manager.getRecord(WS_A);
+    expect(rec?.name).toBeNull();
+    expect(rec?.pinned).toBe(false);
+  });
+
+  // ── v0.3.3 ADR-024:v1→v2 manifest 迁移 ──────────────────────────
+
+  it('v1→v2 迁移：旧 sessionId 当 workspaceId，补默认字段，幂等', async () => {
+    // 手写一个 v1 manifest（旧 schema：key=sessionId, record={closedAt}）。
+    const OLD_SID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const v1Manifest = { version: 1, workspaces: { [OLD_SID]: { closedAt: now } } };
+    await fs.mkdir(join(dir, 'file-panel-workspaces'), { recursive: true });
+    await fs.writeFile(
+      join(dir, 'file-panel-workspaces', 'manifest.json'),
+      JSON.stringify(v1Manifest),
+      'utf8',
+    );
+
+    const restarted = new SessionWorkspaceManager({
+      rootDir: join(dir, 'file-panel-workspaces'),
+      getRetentionDays: () => retentionDays,
+      now: () => now,
+      uuid: () => uuidPool[uuidSeq++ % uuidPool.length]!,
+    });
+    await restarted.initialize();
+
+    // 旧 key 保留为 workspaceId，record 补默认字段。
+    const rec = restarted.getRecord(OLD_SID);
+    expect(rec).toEqual({
+      name: null,
+      createdAt: now,
+      closedAt: now,
+      pinned: false,
+      pathScope: null,
+    });
+    expect(restarted.getPathForWorkspace(OLD_SID)).toBe(
+      join(dir, 'file-panel-workspaces', OLD_SID),
+    );
+
+    // 落盘已是 v2。
+    await restarted.flush();
+    const written = JSON.parse(
+      await fs.readFile(join(dir, 'file-panel-workspaces', 'manifest.json'), 'utf8'),
+    ) as { version: number };
+    expect(written.version).toBe(2);
+
+    // 幂等：再启动一次不重复迁移、字段不变。
+    const restarted2 = new SessionWorkspaceManager({
+      rootDir: join(dir, 'file-panel-workspaces'),
+      getRetentionDays: () => retentionDays,
+      now: () => now,
+    });
+    await restarted2.initialize();
+    expect(restarted2.getRecord(OLD_SID)).toEqual(rec);
+    await restarted2.flush();
+  });
+
+  it('v1→v2 迁移：active(closedAt=null) 的旧记录补 createdAt=now', async () => {
+    const OLD_SID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const v1Manifest = { version: 1, workspaces: { [OLD_SID]: { closedAt: null } } };
+    await fs.mkdir(join(dir, 'file-panel-workspaces'), { recursive: true });
+    await fs.writeFile(
+      join(dir, 'file-panel-workspaces', 'manifest.json'),
+      JSON.stringify(v1Manifest),
+      'utf8',
+    );
+
+    const restarted = new SessionWorkspaceManager({
+      rootDir: join(dir, 'file-panel-workspaces'),
+      getRetentionDays: () => retentionDays,
+      now: () => now,
+      uuid: () => uuidPool[uuidSeq++ % uuidPool.length]!,
+    });
+    await restarted.initialize();
+
+    // active 旧记录：恢复时 closedAt 标 now（崩溃恢复语义），createdAt 也取 now（v1 无此字段）。
+    const rec = restarted.getRecord(OLD_SID);
+    expect(rec?.closedAt).toBe(now);
+    expect(rec?.createdAt).toBe(now);
+    await restarted.flush();
+  });
+
+  it('损坏 manifest → 从空开始（不抛、不丢目录外文件）', async () => {
+    await fs.mkdir(join(dir, 'file-panel-workspaces'), { recursive: true });
+    await fs.writeFile(
+      join(dir, 'file-panel-workspaces', 'manifest.json'),
+      '{not valid json',
+      'utf8',
+    );
+    const restarted = new SessionWorkspaceManager({
+      rootDir: join(dir, 'file-panel-workspaces'),
+      getRetentionDays: () => retentionDays,
+      now: () => now,
+    });
+    await restarted.initialize();
+    expect(restarted.getRecord(WS_A)).toBeNull();
+    await restarted.flush();
+  });
+
+  // ── v0.3.3 ADR-024:文件面板状态快照 ────────────────────────────
+
+  it('writeSnapshot/readSnapshot 往返：openedFiles/active/scroll/runs', async () => {
+    await manager.create();
+    const snap: FilePanelSnapshotData = {
+      version: 1,
+      openedFiles: [
+        { path: 'review.md', kind: 'markdown', external: false },
+        { path: 'C:\\abs\\user.md', kind: 'markdown', external: true },
+      ],
+      activeFilePath: 'review.md',
+      scroll: { 'review.md': { scrollTop: 240, scrollLeft: 0 } },
+      runs: [
+        { key: ["k1","doc","pos","1:42"].join(String.fromCharCode(0)), state: "exited", output: "hello", exitCode: 0 },
+        { key: ["k2","doc","pos","21:0"].join(String.fromCharCode(0)), state: "running", output: "", exitCode: null },
+      ],
+    };
+    await manager.writeSnapshot(WS_A, snap);
+    const read = await manager.readSnapshot(WS_A);
+    expect(read).toEqual(snap);
+
+    // 落在 __marina_state__/file-panel.json
+    const file = join(dir, 'file-panel-workspaces', WS_A, '__marina_state__', 'file-panel.json');
+    const onDisk = JSON.parse(await fs.readFile(file, 'utf8'));
+    expect(onDisk.version).toBe(1);
+  });
+
+  it('readSnapshot 文件缺失 → null（调用方按空状态恢复）', async () => {
+    await manager.create();
+    expect(await manager.readSnapshot(WS_A)).toBeNull();
+  });
+
+  it('readSnapshot 损坏 → null（不抛）', async () => {
+    await manager.create();
+    const file = join(dir, 'file-panel-workspaces', WS_A, '__marina_state__', 'file-panel.json');
+    await fs.mkdir(join(dir, 'file-panel-workspaces', WS_A, '__marina_state__'), {
+      recursive: true,
+    });
+    await fs.writeFile(file, '{broken', 'utf8');
+    expect(await manager.readSnapshot(WS_A)).toBeNull();
   });
 });

@@ -550,9 +550,23 @@ export interface FilePanelEnvSource {
  * 注入内存 stub，不必在每个测试里写真实临时目录。
  */
 export interface SessionWorkspaceSource {
-  create(sessionId: string): Promise<string>;
-  discard(sessionId: string): Promise<void>;
-  release(sessionId: string): void;
+  /**
+   * 创建一个新的空临时 workspace。v0.3.3 ADR-024：workspaceId 与 sessionId 解耦，
+   * 由本方法生成 UUID；SessionManager 维护 sessionId→workspaceId 映射。
+   */
+  create(): Promise<{ workspaceId: string; dir: string }>;
+  /** PTY spawn 失败立即撤销刚创建的 workspace（按 workspaceId）。 */
+  discard(workspaceId: string): Promise<void>;
+  /**
+   * 标记 workspace 已关闭（closedAt=now，按保留期回收）。v0.3.3：参数改 workspaceId。
+   * pinned 的 workspace 被 cleanupExpired 跳过（免回收）。
+   */
+  release(workspaceId: string): void;
+  /**
+   * v0.3.3 ADR-024：取 workspace 的受管目录（仅返回，不接受任意外部路径）。
+   * SessionManager 的 getWorkspacePathForSession 代理调它。
+   */
+  getPathForWorkspace(workspaceId: string): string | null;
 }
 
 export interface SessionManagerOptions {
@@ -626,6 +640,13 @@ export class SessionManager extends EventEmitter {
   private readonly filePanelService: FilePanelEnvSource | null;
   /** session 临时展示工作区的生命周期管理器。 */
   private readonly workspaceManager: SessionWorkspaceSource | null;
+  /**
+   * v0.3.3 ADR-024：sessionId → workspaceId 的运行时绑定映射（真值源）。
+   * create/bind/new 后更新；session 销毁后删除。workspaceId 与 sessionId 解耦，
+   * 让 session 运行中可“领养”别的 workspaceId 的目录。CLI 一律按
+   * TERMINAL_ID → session → workspaceId → dir 查真值（$env:MARINA_WORKSPACE 不可靠）。
+   */
+  private readonly sessionWorkspaceBindings = new Map<string, string>();
   /**
    * v0.3.0:Git tab 可用性判定回调,由 GitService 注入(见 attachGitAvailabilityProvider)。
    * null = 未注入(测试 / Git 面板禁用)→ 永不生成 git leaf,行为与 v0.2.x 一致。
@@ -840,6 +861,8 @@ export class SessionManager extends EventEmitter {
     // 它写进 env;原先生成点在 PTY spawn 之后(line 743),那里改成直接引用。
     const sessionId = randomUUID();
     let workspacePath: string | null = null;
+    /** v0.3.3 ADR-024：刚 create 的 workspaceId（PTY spawn 失败时 discard 用）。 */
+    let workspaceId: string | null = null;
     const env = buildSpawnEnv(process.env, SPAWN_ENV_SKIP);
     // BETA-001:Windows 上 process.env.PATH 是启动时的快照,装新软件后不会自动
     // 刷新。每次 spawn 前从注册表合并最新 PATH 覆写过去,确保新装的 python.exe /
@@ -924,9 +947,15 @@ export class SessionManager extends EventEmitter {
 
     // 工作区在所有 shell / SSH 前置校验通过后、PTY spawn 前创建。这样前置校验
     // 失败不会遗留空目录，而子进程一启动又总能读到存在的 MARINA_WORKSPACE。
+    // v0.3.3 ADR-024：create 返回 {workspaceId, dir}，workspaceId 与 sessionId 解耦。
+    // 这里记录 sessionId→workspaceId 绑定（运行时真值源）；CLI 查 main 按
+    // TERMINAL_ID → session → workspaceId → dir。
     if (this.workspaceManager) {
       try {
-        workspacePath = await this.workspaceManager.create(sessionId);
+        const created = await this.workspaceManager.create();
+        workspaceId = created.workspaceId;
+        workspacePath = created.dir;
+        this.sessionWorkspaceBindings.set(sessionId, created.workspaceId);
         env.MARINA_WORKSPACE = workspacePath;
       } catch (err) {
         throw new SessionManagerError(
@@ -959,9 +988,10 @@ export class SessionManager extends EventEmitter {
       });
     } catch (err) {
       // PTY 未成功交给子进程，工作区没有用户可见价值；立即撤销，而不是等保留期。
-      if (workspacePath && this.workspaceManager) {
+      if (workspaceId && this.workspaceManager) {
         try {
-          await this.workspaceManager.discard(sessionId);
+          await this.workspaceManager.discard(workspaceId);
+          this.sessionWorkspaceBindings.delete(sessionId);
         } catch (cleanupErr) {
           logger.warn(
             'SessionManager',
@@ -1470,6 +1500,28 @@ export class SessionManager extends EventEmitter {
     return this.sessions.size;
   }
 
+  // ──────────────────────────────────────────────────────────────────
+  // v0.3.3 ADR-024:workspace 绑定/复用编排（CLI/IPC 查 main → 这些方法）
+  // ──────────────────────────────────────────────────────────────────
+
+  /**
+   * 当前 session 绑定的 workspaceId（运行时真值）。CLI `workspace`/`bind` 等
+   * 按 TERMINAL_ID → session → 此方法 → workspaceId → dir。无 workspace 返回 null。
+   */
+  getWorkspaceIdForSession(sessionId: string): string | null {
+    return this.sessionWorkspaceBindings.get(sessionId) ?? null;
+  }
+
+  /**
+   * 当前 session 绑定的 workspace 绝对路径。供 FileTreeService/GitService 的
+   * workspaceLookup 代理调用（sessionId → workspaceId → dir）。
+   */
+  getWorkspacePathForSession(sessionId: string): string | null {
+    const wsId = this.sessionWorkspaceBindings.get(sessionId);
+    if (!wsId || !this.workspaceManager) return null;
+    return this.workspaceManager.getPathForWorkspace(wsId);
+  }
+
   /**
    * 取 session 重挂时需要回放的"完整终端状态"为 ANSI 字节流(base64) +
    * 当前 scrollbackLastSeq。
@@ -1863,8 +1915,10 @@ export class SessionManager extends EventEmitter {
     this.pathManager.detachSession(sid);
     // 目录保留期从 session 被销毁时开始，而不是 PTY exited 时开始：已退出 tab
     // 仍可在面板里查看生成文档，符合 exited 无时限保留的状态机语义。
+    // v0.3.3 ADR-024：release 按 workspaceId（从绑定映射取）；删绑定映射。
+    const wsId = this.sessionWorkspaceBindings.get(sid) ?? null;
     try {
-      this.workspaceManager?.release(sid);
+      if (wsId) this.workspaceManager?.release(wsId);
     } catch (err) {
       // 工作区元数据失败不能阻塞主 session 销毁；manager 会在下次启动根据
       // manifest 重试回收，日志保留足够诊断信息。
@@ -1873,6 +1927,7 @@ export class SessionManager extends EventEmitter {
         `workspace release failed sid=${sid}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+    this.sessionWorkspaceBindings.delete(sid);
     this.emit('sessionDestroyed', { sessionId: sid, reason });
   }
 

@@ -244,9 +244,14 @@ function bootstrap(): void {
   // ADR-016:文件树仅把 live owner session 的 currentCwd 与受管 workspace
   // 暴露为两条只读根。服务不持有路径缓存，每个请求都回查 SessionManager /
   // SessionWorkspaceManager，避免 cwd 变化、接管或 session 销毁后的陈旧授权。
+  // v0.3.3 ADR-024：workspaceId 与 sessionId 解耦，workspaceLookup 改走
+  // SessionManager 的 sessionId→workspaceId→dir 绑定映射（不再直连 workspace manager）。
+  const workspacePathLookup = {
+    getPathForSession: (sid: string) => sessionManager.getWorkspacePathForSession(sid),
+  };
   const fileTreeService = new FileTreeService(
     sessionManager,
-    sessionWorkspaceManager,
+    workspacePathLookup,
     filePanelService,
   );
   // v0.3.0:GitService 与 FileTreeService 同构(同 sessionLookup + workspaceLookup
@@ -258,7 +263,7 @@ function bootstrap(): void {
   const backgroundWorkScheduler = new BackgroundWorkScheduler({ maxConcurrent: 1 });
   const gitService = new GitService(
     sessionManager,
-    sessionWorkspaceManager,
+    workspacePathLookup,
     filePanelService,
     backgroundWorkScheduler,
   );

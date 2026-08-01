@@ -289,9 +289,10 @@ function makeManager(
     /** 终端侧边文件面板 env 注入源;不传 = 不注入 MARINA_SERVICE/MARINA_TOKEN */
     filePanelService?: { getUrl(): { baseUrl: string; token: string } | null };
     workspaceManager?: {
-      create(sessionId: string): Promise<string>;
-      discard(sessionId: string): Promise<void>;
-      release(sessionId: string): void;
+      create(): Promise<{ workspaceId: string; dir: string }>;
+      discard(workspaceId: string): Promise<void>;
+      release(workspaceId: string): void;
+      getPathForWorkspace(workspaceId: string): string | null;
     };
   } = {},
 ): {
@@ -2392,17 +2393,21 @@ describe('SessionManager — file panel env 注入', () => {
 
   it('workspace manager → 注入不可被模板覆盖的 MARINA_WORKSPACE', async () => {
     const calls: string[] = [];
+    // v0.3.3 ADR-024:create() 返回 {workspaceId, dir}（workspaceId 与 sessionId 解耦）。
+    const WORKSPACE_ID = 'wwwwwwww-wwww-4www-8www-wwwwwwwwwwww';
     const workspace = {
-      create: async (sessionId: string) => {
-        calls.push(`create:${sessionId}`);
-        return `C:\\marina-workspaces\\${sessionId}`;
+      create: async () => {
+        calls.push(`create`);
+        return { workspaceId: WORKSPACE_ID, dir: `C:\\marina-workspaces\\${WORKSPACE_ID}` };
       },
-      discard: async (sessionId: string) => {
-        calls.push(`discard:${sessionId}`);
+      discard: async (workspaceId: string) => {
+        calls.push(`discard:${workspaceId}`);
       },
-      release: (sessionId: string) => {
-        calls.push(`release:${sessionId}`);
+      release: (workspaceId: string) => {
+        calls.push(`release:${workspaceId}`);
       },
+      getPathForWorkspace: (workspaceId: string) =>
+        workspaceId === WORKSPACE_ID ? `C:\\marina-workspaces\\${WORKSPACE_ID}` : null,
     };
     const templates = [{ ...BUILTIN_TEMPLATES[0]!, env: { MARINA_WORKSPACE: 'forged' } }];
     const { mgr } = makeManager({ workspaceManager: workspace, templates });
@@ -2414,11 +2419,11 @@ describe('SessionManager — file panel env 注入', () => {
       rows: 24,
     });
     const env = FakePty.instances[0]!.options.env;
-    expect(env.MARINA_WORKSPACE).toBe(`C:\\marina-workspaces\\${info.id}`);
-    expect(calls).toContain(`create:${info.id}`);
+    expect(env.MARINA_WORKSPACE).toBe(`C:\\marina-workspaces\\${WORKSPACE_ID}`);
+    expect(calls).toContain(`create`);
 
     mgr.closeSession(info.id);
-    expect(calls).toContain(`release:${info.id}`);
+    expect(calls).toContain(`release:${WORKSPACE_ID}`);
   });
 
   it('enabled=false → 不注入服务地址/token,但仍注入 TERMINAL_ID', async () => {
