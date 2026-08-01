@@ -7,6 +7,16 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+### 新增
+
+- **Diff 视图「打开源文件」入口(Feature C / v0.3.3)。** DiffViewer 左上角新增
+  工具栏,放 `file-text` 按钮;点击走 `cmd:git:open-file` 在文件面板**只读**打开
+  diff 对应文件的工作区原文(非 diff)。路径从 diff 文本的 `+++ b/<path>` 解析
+  (单文件 diff 适用;多文件 diff 因无法确定目标文件而禁用按钮);删除文件
+  (`+++ /dev/null`)自动禁用按钮并 tooltip「文件已删除」。与 Git 面板右键「打开
+  文件」复用同一通道。纯路径解析逻辑抽到 `src/shared/diff-path.ts`(单测覆盖
+  normal/added/deleted/renamed/多文件/含空格路径/二进制等场景)。
+
 ### 修复
 
 - **修复运行 alt-screen TUI(Claude Code / Pi / vim 等)时终端滚动条偶发跳到

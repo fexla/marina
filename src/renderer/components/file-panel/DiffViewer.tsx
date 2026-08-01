@@ -47,11 +47,15 @@ import {
 } from 'react';
 import type { OpenedFile } from '@shared/types';
 import type { PanelSearchProps } from '../layout/panel-registry';
+import { COMMAND_CHANNELS } from '@shared/protocol';
+import { resolveDiffOpenFileState } from '@shared/diff-path';
 import { useFileContent } from './useFileContent';
 import { useDomTextHighlight } from '../../hooks/useDomTextHighlight';
 import { useMiddleClickPan } from '../../hooks/useMiddleClickPan';
 import { useFileViewerScroll } from '../../hooks/useFileViewerScroll';
 import { useTranslation } from '../LanguageProvider';
+import { useToast } from '../Toast';
+import { Icon } from '../icons';
 import { highlightLine, detectLanguageFromPathLine } from './highlight';
 
 /** 行视觉种类(外层 diff 行色,由行首字符决定)。 */
@@ -203,6 +207,7 @@ interface ViewerProps {
 
 export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Element {
   const { tx } = useTranslation();
+  const toast = useToast();
   const content = useFileContent(sessionId, file.path, file.mtimeMs);
   // 行号/符号与代码是两个物理分离的滚动 pane。代码 pane 独占横/纵滚动,
   // gutter 只镜像 scrollTop；这样正文从布局层就不可能滚进行号栏,不需要
@@ -234,6 +239,36 @@ export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
     }
     return { rows: all, truncatedClient: false };
   }, [content]);
+
+  // v0.3.3 Feature C:从 diff 文本反推「打开源文件」按钮的 relativePath + deleted 态。
+  // 只在拿到 diff 文本后算(纯字符串解析,见 src/shared/diff-path.ts)。
+  // 单文件 diff → 给出路径;多文件/畸形 → relativePath=null(按钮禁用);
+  // 删除文件(+++ /dev/null)→ deleted=true(按钮禁用 + tooltip)。
+  const openFileState = useMemo(() => {
+    if (!content || content.kind !== 'diff') {
+      return { relativePath: null, deleted: false } as const;
+    }
+    return resolveDiffOpenFileState(content.text);
+  }, [content]);
+
+  // 点「打开源文件」:走 GIT_OPEN_FILE(与 GitPanel 右键 openFile 同通道),main 端
+  // GitService.openFile 读工作区当前内容进面板只读查看。删除/多文件态已在 UI 禁用,
+  // 这里只兜底网络/main 侧异常(如 SSH、NotARepo)→ toast 提示。
+  const handleOpenFile = (): void => {
+    const { relativePath } = openFileState;
+    if (!relativePath) return; // 防御:disabled 态不应触发,但仍 guard
+    window.api
+      .invoke(COMMAND_CHANNELS.GIT_OPEN_FILE, { sessionId, relativePath })
+      .catch((err: unknown) => {
+        console.warn('[DiffViewer] open-file failed', err);
+        toast.push({
+          kind: 'error',
+          message: `${tx('打开文件失败:', 'Open file failed: ')}${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        });
+      });
+  };
 
   // 右 pane 的水平滚动条会占掉自身 clientHeight；左 pane 没有滚动条。
   // 若不补同高的尾部空间,滚到最底时两边 maxScrollTop 不同,最后一行会错位。
@@ -302,8 +337,36 @@ export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
   const displayRows = rows as DiffRow[];
   const showTruncated = content.truncated || truncatedClient;
 
+  // 「打开源文件」按钮启用态:有明确 relativePath 且非删除时才可点。
+  // deleted → 禁用 + tooltip「文件已删除」;relativePath=null(多文件/畸形)→ 禁用 +
+  // tooltip「无法确定文件」。
+  const openFileDisabled = !openFileState.relativePath || openFileState.deleted;
+  const openFileTooltip = openFileState.deleted
+    ? tx('文件已删除', 'File has been deleted')
+    : !openFileState.relativePath
+      ? tx('无法确定文件', 'Cannot determine file')
+      : tx('打开源文件', 'Open source file');
+
   return (
     <div className="diff-viewer">
+      {/* v0.3.3 Feature C:顶部工具栏(跨两列全宽)。当前只有「打开源文件」一个按钮:
+       * 走 GIT_OPEN_FILE 在面板只读打开工作区原文(非 diff)。图标题决策 #5 = file-text
+       * (语义中性「这是个文件」,不暗示编辑/外部查看,与面板只读定位匹配)。 */}
+      <div className="diff-viewer-toolbar">
+        <button
+          type="button"
+          className="diff-viewer-toolbar-btn"
+          onClick={handleOpenFile}
+          disabled={openFileDisabled}
+          title={openFileTooltip}
+          aria-label={openFileTooltip}
+        >
+          <Icon name="fileText" size={14} />
+          <span className="diff-viewer-toolbar-label">
+            {tx('打开源文件', 'Open source file')}
+          </span>
+        </button>
+      </div>
       {/* gutter 与正文是物理分离的 sibling pane。gutter 不参与正文的横向滚动,
        * 因而不存在“正文滚到下面、再靠 sticky 背景遮住”的重叠关系。 */}
       <div

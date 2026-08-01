@@ -2554,7 +2554,9 @@ html[data-maximized='true'] .app-root.with-shell {
 .diff-viewer {
   margin: 0;
   display: grid;
+  /* v0.3.3 Feature C:顶部工具栏跨两列全宽,下面 gutter+code 两列。 */
   grid-template-columns: max-content minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   height: 100%;
@@ -2563,6 +2565,53 @@ html[data-maximized='true'] .app-root.with-shell {
   font-size: 12px;
   line-height: 1.5;
   color: var(--color-text-primary, #f0f);
+}
+
+/* v0.3.3 Feature C:diff 顶部工具栏(跨两列全宽)。只放「打开源文件」类轻量入口,
+ * 不做词级 diff / side-by-side(头注明写不做)。 */
+.diff-viewer-toolbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-text-muted, #888) 18%, transparent);
+  background-color: var(--color-bg-primary, #f0f);
+}
+
+.diff-viewer-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-secondary, #f0f);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.diff-viewer-toolbar-btn:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--color-text-muted, #888) 12%, transparent);
+  color: var(--color-text-primary, #f0f);
+}
+
+.diff-viewer-toolbar-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.diff-viewer-toolbar-btn:focus-visible {
+  outline: 2px solid var(--color-accent, #4aa);
+  outline-offset: 1px;
+}
+
+.diff-viewer-toolbar-label {
+  white-space: nowrap;
 }
 
 /* 左栏不显示自己的滚动条,但可由代码 pane 的 onScroll 设置 scrollTop。
