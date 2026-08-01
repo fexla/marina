@@ -7,15 +7,24 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
-### 新增
+### 修复
 
-- **修复:终端 URL 链接点击打不开浏览器(T13 / v0.3.3)。**
+- **Markdown 表格内链接换行优化(方案 B)。**
+  MarkdownViewer 表格窄列里的链接(文字 + URL)原本只在空格处断行,文字留本行、
+  URL 挤下一行,视觉上像两条链接、点击区也分裂。现对 `td a` 设
+  `overflow-wrap: anywhere`,链接可在任意字符处断行、不撑宽表格(靠表格已有的
+  `overflow-x: auto` 横向滚动兜底)。代价是长 URL 会从中间断,但整条 `<a>` 仍是
+  一个节点,点哪半都生效。覆盖三种 markdown 风格(auto / github / custom)。
+
+- **终端 URL 链接点击打不开浏览器(T13 / v0.3.3)。**
   `WebLinksAddon` 默认 handler 走无参 `window.open()`,被 window-manager 的
   `setWindowOpenHandler` deny 成 null(deny 前正则拿到空 url → `shell.openExternal`
   永不执行),故点 `https://`/`mailto:` 零反应。改为给 `WebLinksAddon` 传自定义
   handler 直接走 IPC `SYSTEM_OPEN_EXTERNAL`(main 侧已白名单 http/https/mailto),
   绕开脆弱的 window.open 链路。`setWindowOpenHandler` 保留作 OSC 8 / 其他
   window.open 的安全兼底(拒 file:// / javascript: 等)。
+
+### 新增
 
 - **侧栏收藏分组 + 拖拽排序(Feature E.1+E.2 / v0.3.3)。**
   收藏路径告别平铺:加**一级分组**虚拟容器(GroupNode,path 身份不变),分组可折叠/重命名/

@@ -3344,6 +3344,18 @@ html[data-maximized='true'] .app-root.with-shell {
   padding: 4px 8px;
 }
 
+/* 表格单元格里的链接:窄列时长 URL / 文字+URL 会在空格处断行,文字留本行、
+   URL 挤下一行,视觉上像两条链接、点击区也分裂。方案 B:让链接可在任意字符
+   处断行(overflow-wrap:anywhere),不撑宽表格、靠表格已有的 overflow-x:auto
+   横向滚动兜底。代价是长 URL 会从中间断,但点哪半都生效(整条 <a> 是一个节点)。
+   覆盖三种 markdown 风格:auto=.file-markdown-viewer、github/custom=.markdown-body
+   (.markdown-body 容器自身已在上面设了 overflow-wrap/word-break,这里显式钉到
+   td a 上,确保表格内链接行为在三套风格间一致,不依赖继承)。 */
+.file-markdown-viewer td a,
+.panel-dock .markdown-body td a {
+  overflow-wrap: anywhere;
+}
+
 /* 图片 viewer:居中、可滚动;图按宽度等比缩放(max-width:100%)。 */
 .file-image-viewer {
   display: flex;
