@@ -9,6 +9,16 @@
 
 ### 修复
 
+- **切换终端偶发「闪一下又切回去」+ 文件页面报 NotOwner(根治)。** 根因是
+  claim-gate 的旧契约把 claim 失败也当成「等待结束」放行面板请求,于是失败的接管
+  仍会触发文件/Git 面板发注定 NotOwner 的请求;同时各接管路径的失败回滚是无条件的,
+  迟到的失败会覆盖用户后续已经成功的选择。本次改造:`waitForClaim` 改为返回
+  `{ ok: boolean }`(失败不再静默放行),FileTreePanel / GitPanel /
+  useGitPollingDemand 在 `outcome.ok === false` 时中止请求不发 IPC(从根上消除
+  NotOwner 错误态);MainPane / Sidebar 的 orphan 接管回滚加 generation 守卫
+  (只在用户没有再点别的终端时才回滚);useCloseSession 续看的 claim 登记提前到
+  乐观选择时(消除「面板在 claim 登记前就请求」的空窗)。回归测试新增 claim
+  失败不得触发面板请求的组合用例。对应 ADR-005(一窗口一 owner)。
 - **代码块按钮 hover 不再出黑块:透明外壳组件禁用主题 bg token。** 根因是
   `.md-code-block-btn:hover` 用了 `var(--color-bg-hover)` —— 该 token 按应用
   主背景调色,而代码块外壳透明、底下背景随面板/主题未知,深色主题下渲染成
