@@ -254,3 +254,63 @@ export function clearCodeBlockRun(key: string): boolean {
   removeEntry(key);
   return true;
 }
+
+/**
+ * v0.3.3 ADR-024:bind 切到某 workspace 后,把其快照里的 runs 批量灌进缓存。
+ * 仅恢复 exited 的结果(running 是活动态,快照里不会是 running——除非崩在运行中,
+ * 那也保守按 exited 处理)。尊重容量上限(MAX_CACHE_ENTRIES),超出时按 LRU 踢出。
+ */
+export function restoreCodeBlockRuns(
+  runs: Array<{ key: string; state: string; output: string; exitCode: number | null }>,
+): void {
+  if (!runs || runs.length === 0) return;
+  for (const r of runs) {
+    // 不覆盖正在运行的条目(理论上 bind 切换不会发生在运行中,但防御)。
+    const existing = entries.get(r.key);
+    if (existing && existing.state === 'running') continue;
+    const output =
+      typeof r.output === 'string' && r.output.length > MAX_OUTPUT_CHARS
+        ? TRUNCATED_PREFIX + r.output.slice(-MAX_OUTPUT_CHARS)
+        : typeof r.output === 'string'
+          ? r.output
+          : '';
+    entries.set(r.key, {
+      state: 'exited',
+      runId: null,
+      output,
+      exitCode: typeof r.exitCode === 'number' ? r.exitCode : null,
+    });
+    notify(r.key);
+  }
+  // 容量上限:按插入顺序踢出最旧的(简单 LRU;此场景是低频 bind 恢复,够用)。
+  while (entries.size > MAX_CACHE_ENTRIES) {
+    const oldestKey = entries.keys().next().value;
+    if (oldestKey === undefined) break;
+    entries.delete(oldestKey);
+  }
+}
+
+/**
+ * v0.3.3 ADR-024:导出当前缓存里所有非 idle/running 的结果(exited),供快照落盘。
+ * 只导出有实际输出的结果(state=exited),idle 的不导(无意义)。runId 不导(是一次性
+ * 运行标识,恢复后无对应活动 run)。
+ */
+export function exportCodeBlockRuns(): Array<{
+  key: string;
+  state: string;
+  output: string;
+  exitCode: number | null;
+}> {
+  const out: Array<{ key: string; state: string; output: string; exitCode: number | null }> =
+    [];
+  for (const [key, entry] of entries) {
+    if (entry.state !== 'exited') continue;
+    out.push({
+      key,
+      state: 'exited',
+      output: entry.output,
+      exitCode: entry.exitCode,
+    });
+  }
+  return out;
+}

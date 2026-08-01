@@ -26,6 +26,19 @@
 
 ### 新增
 
+- **workspace 绑定/复用 + 文件面板状态持久化(Feature D / v0.3.3)。**
+  v0.3.3 最重的 feature(ADR-024)。workspaceId 与 sessionId 解耦,目录 =
+  `<root>/<workspaceId>/`,session 运行中可领养别的 workspaceId。CLI `marina workspace`
+  系列改查 main(workspaceId 解耦后 `$env:MARINA_WORKSPACE` 是 spawn 时陈旧值,
+  切换后退化为初始值,不可靠;ADR §2.1):`workspace`(查当前路径)、`workspace list`
+  (列命名 workspace)、`workspace bind --name X [--new]`(upsert:新→命名+pin;存在→切+
+  恢复快照)、`workspace new`(切新空临时)、`workspace unpin`(剥 name+pinned 退回
+  可回收;无 remove 防误删)。manifest schema v1→v2(加 name/createdAt/pinned/pathScope,
+  自动迁移旧 sessionId 当 workspaceId),pinned 免回收,name pathScope 内唯一。文件面板
+  状态快照(openedFiles/active/scroll/**代码块运行结果**)持久化到
+  `<workspace>/__marina_state__/file-panel.json`,bind 切换后自动恢复(滚动 500ms
+  debounce 落盘,不进逐字节热路径)。详见 ADR-024。
+
 - **侧栏收藏分组 + 拖拽排序(Feature E.1+E.2 / v0.3.3)。**
   收藏路径告别平铺:加**一级分组**虚拟容器(GroupNode,path 身份不变),分组可折叠/重命名/
   删组(删组子路径归未分组,绝不删 path)。**@dnd-kit 拖拽**:收藏路径可组内排序 + 跨组移动
