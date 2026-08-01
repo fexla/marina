@@ -27,6 +27,15 @@
   文件」复用同一通道。纯路径解析逻辑抽到 `src/shared/diff-path.ts`(单测覆盖
   normal/added/deleted/renamed/多文件/含空格路径/二进制等场景)。
 
+- **侧栏 terminal 条目状态色条 + 缩进(Feature E.3 / v0.3.3,结构先行)。**
+  session 行的状态指示从 9px 圆点改为左侧圆角矩形竛条(决策 #16):active 绿
+  呼吸 / idle 黄静止 / exited 灰静止。色与呼吸走 CSS `[data-state]`(不再 JS 内联
+  style),`@keyframes` 用 opacity(GPU 友好),`prefers-reduced-motion` 关闭呼吸
+  (无障碍)。session 行加一级缩进(`--tree-indent-unit`,附录 G 单一真相源)与父
+  path 行形成层级。原叠在圆点上的 exited check/X 迁到行内(竛条太窄),与旧中性
+  exit-code 占位合并为一处成败指示(成功绿勾 / 失败红叉)。竛条精确尺寸(宽/
+  圆角/呼吸曲线)为临时值,**待 T06 截图定稿**(规划 doc「结构先搭,视觉待截图」)。
+
 ### 修复
 
 - **修复运行 alt-screen TUI(Claude Code / Pi / vim 等)时终端滚动条偶发跳到

@@ -57,12 +57,11 @@ import { SkillInstallDialog } from './SkillInstallDialog';
  *
  * 用 CSS variables 走主题切换 (CP-4 接通);#f0f fallback 是 stylelint 兜底
  * 防止变量缺失渲染成黑色 (软件定义书 5.1.9)。
+ *
+ * v0.3.3 Feature E.3(决策 #16):状态色从 JS 内联 style (旧 STATE_DOT_COLOR)
+ * 改为 CSS class 驱动(.session-state-bar[data-state=...]),让 @keyframes 呼吸
+ * 与 prefers-reduced-motion 能生效。色值仍走主题 CSS variables。
  */
-const STATE_DOT_COLOR: Record<SessionInfo['state'], string> = {
-  active: 'var(--color-success, #f0f)',
-  idle: 'var(--color-warning, #f0f)',
-  exited: 'var(--color-text-muted, #f0f)',
-};
 
 // ──────────────────────────────────────────────────────────────────
 // M1-C:全局 ContextMenuProvider 提到 App.tsx,这里只 useContextMenuApi。
@@ -1171,18 +1170,16 @@ function SessionItemImpl({ session, myWindowId, selected }: SessionItemProps): J
       onContextMenu={handleContextMenu}
       title={fullTitle}
     >
+      {/* v0.3.3 Feature E.3(决策 #16):状态指示从 9px 圆点改为左侧圆角矩形竛条。
+          色:active=绿呼吸 / idle=黄静止 / exited=灰静止。色 + 呼吸走 CSS class
+          (data-state),不 inline style —— 这样 @keyframes 与 prefers-reduced-motion
+          才能生效。竛条很窄(临时宽 3px,精确尺寸待 T06 截图定稿)。
+          exited 的 check/X 图标从圆点迁到行内(竛条太窄放不下,见下行)。 */}
       <span
-        className="session-state-dot"
-        style={{ backgroundColor: STATE_DOT_COLOR[session.state] }}
+        className="session-state-bar"
+        data-state={session.state}
         aria-label={`状态: ${session.state}`}
-      >
-        {session.state === 'exited' && session.exitCode === 0 && (
-          <Check size={9} className="session-state-dot-icon ok" />
-        )}
-        {session.state === 'exited' &&
-          typeof session.exitCode === 'number' &&
-          session.exitCode !== 0 && <X size={9} className="session-state-dot-icon fail" />}
-      </span>
+      />
       {renaming ? (
         <input
           ref={renameInputRef}
@@ -1212,7 +1209,14 @@ function SessionItemImpl({ session, myWindowId, selected }: SessionItemProps): J
       )}
       {session.state === 'exited' && !renaming && (
         <span className="session-exit-code" title={`已退出 (exitCode=${session.exitCode ?? 0})`}>
-          <Icon name="circleDot" size={11} />
+          {/* v0.3.3 E.3:竛条版退出状态图标——成功 Check / 失败 X / 未知 circleDot。
+              原本叠在 9px 圆点上的 check/X 迁到这里(竛条太窄放不下),并合并掉旧的
+              中性 circleDot 占位,一处表达退出成败。 */}
+          {session.exitCode === 0 ? (
+            <Check size={11} className="session-exit-icon ok" />
+          ) : (
+            <X size={11} className="session-exit-icon fail" />
+          )}
         </span>
       )}
       {ownedByOther && !renaming && (
