@@ -113,7 +113,8 @@ describe('PathManager — 初始化', () => {
   it('从持久化恢复 bookmarks', async () => {
     const { mgr } = makeManager({
       initialBookmarks: {
-        version: 1,
+        version: 2,
+        groups: [],
         paths: [
           { id: 'b1', path: TEST_PATH_A, addedAt: 1 },
           { id: 'b2', path: TEST_PATH_B, displayName: 'Project B', addedAt: 2 },
@@ -150,10 +151,11 @@ describe('PathManager — 初始化', () => {
 
   it('迁移:旧 bookmark 缺 kind → 自动按 local 加载', async () => {
     const { mgr } = makeManager({
+      // v1 磁盘文件(无 groups 字段);转 unknown 模拟旧盘加载
       initialBookmarks: {
         version: 1,
         paths: [{ id: 'legacy', path: TEST_PATH_A, addedAt: 1 }],
-      },
+      } as unknown as BookmarksFile,
     });
     await mgr.initialize();
     const tree = mgr.getTree();
@@ -176,13 +178,14 @@ describe('PathManager — 初始化', () => {
 
   it('迁移:kind=ssh 但缺 sshProfileId 的 bookmark → 启动期静默丢弃', async () => {
     const { mgr } = makeManager({
+      // v1 磁盘文件(无 groups 字段)
       initialBookmarks: {
         version: 1,
         paths: [
           { id: 'ok', path: TEST_PATH_A, addedAt: 1 },
           { id: 'broken', path: '~/x', kind: 'ssh', addedAt: 2 },
         ],
-      },
+      } as unknown as BookmarksFile,
     });
     await mgr.initialize();
     const tree = mgr.getTree();
@@ -192,6 +195,7 @@ describe('PathManager — 初始化', () => {
 
   it('迁移:kind=ssh 完整 bookmark 正常加载,narrow 出 sshProfileId', async () => {
     const { mgr } = makeManager({
+      // v1 磁盘文件(无 groups 字段)
       initialBookmarks: {
         version: 1,
         paths: [
@@ -203,7 +207,7 @@ describe('PathManager — 初始化', () => {
             addedAt: 1,
           },
         ],
-      },
+      } as unknown as BookmarksFile,
     });
     await mgr.initialize();
     const tree = mgr.getTree();
@@ -319,13 +323,13 @@ describe('PathManager — renameBookmark / reorderBookmarks / setDefaultTemplate
     );
   });
 
-  it('reorderBookmarks 改顺序', async () => {
+  it('reorderBookmarks 改顺序(全未分组 = flat 特例)', async () => {
     const { mgr } = makeManager();
     await mgr.initialize();
     mgr.addBookmark({ path: TEST_PATH_A });
     mgr.addBookmark({ path: TEST_PATH_B });
     mgr.addBookmark({ path: TEST_PATH_C });
-    mgr.reorderBookmarks([TEST_PATH_C, TEST_PATH_A, TEST_PATH_B]);
+    mgr.reorderBookmarks({ ungrouped: [TEST_PATH_C, TEST_PATH_A, TEST_PATH_B], groups: [] });
     const tree = mgr.getTree();
     expect(tree.bookmarks.map((b) => b.path)).toEqual([
       TEST_PATH_C,
@@ -339,7 +343,9 @@ describe('PathManager — renameBookmark / reorderBookmarks / setDefaultTemplate
     await mgr.initialize();
     mgr.addBookmark({ path: TEST_PATH_A });
     mgr.addBookmark({ path: TEST_PATH_B });
-    expect(() => mgr.reorderBookmarks([TEST_PATH_A])).toThrowError(/InvalidOrderList/);
+    expect(() =>
+      mgr.reorderBookmarks({ ungrouped: [TEST_PATH_A], groups: [] }),
+    ).toThrowError(/InvalidOrderList/);
   });
 
   it('reorderBookmarks 含未知 path throw InvalidOrderList', async () => {
@@ -347,9 +353,9 @@ describe('PathManager — renameBookmark / reorderBookmarks / setDefaultTemplate
     await mgr.initialize();
     mgr.addBookmark({ path: TEST_PATH_A });
     mgr.addBookmark({ path: TEST_PATH_B });
-    expect(() => mgr.reorderBookmarks([TEST_PATH_A, TEST_PATH_C])).toThrowError(
-      /InvalidOrderList/,
-    );
+    expect(() =>
+      mgr.reorderBookmarks({ ungrouped: [TEST_PATH_A, TEST_PATH_C], groups: [] }),
+    ).toThrowError(/InvalidOrderList/);
   });
 
   it('reorderBookmarks 重复 id throw InvalidOrderList', async () => {
@@ -357,9 +363,9 @@ describe('PathManager — renameBookmark / reorderBookmarks / setDefaultTemplate
     await mgr.initialize();
     mgr.addBookmark({ path: TEST_PATH_A });
     mgr.addBookmark({ path: TEST_PATH_B });
-    expect(() => mgr.reorderBookmarks([TEST_PATH_A, TEST_PATH_A])).toThrowError(
-      /InvalidOrderList/,
-    );
+    expect(() =>
+      mgr.reorderBookmarks({ ungrouped: [TEST_PATH_A, TEST_PATH_A], groups: [] }),
+    ).toThrowError(/InvalidOrderList/);
   });
 
   it('setDefaultTemplate 设置和清空', async () => {
@@ -562,5 +568,298 @@ describe('PathManagerError', () => {
     expect(err).toBeInstanceOf(Error);
     expect(err.code).toBe('BookmarkNotFound');
     expect(err.message).toContain('BookmarkNotFound');
+  });
+});
+
+// ╔══════════════════════════════════════════════════════════════════╗
+// ║  v0.3.3 ADR-025 / Feature E.1+E.2:收藏分组 + session 拖序 后端单测  ║
+// ╚══════════════════════════════════════════════════════════════════╝
+// 覆盖:bookmarks.json v1→v2 迁移 / 分层 reorder 校验+应用 / group CRUD /
+// 删组子项归未分组 / 组名唯一校验 / getTree 组装 / sessionOrder(内存)。
+describe('PathManager — 收藏分组 (ADR-025 / Feature E.1)', () => {
+  // 构造一个带 3 bookmark + 2 group 的初始状态,给 reorder/CRUD 测试复用。
+  async function makeWithGroups() {
+    const { mgr, bookmarksStore } = makeManager();
+    await mgr.initialize();
+    mgr.addBookmark({ path: TEST_PATH_A });
+    mgr.addBookmark({ path: TEST_PATH_B });
+    mgr.addBookmark({ path: TEST_PATH_C });
+    const g1 = mgr.addGroup('工作');
+    const g2 = mgr.addGroup('个人');
+    return { mgr, bookmarksStore, g1, g2 };
+  }
+
+  // ── schema v1→v2 迁移 ────────────────────────────────────────
+  it('迁移:v1 文件(无 groups)→ 加载后 groups=[], path groupId=undefined', async () => {
+    const { mgr } = makeManager({
+      initialBookmarks: {
+        version: 1,
+        paths: [{ id: 'legacy', path: TEST_PATH_A, addedAt: 1 }],
+      } as unknown as BookmarksFile,
+    });
+    await mgr.initialize();
+    const tree = mgr.getTree();
+    expect(tree.groups).toEqual([]);
+    expect(tree.bookmarks[0]!.groupId).toBeUndefined();
+  });
+
+  it('迁移:v2 文件带 groups + path.groupId → 正确恢复', async () => {
+    const { mgr } = makeManager({
+      initialBookmarks: {
+        version: 2,
+        groups: [{ id: 'g1', name: '工作' }],
+        paths: [{ id: 'b1', path: TEST_PATH_A, groupId: 'g1', addedAt: 1 }],
+      },
+    });
+    await mgr.initialize();
+    const tree = mgr.getTree();
+    expect(tree.groups).toEqual([{ id: 'g1', name: '工作' }]);
+    expect(tree.bookmarks[0]!.groupId).toBe('g1');
+  });
+
+  it('迁移:磁盘 groups 损坏(非数组/缺字段)→ 静默丢弃该 entry', async () => {
+    const { mgr } = makeManager({
+      // groups 混入脏数据(string/缺字段/空id/重复id),转 unknown 模拟脏盘加载
+      initialBookmarks: {
+        version: 2,
+        groups: [
+          { id: 'g1', name: '工作' },
+          { id: '', name: '空id' }, // 空 id 丢
+          { name: '缺id' }, // 缺 id 丢
+          'not-an-object', // 非对象丢
+          { id: 'g1', name: '重复id' }, // 重复 id 只留首个
+        ],
+        paths: [],
+      } as unknown as BookmarksFile,
+    });
+    await mgr.initialize();
+    const tree = mgr.getTree();
+    expect(tree.groups).toEqual([{ id: 'g1', name: '工作' }]);
+  });
+
+  it('持久化:persistBookmarks 写 version=2 + groups + path.groupId', async () => {
+    const { mgr, bookmarksStore, g1 } = await makeWithGroups();
+    // 把 A、B 放进 g1
+    mgr.reorderBookmarks({
+      ungrouped: [TEST_PATH_C],
+      groups: [{ id: g1.id, childOrder: [TEST_PATH_A, TEST_PATH_B] }],
+    });
+    const last = bookmarksStore.setHistory.at(-1);
+    expect(last).toMatchObject({ version: 2 });
+    expect(last!.groups).toContainEqual({ id: g1.id, name: '工作' });
+    const persistedA = last!.paths.find((p) => (p as { path?: string }).path === TEST_PATH_A);
+    expect(persistedA).toMatchObject({ groupId: g1.id });
+  });
+
+  // ── 分层 reorder ─────────────────────────────────────────────
+  it('分层 reorder:把 path 移进分组 + 调顺序 + groupId 正确', async () => {
+    const { mgr, g1 } = await makeWithGroups();
+    mgr.reorderBookmarks({
+      ungrouped: [TEST_PATH_C],
+      groups: [{ id: g1.id, childOrder: [TEST_PATH_B, TEST_PATH_A] }],
+    });
+    const tree = mgr.getTree();
+    // bookmarks 数组顺序 = ungrouped + 各 group childOrder 拼接
+    expect(tree.bookmarks.map((b) => b.path)).toEqual([TEST_PATH_C, TEST_PATH_B, TEST_PATH_A]);
+    const byPath = Object.fromEntries(tree.bookmarks.map((b) => [b.path, b]));
+    expect(byPath[TEST_PATH_A]!.groupId).toBe(g1.id);
+    expect(byPath[TEST_PATH_B]!.groupId).toBe(g1.id);
+    expect(byPath[TEST_PATH_C]!.groupId).toBeUndefined();
+  });
+
+  it('分层 reorder:未知 groupId → InvalidGroupId', async () => {
+    const { mgr } = await makeWithGroups();
+    expect(() =>
+      mgr.reorderBookmarks({ ungrouped: [], groups: [{ id: 'nope', childOrder: [TEST_PATH_A] }] }),
+    ).toThrowError(/InvalidGroupId/);
+  });
+
+  it('分层 reorder:遗漏某个 path → InvalidOrderList', async () => {
+    const { mgr, g1 } = await makeWithGroups();
+    // 只排了 A,漏了 B、C
+    expect(() =>
+      mgr.reorderBookmarks({ ungrouped: [TEST_PATH_A], groups: [{ id: g1.id, childOrder: [] }] }),
+    ).toThrowError(/InvalidOrderList/);
+  });
+
+  it('分层 reorder:同一 path 在两组 → InvalidOrderList(重复)', async () => {
+    const { mgr, g1, g2 } = await makeWithGroups();
+    expect(() =>
+      mgr.reorderBookmarks({
+        ungrouped: [TEST_PATH_C],
+        groups: [
+          { id: g1.id, childOrder: [TEST_PATH_A] },
+          { id: g2.id, childOrder: [TEST_PATH_A, TEST_PATH_B] }, // A 重复
+        ],
+      }),
+    ).toThrowError(/InvalidOrderList/);
+  });
+
+  // ── group CRUD ───────────────────────────────────────────────
+  it('addGroup:新建空组(追加末尾),返回 id;允许空组', async () => {
+    const { mgr } = await makeWithGroups();
+    const g = mgr.addGroup('新组');
+    expect(g.id).toBeTruthy();
+    expect(mgr.getTree().groups.map((x) => x.name)).toContain('新组');
+    // 空组在 tree 里可见(没有子 path)
+    expect(mgr.getTree().groups.at(-1)).toEqual({ id: g.id, name: '新组' });
+  });
+
+  it('addGroup:空名 / 过长 / 含分隔符 → InvalidName', async () => {
+    const { mgr } = await makeWithGroups();
+    expect(() => mgr.addGroup('')).toThrowError(/InvalidName/);
+    expect(() => mgr.addGroup('a'.repeat(65))).toThrowError(/InvalidName/);
+    expect(() => mgr.addGroup('a/b')).toThrowError(/InvalidName/);
+    expect(() => mgr.addGroup('a\\b')).toThrowError(/InvalidName/);
+  });
+
+  it('addGroup:收藏内重名 → GroupNameConflict', async () => {
+    const { mgr } = await makeWithGroups();
+    expect(() => mgr.addGroup('工作')).toThrowError(/GroupNameConflict/);
+  });
+
+  it('renameGroup:改名成功;收藏内重名(排除自身)→ GroupNameConflict', async () => {
+    const { mgr, g1 } = await makeWithGroups();
+    mgr.renameGroup(g1.id, '工作改');
+    expect(mgr.getTree().groups.find((x) => x.id === g1.id)!.name).toBe('工作改');
+    // g1 改成与 g2 同名 → 冲突
+    expect(() => mgr.renameGroup(g1.id, '个人')).toThrowError(/GroupNameConflict/);
+    // 改成自己当前名 → 无操作不报错
+    expect(() => mgr.renameGroup(g1.id, '工作改')).not.toThrow();
+  });
+
+  it('renameGroup:未知 id → GroupNotFound', async () => {
+    const { mgr } = await makeWithGroups();
+    expect(() => mgr.renameGroup('nope', 'x')).toThrowError(/GroupNotFound/);
+  });
+
+  it('removeGroup:子 path groupId 清空→归未分组,path 不丢', async () => {
+    const { mgr, g1 } = await makeWithGroups();
+    // 先把 A、B 放进 g1
+    mgr.reorderBookmarks({
+      ungrouped: [TEST_PATH_C],
+      groups: [{ id: g1.id, childOrder: [TEST_PATH_A, TEST_PATH_B] }],
+    });
+    mgr.removeGroup(g1.id);
+    const tree = mgr.getTree();
+    expect(tree.groups.find((x) => x.id === g1.id)).toBeUndefined();
+    // 三条 path 都还在,且 groupId 都清空了
+    expect(tree.bookmarks).toHaveLength(3);
+    expect(tree.bookmarks.every((b) => b.groupId === undefined)).toBe(true);
+  });
+
+  it('removeGroup:未知 id → GroupNotFound', async () => {
+    const { mgr } = await makeWithGroups();
+    expect(() => mgr.removeGroup('nope')).toThrowError(/GroupNotFound/);
+  });
+
+  // ── getTree 组装 ─────────────────────────────────────────────
+  it('getTree:groups 顺序 = groups 数组位置;未分组 path 仍在 bookmarks(顶置由 renderer 排)', async () => {
+    const { mgr, g1, g2 } = await makeWithGroups();
+    mgr.reorderBookmarks({
+      ungrouped: [TEST_PATH_C],
+      groups: [
+        { id: g2.id, childOrder: [TEST_PATH_A] },
+        { id: g1.id, childOrder: [TEST_PATH_B] },
+      ],
+    });
+    const tree = mgr.getTree();
+    expect(tree.groups.map((g) => g.id)).toEqual([g2.id, g1.id]);
+    expect(tree.bookmarks).toHaveLength(3);
+  });
+
+  // ── replaceAll (导入) 带 groups ──────────────────────────────
+  it('replaceAll:导入带 groups + path.groupId,严格校验', async () => {
+    const { mgr } = makeManager();
+    await mgr.initialize();
+    mgr.replaceAll({
+      groups: [{ id: 'g1', name: '导入组' }],
+      bookmarks: [{ id: 'b1', path: TEST_PATH_A, kind: 'local', groupId: 'g1', addedAt: 1 }],
+      recent: [],
+    });
+    const tree = mgr.getTree();
+    expect(tree.groups).toEqual([{ id: 'g1', name: '导入组' }]);
+    expect(tree.bookmarks[0]!.groupId).toBe('g1');
+  });
+
+  it('replaceAll:groups 含重复 id → 拒绝(内部状态保留)', async () => {
+    const { mgr } = makeManager();
+    await mgr.initialize();
+    mgr.addGroup('已存在');
+    expect(() =>
+      mgr.replaceAll({
+        groups: [
+          { id: 'dup', name: 'a' },
+          { id: 'dup', name: 'b' },
+        ],
+        bookmarks: [],
+        recent: [],
+      }),
+    ).toThrowError(/InvalidName/);
+    // 原状态未变
+    expect(mgr.getTree().groups.map((g) => g.name)).toEqual(['已存在']);
+  });
+});
+
+describe('PathManager — session 拖序 (Feature E.2 / 决策 #15)', () => {
+  it('reorderSessions:重排某 path 下 session 顺序(内存真值)', async () => {
+    const { mgr } = makeManager();
+    await mgr.initialize();
+    // 模拟 SessionManager attach 三个 session 到同一 path
+    mgr.attachSession('s1', TEST_PATH_A);
+    mgr.attachSession('s2', TEST_PATH_A);
+    mgr.attachSession('s3', TEST_PATH_A);
+    // 初始顺序 = 插入序
+    let tree = mgr.getTree();
+    expect(tree.temporary[0]!.sessionIds).toEqual(['s1', 's2', 's3']);
+    mgr.reorderSessions(TEST_PATH_A, ['s3', 's1', 's2']);
+    tree = mgr.getTree();
+    expect(tree.temporary[0]!.sessionIds).toEqual(['s3', 's1', 's2']);
+  });
+
+  it('reorderSessions:新 attach 的 session 追加到末尾(显式顺序存在时仍兼容)', async () => {
+    const { mgr } = makeManager();
+    await mgr.initialize();
+    mgr.attachSession('s1', TEST_PATH_A);
+    mgr.attachSession('s2', TEST_PATH_A);
+    mgr.reorderSessions(TEST_PATH_A, ['s2', 's1']);
+    // 再 attach 一个 —— 显式顺序里没有它,走插入序兼底:过滤后剩 [s2,s1],新 s3 追加末尾
+    mgr.attachSession('s3', TEST_PATH_A);
+    expect(mgr.getTree().temporary[0]!.sessionIds).toEqual(['s2', 's1', 's3']);
+  });
+
+  it('reorderSessions:数量不匹配 → InvalidOrderList', async () => {
+    const { mgr } = makeManager();
+    await mgr.initialize();
+    mgr.attachSession('s1', TEST_PATH_A);
+    mgr.attachSession('s2', TEST_PATH_A);
+    expect(() => mgr.reorderSessions(TEST_PATH_A, ['s1'])).toThrowError(/InvalidOrderList/);
+  });
+
+  it('reorderSessions:未知 sessionId → InvalidOrderList', async () => {
+    const { mgr } = makeManager();
+    await mgr.initialize();
+    mgr.attachSession('s1', TEST_PATH_A);
+    expect(() => mgr.reorderSessions(TEST_PATH_A, ['s1', 'ghost'])).toThrowError(
+      /InvalidOrderList/,
+    );
+  });
+
+  it('reorderSessions:重复 sessionId → InvalidOrderList', async () => {
+    const { mgr } = makeManager();
+    await mgr.initialize();
+    mgr.attachSession('s1', TEST_PATH_A);
+    mgr.attachSession('s2', TEST_PATH_A);
+    expect(() => mgr.reorderSessions(TEST_PATH_A, ['s1', 's1'])).toThrowError(/InvalidOrderList/);
+  });
+
+  it('detachSession:从显式顺序里剔除该 session;空了删 entry', async () => {
+    const { mgr } = makeManager();
+    await mgr.initialize();
+    mgr.attachSession('s1', TEST_PATH_A);
+    mgr.attachSession('s2', TEST_PATH_A);
+    mgr.reorderSessions(TEST_PATH_A, ['s2', 's1']);
+    mgr.detachSession('s2');
+    expect(mgr.getTree().temporary[0]!.sessionIds).toEqual(['s1']);
   });
 });

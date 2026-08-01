@@ -46,6 +46,8 @@ import {
   PROTOCOL_VERSION,
   type AddBookmarkPayload,
   type AddBookmarkResponse,
+  type AddBookmarkGroupPayload,
+  type AddBookmarkGroupResponse,
   type AddRemoteBookmarkPayload,
   type AddSshProfilePayload,
   type AddSshProfileResponse,
@@ -138,10 +140,13 @@ import {
   type OpenSessionInNewWindowPayload,
   type OpenSessionInNewWindowResponse,
   type ReleaseSessionPayload,
+  type RemoveBookmarkGroupPayload,
   type RemoveBookmarkPayload,
   type RemoveFromRecentPayload,
+  type RenameBookmarkGroupPayload,
   type RenameBookmarkPayload,
   type ReorderBookmarksPayload,
+  type ReorderSessionsPayload,
   type ResizeSessionPayload,
   type ResizeSessionResponse,
   type SendInputPayload,
@@ -645,6 +650,18 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     },
   );
 
+  // v0.3.3 Feature E.2 / 决策 #15:拖动同一 path 下 session 重排(服务端内存,不落盘)。
+  // 校验在 PathManager.reorderSessions:orderedSessionIds 必须恰好等于该 path 当前 session 集合。
+  registerHandle(
+    COMMAND_CHANNELS.SESSION_REORDER,
+    (_e, envelope: CommandEnvelope<ReorderSessionsPayload>): void => {
+      pathManager.reorderSessions(
+        envelope.payload.pathId,
+        envelope.payload.orderedSessionIds,
+      );
+    },
+  );
+
   // 会话专属 UI 布局由 SessionManager 作为临时 session 状态保存。它会随既有
   // evt:session:state-changed 广播，owner 接管或远程客户端重连无需专门通道。
   registerHandle(
@@ -901,7 +918,34 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   registerHandle(
     COMMAND_CHANNELS.BOOKMARK_REORDER,
     (_e, envelope: CommandEnvelope<ReorderBookmarksPayload>): void => {
-      pathManager.reorderBookmarks(envelope.payload.orderedPathIds);
+      // v0.3.3 ADR-025:统一分层 reorder(ungrouped + groups[].childOrder)。
+      pathManager.reorderBookmarks({
+        ungrouped: envelope.payload.ungrouped,
+        groups: envelope.payload.groups,
+      });
+    },
+  );
+
+  // v0.3.3 ADR-025 / Feature E.1:收藏分组 CRUD(各自独立 IPC)。
+  registerHandle(
+    COMMAND_CHANNELS.BOOKMARK_GROUP_ADD,
+    (_e, envelope: CommandEnvelope<AddBookmarkGroupPayload>): AddBookmarkGroupResponse => {
+      const group = pathManager.addGroup(envelope.payload.name);
+      return { id: group.id };
+    },
+  );
+
+  registerHandle(
+    COMMAND_CHANNELS.BOOKMARK_GROUP_RENAME,
+    (_e, envelope: CommandEnvelope<RenameBookmarkGroupPayload>): void => {
+      pathManager.renameGroup(envelope.payload.id, envelope.payload.name);
+    },
+  );
+
+  registerHandle(
+    COMMAND_CHANNELS.BOOKMARK_GROUP_REMOVE,
+    (_e, envelope: CommandEnvelope<RemoveBookmarkGroupPayload>): void => {
+      pathManager.removeGroup(envelope.payload.id);
     },
   );
 
@@ -1667,7 +1711,7 @@ async function buildArchive(deps: IpcLayerDeps): Promise<SettingsArchiveV1> {
   // 强制先 flush,以保证读盘时拿到最新写入
   await flushAllStores(deps);
   const settings = deps.settingsManager.get();
-  const bookmarks = await readJson<{ paths: unknown[] }>('bookmarks.json', { paths: [] });
+  const bookmarks = await readJson<{ paths: unknown[]; groups?: unknown[] }>('bookmarks.json', { paths: [] });
   const recent = await readJson<{ paths: unknown[] }>('recent.json', { paths: [] });
   const templates = {
     defaultTemplateId: deps.templatesManager.getDefaultTemplateId(),
@@ -1681,7 +1725,11 @@ async function buildArchive(deps: IpcLayerDeps): Promise<SettingsArchiveV1> {
     exportedFrom: app.getVersion(),
     settings,
     // 类型断言:JSON 上读出来已经是合法 schema (持久化文件不通过 IPC 不需要严格 schema 校验)
-    bookmarks: bookmarks as SettingsArchiveV1['bookmarks'],
+    // v0.3.3 ADR-025:导出带 groups(可能为 undefined,导入侧 validateGroupsArray 允许缺省→[])。
+    // exactOptionalPropertyTypes 下不能直接写 groups: undefined,这里整体断言存档形状。
+    bookmarks: (bookmarks.groups
+      ? { paths: bookmarks.paths as SettingsArchiveV1['bookmarks']['paths'], groups: bookmarks.groups as SettingsArchiveV1['bookmarks']['groups'] }
+      : { paths: bookmarks.paths as SettingsArchiveV1['bookmarks']['paths'] }) as SettingsArchiveV1['bookmarks'],
     recent: recent as SettingsArchiveV1['recent'],
     sshProfiles: { profiles: deps.sshProfileManager?.list() ?? [] },
     templates,
@@ -1757,6 +1805,8 @@ async function applyArchiveInMemory(deps: IpcLayerDeps, archive: SettingsArchive
     deps.pathManager.replaceAll({
       bookmarks: archive.bookmarks.paths,
       recent: archive.recent.paths,
+      // v0.3.3 ADR-025:旧归档无 groups → undefined → validateGroupsArray 不被调(留 [])。
+      groups: archive.bookmarks.groups,
     });
   } catch (err) {
     throw new Error(`paths: ${err instanceof Error ? err.message : String(err)}`);

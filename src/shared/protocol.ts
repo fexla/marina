@@ -21,6 +21,7 @@ import type {
   MdTheme,
   OpenedFile,
   PathTree,
+  PersistedGroup,
   RemoteDaemonProfile,
   SessionInfo,
   SessionUiLayoutPatch,
@@ -106,6 +107,12 @@ export const COMMAND_CHANNELS = {
    *   新窗口连接后用新 WS clientId claim。
    */
   SESSION_OPEN_IN_NEW_WINDOW: 'cmd:session:open-in-new-window',
+  /**
+   * v0.3.3 Feature E.2 / 决策 #15:拖动同一 path 下的 session 重排顺序。
+   * 真值存 main/daemon 内存(sessionOrder Map),不落盘(重启重置)。
+   * 校验:orderedSessionIds 必须恰好等于该 path 当前 session 集合。
+   */
+  SESSION_REORDER: 'cmd:session:reorder',
 
   // Bookmark / Path 域
   BOOKMARK_ADD: 'cmd:bookmark:add',
@@ -114,6 +121,10 @@ export const COMMAND_CHANNELS = {
   BOOKMARK_REORDER: 'cmd:bookmark:reorder',
   BOOKMARK_SET_DEFAULT_TEMPLATE: 'cmd:bookmark:set-default-template',
   BOOKMARK_PICK_FOLDER: 'cmd:bookmark:pick-folder',
+  /** v0.3.3 ADR-025 / Feature E.1:收藏分组 CRUD(低频,各自独立 IPC)。 */
+  BOOKMARK_GROUP_ADD: 'cmd:bookmark:group:add',
+  BOOKMARK_GROUP_RENAME: 'cmd:bookmark:group:rename',
+  BOOKMARK_GROUP_REMOVE: 'cmd:bookmark:group:remove',
   PATH_REMOVE_FROM_RECENT: 'cmd:path:remove-from-recent',
   /** 将内置 show-in-marina skill 安装到所选收藏项目的 agent 目录。 */
   SKILL_INSTALL_MARINA: 'cmd:skill:install-marina',
@@ -716,7 +727,41 @@ export interface RenameBookmarkPayload {
 }
 
 export interface ReorderBookmarksPayload {
-  orderedPathIds: string[];
+  /**
+   * v0.3.3 ADR-025:统一分层 reorder payload。
+   * - `ungrouped` = 未分组 pathId 有序列表(顶置渲染)。
+   * - `groups` = 各分组及其组内 childOrder(数组顺序=分组显示顺序)。
+   * main 校验:ungrouped ∪ 各 childOrder 的并集必须恰好等于当前 bookmarks
+   * 的 pathId 集合(无重复/无未知/无遗漏),然后整体替换顺序 + groupId。
+   * 旧「全部未分组」= `{ ungrouped: [全量], groups: [] }` 的特例。
+   */
+  ungrouped: string[];
+  groups: { id: string; childOrder: string[] }[];
+}
+
+/** v0.3.3 ADR-025:新建分组,返回新 groupId。组名收藏内唯一。 */
+export interface AddBookmarkGroupPayload {
+  name: string;
+}
+export interface AddBookmarkGroupResponse {
+  id: string;
+}
+/** v0.3.3 ADR-025:重命名分组(收藏内唯一)。 */
+export interface RenameBookmarkGroupPayload {
+  id: string;
+  name: string;
+}
+/** v0.3.3 ADR-025:删组,其下 path 的 groupId 清空→归未分组(绝不删 path)。 */
+export interface RemoveBookmarkGroupPayload {
+  id: string;
+}
+/**
+ * v0.3.3 Feature E.2 / 决策 #15:重排某 path 下的 session 顺序。
+ * orderedSessionIds 必须恰好等于该 path 当前 session 集合。
+ */
+export interface ReorderSessionsPayload {
+  pathId: string;
+  orderedSessionIds: string[];
 }
 
 export interface SetDefaultTemplateForBookmarkPayload {
@@ -1067,7 +1112,7 @@ export interface SettingsArchiveV1 {
   exportedAt: number;
   exportedFrom: string;
   settings: Settings;
-  bookmarks: { paths: Bookmark[] };
+  bookmarks: { paths: Bookmark[]; groups?: PersistedGroup[] };
   /**
    * v2.1:archive 内 recent 容纳 SSH 项,kind / sshProfileId 可选,导入时由
    * PathManager.validateRecentArray 严格校验(ssh kind 必须带 sshProfileId)。

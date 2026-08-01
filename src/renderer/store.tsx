@@ -186,6 +186,7 @@ const EMPTY_TREE: PathTree = {
   bookmarks: [],
   temporary: [],
   recent: [],
+  groups: [],
 };
 
 // ──────────────────────────────────────────────────────────────────

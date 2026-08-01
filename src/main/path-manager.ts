@@ -29,6 +29,7 @@ import { resolve, sep } from 'node:path';
 import type {
   Bookmark,
   BookmarksFile,
+  GroupNode,
   PathKind,
   PathNode,
   PathTree,
@@ -41,7 +42,7 @@ import { logger } from './logger';
 
 const RECENT_CAPACITY = 30;
 
-const DEFAULT_BOOKMARKS_FILE: BookmarksFile = { version: 1, paths: [] };
+const DEFAULT_BOOKMARKS_FILE: BookmarksFile = { version: 2, groups: [], paths: [] };
 const DEFAULT_RECENT_FILE: RecentFile = { version: 1, paths: [] };
 
 /**
@@ -137,7 +138,11 @@ export class PathManagerError extends Error {
       | 'BookmarkNotFound'
       | 'PathNotInRecent'
       | 'InvalidOrderList'
-      | 'InvalidName',
+      | 'InvalidName'
+      // v0.3.3 ADR-025 / Feature E.1:收藏分组 CRUD 错误码
+      | 'GroupNotFound'
+      | 'GroupNameConflict'
+      | 'InvalidGroupId',
     message: string,
   ) {
     super(`[PathManager] ${code}: ${message}`);
@@ -154,6 +159,15 @@ export class PathManager extends EventEmitter {
   private readonly sessionToPath = new Map<string, string>();
 
   /**
+   * v0.3.3 Feature E.2 / 决策 #15:每个 path 下 session 的**显式顺序**真值。
+   * 服务端/daemon 内存,不落盘(重启重置,可接受)。
+   * - 不在此 Map 的 path → 回退到 sessionToPath 的 Map 插入序(创建序)。
+   * - attach 新 session 时若该 path 无显式顺序,自然落在末尾(插入序兜底)。
+   * 作用:保证窗口重开 / 远程访问另一窗口时顺序一致。
+   */
+  private readonly sessionOrder = new Map<string, string[]>();
+
+  /**
    * 在内存中始终保持 bookmarks 数组的最新状态;JsonStore 异步落盘。
    * 数组顺序 = UI 显示顺序。
    */
@@ -163,6 +177,12 @@ export class PathManager extends EventEmitter {
    * recent,按 lastUsedAt 降序;最大 RECENT_CAPACITY 项。
    */
   private recent: RecentEntry[] = [];
+
+  /**
+   * v0.3.3 ADR-025 / Feature E.1:收藏分组(虚拟容器)。顺序 = 数组位置。
+   * 只一级(group → path);删组后其 id 作废(不回收)。仅收藏有分组。
+   */
+  private groups: GroupNode[] = [];
 
   /**
    * BETA-043:启动期扫描发现的"不可访问"路径集合(normalized)。
@@ -188,6 +208,11 @@ export class PathManager extends EventEmitter {
   async initialize(): Promise<{ bookmarksSource: 'main' | 'bak' | 'default' }> {
     const bk = await this.bookmarksStore.load(DEFAULT_BOOKMARKS_FILE);
     const rc = await this.recentStore.load(DEFAULT_RECENT_FILE);
+    // v0.3.3 ADR-025 §4:bookmarks.json v1→v2 迁移(内存层 coerce,沿用 v2.1 §II.1 模式)。
+    //   - version!==2(旧版/损坏回退默认):groups=[],旧 path 补 groupId=undefined。
+    //   - version===2:读 groups(损坏/非数组→[],重名 id 纯由 childOrder 引用,不在此校验路径)。
+    // 损坏条目静默丢弃,与 migrateBookmarkOnLoad 一致 —— 启动期不能因为一条坏数据让用户进不来 Marina。
+    this.groups = migrateGroupsOnLoad(bk.value.groups);
     // v2.1 §II.1:把磁盘上的旧 schema(kind 缺失 / ssh 但 sshProfileId 缺失)
     // 在内存层 coerce 成新 discriminated union。损坏条目静默丢弃,与旧
     // validateBookmarksArray "整体拒绝" 不同 —— 启动期不能因为一条坏数据
@@ -298,21 +323,30 @@ export class PathManager extends EventEmitter {
   }
 
   /**
-   * 调整收藏顺序。orderedPathIds 必须包含且只包含当前所有 bookmark 的 path id。
+   * v0.3.3 ADR-025 §5:调整收藏顺序 + 分组归属(统一分层 reorder)。
    *
-   * @throws PathManagerError InvalidOrderList
+   * payload {ungrouped, groups[{id, childOrder}]} 的并集必须**恰好等于**
+   * 当前 bookmarks 的 pathId 集合(无重复 / 无未知 / 无遗漏)——沿用旧
+   * `InvalidOrderList` 错误语义。应用:按 ungrouped + 各 childOrder 拼接
+   * 顺序重排 this.bookmarks,并按 payload 给每条赋 groupId(ungrouped 段
+   * =undefined,组段=该组 id)。原子替换 + persistBookmarks + emitChange。
+   *
+   * 旧「全部未分组」= `{ ungrouped: [全量], groups: [] }` 的特例。
+   * 不新增 movePathToGroup / reorderGroups / reorderWithinGroup —— 全走这份统一布局。
+   *
+   * @throws PathManagerError InvalidOrderList(数量不符/重复/未知/遗漏)
+   * @throws PathManagerError InvalidGroupId(payload 里出现不存在的组 id)
    */
-  reorderBookmarks(orderedPathIds: string[]): void {
-    const normalized = orderedPathIds.map((id) => makePathId(pathRefFromId(id)));
-    if (normalized.length !== this.bookmarks.length) {
-      throw new PathManagerError(
-        'InvalidOrderList',
-        `预期 ${this.bookmarks.length} 项,实际 ${normalized.length} 项`,
-      );
-    }
+  reorderBookmarks(payload: {
+    ungrouped: string[];
+    groups: { id: string; childOrder: string[] }[];
+  }): void {
     const seen = new Set<string>();
     const next: Bookmark[] = [];
-    for (const id of normalized) {
+    const knownGroupIds = new Set(this.groups.map((g) => g.id));
+
+    const takePath = (rawId: string, assignGroupId: string | undefined): void => {
+      const id = makePathId(pathRefFromId(rawId));
       if (seen.has(id)) {
         throw new PathManagerError('InvalidOrderList', `重复的 pathId="${id}"`);
       }
@@ -324,10 +358,131 @@ export class PathManager extends EventEmitter {
           `pathId="${id}" 不在当前 bookmarks 列表`,
         );
       }
+      // 原地改 groupId(唯一真相源)。同一条 bookmark 顺序变即重新 push。
+      if (assignGroupId === undefined) {
+        delete found.groupId;
+      } else {
+        found.groupId = assignGroupId;
+      }
       next.push(found);
+    };
+
+    for (const id of payload.ungrouped) takePath(id, undefined);
+    for (const group of payload.groups) {
+      if (!knownGroupIds.has(group.id)) {
+        throw new PathManagerError('InvalidGroupId', `groupId="${group.id}" 不存在`);
+      }
+      for (const id of group.childOrder) takePath(id, group.id);
     }
+
+    // 校验并集 == 全量(数量不符覆盖了重复/未知;这里主要防遗漏)。
+    if (seen.size !== this.bookmarks.length) {
+      throw new PathManagerError(
+        'InvalidOrderList',
+        `预期 ${this.bookmarks.length} 项,实际覆盖 ${seen.size} 项(有遗漏或重复)`,
+      );
+    }
+
     this.bookmarks = next;
+    // v0.3.3 ADR-025 G1:groups 数组位置 = 分组显示顺序。payload.groups 顺序
+    // 即新顺序;不在 payload 里的组(空组等)保留原相对顺序追加在后,不被丢。
+    const payloadGroupIds = new Set(payload.groups.map((g) => g.id));
+    const orderedGroups: GroupNode[] = [];
+    for (const pg of payload.groups) {
+      const g = this.groups.find((x) => x.id === pg.id);
+      if (g) orderedGroups.push(g);
+    }
+    for (const g of this.groups) {
+      if (!payloadGroupIds.has(g.id)) orderedGroups.push(g);
+    }
+    this.groups = orderedGroups;
     this.persistBookmarks();
+    this.emitChange();
+  }
+
+  /**
+   * v0.3.3 ADR-025 §6:新建分组(追加到末尾)。组名收藏内唯一、非空、
+   * 禁路径分隔符(防歧义)、≤64 字符。允许空组。返回新 groupId。
+   *
+   * @throws PathManagerError InvalidName(空/过长/含分隔符)
+   * @throws PathManagerError GroupNameConflict(收藏内重名)
+   */
+  addGroup(name: string): GroupNode {
+    validateGroupName(name);
+    this.assertGroupNameUnique(name);
+    const group: GroupNode = { id: randomUUID(), name };
+    this.groups.push(group);
+    this.persistBookmarks();
+    this.emitChange();
+    return group;
+  }
+
+  /**
+   * v0.3.3 ADR-025 §6:重命名分组(收藏内唯一)。
+   *
+   * @throws PathManagerError GroupNotFound
+   * @throws PathManagerError InvalidName / GroupNameConflict
+   */
+  renameGroup(id: string, name: string): void {
+    validateGroupName(name);
+    const group = this.findGroup(id);
+    if (group.name === name) return; // 无变化
+    this.assertGroupNameUnique(name, id);
+    group.name = name;
+    this.persistBookmarks();
+    this.emitChange();
+  }
+
+  /**
+   * v0.3.3 ADR-025 §6:删组。其下 path 的 groupId 清空→归未分组(**绝不删 path**)。
+   * 组 id 作废(不回收)。
+   *
+   * @throws PathManagerError GroupNotFound
+   */
+  removeGroup(id: string): void {
+    const idx = this.groups.findIndex((g) => g.id === id);
+    if (idx < 0) {
+      throw new PathManagerError('GroupNotFound', `groupId="${id}" 不存在`);
+    }
+    this.groups.splice(idx, 1);
+    // 子 path 归未分组(清 groupId)。
+    for (const b of this.bookmarks) {
+      if (b.groupId === id) delete b.groupId;
+    }
+    this.persistBookmarks();
+    this.emitChange();
+  }
+
+  /**
+   * v0.3.3 Feature E.2 / 决策 #15:重排某 path 下 session 顺序(服务端内存,不落盘)。
+   * orderedSessionIds 必须恰好等于该 path 当前 session 集合(无重复/无未知/无遗漏)。
+   * 应用后该 path 的 sessionsForPath 按显式顺序返回,触发 pathTreeUpdated 广播。
+   *
+   * @throws PathManagerError InvalidOrderList
+   */
+  reorderSessions(pathId: string, orderedSessionIds: string[]): void {
+    const id = makePathId(pathRefFromId(pathId));
+    const current = new Set(this.sessionsForPath(id));
+    if (orderedSessionIds.length !== current.size) {
+      throw new PathManagerError(
+        'InvalidOrderList',
+        `预期 ${current.size} 个 session,实际 ${orderedSessionIds.length} 个`,
+      );
+    }
+    const seen = new Set<string>();
+    for (const sid of orderedSessionIds) {
+      if (seen.has(sid)) {
+        throw new PathManagerError('InvalidOrderList', `重复的 sessionId="${sid}"`);
+      }
+      seen.add(sid);
+      if (!current.has(sid)) {
+        throw new PathManagerError(
+          'InvalidOrderList',
+          `sessionId="${sid}" 不属于 pathId="${id}"`,
+        );
+      }
+    }
+    this.sessionOrder.set(id, orderedSessionIds.slice());
     this.emitChange();
   }
 
@@ -422,6 +577,15 @@ export class PathManager extends EventEmitter {
     if (path === undefined) return;
     this.sessionToPath.delete(sessionId);
 
+    // v0.3.3 Feature E.2:从显式顺序里剔除该 session。数组空了就删 entry
+    // (下次该 path 再开 session 回退到插入序)。
+    const explicit = this.sessionOrder.get(path);
+    if (explicit) {
+      const next = explicit.filter((sid) => sid !== sessionId);
+      if (next.length === 0) this.sessionOrder.delete(path);
+      else this.sessionOrder.set(path, next);
+    }
+
     // 如果该 path 没有其他 session 且不在收藏,进入最近
     if (!this.hasSessionsForPath(path) && !this.findBookmarkByPath(path)) {
       this.touchRecent(pathRefFromId(path));
@@ -454,6 +618,7 @@ export class PathManager extends EventEmitter {
         sessionIds: this.sessionsForPath(id),
         ...(b.displayName ? { displayName: b.displayName } : {}),
         ...(b.defaultTemplateId ? { defaultTemplateId: b.defaultTemplateId } : {}),
+        ...(b.groupId ? { groupId: b.groupId } : {}),
         ...markInvalid(id),
       });
     });
@@ -487,7 +652,7 @@ export class PathManager extends EventEmitter {
         });
       });
 
-    return { bookmarks, temporary, recent };
+    return { bookmarks, temporary, recent, groups: this.groups.map((g) => ({ ...g })) };
   }
 
   /**
@@ -548,12 +713,50 @@ export class PathManager extends EventEmitter {
     return this.bookmarks.find((b) => bookmarkPathId(b) === normalizedPath);
   }
 
-  private sessionsForPath(normalizedPath: string): string[] {
-    const result: string[] = [];
-    for (const [sid, p] of this.sessionToPath.entries()) {
-      if (p === normalizedPath) result.push(sid);
+  /**
+   * v0.3.3 ADR-025:按 id 查分组;不存在报错。
+   * @throws PathManagerError GroupNotFound
+   */
+  private findGroup(id: string): GroupNode {
+    const group = this.groups.find((g) => g.id === id);
+    if (!group) {
+      throw new PathManagerError('GroupNotFound', `groupId="${id}" 不存在`);
     }
-    return result;
+    return group;
+  }
+
+  /**
+   * v0.3.3 ADR-025:组名收藏内唯一校验。exceptId=正在重命名的组(自身不算冲突)。
+   * @throws PathManagerError GroupNameConflict
+   */
+  private assertGroupNameUnique(name: string, exceptId?: string): void {
+    if (this.groups.some((g) => g.name === name && g.id !== exceptId)) {
+      throw new PathManagerError('GroupNameConflict', `组名「${name}」已存在(收藏内组名唯一)`);
+    }
+  }
+
+  private sessionsForPath(normalizedPath: string): string[] {
+    // v0.3.3 Feature E.2:优先用显式顺序(拖拽后的服务端内存真值);
+    // 无显式顺序回退 sessionToPath 的 Map 插入序(≈创建序)。
+    const explicit = this.sessionOrder.get(normalizedPath);
+    // 当前仍 attach 在该 path 的 session(按 sessionToPath 插入序,用于兼底+补全)。
+    const currentInInsertionOrder: string[] = [];
+    const current = new Set<string>();
+    for (const [sid, p] of this.sessionToPath.entries()) {
+      if (p === normalizedPath) {
+        currentInInsertionOrder.push(sid);
+        current.add(sid);
+      }
+    }
+    if (!explicit) return currentInInsertionOrder;
+    // 显式顺序存在:按它返回,但要把「顺序里没有的新 session」(拖后新开的)
+    // 追加到末尾,否则会被 filter 丢弃(见 sessionsForPath 设计)。
+    const ordered = explicit.filter((sid) => current.has(sid));
+    const inExplicit = new Set(ordered);
+    for (const sid of currentInInsertionOrder) {
+      if (!inExplicit.has(sid)) ordered.push(sid);
+    }
+    return ordered;
   }
 
   private hasSessionsForPath(normalizedPath: string): boolean {
@@ -604,7 +807,12 @@ export class PathManager extends EventEmitter {
   }
 
   private persistBookmarks(): void {
-    this.bookmarksStore.set({ version: 1, paths: this.bookmarks.slice() });
+    // v0.3.3 ADR-025 §4:version=2,groups + paths(含 groupId)。
+    this.bookmarksStore.set({
+      version: 2,
+      groups: this.groups.map((g) => ({ id: g.id, name: g.name })),
+      paths: this.bookmarks.slice(),
+    });
   }
 
   private persistRecent(): void {
@@ -634,13 +842,15 @@ export class PathManager extends EventEmitter {
    * @param input.recent 新的最近列表 (按当前数组顺序;内部仍会再 sortRecent)
    * @throws PathManagerError('InvalidName') 任一 entry 形状不合规
    */
-  replaceAll(input: { bookmarks: unknown; recent: unknown }): void {
+  replaceAll(input: { bookmarks: unknown; recent: unknown; groups?: unknown }): void {
     // 入参视为外部不可信(导入归档可能跨版本 / kind 缺失 / sshProfileId 缺失);
-    // validateBookmarksArray / validateRecentArray 做严格 narrow + path normalize。
+    // validateBookmarksArray / validateRecentArray / validateGroupsArray 做严格 narrow + path normalize。
     const bookmarks = validateBookmarksArray(input.bookmarks);
     const recent = validateRecentArray(input.recent);
+    const groups = input.groups !== undefined ? validateGroupsArray(input.groups) : [];
     this.bookmarks = bookmarks;
     this.recent = recent;
+    this.groups = groups;
     this.sortRecent();
     this.persistBookmarks();
     this.persistRecent();
@@ -684,6 +894,11 @@ function validateBookmarksArray(input: unknown): Bookmark[] {
     if (r['defaultTemplateId'] !== undefined && typeof r['defaultTemplateId'] !== 'string') {
       throw new PathManagerError('InvalidName', `bookmarks[${i}].defaultTemplateId 非法`);
     }
+    // v0.3.3 ADR-025:导入归档可带 groupId(string);非 string 或缺失→归未分组。
+    const groupId =
+      r['groupId'] !== undefined && typeof r['groupId'] === 'string'
+        ? (r['groupId'] as string)
+        : undefined;
     const kind: PathKind = r['kind'] === 'ssh' ? 'ssh' : 'local';
     const sshProfileId =
       typeof r['sshProfileId'] === 'string' ? r['sshProfileId'] : undefined;
@@ -707,6 +922,7 @@ function validateBookmarksArray(input: unknown): Bookmark[] {
         ...(typeof r['defaultTemplateId'] === 'string'
           ? { defaultTemplateId: r['defaultTemplateId'] }
           : {}),
+        ...(groupId ? { groupId } : {}),
       }),
     );
   }
@@ -804,6 +1020,7 @@ function buildBookmark(input: {
   addedAt: number;
   displayName?: string;
   defaultTemplateId?: string;
+  groupId?: string;
 }): Bookmark {
   const common = {
     id: input.id,
@@ -811,6 +1028,7 @@ function buildBookmark(input: {
     addedAt: input.addedAt,
     ...(input.displayName ? { displayName: input.displayName } : {}),
     ...(input.defaultTemplateId ? { defaultTemplateId: input.defaultTemplateId } : {}),
+    ...(input.groupId ? { groupId: input.groupId } : {}),
   };
   switch (input.ref.kind) {
     case 'local':
@@ -845,6 +1063,7 @@ function buildPathNode(input: {
   sessionIds: string[];
   displayName?: string;
   defaultTemplateId?: string;
+  groupId?: string;
   invalid?: true;
 }): PathNode {
   const common = {
@@ -854,6 +1073,7 @@ function buildPathNode(input: {
     sessionIds: input.sessionIds,
     ...(input.displayName ? { displayName: input.displayName } : {}),
     ...(input.defaultTemplateId ? { defaultTemplateId: input.defaultTemplateId } : {}),
+    ...(input.groupId ? { groupId: input.groupId } : {}),
     ...(input.invalid ? { invalid: true as const } : {}),
   };
   switch (input.ref.kind) {
@@ -880,6 +1100,8 @@ function migrateBookmarkOnLoad(raw: unknown): Bookmark[] {
   const sshProfileId =
     typeof r['sshProfileId'] === 'string' ? r['sshProfileId'] : undefined;
   if (kind === 'ssh' && !sshProfileId) return [];
+  // v0.3.3 ADR-025:保留 groupId(仅 string 有效;损坏类型→丢弃该字段即归未分组)。
+  const groupId = typeof r['groupId'] === 'string' ? r['groupId'] : undefined;
   const base = {
     id: r['id'],
     path: r['path'],
@@ -888,6 +1110,7 @@ function migrateBookmarkOnLoad(raw: unknown): Bookmark[] {
     ...(typeof r['defaultTemplateId'] === 'string'
       ? { defaultTemplateId: r['defaultTemplateId'] }
       : {}),
+    ...(groupId ? { groupId } : {}),
   };
   if (kind === 'local') return [{ ...base, kind: 'local' }];
   return [{ ...base, kind: 'ssh', sshProfileId: sshProfileId! }];
@@ -910,4 +1133,83 @@ function migrateRecentOnLoad(raw: unknown): RecentEntry[] {
   };
   if (kind === 'local') return [{ ...base, kind: 'local' }];
   return [{ ...base, kind: 'ssh', sshProfileId: sshProfileId! }];
+}
+
+// ──────────────────────────────────────────────────────────────────
+// v0.3.3 ADR-025 / Feature E.1:收藏分组(group)启动期 migrate + 校验
+// ──────────────────────────────────────────────────────────────────
+
+/** 分组名校名规则(与 addGroup/renameGroup 共用)。 */
+const GROUP_NAME_MAX = 64;
+const PATH_SEPARATORS = /[\\/]/;
+
+/**
+ * v0.3.3 ADR-025 §6:组名校验。非空 / ≤64 / 禁路径分隔符(防歧义)。
+ * 收藏内唯一性由 assertGroupNameUnique 单独校验(需访问 this.groups)。
+ * @throws PathManagerError InvalidName
+ */
+function validateGroupName(name: string): void {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new PathManagerError('InvalidName', '组名不能为空');
+  }
+  if (name.length > GROUP_NAME_MAX) {
+    throw new PathManagerError('InvalidName', `组名长度超过 ${GROUP_NAME_MAX} 字符`);
+  }
+  if (PATH_SEPARATORS.test(name)) {
+    throw new PathManagerError('InvalidName', '组名不能含路径分隔符(\\ /)');
+  }
+}
+
+/**
+ * v0.3.3 ADR-025 §4:启动期 groups coerce。磁盘可能无 groups 字段(v1 文件 /
+ * 损坏回退默认)。损坏 entry(非对象 / 缺 id 或 name / 类型错)静默丢弃,与
+ * migrateBookmarkOnLoad 容错策略一致。重复 id 只保留首个(防磁盘脏数据)。
+ */
+function migrateGroupsOnLoad(raw: unknown): GroupNode[] {
+  if (!Array.isArray(raw)) return [];
+  const out: GroupNode[] = [];
+  const seenIds = new Set<string>();
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const r = entry as Record<string, unknown>;
+    if (typeof r['id'] !== 'string' || typeof r['name'] !== 'string') continue;
+    if (r['id'].length === 0 || r['name'].length === 0) continue;
+    if (seenIds.has(r['id'])) continue; // 去重,保留首个
+    seenIds.add(r['id']);
+    out.push({ id: r['id'], name: r['name'] });
+  }
+  return out;
+}
+
+/**
+ * v0.3.3 ADR-025:导入归档的 groups 严格校验(外部不可信)。
+ * 任一条违规(缺 id/name / 重复 id)整体拒绝,抛 PathManagerError。caller
+ * (replaceAll)捕获后让 import 失败,内部状态保留。
+ */
+function validateGroupsArray(input: unknown): GroupNode[] {
+  if (!Array.isArray(input)) {
+    throw new PathManagerError('InvalidName', 'groups 必须是数组');
+  }
+  const out: GroupNode[] = [];
+  const seenIds = new Set<string>();
+  for (let i = 0; i < input.length; i++) {
+    const g = input[i];
+    if (typeof g !== 'object' || g === null) {
+      throw new PathManagerError('InvalidName', `groups[${i}] 不是对象`);
+    }
+    const r = g as Record<string, unknown>;
+    if (typeof r['id'] !== 'string' || !r['id']) {
+      throw new PathManagerError('InvalidName', `groups[${i}].id 非法`);
+    }
+    if (typeof r['name'] !== 'string' || !r['name']) {
+      throw new PathManagerError('InvalidName', `groups[${i}].name 非法`);
+    }
+    validateGroupName(r['name']);
+    if (seenIds.has(r['id'])) {
+      throw new PathManagerError('InvalidName', `groups[${i}].id 重复: ${r['id']}`);
+    }
+    seenIds.add(r['id']);
+    out.push({ id: r['id'], name: r['name'] });
+  }
+  return out;
 }

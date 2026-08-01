@@ -289,10 +289,28 @@ interface PathNodeBase {
   /** 收藏路径才有: 双击新建终端的默认模板 */
   defaultTemplateId?: string;
   /**
+   * v0.3.3 ADR-025 / Feature E.1:收藏分组虚拟节点 id。
+   * undefined = 未分组。仅收藏路径(bookmarked)会用;temporary/recent 恒 undefined。
+   * 这是 path 与分组归属的**唯一真相源**,顺序由 bookmarks 数组位置表达。
+   */
+  groupId?: string;
+  /**
    * BETA-043:启动期扫描发现该路径已不可访问(被外部删除 / 权限变化等)。
    * 仅做 UI 标记(置灰 + ⚠️ icon),不自动从列表里清除,留给用户决定。
    */
   invalid?: boolean;
+}
+
+/**
+ * v0.3.3 ADR-025 / Feature E.1:收藏分组虚拟节点(纯组织层,非路径)。
+ *
+ * 只一级(group → path,无嵌套);临时/最近不分组(决策 #13)。
+ * `id` = 新生成的 UUID,不与 pathId 复用;删组后该 id 作废(不回收)。
+ * 显示顺序 = groups 数组位置(无 order 字段);组内 path 顺序 = bookmarks 数组位置。
+ */
+export interface GroupNode {
+  id: string;
+  name: string;
 }
 
 export interface LocalPathNode extends PathNodeBase {
@@ -315,11 +333,16 @@ export type PathNode = LocalPathNode | RemotePathNode;
 
 /**
  * 完整路径树 (snapshot / 广播用)。
+ *
+ * v0.3.3 ADR-025:`groups` 仅收藏有分组;temporary/recent 恒为 []。
+ * renderer 拿到后自己按「未分组顶置 + 分组顺序 + 组内 path 顺序」排版,
+ * childPathIds 不进 PathTree(派生即可,避免双真相)。
  */
 export interface PathTree {
   bookmarks: PathNode[];
   temporary: PathNode[];
   recent: PathNode[];
+  groups: GroupNode[];
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -604,14 +627,27 @@ export interface Settings {
  * 会丢弃损坏条目)。所有写盘前的内存 Bookmark 都是严格 discriminated union,
  * 通过 buildBookmark 构造。
  */
+/**
+ * v0.3.3 ADR-025:磁盘层分组形状。顺序 = groups 数组位置(无 order/addedAt)。
+ */
+export interface PersistedGroup {
+  id: string;
+  name: string;
+}
+
+/**
+ * bookmarks.json schema。v0.3.3 起 version=2,新增 groups 与 path.groupId。
+ * v1 文件(无 groups / path 无 groupId)启动期迁移为 v2(见 PathManager.initialize)。
+ */
 export interface BookmarksFile {
-  version: 1;
+  version: 2;
+  groups: PersistedGroup[];
   paths: PersistedBookmark[];
 }
 
 /**
  * 磁盘层 Bookmark 形状:跟 beta.9 之前的旧 schema 兼容(无 kind / 缺
- * sshProfileId)。新代码请用严格类型 Bookmark(discriminated union)。
+ * sshProfileId;v0.3.3 前无 groupId)。新代码请用严格类型 Bookmark(discriminated union)。
  */
 export interface PersistedBookmark {
   id: string;
@@ -620,6 +656,8 @@ export interface PersistedBookmark {
   sshProfileId?: string;
   displayName?: string;
   defaultTemplateId?: string;
+  /** v0.3.3 ADR-025:所属分组 id;缺省/undefined = 未分组 */
+  groupId?: string;
   addedAt: number;
 }
 
@@ -628,6 +666,8 @@ interface BookmarkBase {
   path: string;
   displayName?: string;
   defaultTemplateId?: string;
+  /** v0.3.3 ADR-025:所属分组 id;undefined = 未分组(唯一真相源,仅收藏用) */
+  groupId?: string;
   /** Unix ms */
   addedAt: number;
 }

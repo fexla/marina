@@ -37,8 +37,9 @@ describe('protocol constants', () => {
   });
 
   it('all command channels start with cmd: prefix', () => {
+    // v0.3.3 起 bookmark 分组走 cmd:bookmark:group:<action> 三段域名,正则放行为多段域名。
     for (const channel of Object.values(COMMAND_CHANNELS)) {
-      expect(channel).toMatch(/^cmd:[a-z-]+:[a-z-]+$/);
+      expect(channel).toMatch(/^cmd:[a-z-]+(:[a-z-]+)+$/);
     }
   });
 
