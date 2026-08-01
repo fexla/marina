@@ -74,7 +74,13 @@ export async function closeSessionWithContinue(
   const candidate = orphans[0];
 
   if (candidate) {
-    // 乐观接管 + 选中,抢在 destroyed 事件之前
+    // 乐观接管 + 选中,抢在 destroyed 事件之前。**同时立即发起 claim**
+    // (claimSession 会登记进 claim-gate)—— 不能等到 close 之后才 claim,否则
+    // 候选的新 LayoutHost 已挂载、FileTreePanel 的 waitForClaim 会立即返回
+    // { ok: true }(gate 里没有 in-flight),请求发出时 main 端 owner 还是 null
+    // → NotOwner。提前登记让面板等到真正的 claim settle。
+    // claimOwner 在 main 端会 release 本窗口已持有的其他 session(即正被关的
+    // 当前 session),这无害——关闭一个已释放的 session 不受影响。
     dispatch({
       type: 'sessions/owner-changed',
       sessionId: candidate.id,
@@ -82,11 +88,14 @@ export async function closeSessionWithContinue(
     });
     dispatch({ type: 'view/select-session', sessionId: candidate.id });
   }
+  // claimPromise 在候选存在时立即发起(不 await),与 close 并行。close 完成后再
+  // await 它做失败回滚。close 期间 claim 已登记进 gate,面板请求被正确 gate。
+  const claimPromise = candidate ? claimSession(candidate.id) : null;
   try {
     await window.api.invoke(COMMAND_CHANNELS.SESSION_CLOSE, { sessionId });
-    if (candidate) {
-      // 当前 session 已关,本窗口已无持有;claim 候选(幂等,乐观已设 owner)。
-      await claimSession(candidate.id).catch((err) => {
+    if (candidate && claimPromise) {
+      // 当前 session 已关,本窗口已无持有;等 claim 完成(幂等,乐观已设 owner)。
+      await claimPromise.catch((err) => {
         console.error('[useCloseSession] claim-after-close failed, rollback', err);
         dispatch({
           type: 'sessions/owner-changed',
@@ -99,6 +108,8 @@ export async function closeSessionWithContinue(
   } catch (err) {
     console.error('[useCloseSession] close session failed', err);
     // close 失败:回滚乐观的接管(候选还给别人/变回 orphan),选回被关的那个。
+    // claim 若还在 in-flight,gate 会在 settle 后自然清除;若已 reject 也不影响
+    // 这里的回滚(回滚是本地 dispatch,与 claim 结果独立)。
     if (candidate) {
       dispatch({
         type: 'sessions/owner-changed',

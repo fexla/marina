@@ -492,6 +492,10 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
   // tab 的 × 关闭走统一续看逻辑:关掉当前正在看的终端时自动切到同目录另一个
   // 无主终端(见 useCloseSession)。与 statusbar「关闭」/ 右键菜单「关闭」一致。
   const closeSession = useCloseSession();
+  // generation 守卫:每次 orphan 接管递增并捕获序号。claim 是异步的,迟到的失败
+  // 回滚必须只在「用户没有再点别的终端」时才执行 —— 否则会覆盖用户后续已经成功的
+  // 选择(例如快速连点 A→B→C,C 成功后 B 的迟到失败不该把用户拽回 A)。
+  const claimGenRef = useRef(0);
 
   // Variant 由 session.ownerWindowId 自决,不再由父级分组传入。这样 tab
   // 即使移动 (虽然现在不再重排) 也不会丢 variant。
@@ -582,8 +586,12 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
       // claimSession 内部把 claim promise 登记进 claim-gate,让面板首次数据请求
       // await 它,消除「乐观 select 触发面板重挂 → 立即请求 → main 端 owner 还是 null →
       // NotOwner」的 race。详见 hooks/claim-gate.ts。
+      const gen = ++claimGenRef.current;
       claimSession(session.id).catch((err) => {
         console.error('[Tab] claim failed, rolling back', err);
+        // generation 守卫:若用户在此期间又点了别的终端(claimGenRef 已推进),
+        // 不要用这次迟到的失败覆盖用户的新选择。
+        if (claimGenRef.current !== gen) return;
         // 回滚:目标变回 orphan,旧持有变回 myWindow
         dispatch({
           type: 'sessions/owner-changed',

@@ -1026,6 +1026,10 @@ function SessionItemImpl({ session, myWindowId, selected }: SessionItemProps): J
   const stateRef = useAppStateRef();
   const isMine = session.ownerWindowId === myWindowId;
   const ownedByOther = session.ownerWindowId !== null && session.ownerWindowId !== myWindowId;
+  // generation 守卫:每次 orphan 接管递增并捕获序号。claim 是异步的,迟到的失败
+  // 回滚必须只在「用户没有再点别的终端」时才执行 —— 否则会覆盖用户后续已经成功的
+  // 选择(例如快速连点 A→B→C,C 成功后 B 的迟到失败不该把用户拽回 A)。
+  const claimGenRef = useRef(0);
 
   // M1-C:行内重命名
   const [renaming, setRenaming] = useState(false);
@@ -1121,8 +1125,12 @@ function SessionItemImpl({ session, myWindowId, selected }: SessionItemProps): J
     dispatch({ type: 'view/select-path', pathId: session.pathId });
     dispatch({ type: 'view/select-session', sessionId: session.id });
 
+    const gen = ++claimGenRef.current;
     claimSession(session.id).catch((err) => {
       console.error('[Sidebar] claim failed, rolling back', err);
+      // generation 守卫:若用户在此期间又点了别的终端(claimGenRef 已推进),
+      // 不要用这次迟到的失败覆盖用户的新选择。
+      if (claimGenRef.current !== gen) return;
       dispatch({
         type: 'sessions/owner-changed',
         sessionId: session.id,
