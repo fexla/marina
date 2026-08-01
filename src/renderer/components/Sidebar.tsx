@@ -28,14 +28,28 @@ import {
   type MouseEvent,
   type ReactNode,
 } from 'react';
-import { AlertTriangle, Check, ChevronDown, ChevronRight, X } from 'lucide-react';
+import { AlertTriangle, Check, ChevronDown, ChevronRight, FolderInput, Pencil, Trash2, X } from 'lucide-react';
+import {
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  closestCenter,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import {
   COMMAND_CHANNELS,
   type AddBookmarkResponse,
   type CreateSessionResponse,
   type PickFolderResponse,
 } from '@shared/protocol';
-import type { PathNode, SessionInfo } from '@shared/types';
+import type { GroupNode, PathNode, SessionInfo } from '@shared/types';
 import { disambiguatePathNames } from '@shared/path-display';
 import { useTranslation } from './LanguageProvider';
 import { findMyOwnedSessionId, useAppDispatch, useAppState, useAppStateRef } from '../store';
@@ -44,6 +58,7 @@ import { useContextMenuApi, type ContextMenuItem } from './ContextMenu';
 import { useModal } from './Modal';
 import { useToast } from './Toast';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
+import { usePanelPreference } from '../hooks/usePanelPreference';
 import { claimSession } from '../hooks/claim-gate';
 import { buildSessionContextMenu } from './sessionContextMenu';
 import { closeSessionWithContinue } from '../hooks/useCloseSession';
@@ -237,6 +252,14 @@ export function Sidebar(): JSX.Element {
     () => filterNodesBySegment(state.pathTree.bookmarks),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [state.pathTree.bookmarks, effectiveSegment],
+  );
+  // v0.3.3 ADR-025:收藏分组(虚拟节点)不分本地/远程 —— 分组是跨 segment 的组织容器,
+  // 只有里面的 path 按 segment 过滤。故 groups 直接取全集。
+  const groupsFiltered = useMemo(() => state.pathTree.groups ?? [], [state.pathTree.groups]);
+  // 收藏去重名(Category 内部算的那套提到外面,BookmarkCategory 复用)。
+  const bookmarkDisplayNames = useMemo(
+    () => disambiguatePathNames(bookmarksFiltered),
+    [bookmarksFiltered],
   );
   const temporaryFiltered = useMemo(
     () => filterNodesBySegment(state.pathTree.temporary),
@@ -494,16 +517,15 @@ export function Sidebar(): JSX.Element {
         </div>
       )}
       <div className="sidebar-bookmarks-dropzone" data-segment={effectiveSegment}>
-        <Category
-          categoryId="bookmark"
-          title={t('sidebar.category.bookmark')}
-          iconName="bookmark"
+        <BookmarkCategory
           paths={bookmarksFiltered}
+          groups={groupsFiltered}
           collapsed={isCategoryCollapsed('bookmark')}
-          onToggleCollapsed={handleToggleCategory}
+          onToggleCollapsed={() => handleToggleCategory('bookmark')}
           actionLabel={<Icon name="plus" size={12} />}
           actionTitle={t('sidebar.addBookmark.title')}
           onAction={() => void handleAddBookmark()}
+          displayNames={bookmarkDisplayNames}
         />
         <Category
           categoryId="temporary"
@@ -640,12 +662,382 @@ function Category({
   );
 }
 
+// ╔══════════════════════════════════════════════════════════════════╗
+// ║  v0.3.3 ADR-025 / Feature E.1+E.2:收藏分组渲染 + @dnd-kit 拖序       ║
+// ╚══════════════════════════════════════════════════════════════════╝
+// 设计:
+// - 收藏栏(Category=bookmark)用 BookmarkCategory 替换原平铺渲染:
+//   未分组块(隐式,顶置)+ 各分组块(组头:折叠/重命名/删组)。
+// - 分组折叠态走 L2 偏好 usePanelPreference(附录 G.1),不裸 localStorage。
+// - 拖序走 @dnd-kit 多容器:未分组 + 各组各为 SortableContext(共享 DndContext),
+//   拖动跨容器=移组,拖动同容器=组内排序;拖完发分层 BOOKMARK_REORDER。
+// - 临时/最近栏不受影响(决策 #13:只收藏可分组/可拖序)。
+// - 排序能力直接内联进 PathItem 的 <li>(传 sortableId 才启用),避免额外的
+//   包裹 <li> 造成 li 嵌套(无效 HTML)。临时/最近不传 → 零 dnd 开销。
+const UNGROUPED_CONTAINER = '__marina_ungrouped__';
+
+/**
+ * 分组头:折叠/展开、组名、重命名、删组。
+ * 折叠态走 usePanelPreference(panelId='sidebar', key='groupCollapsed', 默认空 Set)。
+ */
+function GroupHeader({
+  group,
+  collapsed,
+  onToggleCollapse,
+}: {
+  group: GroupNode;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
+}): JSX.Element {
+  const t = useTranslation();
+  const toast = useToast();
+  const [renaming, setRenaming] = useState(false);
+  const [name, setName] = useState(group.name);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const beginRename = (): void => {
+    setName(group.name);
+    setRenaming(true);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+  };
+
+  const commitRename = (): void => {
+    const v = name.trim();
+    setRenaming(false);
+    if (!v || v === group.name) return;
+    window.api
+      .invoke(COMMAND_CHANNELS.BOOKMARK_GROUP_RENAME, { id: group.id, name: v })
+      .catch((err: unknown) => {
+        toast.push({
+          kind: 'error',
+          message: `重命名分组失败:${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+  };
+
+  const handleDelete = (): void => {
+    // 删组:子 path 归未分组,绝不删 path。后端已保证;这里给个 toast 反馈。
+    window.api
+      .invoke(COMMAND_CHANNELS.BOOKMARK_GROUP_REMOVE, { id: group.id })
+      .then(() =>
+        toast.push({ kind: 'success', message: `已删除分组「${group.name}」,其下路径已归到未分组` }),
+      )
+      .catch((err: unknown) => {
+        toast.push({
+          kind: 'error',
+          message: `删除分组失败:${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+  };
+
+  return (
+    <div className="sidebar-group-header" onClick={onToggleCollapse}>
+      <span className="sidebar-group-chevron" aria-hidden="true">
+        {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+      </span>
+      {renaming ? (
+        <input
+          ref={inputRef}
+          type="text"
+          className="sidebar-group-rename-input"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onBlur={commitRename}
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              commitRename();
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              setRenaming(false);
+            }
+          }}
+        />
+      ) : (
+        <span className="sidebar-group-name" title={group.name}>
+          <Icon name="folder" size={12} />
+          {group.name}
+        </span>
+      )}
+      <span className="sidebar-group-actions">
+        <button
+          type="button"
+          className="sidebar-group-action"
+          onClick={(e) => {
+            e.stopPropagation();
+            beginRename();
+          }}
+          title={t('sidebar.group.rename') || '重命名分组'}
+        >
+          <Pencil size={11} />
+        </button>
+        <button
+          type="button"
+          className="sidebar-group-action"
+          onClick={(e) => {
+            e.stopPropagation();
+            handleDelete();
+          }}
+          title={t('sidebar.group.remove') || '删除分组(路径归到未分组)'}
+        >
+          <Trash2 size={11} />
+        </button>
+      </span>
+    </div>
+  );
+}
+
+/**
+ * 收藏栏:带分组的布局 + @dnd-kit 拖序。
+ *
+ * 拖序语义(决策 #13:只收藏可拖序):
+ * - 同容器(未分组或同一组)内拖动 = 组内排序。
+ * - 跨容器拖动 = 移到目标组(拖到未分组 = 移出组)。
+ * - 拖完统一发分层 BOOKMARK_REORDER {ungrouped, groups[{id, childOrder}]}。
+ */
+function BookmarkCategory({
+  paths,
+  groups,
+  collapsed,
+  onToggleCollapsed,
+  actionLabel,
+  actionTitle,
+  onAction,
+  displayNames,
+}: {
+  paths: PathNode[];
+  groups: GroupNode[];
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  actionLabel?: ReactNode;
+  actionTitle?: string;
+  onAction?: () => void;
+  displayNames: Map<string, string>;
+}): JSX.Element {
+  const t = useTranslation();
+  // 分组折叠态:L2 偏好(附录 G.1),跨重启保留;默认全展开。
+  const [collapsedGroupIds, setCollapsedGroupIds] = usePanelPreference<string[]>(
+    'sidebar',
+    'groupCollapsed',
+    [],
+  );
+  const collapsedSet = useMemo(() => new Set(collapsedGroupIds), [collapsedGroupIds]);
+  const toggleGroup = (groupId: string): void => {
+    setCollapsedGroupIds((prev) =>
+      prev.includes(groupId) ? prev.filter((x) => x !== groupId) : [...prev, groupId],
+    );
+  };
+
+  // 按 groupId 派生各容器(path 顺序 = bookmarks 数组顺序,即后端真值)。
+  const ungrouped = useMemo(() => paths.filter((p) => !p.groupId), [paths]);
+  const byGroup = useMemo(() => {
+    const m = new Map<string, PathNode[]>();
+    for (const g of groups) m.set(g.id, []);
+    for (const p of paths) {
+      if (p.groupId && m.has(p.groupId)) m.get(p.groupId)!.push(p);
+    }
+    return m;
+  }, [paths, groups]);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+  );
+
+  /**
+   * 拖完重算完整布局并发 BOOKMARK_REORDER。
+   * 多容器 dnd-kit:active.id 是被拖 pathId,over.id 是落点 pathId(或组占位),
+   * over.data.current?.sortable?.containerId 告诉落在哪个容器。
+   */
+  const handleDragEnd = (event: DragEndEvent): void => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const activeId = String(active.id);
+    const overId = String(over.id);
+    const fromContainer =
+      (active.data.current?.sortable as { containerId?: string } | undefined)?.containerId ??
+      UNGROUPED_CONTAINER;
+    // over 可能是某 path(有 containerId),也可能是空容器的 droppable id(=containerId 本身)
+    const overContainer =
+      (over.data.current?.sortable as { containerId?: string } | undefined)?.containerId ??
+      overId;
+
+    // 取源 / 目标容器的当前顺序(克隆后操作)。
+    const listFor = (containerId: string): PathNode[] => {
+      if (containerId === UNGROUPED_CONTAINER) return ungrouped.slice();
+      return (byGroup.get(containerId) ?? []).slice();
+    };
+    const fromList = listFor(fromContainer);
+    const toList = fromContainer === overContainer ? fromList : listFor(overContainer);
+
+    const fromIdx = fromList.findIndex((p) => p.id === activeId);
+    if (fromIdx < 0) return;
+    const [moved] = fromList.splice(fromIdx, 1);
+
+    if (fromContainer === overContainer) {
+      const overIdx = toList.findIndex((p) => p.id === overId);
+      if (overIdx < 0) toList.push(moved);
+      else toList.splice(overIdx, 0, moved);
+    } else {
+      // 跨容器:落到 over path 前;over 是空容器占位则追加末尾。
+      const overIdx = toList.findIndex((p) => p.id === overId);
+      if (overIdx < 0) toList.push(moved);
+      else toList.splice(overIdx, 0, moved);
+    }
+
+    // 回填到 ungrouped / byGroup 的视图(本次 render 内的乐观更新);
+    // 真值由后端 BOOKMARK_REORDER 后 evt:path:tree-updated 回灌。
+    if (fromContainer === UNGROUPED_CONTAINER) {
+      ungrouped.splice(0, ungrouped.length, ...fromList);
+    } else {
+      byGroup.set(fromContainer, fromList);
+    }
+    if (overContainer === UNGROUPED_CONTAINER) {
+      ungrouped.splice(0, ungrouped.length, ...toList);
+    } else if (overContainer !== fromContainer) {
+      byGroup.set(overContainer, toList);
+    }
+
+    // 组装分层 payload(groups 顺序 = 当前 groups 数组顺序)。
+    const payloadGroups = groups.map((g) => ({
+      id: g.id,
+      childOrder: (byGroup.get(g.id) ?? []).map((p) => p.id),
+    }));
+    const ungroupedIds = ungrouped.map((p) => p.id);
+    window.api
+      .invoke(COMMAND_CHANNELS.BOOKMARK_REORDER, { ungrouped: ungroupedIds, groups: payloadGroups })
+      .catch((err: unknown) => {
+        // 后端校验失败(理论上不会,因为我们用真值组装)——吞掉,等 tree 回灌纠偏。
+        console.warn('[BookmarkCategory] reorder rejected:', err);
+      });
+  };
+
+  const renderPath = (p: PathNode): JSX.Element => {
+    const override = p.kind === 'ssh' ? undefined : displayNames.get(p.id);
+    return (
+      <PathItem
+        key={p.id}
+        node={p}
+        sortableId={p.id}
+        {...(override !== undefined ? { displayNameOverride: override } : {})}
+      />
+    );
+  };
+
+  return (
+    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+      <section className={`sidebar-category${collapsed ? ' collapsed' : ''}`}>
+        <header
+          className="sidebar-category-header"
+          onClick={onToggleCollapsed}
+          title={collapsed ? '展开分组' : '折叠分组'}
+        >
+          <span className="sidebar-category-chevron" aria-hidden="true">
+            {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+          </span>
+          <span className="sidebar-category-title">
+            <span className="sidebar-category-icon" aria-hidden="true">
+              <Icon name="bookmark" size={12} />
+            </span>
+            {t('sidebar.category.bookmark')}
+          </span>
+          <span className="sidebar-category-count">{paths.length}</span>
+          {actionLabel && (
+            <button
+              type="button"
+              className="sidebar-category-action"
+              onClick={(e) => {
+                e.stopPropagation();
+                onAction?.();
+              }}
+              title={actionTitle}
+            >
+              {actionLabel}
+            </button>
+          )}
+        </header>
+        {collapsed ? null : paths.length === 0 && groups.length === 0 ? (
+          <p className="sidebar-empty">空</p>
+        ) : (
+          <div className="sidebar-bookmark-groups">
+            {/* 未分组块(隐式,顶置):有未分组 path 才渲染。*/}
+            <SortableContext
+              items={ungrouped.map((p) => p.id)}
+              strategy={verticalListSortingStrategy}
+              id={UNGROUPED_CONTAINER}
+            >
+              {ungrouped.length > 0 && (
+                <ul className="sidebar-paths sidebar-ungrouped">{ungrouped.map(renderPath)}</ul>
+              )}
+            </SortableContext>
+            {/* 各分组块(按 groups 顺序)。*/}
+            {groups.map((g) => {
+              const gPaths = byGroup.get(g.id) ?? [];
+              const isCollapsed = collapsedSet.has(g.id);
+              return (
+                <div className="sidebar-group" key={g.id}>
+                  <GroupHeader
+                    group={g}
+                    collapsed={isCollapsed}
+                    onToggleCollapse={() => toggleGroup(g.id)}
+                  />
+                  {!isCollapsed && (
+                    <SortableContext
+                      items={gPaths.map((p) => p.id)}
+                      strategy={verticalListSortingStrategy}
+                      id={g.id}
+                    >
+                      <ul className="sidebar-paths sidebar-group-paths">
+                        {gPaths.map(renderPath)}
+                      </ul>
+                    </SortableContext>
+                  )}
+                </div>
+              );
+            })}
+            {/* 新建分组按钮(底部)。*/}
+            <button
+              type="button"
+              className="sidebar-group-add"
+              onClick={() => void addGroupPrompt()}
+              title={t('sidebar.group.add') || '新建分组'}
+            >
+              <FolderInput size={12} /> {t('sidebar.group.add') || '新建分组'}
+            </button>
+          </div>
+        )}
+      </section>
+    </DndContext>
+  );
+
+  /** 新建分组:用原生 prompt 取组名(低频操作,不值得起 modal)。 */
+  async function addGroupPrompt(): Promise<void> {
+    const name = window.prompt(t('sidebar.group.add') || '新建分组(输入组名)');
+    if (!name || !name.trim()) return;
+    try {
+      await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_GROUP_ADD, { name: name.trim() });
+    } catch (err) {
+      // 后端校验(唯一/分隔符/长度)失败会 reject;用 alert 直观提示。
+      window.alert(`新建分组失败:${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
 function PathItem({
   node,
   displayNameOverride,
+  sortableId,
 }: {
   node: PathNode;
   displayNameOverride?: string;
+  /**
+   * v0.3.3 Feature E.2:传了才启用 @dnd-kit 拖拽(仅收藏栏传,临时/最近不传)。
+   * id = node.id;不传时 useSortable 不被调用,零 dnd 开销。
+   */
+  sortableId?: string;
 }): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
@@ -660,6 +1052,43 @@ function PathItem({
   const activeCount = sessions.length;
   // BETA-014:优先用 Category 算好的去重名;退到本节点 displayName / 末段
   const displayName = displayNameOverride ?? node.displayName ?? formatPathDisplayName(node);
+
+  // v0.3.3 Feature E.2:仅收藏栏(传 sortableId)启用拖拽。useSortable 是条件调用 ——
+  // React hooks 规则要求顶层调用,故用 sortableId 是否为空区分启用,但 hook 本身始终调。
+  // 临时/最近传 undefined → useSortable({id: undefined}) 不参与任何 SortableContext,零开销。
+  const sortable = useSortable({
+    id: sortableId,
+    disabled: !sortableId,
+    data: { type: 'bookmark-path' },
+  });
+  const sortableStyle =
+    sortableId && sortable.transform
+      ? { transform: CSS.Translate.toString(sortable.transform), transition: sortable.transition }
+      : undefined;
+  const sortableProps = sortableId
+    ? { ref: sortable.setNodeRef as React.LiHTMLAttributes<HTMLLIElement>['ref'], ...sortable.attributes, ...sortable.listeners }
+    : {};
+
+  // v0.3.3 Feature E.2:同 path 下 session 拖序(各 path 独立 DndContext;决策 #15)。
+  const sessionSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+  );
+  const handleSessionDragEnd = (event: DragEndEvent, sess: SessionInfo[]): void => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const fromIdx = sess.findIndex((s) => s.id === active.id);
+    const overIdx = sess.findIndex((s) => s.id === over.id);
+    if (fromIdx < 0 || overIdx < 0) return;
+    // 重排:从 fromIdx 删掉插到 overIdx 前。
+    const ordered = sess.map((s) => s.id);
+    const [moved] = ordered.splice(fromIdx, 1);
+    ordered.splice(overIdx, 0, moved);
+    window.api
+      .invoke(COMMAND_CHANNELS.SESSION_REORDER, { pathId: node.id, orderedSessionIds: ordered })
+      .catch((err: unknown) => {
+        console.warn('[PathItem] session reorder rejected:', err);
+      });
+  };
 
   // M1-C:行内重命名 (仅收藏支持)
   const [renaming, setRenaming] = useState(false);
@@ -917,7 +1346,11 @@ function PathItem({
 
   return (
     <>
-      <li className={`path-item${selected ? ' selected' : ''}${node.invalid ? ' invalid' : ''}`}>
+      <li
+        className={`path-item${selected ? ' selected' : ''}${node.invalid ? ' invalid' : ''}${sortableId && sortable.isDragging ? ' dragging' : ''}`}
+        style={sortableStyle}
+        {...sortableProps}
+      >
         <div
           className="path-item-row"
           onClick={handleSelect}
@@ -977,16 +1410,28 @@ function PathItem({
           )}
         </div>
         {expanded && sessions.length > 0 && (
-          <ul className="session-list">
-            {sessions.map((s) => (
-              <SessionItem
-                key={s.id}
-                session={s}
-                myWindowId={state.myWindowId}
-                selected={state.selectedSessionId === s.id}
-              />
-            ))}
-          </ul>
+          <DndContext
+            sensors={sessionSensors}
+            collisionDetection={closestCenter}
+            onDragEnd={(e) => handleSessionDragEnd(e, sessions)}
+          >
+            <SortableContext
+              items={sessions.map((s) => s.id)}
+              strategy={verticalListSortingStrategy}
+            >
+              <ul className="session-list">
+                {sessions.map((s) => (
+                  <SessionItem
+                    key={s.id}
+                    session={s}
+                    myWindowId={state.myWindowId}
+                    selected={state.selectedSessionId === s.id}
+                    sortableId={s.id}
+                  />
+                ))}
+              </ul>
+            </SortableContext>
+          </DndContext>
         )}
       </li>
       {skillInstallerOpen && (
@@ -1008,6 +1453,11 @@ interface SessionItemProps {
   myWindowId: string;
   /** 父级传入 — 同上,避免订阅 state.selectedSessionId */
   selected: boolean;
+  /**
+   * v0.3.3 Feature E.2:传了才启用 @dnd-kit 拖拽(同 path 内排序)。
+   * 不传 → useSortable 被 disabled,零 dnd 开销(与 PathItem 同样模式)。
+   */
+  sortableId?: string;
 }
 
 /**
@@ -1018,7 +1468,7 @@ interface SessionItemProps {
  * 用 React.memo 包裹后,sessions/state-changed 仅会让"那个真正变化的
  * session"对应的 SessionItem 重渲,其余引用未变的 props 被 memo 跳过。
  */
-function SessionItemImpl({ session, myWindowId, selected }: SessionItemProps): JSX.Element {
+function SessionItemImpl({ session, myWindowId, selected, sortableId }: SessionItemProps): JSX.Element {
   const dispatch = useAppDispatch();
   const ctxMenu = useContextMenuApi();
   const toast = useToast();
@@ -1029,6 +1479,13 @@ function SessionItemImpl({ session, myWindowId, selected }: SessionItemProps): J
   // 回滚必须只在「用户没有再点别的终端」时才执行 —— 否则会覆盖用户后续已经成功的
   // 选择(例如快速连点 A→B→C,C 成功后 B 的迟到失败不该把用户拽回 A)。
   const claimGenRef = useRef(0);
+
+  // v0.3.3 Feature E.2:同 path 内 session 拖序(仅传 sortableId 时启用)。
+  const sessionSortable = useSortable({
+    id: sortableId,
+    disabled: !sortableId,
+    data: { type: 'session' },
+  });
 
   // M1-C:行内重命名
   const [renaming, setRenaming] = useState(false);
@@ -1165,7 +1622,20 @@ function SessionItemImpl({ session, myWindowId, selected }: SessionItemProps): J
     <li
       className={`session-item${selected ? ' selected' : ''}${
         ownedByOther ? ' owned-by-other' : ''
-      }${session.state === 'exited' ? ' exited' : ''}`}
+      }${session.state === 'exited' ? ' exited' : ''}${sortableId && sessionSortable.isDragging ? ' dragging' : ''}`}
+      style={
+        sortableId && sessionSortable.transform
+          ? { transform: CSS.Translate.toString(sessionSortable.transform), transition: sessionSortable.transition }
+          : undefined
+      }
+      {...(sortableId
+        ? {
+            ref: sessionSortable.setNodeRef as React.LiHTMLAttributes<HTMLLIElement>['ref'],
+            ...sessionSortable.attributes,
+            ...sessionSortable.listeners,
+          }
+        : {})
+      }
       onClick={() => void handleClick()}
       onContextMenu={handleContextMenu}
       title={fullTitle}

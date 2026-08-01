@@ -9,6 +9,15 @@
 
 ### 新增
 
+- **侧栏收藏分组 + 拖拽排序(Feature E.1+E.2 / v0.3.3)。**
+  收藏路径告别平铺:加**一级分组**虚拟容器(GroupNode,path 身份不变),分组可折叠/重命名/
+  删组(删组子路径归未分组,绝不删 path)。**@dnd-kit 拖拽**:收藏路径可组内排序 + 跨组移动
+  (拖完发统一分层 BOOKMARK_REORDER {ungrouped, groups[{id,childOrder}]});各路径下终端
+  可同 path 内拖序(决策 #15:服务端内存真值,不落盘,重启重置)。临时/最近不可分组/拖序
+  (决策 #13)。分组折叠态走 L2 偏好 usePanelPreference(附录 G)。bookmarks.json schema
+  v1→v2 自动迁移(幂等/原子/损坏回退;旧 path 归未分组)。新依赖 @dnd-kit/core +
+  @dnd-kit/sortable(npm 核活跃度已验,2024-12 仍在维护)。详见 ADR-025。
+
 - **远程截图(`marina screenshot`)—— agent 自测 enabler(T12 / v0.3.3)。**
   新增 `GET /screenshot?terminal=<id>` HTTP 路由(Bearer 鉴权,同其他路由)截该 session
   owner window 的屏返 `image/png`;capture 回调注入式(`attachWindowCapture`,index.ts

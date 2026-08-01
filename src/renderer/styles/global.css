@@ -1379,6 +1379,112 @@ html[data-maximized='true'] .app-root.with-shell {
   padding: 0;
 }
 
+/* ── v0.3.3 ADR-025 / Feature E.1+E.2:收藏分组 + 拖序 ─────────────── */
+.sidebar-bookmark-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 0;
+}
+/* 未分组块与分组块都是 <ul class="sidebar-paths">;未分组隐式无头。 */
+.sidebar-ungrouped {
+  margin: 0;
+}
+.sidebar-group {
+  display: flex;
+  flex-direction: column;
+}
+.sidebar-group-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  cursor: pointer;
+  color: var(--color-text-secondary, inherit);
+  font-size: 11px;
+  font-weight: 600;
+  user-select: none;
+  border-radius: 4px;
+}
+.sidebar-group-header:hover {
+  background: var(--color-hover, rgba(255, 255, 255, 0.05));
+}
+.sidebar-group-chevron {
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.7;
+}
+.sidebar-group-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-group-actions {
+  display: none;
+  gap: 2px;
+}
+.sidebar-group-header:hover .sidebar-group-actions {
+  display: inline-flex;
+}
+.sidebar-group-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 3px;
+  opacity: 0.7;
+}
+.sidebar-group-action:hover {
+  opacity: 1;
+  background: var(--color-hover, rgba(255, 255, 255, 0.08));
+}
+.sidebar-group-rename-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 4px;
+  border: 1px solid var(--color-border, #444);
+  border-radius: 3px;
+  background: var(--color-bg-input, inherit);
+  color: inherit;
+}
+/* 分组内 path 多缩进一级,体现层级(附录 G.2 精神;这里用 padding 而非
+   FileListRow,因为侧栏不是文件树)。 */
+.sidebar-group-paths {
+  padding-left: 10px;
+}
+.sidebar-group-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 8px;
+  padding: 3px 6px;
+  font-size: 11px;
+  color: var(--color-text-secondary, inherit);
+  background: transparent;
+  border: 1px dashed var(--color-border, #555);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.sidebar-group-add:hover {
+  background: var(--color-hover, rgba(255, 255, 255, 0.05));
+}
+/* 拖拽中的行:半透明 + 不影响布局的轻微缩放提示。 */
+.path-item.dragging {
+  opacity: 0.4;
+}
+
+
 .path-item {
   font-size: 12px;
 }

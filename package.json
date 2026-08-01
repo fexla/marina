@@ -37,6 +37,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
     "@xterm/addon-fit": "0.12.0-beta.256",
     "@xterm/addon-search": "0.17.0-beta.256",
     "@xterm/addon-serialize": "0.15.0-beta.256",
