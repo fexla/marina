@@ -1133,7 +1133,19 @@ export function TerminalView({
     termRef.current = term;
 
     const fitAddon = new FitAddon();
-    const webLinksAddon = new WebLinksAddon();
+    // v0.3.3 T13:终端 URL 点击打不开浏览器 —— 根因是 WebLinksAddon 默认 handler 走
+    // window.open()（无参），被 window-manager 的 setWindowOpenHandler deny 成 null，
+    // 且 deny 前的正则拿到的是空 url → shell.openExternal 永不执行。这里直接传
+    // 自定义 handler 走 IPC SYSTEM_OPEN_EXTERNAL(main 侧已白名单 http/https/mailto)，
+    // 绕开脆弱的 window.open 链路。setWindowOpenHandler 保留作 OSC 8 / 其他
+    // window.open 的安全兼底（拒 file:// / javascript: 等）。
+    const webLinksAddon = new WebLinksAddon((_event, url) => {
+      window.api
+        .invoke(COMMAND_CHANNELS.SYSTEM_OPEN_EXTERNAL, { url })
+        .catch((err) =>
+          console.warn('[terminal] WebLinksAddon link open failed:', err),
+        );
+    });
     const searchAddon = new SearchAddon();
     term.loadAddon(fitAddon);
     term.loadAddon(webLinksAddon);

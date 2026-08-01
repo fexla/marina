@@ -9,6 +9,14 @@
 
 ### 新增
 
+- **修复:终端 URL 链接点击打不开浏览器(T13 / v0.3.3)。**
+  `WebLinksAddon` 默认 handler 走无参 `window.open()`,被 window-manager 的
+  `setWindowOpenHandler` deny 成 null(deny 前正则拿到空 url → `shell.openExternal`
+  永不执行),故点 `https://`/`mailto:` 零反应。改为给 `WebLinksAddon` 传自定义
+  handler 直接走 IPC `SYSTEM_OPEN_EXTERNAL`(main 侧已白名单 http/https/mailto),
+  绕开脆弱的 window.open 链路。`setWindowOpenHandler` 保留作 OSC 8 / 其他
+  window.open 的安全兼底(拒 file:// / javascript: 等)。
+
 - **侧栏收藏分组 + 拖拽排序(Feature E.1+E.2 / v0.3.3)。**
   收藏路径告别平铺:加**一级分组**虚拟容器(GroupNode,path 身份不变),分组可折叠/重命名/
   删组(删组子路径归未分组,绝不删 path)。**@dnd-kit 拖拽**:收藏路径可组内排序 + 跨组移动
