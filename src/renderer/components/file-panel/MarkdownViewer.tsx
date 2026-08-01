@@ -31,10 +31,11 @@ import type { PanelSearchProps } from '../layout/panel-registry';
 import { useDomTextHighlight } from '../../hooks/useDomTextHighlight';
 import { useMiddleClickPan } from '../../hooks/useMiddleClickPan';
 import { useFileViewerScroll } from '../../hooks/useFileViewerScroll';
-import { COMMAND_CHANNELS, type ReadImagePayload, type ReadImageResponse } from '@shared/protocol';
+import { COMMAND_CHANNELS, type ReadImagePayload, type ReadImageResponse, type OpenPathFromMarkdownPayload } from '@shared/protocol';
 import { isRemoteUrl } from '@shared/url-scheme';
 import { useFileContent } from './useFileContent';
 import { useTranslation } from '../LanguageProvider';
+import { useToast } from '../Toast';
 import { MarkdownCodeBlock, extractCodeBlockInfo } from './MarkdownCodeBlock';
 import { useAppState } from '../../store';
 
@@ -60,7 +61,13 @@ export function MarkdownViewer({ sessionId, file, search, scrollRef }: ViewerPro
   // 抖动 + 重复 IPC + 代码块状态丢失。
   const components = useMemo<Components>(
     () => ({
-      a: MdLink,
+      a: (props) => (
+        <MdLink
+          {...props}
+          sessionId={sessionId}
+          mdPath={file.path}
+        />
+      ),
       img: (props: ImgHTMLAttributes<HTMLImageElement>) => (
         <MdImage
           src={props.src}
@@ -173,26 +180,73 @@ export function MarkdownViewer({ sessionId, file, search, scrollRef }: ViewerPro
   );
 }
 
+interface MdLinkProps extends AnchorHTMLAttributes<HTMLAnchorElement> {
+  sessionId: string;
+  /** 当前渲染的 md 文件规范化绝对路径(main 端成员校验 + 相对解析基准)。 */
+  mdPath: string;
+}
+
 /**
- * 外链:点击 preventDefault 后调 cmd:system:open-external,让系统默认浏览器打开。
- * 否则 Electron webContents 会导航到 href,Marina 的 SPA 被替换、前端崩。
- * 页内锚点(#xxx)不拦截,走默认滚动。target/rel 设 _blank + noopener 是 HTML 语义
- * 兜底(preventDefault 后不会真触发导航 / window.open)。
+ * v0.3.3 Feature B(决策 #4):markdown 里的链接按 scheme 分流——
+ * - **外链**:`http://` / `https://` / `mailto:` 开头 → cmd:system:open-external
+ *   (系统浏览器;main 对非 http(s) 一律拒,所以必须 preventDefault)。
+ * - **页内锚点** `#xxx` → 不拦截,默认滚动(react-markdown 渲染的 id)。
+ * - **本地文件**(其余一切)→ cmd:file-panel:open-path 相对 md 所在目录解析,
+ *   进面板**只读查看**(复用 FilePanelService 状态机:加 tab + 切 active + watcher)。
+ *   不存在 / 不是文件 / md 不在面板 → main 抛 FilePanelError,这里 toast 提示。
+ *
+ * 心智约定(写进 show-in-marina SKILL):本地文件直接写路径→面板打开;网页写完整
+ * `https://` URL→浏览器。这是「定一个格式识别外链」——格式即完整 scheme URL。
+ *
+ * target/rel 设 _blank + noopener 是 HTML 语义兜底(preventDefault 后不会真导航)。
  */
-function MdLink({ href, children }: AnchorHTMLAttributes<HTMLAnchorElement>): JSX.Element {
+function MdLink({ href, children, sessionId, mdPath }: MdLinkProps): JSX.Element {
+  const { tx } = useTranslation();
+  const toast = useToast();
   const handle = (e: React.MouseEvent<HTMLAnchorElement>): void => {
     if (!href) return;
     if (href.startsWith('#')) return; // 页内锚点 → 默认滚动
     e.preventDefault();
+    // 决策 #4:外链 = 完整 http(s)/mailto scheme。其余一律当本地文件。
+    if (isExternalLink(href)) {
+      window.api
+        .invoke(COMMAND_CHANNELS.SYSTEM_OPEN_EXTERNAL, { url: href })
+        .catch((err: unknown) => console.warn('[md] openExternal failed', err));
+      return;
+    }
+    // 本地文件链接 → 相对 md 目录解析进面板只读查看。main 端做成员校验 + resolve +
+    // stat,失败(不存在/不是文件/md 不在面板)抛 FilePanelError → 这里 toast。
     window.api
-      .invoke(COMMAND_CHANNELS.SYSTEM_OPEN_EXTERNAL, { url: href })
-      .catch((err: unknown) => console.warn('[md] openExternal failed', err));
+      .invoke<OpenPathFromMarkdownPayload, unknown>(COMMAND_CHANNELS.FILE_PANEL_OPEN_PATH, {
+        sessionId,
+        mdPath,
+        src: href,
+      })
+      .catch((err: unknown) => {
+        console.warn('[md] openPath failed', err);
+        const reason = err instanceof Error ? err.message : String(err);
+        toast.push({
+          kind: 'error',
+          message: `${tx('打开文件失败:', 'Open file failed: ')}${reason}`,
+        });
+      });
   };
   return (
     <a href={href} onClick={handle} target="_blank" rel="noopener noreferrer">
       {children}
     </a>
   );
+}
+
+/**
+ * v0.3.3 Feature B(决策 #4):链接是否为「外链」(走系统浏览器)。
+ * 只有完整 `http://` / `https://` / `mailto:` scheme 才算外链;其余(相对路径、
+ * 绝对路径、`file://`、`data:`、`tel:` 等)一律当本地文件 → 进面板只读查看。
+ * 注意:不用 url-scheme 的 isRemoteUrl(它含 data/blob/tel,对**链接**场景过宽——
+ * 那些当本地文件解析失败 toast 比「悄悄当外链打浏览器」体验更明确)。
+ */
+function isExternalLink(href: string): boolean {
+  return /^(?:https?:|mailto:)/i.test(href);
 }
 
 interface ImgProps {

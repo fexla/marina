@@ -7,6 +7,18 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+### 新增
+
+- **Markdown 文档里的本地文件链接 → 面板只读查看(Feature B / v0.3.3)。**
+  MarkdownViewer 的链接按 scheme 分流(决策 #4):`http://`/`https://`/`mailto:`
+  外链仍走系统浏览器;页内 `#锚点` 滚动;**其余一律当本地文件**,相对 md 文件
+  所在目录解析后进文件面板**只读查看**(复用 FilePanelService 状态机:加 tab +
+  切 active + watcher)。新增 `cmd:file-panel:open-path` 通道 + `openFileFromMarkdown`
+  方法,与 `readImageAsset`(图片)同源安全模型:mdPath 成员校验 + main 端 resolve
+  + stat。文件不存在/不是文件/源 md 不在面板 → toast 提示。链接约定写进
+  `show-in-marina` SKILL(本地文件直接写路径→面板;网页写完整 `https://` URL→
+  浏览器)。
+
 ### 修复
 
 - **修复运行 alt-screen TUI(Claude Code / Pi / vim 等)时终端滚动条偶发跳到
