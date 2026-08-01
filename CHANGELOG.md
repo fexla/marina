@@ -7,282 +7,139 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
-### 修复
+## [0.3.2] — 2026-08-01
 
-- **切换终端偶发「闪一下又切回去」+ 文件页面报 NotOwner(根治)。** 根因是
-  claim-gate 的旧契约把 claim 失败也当成「等待结束」放行面板请求,于是失败的接管
-  仍会触发文件/Git 面板发注定 NotOwner 的请求;同时各接管路径的失败回滚是无条件的,
-  迟到的失败会覆盖用户后续已经成功的选择。本次改造:`waitForClaim` 改为返回
-  `{ ok: boolean }`(失败不再静默放行),FileTreePanel / GitPanel /
-  useGitPollingDemand 在 `outcome.ok === false` 时中止请求不发 IPC(从根上消除
-  NotOwner 错误态);MainPane / Sidebar 的 orphan 接管回滚加 generation 守卫
-  (只在用户没有再点别的终端时才回滚);useCloseSession 续看的 claim 登记提前到
-  乐观选择时(消除「面板在 claim 登记前就请求」的空窗)。回归测试新增 claim
-  失败不得触发面板请求的组合用例。对应 ADR-005(一窗口一 owner)。
-- **代码块按钮 hover 不再出黑块:透明外壳组件禁用主题 bg token。** 根因是
-  `.md-code-block-btn:hover` 用了 `var(--color-bg-hover)` —— 该 token 按应用
-  主背景调色,而代码块外壳透明、底下背景随面板/主题未知,深色主题下渲染成
-  黑块。通用修复:透明外壳组件的 hover/选中反馈一律改
-  `color-mix(in srgb, currentColor N%, transparent)`(由元素自身文字色派生,
-  与任何背景都可读,永不变黑,明暗主题自适应)。新增样式契约守卫
-  `src/renderer/styles/global-css.test.ts`:`npm test` 自动拦截“代码块规则里
-  出现 var(--color-bg-\*)”与“hover 反馈色不用 currentColor”两类回归 ——
-  这类问题以后由 CI 抓,不需要逐个主题人工测。
-- **代码块支持运行选中片段:改为鼠标附近悬浮按钮。** 在代码块内选中文本后,
-  松开鼠标会在鼠标附近浮出一个“运行选中”按钮(类似 VS Code 的 lightbulb),
-  点它只跑选中部分。原工具栏“运行”按钮恢复成始终跑整块,两者职责独立。
-  实现:selectionchange 只维护 ref + 选区消失时隐藏(拖选过程零重渲染);
-  mouseup 时用鼠标坐标定位 fixed 浮层(贴合“鼠标附近”);onMouseDown
-  preventDefault 避免点按钮清空选区。样式走 currentColor tint + 阴影,
-  守样式契约(守卫测试覆盖)。
-- **悬浮“运行选中”按钮改为不透明绿色 FAB。** 按钮使用不透明绿色底 + 白色
-  三角图标(Material FAB 风格),只显示图标 —— 悬浮位置不确定,半透明在任意
-  背景上都不够清晰。mouseup 监听放在 document,保证代码块边缘外松手也能完成
-  归属校验;选中文本存 ref,点击按钮不会因浏览器先清空选区而丢失命令。
-- **选区必须唯一归属于一个代码块。** 用 Range.comparePoint 统计选区实际相交的
-  `.md-code-block > pre`:恰好一个且普通选区完整位于其中时才显示按钮;横跨两个
-  或更多代码块时所有块均拒绝,不会每块各显示一个。普通拖选超出代码块同样拒绝。
-  Chromium 三击末行会把 focus 自动扩到后续 H2,因此仅对 mouseup.detail >= 3
-  且“起点在 pre 内、终点越过 pre 尾部”的已确认浏览器行为裁掉多选部分,保留
-  三击最后一行的运行能力;该例外仍要求只相交一个代码块。
-- **修复三击末行显示按钮但点击后不执行。** 点击悬浮按钮自身会冒泡新的
-  document mouseup(detail=1),此前它在 click 之前把三击特殊选区按普通跨界选区
-  清空,导致运行处理器读不到命令。document 选区监听现在忽略悬浮按钮自身的
-  mouseup,保留 mousedown preventDefault 已保护的选区与命令 ref。
-- **悬浮按钮改为代码块内部绝对定位并随文档滚动。** 选区 viewport 坐标在
-  mouseup 时换算成 `.md-code-block` 内部坐标,wrapper 用 position:relative、按钮
-  用 position:absolute;滚轮滚动 Markdown 页面时按钮随所属代码块移动,不再像
-  fixed 元素一样钉在屏幕原位。位置同时钳在代码块边界内,不会浮到无关内容上。
-- **代码块运行状态改为组件外 L1 缓存,切 terminal 不再停进程或丢输出。** 删除
-  MarkdownCodeBlock 卸载时主动 stop 的旧逻辑;窗口级事件桥在组件不挂载时仍接收
-  output/exited,切回后按 sessionId + 文档路径 + 源位置 + 代码摘要恢复运行状态、
-  流式输出和退出码。缓存有 128 条 / 单条 2Mi 字符硬上限,只淘汰非 running 条目;
-  敏感输出仅存在 renderer 内存,不写 localStorage、磁盘或日志。窗口真正关闭时仍由
-  CodeBlockRunner.removeClient 终止该窗口启动的任务;源 Session 真正销毁时则由
-  removeSession 只停止该 Session 的任务并向存活窗口发 exited 收口 cache。
-- **代码块新增“清除”按钮。** 运行结束或启动失败后,在输出区底部 footer 的右侧
-  显示清除操作(退出状态留在左侧);点击删除缓存结果并回到 idle,输出区和退出码
-  一起消失。运行中不显示且 cache 拒绝误清,避免遗失存活任务的 runId;需要先停止
-  或等待退出。
-- **运行 / 停止 / 清除统一改为纯图标按钮。** 三个动作的图标语义已足够清晰,移除
-  重复文字以降低工具栏和输出 footer 的视觉噪音;保留 title 悬停提示并补 aria-label。
-- **所有代码块纯图标按钮统一为 24×24 正方形。** 复制 / 运行 / 停止 / 清除及
-  “运行选中”悬浮按钮共用 md-code-block-btn 的固定正方形尺寸和 12px 图标;修复
-  悬浮按钮继承横向 padding 后显示成长方形。定位仍测量顶部运行按钮的真实宽高。
+> 相对 0.3.1 的 MINOR 版本:落地性能诊断子系统、需求感知后台调度、Markdown 代码块
+> 一键执行、终端视图 TerminalDeck 等新能力模块,并大幅改进切终端/文件预览体验。
+> 本版本由 `0.3.2-dev.1` ~ `0.3.2-dev.10` 十个开发构建合并升格而来。
+
+### 新增
+
+- **性能飞行记录器(ADR-020)。** 每次运行自动在 `performance-reports/` 生成有界
+  JSON + Markdown 报告:10 秒采样 main event-loop delay/utilization、CPU/RSS/heap、
+  Electron 各进程、window/session/Git watcher gauges;250ms timer 统计 ≥100/250/1000ms
+  stall;固定名称 operation heatmap 汇总 IPC、Git、session/PTY 生命周期。平时 5 分钟
+  原子刷新,≥1 秒严重 stall 至多每 60 秒额外落盘;异常退出保留 `finalized:false` 现场,
+  最多保留 30 次运行。自动报告不记录路径、命令、终端内容、IPC payload 或 stack trace
+  (附录 H 隐私红线)。
+- **按需 15 秒 V8 CPU Profile。** 设置 → 高级可显式捕获 main 进程 `.cpuprofile`;
+  操作前提示函数名/本地源码路径隐私风险,服务端限制 5-30 秒、禁止并发采集且每 run
+  最多保留 5 份,从不因 stall 自动启动。
+- **性能报告入口。** 设置 → 高级显示本次采样/stall/RSS 摘要,并提供「立即刷新报告」
+  「打开报告目录」。
+- **PTY 吞吐与背压诊断(ADR-020 增补)。** 报告新增每采样窗口 bytes/s、chunks/s(从
+  counter delta 推导,零热路径开销)、全程峰值速率与突发窗口计数、sessionOutput IPC
+  发送耗时分布、8ms 合并窗口吸收字节峰值;stall 记录携带近窗口 PTY 速率,能区分 stall
+  由流量突发/背压引起还是无关抖动。
+- **独立报告分析工具** `scripts/analyze-performance-report.mjs`。传入报告 JSON 路径
+  (或省略自动找最新)输出六维诊断(吞吐/背压/stall 相关性/瓶颈/内存/隐私自检),纯 Node
+  内置模块零新依赖。
+- **需求感知后台任务调度器(ADR-021)。** 新增 main 端 `BackgroundWorkScheduler`:
+  昂贵周期任务统一 recursive timeout、全局并发预算(默认 1)、HOT/WARM/NONE demand、
+  多窗口最高需求合并、pre-registration demand 与 generation 竞态防护;窗口关闭、远程
+  断线、owner/Session 生命周期统一清理。
+- **Markdown 代码块一键执行(ADR-023)。** Markdown 面板里 `bash`/`sh`/`powershell`/
+  `pwsh`/`cmd` 等 fenced code block 带「复制」「运行」「停止」「清除」按钮。点击「运行」
+  后 main/daemon 直接 `child_process.spawn` 对应 shell 跑整段代码,**不经 PTY / xterm**,
+  因此当前终端无论是 Claude Code / Codex / vim 还是普通 shell 都不会被干扰。工作目录
+  取自该终端的服务端 `currentCwd`,输出在代码块下方流式显示,退出后显示 exit code。
+  本地与远程后端行为一致(preload 自动路由);SSH 终端因命令需在远程主机跑、本进程无法
+  spawn 而明确拒绝。
+  - 选中片段:代码块内选中文本后,鼠标附近浮出「运行选中」按钮(类似 VS Code
+    lightbulb),只跑选中部分;选区须唯一归属一个代码块,横跨多个或拖出代码块时拒绝。
+    按钮随文档滚动定位,钳在代码块边界内。
+  - 运行状态改为组件外 L1 缓存:切终端不停止进程、不丢失输出,切回后按 sessionId +
+    文档路径 + 源位置 + 代码摘要恢复运行状态/流式输出/退出码。缓存 128 条 / 单条 2MiB
+    上限,只淘汰非 running 条目;窗口关闭/Session 销毁时收口。
+  - shell 走应用自身 `detectShells` 的绝对路径(与 SessionManager 同源,不依赖 Electron
+    main 的 PATH);cmd 输出 GBK/UTF-8 自动检测解码(中文 Windows 默认 GBK 输出会乱码,
+    `chcp 65001` 对管道无效),PowerShell/pwsh 用命令前缀强制 UTF-8。代码块外壳/toolbar/
+    输出区全透明,仅 border 分层,明暗主题自适应不再出现固定黑条。
+- **内置 Nerd Font 兑底 + 自定义回退字体。** 应用内置 `Symbols Nerd Font Mono`(MIT)
+  作为终端字体栈零配置兑底,解决 powerlevel10k / starship / lsd / eza 等 CLI 工具输出的
+  Nerd Font 图标显方块问题。字体栈由 `buildTerminalFontStack()` 统一构建:主字体 → 用户
+  自定义回退 → 内置 Nerd Font → 通用 monospace。「设置 → 外观」新增「回退字体」输入框,
+  下方有实时图标预览 + 最终字体栈明文展示。
 
 ### 改进
 
-- **pwsh 代码块在未装 PowerShell 7 的机器上回退到 Windows PowerShell 5.1。**
-  之前 detectShells 找不到 pwsh → spawn pwsh.exe ENOENT → 友好报错但无法
-  运行。现在 pwsh 的 shell 偏好序改为 ['pwsh', 'powershell'],Windows 上
-  powershell.exe 必装,绝大多数代码块在 5.1 / 7 下行为一致。UTF-8 前缀通用。
-- **show-in-marina 预制 skill 提示词新增“可运行代码块”指引。** SKILL.md 新增
-  专节,告知 AI:经 `show` 展示的 Markdown 里 fenced 代码块(bash/powershell/
-  cmd)自带运行按钮,用户一键执行 / 选中片段执行。AI 可借此自发产出可操作
-  文档(分步 setup 指南、“试试这几条”命令菜单、修复验证步骤),而非仅可读文档。
-  description 同步更新。src 与 .pi 两份同步。
-- **GPU 合成降级时自动回退 DOM renderer(PER-2),根治 WebGL 导致的持续高 CPU。**
-  Chromium 在 GPU 进程崩溃 / 显卡设备变化(如 AMD 驱动重装)后会自动给 renderer 加
-  `--disable-gpu-compositing`,把网页合成从 GPU 降级到 CPU 软件光栅。但 xterm 的
-  WebGL renderer(`advanced.terminalRenderer: auto`,Windows/macOS 默认)不感知这个
-  降级,继续用 WebGL 画光标(`cursorBlink` 每帧),产物却要交给 CPU 合成 ——
-  实测(真实 Electron,2026-07-31)GPU 进程持续烧 432–471% 单核(≈ 4 个核),整机体感
-  “卡”;切 DOM renderer 后 GPU 进程瞬间降至 7-8%(↓ 60 倍)。现 preload 检测本
-  renderer 命令行(`window.api.gpuCompositingDisabled`),auto 模式下据此强制回退 DOM,
-  避免 “WebGL + CPU 合成” 最差组合;用户显式选 `webgl` / `dom` 不受影响。
-- **飞行记录器不再低估 GPU 进程 CPU(PER-2)。** `aggregateElectronMetrics` 原用
-  `app.getAppMetrics().cpu.percentCPUUsage` 单点采样,对 GPU 进程实测可低估 40-60 倍
-  (报告显示 6.8%,实际 432%)。改用 `cumulativeCPUUsage`(Electron 22+ 运行时提供)
-  差分换算真实平均 CPU%,首采样无基线时 fallback `percentCPUUsage`。这类“GPU 烧核”
-  问题以后在自动报告里一目了然,不再隐藏。
-- **切换终端提速(REPLAY-1):claim 不再重复序列化 scrollback。** `cmd:session:claim`
-  响应从"完整 base64 scrollback + lastSeq"改为仅 O(1) lastSeq —— renderer 从不消费
-  claim 响应里的 scrollback(冷挂载走 `get-scrollback`,暖切换由 TerminalDeck 缓存 +
-  view lease 维持),历史实现让每次切换都在 main 重复 serialize(5000 行 ≈ 40-60ms)
-  并传输 0.6-2MB 大 payload。协议、ipc-protocol.md、claim-gate 同步。
-- **冷挂载 scrollback 重放提速(REPLAY-1):分片从 16KB + 每片 `setTimeout(0)` 改为
-  256KB + 时间预算 + MessageChannel 让出。** 实测(真实 Electron,2026-07-31):
-  Chromium 对连续嵌套 timer 有 ~4ms clamp,5000 行 120 列(≈590KB)重放 214ms、
-  240 列 CJK(≈1.7MB)551ms,其中 timer 链单独占 130-500ms;不插 timer 的完整
-  重放仅 47-81ms。新策略实测 34/47/49ms(590KB / 1.19MB / 1.74MB),提速 6-11 倍,
-  保留 FLK-1 的"主线程可呼吸、敲键回显正常"收益。
-
-## [0.3.2-dev.10] — 2026-08-01
-
-> **开发构建**(AGENTS.md 附录 F)。dev.9 的代码块执行在中文兼容性上翻车:Electron main
-> 的 PATH 没有 pwsh.exe / Git Bash(用户装了但不在 PATH),spawn 异步 ENOENT → 用户看到
-> 退出码 -4058;cmd 输出按系统 ANSI 代码页(GBK)解码乱码;代码块外壳背景误用 elevated
-> 导致“黑条”扩大。本版全部修复。SemVer 上 `0.3.2-dev.9 < 0.3.2-dev.10 < 0.3.2`。
-> 产物 `Marina-Portable-0.3.2-dev.10-x64.exe`。
-
-### 修复
-
-- **代码块执行不再依赖 PATH:shell 走应用自身 detectShells 的绝对路径。** pwsh / bash /
-  powershell / cmd 的 spawn 命令优先取 `detectShells` 结果(与 SessionManager 同一检测源,
-  覆盖 `Program Files\PowerShell\7\pwsh.exe` / `Program Files\Git\bin\bash.exe` 等),
-  Electron main 的 PATH 里没有这些可执行文件时不再报 ENOENT(退出码 -4058)。`run()`
-  改为 async(等待 shell 解析),getShells 失败回退 PATH 名不阻塞。spawn 后异步 ENOENT
-  也给出“找不到可执行命令”的友好提示而非裸的 -4058。
-- **cmd 输出中文乱码修复:GBK/UTF-8 自动检测解码。** cmd.exe 按系统 ANSI 代码页(中文
-  Windows = GBK)输出,`chcp 65001` 对管道输出无效(实测中文变问号)。新增
-  `DetectingOutputDecoder`:纯 ASCII 直接输出,首段非 ASCII 字节用 fatal UTF-8 判定,
-  失败则按 GBK 解码,TextDecoder(stream) 处理跨 chunk 多字节切分。同时移除 cmd 的
-  chcp 前缀。PowerShell/pwsh 仍用命令前缀强制 UTF-8(dev.9 已验证生效)。
-- **代码块外壳背景不再扩大“黑条”。** dev.9 把整块背景设为 elevated 变量导致黑区从
-  toolbar 扩大到整块;改为外壳 / toolbar / 输出区全透明、仅 border 分层,代码区背景
-  仍由各主题 pre 规则提供,明暗主题自适应。
-
-## [0.3.2-dev.9] — 2026-07-31
-
-### 新增
-
-- **Markdown 代码块一键执行(ADR-023)。** Markdown 面板里 `bash` / `sh` / `powershell` /
-  `pwsh` / `cmd` 等 fenced code block 现在带「复制」「运行」按钮。点击「运行」后
-  main/daemon 直接 `child_process.spawn` 对应 shell 跑整段代码,**不经 PTY / xterm**,因此
-  当前终端无论是 Claude Code / Codex / vim 还是普通 shell 都不会被干扰。工作目录取自
-  该终端的服务端 `currentCwd`,输出在代码块下方流式显示,运行中可「停止」(SIGKILL),
-  退出后显示 exit code。本地与远程后端行为一致(preload 自动路由);SSH 终端因命令需在
-  远程主机跑、本进程无法 spawn 而明确拒绝。无确认弹窗(产品决策移除风险分级)。
-  - 新增 `src/shared/markdown-command.ts`(语言归一化与可运行判定)、
-    `src/main/code-block-runner.ts`(spawn + 流式输出 + 生命周期)、
-    `src/renderer/components/file-panel/MarkdownCodeBlock.tsx`(工具栏 / 输出区)。
-  - 新增 IPC:`cmd:system:run-code-block` / `cmd:system:stop-code-block` /
-    `evt:system:code-block-output` / `evt:system:code-block-exited`。
-  - **编码**:`StringDecoder('utf8')` 处理多字节字符跨 chunk 切分;PowerShell / pwsh
-    命令前缀强制 `[Console]::OutputEncoding = UTF8`(中文 Windows 默认 GBK 输出会乱码);
-    cmd 前缀 `chcp 65001` 切 UTF-8 代码页。bash 用 `-c`(非登录非交互,避免登录 shell
-    profile 副作用导致的输出丢失)。
-  - **样式**:代码块外壳统一背景 + 透明 toolbar / output(明暗主题自适应,不再出现
-    固定黑条);无输出的运行也显示 exit code,不再“闪一下闪回”。
-
-## [0.3.2-dev.8] — 2026-07-30
-
-> **开发构建**（AGENTS.md 附录 F）。人工复验澄清此前所说的“滚动位置”指右侧
-> Markdown / 文本 / Diff 等文件预览，不是中间 xterm；本版修复正确的状态对象。
-> dev.7 的 TerminalDeck 保留为独立的终端生命周期修正。SemVer 上
-> `0.3.2-dev.7 < 0.3.2-dev.8 < 0.3.2`。
-> 产物 `Marina-Portable-0.3.2-dev.8-x64.exe`。
-
-### 修复
-
-- **右侧文件预览按终端、文件分别记住真实滚动位置。** 新增 renderer L1 view state `fileViewerScroll`，以 `sessionId + OpenedFile.path + kind` 隔离 Markdown、Text、Diff、Image/Unknown；切换工作区面板、文件 tab 或终端 Session 后恢复，关闭文件、清空面板或销毁 Session 时同步清理。Markdown/Image 使用 `.file-panel-body` 的文档级坐标，Text/Diff 使用各自内层双轴 scroller；Diff 同时恢复 `scrollLeft` / `scrollTop` 并同步左侧 gutter。滚动事件 120ms trailing debounce 写 store，切换前立即 flush，不使用模块级隐藏 Map，也不跨应用重启持久化。
-- **异步加载、快速切换和搜索不再覆盖正确位置。** `useFileContent` 给响应绑定 request identity，同 kind 文件切换时同步隐藏上一文件内容；恢复走双 RAF + `ResizeObserver`（最多 4 秒），Markdown 图片等布局尚短时保留原目标，不能被浏览器 clamp 后的程序化 scroll 事件覆写。React DOM mutation 已先把复用容器归零时，cleanup 只 flush 事件阶段的 pending 真值，不重读 DOM；另对跨文件迟到 scroll、快速卸载和搜索 `scrollIntoView` 设置独立 fence，避免位置串档或互相抢滚动。
-
-### 验证
-
-- 新增真实 Electron `smoke:file-viewer-scroll`：覆盖初始 `maxTop=0` 后延迟长高、双 RAF 前快速卸载、搜索 active 且无匹配时 A→B→A、两个 Markdown 文件独立位置、Text 纵向恢复、Diff 横纵向 + gutter 同步，以及 panel / file / session 三类切换。最终 typecheck、ESLint、Stylelint、63 个测试文件（1000/1000）和该 smoke 全部通过。
-
-## [0.3.2-dev.7] — 2026-07-29
-
-> **开发构建**(AGENTS.md 附录 F)。dev.6 人工复验确认 Diff 双 pane 布局正确，
-> 但终端滚动仍未修复；本版停止继续修 replay 标量，改为保留真实 xterm 实例。
-> SemVer 上 `0.3.2-dev.6 < 0.3.2-dev.7 < 0.3.2`。
-> 产物 `Marina-Portable-0.3.2-dev.7-x64.exe`。
-
-### 修复
-
-- **Session 切换改为持久 TerminalDeck，不再销毁/重建 xterm。** dev.4–dev.6 的 `viewportY`、live store、`preventScroll` 都未改变根因：MainPane 每次切换仍按 session key 卸载 TerminalView、`term.dispose()`，再从另一个 headless Terminal 的序列化结果重建，单个行号不可能表达真实 viewport/buffer/reflow 状态。现最多缓存 10 个访问过的 xterm slot，A→B→A 只切换 `visibility/inert/active`；同一 Terminal、DOM node、buffer、viewport 和 selection 原样存活。Main 新增每 Session 唯一只读 view lease：owner=null 时 parked xterm 仍定向接收后台输出，但无 input/resize/文件/Git 权限；跨 client 漏输出时 `continuous=false`，只重建该 slot。parked slot 释放 WebGL、active 再加载，避免 GL context 累积。真实 Electron smoke 创建 A/B、滚 A、让 A parked 期间继续输出、再切回 A，断言 viewport DOM identity 不变、`viewportY` 不变且后台 token 已收到，连续两次通过。
-- **Diff 双栏分隔线不再亮粉。** dev.6 使用了不存在的 `--color-border`，命中调试 fallback `#f0f`。改用项目既有主题策略：`color-mix(var(--color-text-muted) 18%, transparent)`，七套主题均为低对比 hairline。
-
-## [0.3.2-dev.6] — 2026-07-29
-
-> **开发构建**(AGENTS.md 附录 F)。dev.5 后按人工复验纠正 Diff 查看器的基础布局，
-> 不再用 sticky 遮罩修补正文穿透。SemVer 上 `0.3.2-dev.5 < 0.3.2-dev.6 < 0.3.2`。
-> 产物 `Marina-Portable-0.3.2-dev.6-x64.exe`。
-
-### 修复
-
-- **Diff 行号栏与代码栏改为物理分离的双 pane。** dev.4/dev.5 的根本错误不是某个宽/高 CSS 值,而是布局把 gutter 放在代码横向滚动层里,再靠 sticky + 不透明背景遮住从下面滚过的正文；这让“穿透”成为设计上始终存在、只能打补丁掩盖的问题。现重构为 sibling panes:左 pane 只渲染数字/符号并固定不参与横向滚动,右 pane 独占代码横/纵滚动,两者只同步 `scrollTop`；数字栏有独立边界线,代码在 DOM clipping/布局层就不可能进入数字栏。中键平移、搜索 `scrollIntoView` 都作用于右 pane；鼠标停在左栏滚轮时转发给右 pane。水平滚动条实际高度会补入 gutter 尾部,保证滚到最底两边仍严格对齐。Chromium 几何探针确认横滚 140px 后左侧命中元素仍是 gutter、代码只在右 pane 的 clip 区内显示；100 行滚到底 `lastRowDelta=0`。
-
-## [0.3.2-dev.5] — 2026-07-29
-
-> **开发构建**(AGENTS.md 附录 F)。dev.4 人工复验确认终端滚动位置与 Diff gutter
-> 两项旧修均未命中真正运行时问题；本版依据现场截图、React effect 时序与 Chromium
-> 几何探针重新定位。SemVer 上 `0.3.2-dev.4 < 0.3.2-dev.5 < 0.3.2`。
-> 产物 `Marina-Portable-0.3.2-dev.5-x64.exe`。
-
-### 修复
-
-- **终端滚动恢复改读 live store,焦点不再覆盖 viewport。** dev.4 已把位置重构为 store 一等 view state并改用正确的 `viewportY`,但 replay fence 仍读取 mount 时 `appState` 闭包。旧实例的 passive-effect cleanup 可能晚于新实例 render,导致刚 flush 的位置不在闭包里,恢复分支仍当作“无缓存”到底。现通过 `useAppStateRef()` 在异步 fence 当下读取最新 `terminalScroll`；直接聚焦 xterm helper textarea 统一使用 `preventScroll:true`,防止浏览器为了露出底部光标而把刚恢复的 viewport 再拉到底。
-- **Diff 空 gutter 高度补齐(中间修正,dev.6 进一步改结构)。** 根据截图确认无行号 hunk 在 baseline grid 中 gutter 高度为 0,先用 `align-self:stretch` 补齐不透明背景。后续复盘确认“代码滚在 gutter 下方、靠背景遮住”本身就是错误布局,dev.6 改为真正分离的双 pane。
-
-## [0.3.2-dev.4] — 2026-07-29
-
-> **开发构建**(AGENTS.md 附录 F)。0.3.2-dev.3 验收后的一批修复:侧栏双击新建闪屏根治、
-> 关闭终端续看按最近使用、切换终端记住滚动位置(重构为一等 view state)、Diff 无行号行 gutter。
-> 仍预告版本号 `0.3.2`,dev 构建标识递增为 `-dev.4`。SemVer 上 `0.3.2-dev.3 < 0.3.2-dev.4 < 0.3.2`。
-> 产物 `Marina-Portable-0.3.2-dev.4-x64.exe`。
-
-### 修复
-
-- **侧栏双击新建终端不再先闪一下「新建终端」页。** 0.3.2-dev.3 只修了 invoke 返回早于广播的时序类闪屏,漏了一个更根本的来源:双击序列里的第一击 `click` 会先派发 `view/select-path`,该 reducer 在 hideTopTabBar 模式下无条件清空 `selectedSessionId`,于是主区在 `dblclick` 触发 SESSION_CREATE 并返回之前一直显示 EmptyPathState。现给侧栏 `PathItem` 的单击选中加一个双击阈值窗口(230ms)的去抖:`click` 不立即派发选中,而是延后;若在该窗口内收到 `dblclick` 则取消这次选中,双击就只「直接新建终端」而不先切到新建页(标签栏可见模式同样受益)。这是文件管理器/终端启动器的标准 click-vs-dblclick 消歧模式。
-- **关闭终端续看按最近使用顺序选候选。** 关掉当前终端后,若同目录有多个无主(orphan)终端,此前按侧栏/tab 的创建顺序取第一个,不贴合「关一个、看下一个」的直觉。现 store 记每个 session 的最后选中时间戳(`view/select-session` / `sessions/created` 写,`sessions/destroyed` 清),续看选候选改为按该时间戳降序——用户最近还看过的那个终端优先;无记录的(从未在本窗口选过的 orphan)排末尾,之间回退到原顺序做稳定兜底。
-- **切换终端滚动位置进入 store(首次实现,dev.5 继续纠偏)。** 将位置做成一等 view state(`terminalScroll: Map<sessionId,{topLine,wasAtBottom}>`),onScroll debounce 写、卸载 flush、session 销毁清理；修正 `baseY`/`viewportY` 字段误用。人工复验发现异步 fence 仍读取 mount 时闭包,所以本版并未真正解决切换后恢复,后续由 dev.5 修复。
-- **Diff 无行号 gutter 首次宽度修正(dev.5 继续纠偏)。** 始终渲染空行号槽并固定 gutter 宽度,保证 hunk/header 与普通代码行的正文起点一致。人工复验截图确认真正问题是空 gutter 高度为 0 导致横向正文穿透,所以宽度修正视觉上没有解决主诉；后续由 dev.5 修复。
-
-## [0.3.2-dev.3] — 2026-07-26
-
-> **开发构建**(AGENTS.md 附录 F)。0.3.2-dev.2 后积累的一批改动:Git 轮询按 repo 去重、
-> Nerd Font 兑底、远程 permessage-deflate、面板 race / 续看 / 新建闪屏 / 代码查看器滚动等修复,
-> 以及 show-in-marina 技能的僵尸 tab 检测 + 批量 close + 文档增强。仍预告版本号 `0.3.2`,
-> dev 构建标识递增为 `-dev.3`。SemVer 上 `0.3.2-dev.2 < 0.3.2-dev.3 < 0.3.2`。
-> 产物 `Marina-Portable-0.3.2-dev.3-x64.exe`。
-
-### show-in-marina 技能
-
-- **僵尸 tab 检测。** 面板里的 tab 指向的文件被从磁盘删除后,此前 tab 会无限期残留且用户无从发现。现 `FilePanelService` 为每个已打开文件维护 `missing` 标记:`fs.watch` 检测到删除时立即置 true(文件重现则清回 false),`GET /opening-files` 拉取前先 `refreshStale` 重刷磁盘真值(补 watcher 漏掉的事件,如 Marina 关闭期间被删)。CLI `marina list` 给僵尸 tab 打 `!` 前缀与 `(deleted)` 标记,并在末尾提示 `marina close --stale`;`list --json` 输出 `"missing": true`。
-- **批量 close。** CLI `marina close` 新增三种批量形态:`--all`(关全部)、`--stale`(只关僵尸 tab)、`--glob <PATTERN>`(按 basename 通配关,支持 `*`/`?`)。路径参数含 `*`/`?` 自动当 glob(如 `close *.md`)。服务端新增 `POST /close-files {terminal, mode, pattern?}` 端点 + `closeAllFiles` / `closeMatchingFiles` / `refreshStale` 方法,返回体带 `closed` 路径列表供 CLI 输出「关了哪些」。glob 匹配为内置极简实现(不新增依赖)。
-- **close 路径模糊匹配。** 此前 `close <PATH>` 必须与 `list` 输出的完整路径精确一致才关得掉,容易传错。现服务端 `closeFile` 精确路径未中时回退到大小写不敏感的 basename 匹配——只给文件名(如 `close report.md`)也能关;多个同名时报错并提示用完整路径或 glob,不猜不误关。renderer 的 tab 关闭恒走精确路径,行为不变。
-- **文档:文档作为任务沟通界面。** SKILL.md 新增「Use one document as the task dashboard」一节,固化一个高频用法模式:跨多轮的同一任务用一份文档当与用户的沟通面(进展/选项/待确认项/用户批注集中在该文件,每轮覆写 + re-show 同一路径,CLI 只留状态 + 「详见文档」),比把长内容堆在 CLI 多轮里稳定得多。
-- **安装的 skill 同步。** `.pi/skills/show-in-marina/`(项目级安装快照)此前落后于源(`src/skills/show-in-marina/`,缺 bash 封装、旧版 SKILL.md/ps1)。已与源同步,含上述全部改动与 bash 封装。
+- **pwsh 代码块在未装 PowerShell 7 的机器上回退到 Windows PowerShell 5.1。** pwsh 的
+  shell 偏好序改为 `['pwsh', 'powershell']`,Windows 上 powershell.exe 必装,绝大多数代码
+  块在 5.1 / 7 下行为一致。
+- **show-in-marina 预制 skill 增强。** 僵尸 tab 检测(指向的文件被删后 tab 标 `!`/`(deleted)`
+  并提示 `close --stale`);批量 close(`--all` / `--stale` / `--glob`);close 路径模糊匹配
+  (只给文件名也能关);SKILL.md 新增「文档作为任务沟通界面」用法模式与「可运行代码块」
+  指引。项目级安装快照与源同步。
+- **远程连接启用 permessage-deflate(RFC 7692)。** PTY 字节流与 scrollback replay 都是
+  高度可压缩文本,典型远程流量减 50–70%;client 端由 Chromium 自动协商,无需改动。
 
 ### 性能
 
-- **Git 后台轮询按 repo 去重(ADR-021 方案 A)。** 此前每个 Git 仓库 session 各注册一个 3 秒/60 秒 polling task，同一 repo 开 N 个终端就重复轮询 N 次 `git status`（并占满全局并发预算，大仓库下制造 stall）。现改为按 repo 去重：一个 repo 只注册一个 task，run 时跑一次 git status 再 fan-out emit 给该 repo 下所有 session；每个 session 作为该 task 的一个 scheduler consumer（demand 由 scheduler 自动取各 session 最高）。同 repo 的 GitPanel mount / HOT immediate / 后台 poll 共享同一个 repo 级 in-flight，同 repo 任何时刻最多一个 git status 在跑。removePollingConsumer 改为枚举该窗口持有的 session 逐个撤 demand（demand consumerId 从 windowId 改为 sessionId）。
-
-### 新增
-
-- **内置 Nerd Font 兑底 + 自定义回退字体。** 很多 CLI 工具(powerlevel10k / starship / lsd / eza 等)在输出里塞 Nerd Font 图标,用户选的终端字体不含这些字形就会显方块。现应用内置 `Symbols Nerd Font Mono`(打包进 `assets/fonts/`,MIT 协议)作为终端字体栈的零配置兑底;字体栈由 `src/shared/font-stack.ts` 的 `buildTerminalFontStack()` 统一构建,优先级为主字体 → 用户自定义回退 → 内置 Nerd Font → 通用 monospace,保证 PUA 图标先命中符号字体而非被通用 monospace 截胡。另在「设置 → 外观」新增「回退字体」输入框(默认留空 = 仅用内置兑底),高级用户可填自定义回退(如自己装的完整 Nerd Font、emoji 字体),下方有实时 Nerd Font 图标预览 + 最终字体栈明文展示。
+- **切终端提速(REPLAY-1)。** `cmd:session:claim` 不再序列化/返回全量 scrollback
+  (renderer 从不消费它:冷挂载走 get-scrollback,暖切换走 TerminalDeck 缓存 + view lease),
+  改为 O(1) lastSeq —— 消除每次切换 40-60ms serialize + 0.6-2MB payload 传输。冷挂载
+  scrollback 重放分片从 16KB + 每片 `setTimeout(0)` 改为 256KB + 时间预算 + MessageChannel
+  让出(Chromium 对连续嵌套 timer 有 ~4ms clamp);实测(真实 Electron 31,5000 行)
+  590KB/1.19MB/1.74MB 重放 214/375/551ms → 34/47/49ms,提速 6-11 倍。
+- **终端视图改为持久 TerminalDeck,不再销毁/重建 xterm(ADR-022)。** A→B→A 复用同一个
+  Terminal、DOM node、buffer、viewport 和 selection,最多缓存 10 个访问过的 xterm slot。
+  main 新增每 Session 唯一只读 view lease:owner=null 时 parked 终端仍定向接收后台输出,
+  但无 input/resize/文件/Git 权限;parked slot 释放 WebGL、active 再加载,避免 GL context
+  累积。
+- **Git 后台轮询按 repo 去重(ADR-021 方案 A)。** 此前每个 Git 仓库 session 各注册一个
+  polling task,同一 repo 开 N 个终端就重复轮询 N 次 git status 并占满全局并发预算。现按
+  repo 去重:一个 repo 只注册一个 task,run 时跑一次 git status 再 fan-out emit 给该 repo
+  下所有 session;每个 session 作为该 task 的一个 scheduler consumer(demand 取各 session
+  最高)。同 repo 的 GitPanel mount / HOT immediate / 后台 poll 共享同一个 repo 级 in-flight。
+- **关键路径统一埋点。** IPC 注册中间件按固定 channel 统计 duration/error/in-flight;
+  Git status/diff、poll skip、watcher/in-flight gauges 与 session/PTY counters 接入同一
+  有界 registry。metric name 有 200 项硬上限,拒绝路径/动态高基数字符串。
+- **Git 扫描按真实 UI 需求降频。** 当前聚焦窗口的当前 Git 面板为 HOT(立即刷新 + 完成后
+  3 秒);当前 Session 显示其他面板、dock 折叠或窗口失焦为 WARM(60 秒);切换 Session、
+  owner 释放、退出/离仓/零窗口为 NONE(完全停止)。所有自动 Git status 全局最多一个并发,
+  同 session+cwd 的 mount 拉取/prefetch/HOT immediate 合并为一个子进程。
+- **GPU 合成降级时自动回退 DOM renderer(PER-2)。** Chromium 在 GPU 进程崩溃/显卡设备
+  变化后会给 renderer 加 `--disable-gpu-compositing`,但 xterm WebGL renderer 不感知降级,
+  继续用 WebGL 画光标却交给 CPU 合成 —— 实测 GPU 进程持续烧 432–471% 单核。现 preload
+  检测本 renderer 命令行,`auto` 模式下据此强制回退 DOM(GPU 进程降至 7-8%,↓ 60 倍);
+  用户显式选 `webgl`/`dom` 不受影响。
+- **飞行记录器不再低估 GPU 进程 CPU。** `aggregateElectronMetrics` 改用
+  `cumulativeCPUUsage` 差分换算真实平均 CPU%(原单点 `percentCPUUsage` 对 GPU 进程可低估
+  40-60 倍),首采样无基线时 fallback。
 
 ### 修复
 
-- **远程连接(permessage-deflate)网络流量大幅下降。** 连远程 daemon 用终端时,PTY 字节流与 scrollback replay 都是高度可压缩的文本(大量 ANSI 转义/重复字符/空格),但此前 WS 传输未启用压缩,且经 base64+JSON 双重封装(约 +47% 膨胀)。现给 daemon 端 `WebSocketServer` 启用 permessage-deflate(RFC 7692):PTY 增量输出与切 tab 时的全量 scrollback replay(~2MB)压完常只剩几百 KB,典型远程流量可减 50–70%。client 端(preload 的浏览器原生 WebSocket)由 Chromium 自动发起 deflate 协商,无需改动;ws 库默认 threshold=1024,小于 1KB 的消息跳过压缩省 CPU。对齐 docs/方案-远程后端 R3 风险与 transport-ws.ts 顶部 TODO(P1 binary frame 后续再做)。
-- **切换终端 tab 时文件/Git 面板不再报「当前窗口不持有该会话」(NotOwner)。** 同窗口内点一个之前被释放成无主(orphan)的终端时,面板会在终端视图刚切换、main 端 owner 关系尚未更新完成的瞬间发数据请求,被 `requireOwner` 判为 NotOwner 并把错误文字显给用户。根因是「乐观接管 orphan session」(renderer 先 dispatch 本地 owner 变更 + select,终端视图立即切换)与「main 端 SESSION_CLAIM 异步往返」(handler 内部要 await scrollback 序列化,非 ms 级)之间的 race —— 而 getScrollbackForReplay 免 owner 校验,所以终端本身不受影响,只有面板数据请求中招。现新增 `src/renderer/hooks/claim-gate.ts`:所有接管路径(tab 点击 / 侧栏点击 / 关闭续看 / 启动恢复)统一走 `claimSession()`,把 claim promise 登记进模块级 gate;面板(FileTreePanel / GitPanel / Git 轮询 demand)首次数据请求前 `await waitForClaim(sessionId)`,等 main 端 owner 就位再发,从根消除 race —— 终端切换的即时性不变。另给 main 端 `requireOwner` / `requireOwnerSession` 命中 NotOwner/SessionMissing 时补 `logger.warn`(带 sessionId/requester/真实 owner,区分「同窗口 race」与「跨窗口未接管」;只记 id 不记路径/命令,符合附录 H),此前这类面板错误在 main.log 里是黑洞。
-- **关闭当前终端后自动续看(通用,不限 hideTopTabBar)。** 此前关掉正在看的终端,主区直接掉进「新建终端」页(即使同目录还有别的终端)——因为一个窗口同一时刻只持有 1 个 session,销毁后本窗口不再持有任何 session。现 tab 的 × / 右键菜单「关闭」/ statusbar「关闭」统一走续看逻辑:关掉当前终端时,若同目录有无主(orphan)终端就接管并切过去,没有才进新建页。乐观先选候选再 SESSION_CLOSE,避免中间闪一下新建页;claim 失败回滚到新建页。
-- **hideTopTabBar 模式下「新建 / 关闭」放到底部 statusbar,不新增行。** TabBar 隐藏是为了省掉那一行,不能再用一条几乎全空的工具栏把它吃回去。改为复用终端底部已有的 statusbar(pid 那条,本就带简易模式切换等交互按钮),hideTopTabBar 模式下补「新建 / 关闭」两个小图标按钮。statusbar 仅在显示终端时存在,而 EmptyPathState(新建页)本身就有模板按钮,不重复。
-- **新建终端不再闪一下「新建终端」页。** 双击侧栏目录 / EmptyPathState 模板按钮新建时,旧逻辑在 invoke 返回早于 `evt:session:created` 广播时选中的 id 尚未进入 state → 闪一下新建页。改用乐观 dispatch `sessions/created`(直接把 res.session 写入 state + 选中),广播后到达再幂等覆盖,全程无空窗。
-- **代码查看器(DiffViewer / TextViewer)横向滚动后右侧裸露无底色 + 行号列挡不住代码。** 此前 diff 视图左右拖动查看长代码行时有两个叠加问题:(1) 往右拖后右侧区域没有行背景色;(2) 行号列挡不住滚过来的代码、文字重叠。根因是行级布局:每行(`.diff-line` / `.file-text-line`)是 `display:grid` 的 block 元素,宽度默认 = 填满滚动容器视口宽,而 `white-space:pre` 的代码内容溢出 grid box——于是行的 `background-color` 只画在视口宽的 box 上,溢出到右侧的代码文字区没有行底色;同时 add/del/hunk 行与查找聚焦行的底色用 `color-mix(..., transparent)` 叠在透明底上,`.diff-line-gutter` 的 `background:inherit` 继承到半透明色,也挡不住代码。修复两部分:(a) 在滚动容器与行之间新增一层 `.diff-lines` / `.file-text-lines` 包裹层,`width:max-content; min-width:100%`,让所有行(block 子元素)对齐到「最长行」的固有宽度,行背景随之覆盖到 scrollWidth 右端,横向滚动时背景连续不断裂;gutter 仍 sticky left:0 钉住。(b) 把上述半透明行底色的混合底从 `transparent` 换成不透明 `var(--color-bg-primary)`(视觉浓度几乎不变),gutter 即可正确遮挡滚过来的代码。DiffViewer 顺手把根元素从不规范的 `<pre>`(内含 block `<div>`)改为 `<div>`。两 viewer 同构,一并修好。
-
-## [0.3.2-dev.2] — 2026-07-23
-
-> **开发构建**(AGENTS.md 附录 F)。0.3.2-dev.1 后增补 PTY 吞吐/背压诊断与独立报告
-> 分析工具。仍预告版本号 `0.3.2`,dev 构建标识递增为 `-dev.2`。SemVer 上
-> `0.3.2-dev.1 < 0.3.2-dev.2 < 0.3.2`。产物 `Marina-Portable-0.3.2-dev.2-x64.exe`。
-
-### 新增
-
-- **PTY 吞吐与背压诊断(ADR-020 增补)。** 此前性能报告只记 `pty.outputBytes` 总量,远程/重负载场景(远程编译、tail 日志、cat 大文件)看不出是平稳流还是突发流,且 stall 全标“活跃操作:无”,无法判断是否由背压引起。现报告新增:每采样窗口的 bytes/s、chunks/s(从 counter delta 推导,零热路径开销);全程峰值速率与突发窗口计数(阈值固定 1 MiB/s);sessionOutput IPC 发送耗时分布(`pty.sessionOutputDispatch`,背压信号——renderer 跟不上时该调用变慢);8ms 合并窗口吸收字节峰值(`pty.peakPendingEmitBytes`);stall 记录携带近窗口 PTY 速率,能区分 stall 由流量突发/背压引起还是无关抖动。报告 Markdown 新增「PTY 数据吞吐与背压」段,stall 表新增「近 PTY 速率」列。
-- **独立报告分析工具** `scripts/analyze-performance-report.mjs`。传入报告 JSON 路径(或省略自动找最新)即可输出六维诊断:吞吐健康(总量/峰值/平均/突发)、背压事件(慢 dispatch)、stall↔流量相关性、瓶颈定位(operation heatmap)、内存健康、隐私自检。纯 Node 内置模块,零新依赖。
-
-## [0.3.2-dev.1] — 2026-07-22
-
-> **开发构建**(AGENTS.md 附录 F)。0.3.1 发布后积累的性能诊断子系统 + 需求感知
-> 后台调度属 MINOR 级新能力模块,故预告版本号取 `0.3.2`,dev 构建标识 `-dev.1`。
-> SemVer 上 `0.3.1 < 0.3.2-dev.1 < 0.3.2`,装此包相对 0.3.1 是升级、不触发降级拦截;
-> 相对未来正式 0.3.2 仍是预发布。产物 `Marina-Portable-0.3.2-dev.1-x64.exe`。
-
-### 新增
-
-- **性能飞行记录器。** 每次运行自动在 `performance-reports/` 生成一份有界 JSON + Markdown：10 秒采样 main event-loop delay/utilization（100ms histogram resolution）、CPU/RSS/heap、active resource 类型、Electron Browser/Tab/GPU/Utility 进程 CPU/内存、window/session/Git watcher gauges；250ms timer 统计 >=100/250/1000ms stall；固定名称 operation heatmap 汇总 IPC、Git、session/PTY 生命周期。平时 5 分钟原子刷新，>=1 秒严重 stall 至多每 60 秒额外落盘；异常退出保留 `finalized:false` 最近现场，最多保留 30 次运行。自动报告不记录路径、命令、终端内容、IPC payload 或 stack trace。
-- **按需 15 秒 V8 CPU Profile。** 设置 -> 高级可显式捕获 main 进程 `.cpuprofile`；操作前提示函数名/本地源码路径隐私风险，服务端限制 5-30 秒、禁止并发采集且每 run 最多保留 5 份，从不因 stall 自动启动。
-- **性能报告入口。** 设置 -> 高级显示本次采样/stall/RSS 摘要，并提供“立即刷新报告”“打开报告目录”。
-- **0.3.2 性能飞行记录器条目重命名。** 上述三条为本批次飞行记录器能力（ADR-020）。
-- **需求感知后台任务调度器（ADR-021）。** 新增 main 端 `BackgroundWorkScheduler`，昂贵周期任务统一使用 recursive timeout、全局并发预算、HOT/WARM/NONE demand、多窗口最高需求合并、pre-registration demand 和 generation 竞态防护；窗口关闭、远程断线、owner/Session 生命周期统一清理。
-
-### 性能
-
-- **关键路径统一埋点。** IPC 注册中间件按固定 channel 统计 duration/error/in-flight；Git status/diff、poll skip、watcher/in-flight gauges 与 session/PTY counters 接入同一有界 registry。metric name 有 200 项硬上限，拒绝路径/动态高基数字符串。
-- **Git 扫描按真实 UI 需求降频。** 当前聚焦窗口的当前 Git 面板为 HOT：立即刷新、完成后 3 秒再扫；当前 Session 显示其他面板、dock 折叠或窗口失焦为 WARM：60 秒；切换 Session、owner 释放、退出/离仓/零窗口为 NONE：完全停止。所有自动 Git status 全局最多一个并发，同 session+cwd 的 mount 拉取/prefetch/HOT immediate 合并为一个子进程。
+- **切换终端偶发「闪一下又切回去」+ 文件/Git 面板报 NotOwner(根治)。** 根因是 claim-gate
+  旧契约把 claim 失败也当成「等待结束」放行面板请求,于是失败的接管仍触发面板发注定
+  NotOwner 的请求;同时各接管路径的失败回滚是无条件的,迟到的失败会覆盖用户后续已经成功
+  的选择。`waitForClaim` 改为返回 `{ ok: boolean }`(失败不再静默放行),FileTreePanel /
+  GitPanel / useGitPollingDemand 在 `outcome.ok === false` 时中止请求不发 IPC;MainPane /
+  Sidebar 的 orphan 接管回滚加 generation 守卫(只在用户没再点别的终端时才回滚);
+  useCloseSession 续看的 claim 登记提前到乐观选择时(消除「面板在 claim 登记前就请求」的
+  空窗)。对应 ADR-005(一窗口一 owner)。
+- **右侧文件预览按终端、文件分别记住真实滚动位置。** 新增 renderer L1 view state
+  `fileViewerScroll`,以 `sessionId + OpenedFile.path + kind` 隔离 Markdown/Text/Diff/Image;
+  切换工作区面板、文件 tab 或终端 Session 后恢复。异步加载、快速切换和搜索不再覆盖正确
+  位置(响应绑定 request identity、双 RAF + ResizeObserver 恢复、迟到 scroll 独立 fence)。
+- **关闭当前终端后自动续看(通用,不限 hideTopTabBar)。** 关掉正在看的终端时,若同目录
+  有无主(orphan)终端就接管并切过去;续看选候选改为按最后选中时间戳降序(最近看过的优先)。
+  tab 的 × / 右键「关闭」/ statusbar「关闭」统一走续看逻辑,乐观先选候选再 SESSION_CLOSE,
+  避免中间闪新建页。
+- **hideTopTabBar 模式下「新建 / 关闭」放到底部 statusbar,不新增行。** 复用终端底部已有
+  的 statusbar 补两个小图标按钮,不再用一条几乎全空的工具栏吃掉省下来的那一行。
+- **侧栏双击新建终端不再先闪一下「新建终端」页。** 双击序列的第一击 `click` 会先派发
+  `view/select-path`,该 reducer 在 hideTopTabBar 模式下清空 `selectedSessionId` → 主区在
+  `dblclick` 触发 SESSION_CREATE 返回前显示 EmptyPathState。现给单击选中加 230ms 双击阈值
+  窗口去抖(click-vs-dblclick 消歧)。新建终端整体也不再闪新建页(乐观 dispatch
+  `sessions/created`,广播后幂等覆盖)。
+- **代码查看器(DiffViewer / TextViewer)横向滚动后右侧裸露无底色 + 行号列挡不住代码
+  (根治)。** 根因是行级 `display:grid` block 宽度默认填满视口,而 `white-space:pre` 代码
+  溢出 → 行背景只画在视口宽 box 上、溢出区无底色。重构为在滚动容器与行之间新增
+  `.diff-lines`/`.file-text-lines` 包裹层(`width:max-content; min-width:100%`),行背景
+  覆盖到 scrollWidth 右端;gutter 与代码改为物理分离的双 sibling pane(左 pane 只渲染
+  数字/符号且固定不参与横向滚动,右 pane 独占横/纵滚动,只同步 scrollTop),代码在 DOM
+  clipping 层就不可能进入数字栏。半透明行底色的混合底从不透明 `--color-bg-primary` 派生,
+  明暗主题均为低对比 hairline(不再命中调试 fallback 亮粉)。
 
 ## [0.3.1] — 2026-07-22
 
