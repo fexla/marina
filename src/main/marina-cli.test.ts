@@ -788,3 +788,61 @@ describeBashOrSkip('marina bash wrapper (requires bash + PowerShell + Python moc
     expect(r.stdout.trim()).toBe('marina: online');
   });
 });
+
+// v0.3.3 T12: `marina screenshot` —— CLI 远程截图(testability enabler)。
+// 验证命令走通:向真实(模拟)服务 GET /screenshot,存下 PNG,字节与 mock 返一致。
+describe('marina screenshot (T12)', () => {
+  let mock: { proc: ChildProcess; baseUrl: string; logFile: string };
+  let workspace: string;
+
+  beforeEach(async () => {
+    workspace = mkdtempSync(join(tmpdir(), 'marina-shot-test-'));
+    mock = await startMock();
+  });
+  afterEach(() => {
+    mock.proc.kill();
+    rmSync(workspace, { recursive: true, force: true });
+  });
+
+  it('显式路径:存下 PNG + 打印路径 + 字节正确', () => {
+    const out = join(workspace, 'shot.png');
+    if (existsSync(out)) rmSync(out);
+    const r = runMarina(['screenshot', out], {
+      env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+    });
+    expect(r.status, `stdout: ${r.stdout}\nstderr: ${r.stderr}`).toBe(0);
+    expect(r.stdout.trim()).toBe(out);
+    expect(existsSync(out)).toBe(true);
+    // mock 返的 1×1 PNG 字节(hex 同 marina-cli-mock-server.py)
+    const expected = Buffer.from(
+      '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489' +
+        '0000000d49444154789c63000100000005000100',
+      'hex',
+    );
+    expect(readFileSync(out).equals(expected)).toBe(true);
+  });
+
+  it('默认路径:不传参时落到 workspace 下的时间戳文件', () => {
+    const r = runMarina(['screenshot'], {
+      env: {
+        MARINA_SERVICE: mock.baseUrl,
+        MARINA_TOKEN: TOKEN,
+        TERMINAL_ID: 't1',
+        MARINA_WORKSPACE: workspace,
+      },
+    });
+    expect(r.status, `stdout: ${r.stdout}\nstderr: ${r.stderr}`).toBe(0);
+    const printed = r.stdout.trim();
+    expect(printed).toContain('marina-screenshot-');
+    expect(printed.endsWith('.png')).toBe(true);
+    expect(existsSync(printed)).toBe(true);
+  });
+
+  it('缺 TERMINAL_ID → exit 1 (offline)', () => {
+    const r = runMarina(['screenshot'], {
+      env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN },
+    });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('TERMINAL');
+  });
+});

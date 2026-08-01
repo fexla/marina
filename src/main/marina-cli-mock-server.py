@@ -144,6 +144,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _send_bytes(self, code, content_type, data):
+        # v0.3.3 T12: binary response for /screenshot (image/png).
+        self.send_response(code)
+        self.send_header("content-type", content_type)
+        self.send_header("content-length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def _authed(self):
         return self.headers.get("Authorization") == "Bearer " + TOKEN
 
@@ -159,6 +167,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if p == "/opening-files":
             self._send(200, opening_files_response())
+            return
+        if p == "/screenshot":
+            # v0.3.3 T12: return a fixed 1x1 PNG so CLI `screenshot` can save & compare.
+            png = bytes.fromhex(
+                "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+                "0000000d49444154789c63000100000005000100"
+            )
+            self._send_bytes(200, "image/png", png)
             return
         self._send(404, {"error": "not found"})
 

@@ -9,6 +9,14 @@
 
 ### 新增
 
+- **远程截图(`marina screenshot`)—— agent 自测 enabler(T12 / v0.3.3)。**
+  新增 `GET /screenshot?terminal=<id>` HTTP 路由(Bearer 鉴权,同其他路由)截该 session
+  owner window 的屏返 `image/png`;capture 回调注入式(`attachWindowCapture`,index.ts
+  闭合 sessionManager→ownerWindowId→windowManager.getById→webContents.capturePage→toPNG),
+  服务层不引 electron 保持可测。CLI `marina screenshot [PATH]`(`Invoke-WebRequest -OutFile`)
+  默认落 `<workspace>/marina-screenshot-<时间戳>.png` 并打印路径 —— agent 截图后 `read` 即可
+  自测 UI,消除人工截图依赖(T05/T06 类 HITL)。无 owner/窗口销毁/未注入分别返 400/503。
+
 - **Markdown 文档里的本地文件链接 → 面板只读查看(Feature B / v0.3.3)。**
   MarkdownViewer 的链接按 scheme 分流(决策 #4):`http://`/`https://`/`mailto:`
   外链仍走系统浏览器;页内 `#锚点` 滚动;**其余一律当本地文件**,相对 md 文件

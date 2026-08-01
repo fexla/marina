@@ -395,9 +395,54 @@ function Invoke-CmdList {
   return $script:EXIT_OK
 }
 
+function Invoke-CmdScreenshot {
+  # v0.3.3 T12(testability enabler): capture this terminal's owner window as a PNG.
+  # Used by agents to self-verify UI without a human screenshot. Unlike other commands
+  # this returns BINARY (image/png), so it uses Invoke-WebRequest -OutFile directly
+  # rather than the JSON Send-MarinaRequest. Default output path = a timestamped
+  # file under the managed workspace (so agents can `read` it); explicit PATH overrides.
+  param($Config, [string[]]$CmdArgs)
+  Assert-NoUnknownOptions -CmdArgs $CmdArgs -Allowed @() -CmdName 'screenshot'
+  if (-not $Config.Service) {
+    Die $script:EXIT_OFFLINE 'MARINA_SERVICE is unset (not in a Marina terminal, or file panel is disabled in settings)'
+  }
+  if (-not $Config.Token) { Die $script:EXIT_OFFLINE 'MARINA_TOKEN is unset' }
+  if (-not $Config.Terminal) { Die $script:EXIT_OFFLINE 'MARINA_TERMINAL is unset (cannot identify owner window)' }
+
+  # Resolve output path: explicit arg > workspace/<timestamp>.png > temp fallback.
+  $outPath = if ($CmdArgs.Count -ge 1 -and $CmdArgs[0]) { Resolve-AbsPath -P ([string]$CmdArgs[0]) } else { $null }
+  if (-not $outPath) {
+    $ws = if ($Config.Workspace) { Resolve-AbsPath -P $Config.Workspace } else { $null }
+    $dir = if ($ws -and (Test-Path -LiteralPath $ws -PathType Container)) { $ws } else { [System.IO.Path]::GetTempPath() }
+    $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss')
+    $outPath = Join-Path $dir "marina-screenshot-$stamp.png"
+  }
+
+  $url = $Config.Service.TrimEnd('/') + '/screenshot?terminal=' + [uri]::EscapeDataString($Config.Terminal)
+  try {
+    # Binary download: Invoke-WebRequest writes the response body straight to disk.
+    Invoke-WebRequest -Uri $url -Method GET -TimeoutSec 10 -Headers @{ Authorization = "Bearer $($Config.Token)" } `
+      -OutFile $outPath -ErrorAction Stop | Out-Null
+  } catch {
+    $resp = $_.Exception.Response
+        if ($null -eq $resp) { Die $script:EXIT_OFFLINE "cannot reach $($url): $($_.Exception.Message)" }
+    $code = [int]$resp.StatusCode
+    $bodyText = ''
+    try {
+      $stream = $resp.GetResponseStream(); $reader = New-Object System.IO.StreamReader($stream)
+      $bodyText = $reader.ReadToEnd()
+      $parsed = $bodyText | ConvertFrom-Json -ErrorAction SilentlyContinue
+      if ($parsed -and $parsed.error) { $bodyText = [string]$parsed.error }
+    } catch {}
+    Die $script:EXIT_REJECTED "Marina rejected screenshot (HTTP $code): $bodyText"
+  }
+  [Console]::Out.WriteLine($outPath)
+  return $script:EXIT_OK
+}
+
 function Print-Usage {
   [Console]::Out.WriteLine(@'
-usage: marina [-h] {ping,workspace,show,close,list} ...
+usage: marina [-h] {ping,workspace,show,close,list,screenshot} ...
 
 Drive Marina's side file panel from inside a Marina terminal. Env vars are
 read automatically; do not pass them as CLI options.
@@ -416,6 +461,9 @@ commands:
   list              list files open in this terminal's panel
                     deleted files are marked with ! and (deleted)
                     --json      raw JSON output (includes `missing`)
+  screenshot [PATH] capture this terminal's owner window as a PNG
+                    default: <workspace>/marina-screenshot-<timestamp>.png
+                    prints the saved path; agents can `read` it to self-test UI
 
 There is no stdin mode. Run `marina workspace` to get the concrete scratch
 path, write the artifact there with your file-writing tool (UTF-8), then run
@@ -439,5 +487,6 @@ switch ($Command) {
   'show' { exit (Invoke-CmdShow -Config $cfg -CmdArgs $Rest) }
   'close' { exit (Invoke-CmdClose -Config $cfg -CmdArgs $Rest) }
   'list' { exit (Invoke-CmdList -Config $cfg -CmdArgs $Rest) }
+  'screenshot' { exit (Invoke-CmdScreenshot -Config $cfg -CmdArgs $Rest) }
   default { Die $script:EXIT_USAGE "unknown command: $Command" }
 }

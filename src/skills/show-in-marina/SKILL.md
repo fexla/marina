@@ -273,6 +273,8 @@ Rules of thumb:
 ./marina workspace              # print this terminal's managed scratch path
 ./marina list                   # files open in this terminal's panel
 ./marina list --json            # machine-readable output (includes `missing`)
+./marina screenshot             # capture this window as a PNG, print its path (T12)
+./marina screenshot /abs/x.png  # ...to an explicit path
 ./marina close "$artifact"      # close one file
 ./marina close report.md        # ...or just the file name (basename match)
 ./marina close --all            # close every file in this terminal's panel
@@ -280,6 +282,14 @@ Rules of thumb:
 ./marina close --glob '*.md'    # close files whose name matches a glob
 ./marina close '*.md'           # a path containing * or ? is auto-treated as --glob
 ```
+
+**`screenshot` (self-test enabler).** Captures this terminal's owner window as a
+PNG so you can visually verify UI you changed without a human in the loop. It
+prints the saved path; read that PNG back to inspect it. Default output is a
+timestamped file under the managed workspace; pass an explicit path to choose.
+Requires `MARINA_SERVICE` / `MARINA_TOKEN` / `TERMINAL_ID` (same as `show`).
+Fails with exit 1 if those are unset, exit 3 if Marina refuses (no owner
+window, window closed, etc.).
 
 **`list` marks zombie tabs.** A tab whose file has been deleted from disk is
 shown with a leading `!` and `(deleted)`, plus a `close --stale` hint at the
