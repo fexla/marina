@@ -899,7 +899,7 @@ E. 检查点之间想"顺手"重构 / 加新功能
 **关键事实(不用每次查)**:
 - `win.target` 在 `electron-builder.yml` 已配 `nsis` + `portable` 双目标。`npm run build` 一次性产两个 exe。
 - `portable` 块的 `artifactName: ${productName}-Portable-${version}-${arch}.${ext}` → 文件名固定 `Marina-Portable-{ver}-x64.exe`。
-- 版本号取自 `package.json` 的 `version`(当前 0.3.1),产物在 `release/{version}/`。
+- 版本号取自 `package.json` 的 `version`(当前 0.3.2),产物在 `release/{version}/`。
 - icon:`build/icon.ico`(三处复用:win 主图标 / nsis 安装&卸载器)。**没有 .ico 时 portable 用默认 electron 图标,不报错但难看** —— icon 由 `scripts/generate-icon.cjs` 从 svg 离线生成,别在 build 流程里现造。
 - `asar: true` + `asarUnpack: node_modules/node-pty/**`(native 模块不能进 asar)。
 - shell-hooks / skills / context-menu MSIX 通过 `extraResources` 放 app.asar 旁(外部进程读不了 asar)。
@@ -953,7 +953,7 @@ E. 检查点之间想"顺手"重构 / 加新功能
 3. **构建前必须同步 package.json version ↔ CHANGELOG**(见附录 D 验收清单第 1 项)。二者不一致 = 构建阻塞。package.json 的 `version` 是“当前版本”的唯一真相源。
 4. **一个版本号 = 一个 CHANGELOG 条目**。patch 版本把多条小改动合并到同一条目下,不拆成多个版本。
 
-**当前版本状态**:0.3.1(2026-07-22 正式发布)。该版本合并 `0.3.1-dev.1` / `0.3.1-dev.2` 的 viewer、面板基础设施与 `show-in-marina` 改进，并补上 Git 后台轮询生命周期/反压修复。下一批性能诊断工具按开发者指定目标记为 0.3.2，开发期间先进入 `[Unreleased]`，需要分发测试包时再按附录 F 产 `0.3.2-dev.N`。
+**当前版本状态**:0.3.2(2026-08-01 正式发布)。该版本合并 `0.3.2-dev.1` ~ `0.3.2-dev.10` 十个开发构建,落地性能诊断子系统(ADR-020)、需求感知后台调度(ADR-021)、终端视图 TerminalDeck(ADR-022)、Markdown 代码块一键执行(ADR-023)等新能力模块。后续积累进入 `[Unreleased]`,需要分发测试包时再按附录 F 产 `0.3.3-dev.N`(或下一预判目标)。
 
 ---
 
