@@ -214,6 +214,8 @@ export const COMMAND_CHANNELS = {
   FILE_PANEL_GET_OPEN_FILES: 'cmd:file-panel:get-open-files',
   /** UI 侧"打开文件"按钮(选文件对话框)→ 打开并切 active */
   FILE_PANEL_OPEN: 'cmd:file-panel:open',
+  /** v0.3.3 Feature B:markdown 文档里的本地文件链接 → 相对 md 目录解析进面板只读查看 */
+  FILE_PANEL_OPEN_PATH: 'cmd:file-panel:open-path',
   /** 关闭面板里某个已打开文件 */
   FILE_PANEL_CLOSE: 'cmd:file-panel:close',
   /** 仅切换 active(点 tab),不改文件列表 */
@@ -1421,6 +1423,16 @@ export interface GetOpenFilesPayload {
 export interface FilePanelActionPayload {
   sessionId: string;
   path: string;
+}
+
+/** v0.3.3 Feature B cmd:file-panel:open-path payload。markdown 文档里的本地文件
+ * 链接点击 → main 相对 mdPath 所在目录解析 src 为本地绝对路径后进面板只读查看。
+ * mdPath 必须是该 session 已打开列表里的 md 文件(同 ReadImagePayload 成员校验防线),
+ * 防 renderer 被诱导用任意 mdPath + src 打开磁盘任意文件。 */
+export interface OpenPathFromMarkdownPayload {
+  sessionId: string;
+  mdPath: string;
+  src: string;
 }
 
 /** cmd:file-panel:read payload。path 必须是已打开列表里的规范化绝对路径。 */

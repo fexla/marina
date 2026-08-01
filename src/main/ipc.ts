@@ -74,6 +74,7 @@ import {
   type FilePanelActionPayload,
   type FilePanelSnapshot,
   type FilePanelUpdatedPayload,
+  type OpenPathFromMarkdownPayload,
   type GetFileTreeRootsPayload,
   type GetFileTreeRootsResponse,
   type ListFileTreeDirectoryPayload,
@@ -1806,6 +1807,21 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
     COMMAND_CHANNELS.FILE_PANEL_OPEN,
     async (_e, envelope: CommandEnvelope<FilePanelActionPayload>): Promise<FilePanelSnapshot> =>
       filePanelService.openFile(envelope.payload.sessionId, envelope.payload.path),
+  );
+
+  // v0.3.3 Feature B:markdown 文档里的本地文件链接 → 相对 md 目录解析进面板只读查看。
+  // 与 FILE_PANEL_OPEN 的区别:解析基准是 mdPath 所在目录(文档作者视角),不是 currentCwd。
+  registerHandle(
+    COMMAND_CHANNELS.FILE_PANEL_OPEN_PATH,
+    async (
+      _e,
+      envelope: CommandEnvelope<OpenPathFromMarkdownPayload>,
+    ): Promise<FilePanelSnapshot> =>
+      filePanelService.openFileFromMarkdown(
+        envelope.payload.sessionId,
+        envelope.payload.mdPath,
+        envelope.payload.src,
+      ),
   );
 
   registerHandle(

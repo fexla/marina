@@ -263,6 +263,122 @@ describe('FilePanelService - readFile', () => {
   });
 });
 
+// v0.3.3 Feature B:markdown 文档里的本地文件链接 → 相对 md 目录解析进面板只读查看。
+// 与 openFile(相对 currentCwd)的区别在解析基准 + mdPath 成员校验。
+describe('FilePanelService - openFileFromMarkdown (Feature B)', () => {
+  let dir: string;
+  let svc: FilePanelService;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'marina-fp-mdlink-'));
+    svc = new FilePanelService();
+    svc.attachSessionLookup(makeLookup({ s1: { currentCwd: dir, ownerWindowId: 'w1' } }));
+  });
+
+  afterEach(async () => {
+    await svc.stop();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('相对 md 目录解析本地文件 → 进面板 + 切 active', async () => {
+    // md 在子目录 docs/ 下,引用同级 a.txt。解析基准 = md 所在目录,不是 currentCwd。
+    await mkdir(join(dir, 'docs'));
+    await writeFile(join(dir, 'docs', 'readme.md'), '# hi');
+    await writeFile(join(dir, 'docs', 'a.txt'), 'hello');
+    // 先把 md 本身打开(成员校验需要 mdPath 在已打开列表里)
+    await svc.openFile('s1', join('docs', 'readme.md'));
+    const mdPath = join(dir, 'docs', 'readme.md');
+
+    const r = await svc.openFileFromMarkdown('s1', mdPath, 'a.txt');
+    expect(r.files.map((f) => f.path)).toContain(join(dir, 'docs', 'a.txt'));
+    expect(r.activePath).toBe(join(dir, 'docs', 'a.txt'));
+  });
+
+  it('../ 穿越到 md 目录外(只读面板,允许) → 能打开', async () => {
+    await mkdir(join(dir, 'docs'));
+    await writeFile(join(dir, 'docs', 'readme.md'), '# hi');
+    await writeFile(join(dir, 'parent.txt'), 'up');
+    await svc.openFile('s1', join('docs', 'readme.md'));
+    const mdPath = join(dir, 'docs', 'readme.md');
+
+    const r = await svc.openFileFromMarkdown('s1', mdPath, '../parent.txt');
+    expect(r.activePath).toBe(join(dir, 'parent.txt'));
+  });
+
+  it('绝对路径 src → 直接打开(忽略 md 目录)', async () => {
+    await mkdir(join(dir, 'docs'));
+    await writeFile(join(dir, 'docs', 'readme.md'), '# hi');
+    await writeFile(join(dir, 'abs.txt'), 'abs');
+    await svc.openFile('s1', join('docs', 'readme.md'));
+    const mdPath = join(dir, 'docs', 'readme.md');
+    const abs = join(dir, 'abs.txt');
+
+    const r = await svc.openFileFromMarkdown('s1', mdPath, abs);
+    expect(r.activePath).toBe(abs);
+  });
+
+  it('src 为空 → ResolveFailed', async () => {
+    await writeFile(join(dir, 'r.md'), '# hi');
+    await svc.openFile('s1', 'r.md');
+    const mdPath = join(dir, 'r.md');
+    await expect(svc.openFileFromMarkdown('s1', mdPath, '')).rejects.toMatchObject({
+      code: 'ResolveFailed',
+    });
+  });
+
+  it('远程 URL src → ResolveFailed(不走本地打开)', async () => {
+    await writeFile(join(dir, 'r.md'), '# hi');
+    await svc.openFile('s1', 'r.md');
+    const mdPath = join(dir, 'r.md');
+    await expect(
+      svc.openFileFromMarkdown('s1', mdPath, 'https://example.com/x'),
+    ).rejects.toMatchObject({ code: 'ResolveFailed' });
+    await expect(svc.openFileFromMarkdown('s1', mdPath, 'mailto:a@b.com')).rejects.toMatchObject({
+      code: 'ResolveFailed',
+    });
+  });
+
+  it('mdPath 不在面板 → NotFound(成员校验防线)', async () => {
+    await writeFile(join(dir, 'r.md'), '# hi');
+    await writeFile(join(dir, 'a.txt'), 'x');
+    // 注意:不 openFile md,直接调 → mdPath 不在列表
+    await expect(
+      svc.openFileFromMarkdown('s1', join(dir, 'r.md'), 'a.txt'),
+    ).rejects.toMatchObject({ code: 'NotFound' });
+  });
+
+  it('文件不存在 → NotFound', async () => {
+    await writeFile(join(dir, 'r.md'), '# hi');
+    await svc.openFile('s1', 'r.md');
+    const mdPath = join(dir, 'r.md');
+    await expect(
+      svc.openFileFromMarkdown('s1', mdPath, 'nope.txt'),
+    ).rejects.toMatchObject({ code: 'NotFound' });
+  });
+
+  it('src 指向目录 → NotFile(拒绝,与 openFile 一致)', async () => {
+    await mkdir(join(dir, 'docs'));
+    await writeFile(join(dir, 'docs', 'r.md'), '# hi');
+    await mkdir(join(dir, 'docs', 'sub'));
+    await svc.openFile('s1', join('docs', 'r.md'));
+    const mdPath = join(dir, 'docs', 'r.md');
+    // resolve 后 openFile 经 resolveAndStat 校验是文件 → 目录抛 NotFile
+    await expect(svc.openFileFromMarkdown('s1', mdPath, 'sub')).rejects.toMatchObject({
+      code: 'NotFile',
+    });
+  });
+
+  it('重复打开同一文件 → 不重复添加(更新 mtime)', async () => {
+    await writeFile(join(dir, 'r.md'), '# hi');
+    await writeFile(join(dir, 'a.txt'), 'x');
+    await svc.openFile('s1', 'r.md');
+    const mdPath = join(dir, 'r.md');
+    await svc.openFileFromMarkdown('s1', mdPath, 'a.txt');
+    const r2 = await svc.openFileFromMarkdown('s1', mdPath, 'a.txt');
+    expect(r2.files.filter((f) => f.path === join(dir, 'a.txt'))).toHaveLength(1);
+  });
+});
+
 describe('FilePanelService - HTTP 鉴权与路由', () => {
   let dir: string;
   let svc: FilePanelService;
