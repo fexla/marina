@@ -1278,6 +1278,18 @@ export function TerminalView({
     const scrollMemoryDisposable = term.onScroll(() => {
       if (!replayed) return;
       const buf = term.buffer.active;
+      // SCROLL-2:gate 掉 alternate buffer。alt-screen TUI(Claude Code / Pi /
+      // vim / lazygit)的 alt buffer 无 scrollback,且 ?1049h/?1049l 切换时
+      // xterm 会 fire 一次 onScroll(BufferService.onBufferActivate →
+      // _onScroll.fire(activeBuffer.ydisp),见 xterm 源码 common/services/
+      // BufferService.ts)。若在这里照常记录,会把 alt/normal 切换瞬间的 ydisp
+      // 当成用户滚动写进 store —— normal buffer 若残留一个非贴底的 viewportY
+      // (用户进 TUI 前看过历史),下次 replay 恢复时 scrollToLine(topLine) 就把
+      // 视口拉到 scrollback 顶部。滚动位置记忆只对 normal buffer 有意义:alt
+      // buffer 的「底」就是当前屏幕,无需记忆,也无 scrollback 可滚。
+      // (xterm 自己的 Viewport.ts 在 onBufferActivate 里也重置 _latestYDisp 做
+      // 同类隔离,这里对齐它的防护思路。)
+      if (buf.type !== 'normal') return;
       // 注意用 viewportY(视口顶部行)而非 baseY:ybase 是「滚动历史总量」
       // (恒定,随输出增长但不随拖动变),viewportY 才是当前视口顶部行。早期
       // 实现误用 baseY → 存的值恒等于底部、scrollToLine 永远到底,记忆失效。

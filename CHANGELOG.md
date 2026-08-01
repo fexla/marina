@@ -7,6 +7,17 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+### 修复
+
+- **修复运行 alt-screen TUI(Claude Code / Pi / vim 等)时终端滚动条偶发跳到
+  最顶部的问题(SCROLL-2)。** 根因是 xterm 在 alternate/normal buffer 切换
+  (`?1049h`/`?1049l`)时会 fire 一次 `onScroll`,而滚动位置记忆的 `onScroll`
+  监听未区分 buffer 类型,把切换瞬间的 `ydisp` 当成用户滚动写进 store;下次
+  replay 重建执行 `scrollToLine(topLine)` 时把视口拉到 scrollback 顶部。修复:
+  `onScroll` 回调顶部加 `if (buf.type !== 'normal') return;` 守卫 —— alt buffer
+  本就无 scrollback,滚动位置记忆只对 normal buffer 有意义。详见
+  `docs/issues/scroll-2-alt-buffer-viewport-jump-to-top.md`。
+
 ## [0.3.2] — 2026-08-01
 
 > 相对 0.3.1 的 MINOR 版本:落地性能诊断子系统、需求感知后台调度、Markdown 代码块
