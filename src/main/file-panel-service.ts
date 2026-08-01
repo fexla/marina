@@ -487,6 +487,67 @@ export class FilePanelService extends EventEmitter {
     }
   }
 
+  /**
+   * v0.3.3 Feature B:打开 markdown 文档里引用的**本地文件**进面板只读查看。
+   *
+   * 与 openFile 的区别:openFile 相对 session.currentCwd 解析(终端程序视角);
+   * 本方法相对 **mdPath 所在目录** 解析(文档作者视角,与 readImageAsset 对图片
+   * 的处理一致——用户心智统一:md 里写的相对路径都相对该 md 文件)。
+   *
+   * 安全(与 readImageAsset 同防线):
+   * - mdPath 必须是该 session 已打开列表里的文件(成员校验),防 renderer 被诱导
+   *   用任意 mdPath + src 打开磁盘任意文件。这是 renderer→main 的信任边界。
+   * - src 走 normalizePath(resolve(dirname(mdPath), src)),再交 resolveAndStat 校验
+   *   存在 + 是文件(目录拒)。穿越 ../ 可指向 md 目录外,但只进只读面板、不外发。
+   *
+   * @throws FilePanelError ResolveFailed(src 空/畸形)/ SessionMissing / NotFound /
+   *   NotFile / 以及 toOpenedFile/detect 的内部错误。renderer 收到后 toast 提示。
+   *
+   * @returns 打开后的面板快照(与 openFile 同形,含新增/更新后的文件列表 + active)。
+   */
+  async openFileFromMarkdown(
+    sessionId: string,
+    mdPath: string,
+    src: string,
+  ): Promise<FilePanelSnapshot> {
+    if (!src || typeof src !== 'string') {
+      throw new FilePanelError('ResolveFailed', '链接路径为空');
+    }
+    // 网络/data:/blob:/mailto:/tel: 不该走到这(renderer MdLink 已按决策 #4 把
+    // http(s)/mailto 当外链走 open-external,其余才进本地分支)。传进来也拒,
+    // 与 readImageAsset 一致。
+    if (isRemoteUrl(src)) {
+      throw new FilePanelError('ResolveFailed', '远程链接不走本地文件打开');
+    }
+    // 成员校验:mdPath 必须是该 session 已打开列表里的文件(与 readImageAsset 同防线)。
+    const state = this.panels.get(sessionId);
+    if (!state?.files.some((f) => f.path === mdPath)) {
+      throw new FilePanelError('NotFound', '源 markdown 文件不在当前面板');
+    }
+    // 相对 md 目录解析 + 规范化。decodeURIComponent 兼容 %20 等转义(与 readImageAsset
+    // 一致;renderer 的 normalizeMdImageSources 对图片做了空格转义,链接 href 由
+    // react-markdown 给原值,这里统一 decode 容错)。
+    let decoded = src;
+    try {
+      decoded = decodeURIComponent(src);
+    } catch {
+      // malformed % 序列,保留原值让 resolve 尝试
+    }
+    let abs: string;
+    try {
+      abs = normalizePath(resolve(dirname(mdPath), decoded));
+    } catch (err) {
+      throw new FilePanelError(
+        'ResolveFailed',
+        `路径解析失败: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    // 校验存在 + 是文件(目录拒,与 openFile 的 resolveAndStat 一致)。直接复用
+    // openFile(sessionId, abs):绝对路径会忽略 currentCwd base,走完整状态机
+    // (加/更新 tab、切 active、ensureWatcher、requestActivation),零重复逻辑。
+    return this.openFile(sessionId, abs);
+  }
+
   /** session 销毁:清掉该 session 全部 watcher + 状态(ipc wireEventBroadcasts 调)。 */
   onSessionDestroyed(sessionId: string): void {
     if (!this.panels.has(sessionId)) return;

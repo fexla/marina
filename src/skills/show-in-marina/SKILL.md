@@ -233,6 +233,40 @@ When you build a task-dashboard document (see above), consider making the
 verification / next-step commands runnable blocks so the user can act on the
 doc directly instead of switching to chat or a terminal.
 
+## Links to local files and web pages in Markdown
+
+Links (`[text](target)`) in any Markdown you `show` are split by Marina by
+their **scheme** — use the right form so the click does what you intend:
+
+- **Local file** (default): write the path **as-is**, relative to the Markdown
+  file's directory (or absolute). A click opens that file **read-only in the
+  panel** as a new tab — point at another doc, a source file, a log, an image,
+  etc. Relative paths resolve against the Markdown file's location, the same
+  rule Markdown images use.
+  ```markdown
+  See [the design notes](./design-notes.md) and [main.ts](../src/main.ts).
+  ```
+- **Web page**: write the **full** URL starting with `http://` or `https://`
+  (or `mailto:`). A click opens it in the system browser — Marina's panel is
+  not a browser.
+  ```markdown
+  Docs: <https://react.dev/learn> · contact [me](mailto:me@example.com)
+  ```
+- **In-page anchor**: `#section-id` scrolls within the current document
+  (React-markdown renders heading ids).
+
+Rules of thumb:
+- **Anything that is not a full `http(s)://` / `mailto:` URL and not a `#`
+  anchor is treated as a local file.** So a bare `example.com/x` (no scheme)
+  or a `data:`/`tel:`/`file:` target is read as a local path and opened in the
+  panel — usually failing with a toast if it doesn't resolve. Always write the
+  full scheme for web links.
+- **Pointing at a missing/non-file path** shows a toast error; the panel is
+  unchanged. Paths are resolved and checked on the Marina side (the Markdown's
+  own directory is the base), so relative links keep working after the file is
+  moved as long as the relative layout is preserved.
+- Local links open **read-only**; Marina's panel is a viewer, not an editor.
+
 ## Other commands
 
 ```bash
