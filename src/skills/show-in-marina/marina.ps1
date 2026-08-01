@@ -200,23 +200,109 @@ function Invoke-CmdPing {
 }
 
 function Invoke-CmdWorkspace {
-  # Print the concrete absolute workspace path. This command intentionally
-  # does not require MARINA_SERVICE/TOKEN: the directory is a local env
-  # capability created before the PTY starts. Non-shell write tools must use
-  # this concrete path because they never expand shell variable syntax.
+  # v0.3.3 ADR-024 / Feature D: workspace subcommands.
+  # workspaceId is decoupled from sessionId, so $env:MARINA_WORKSPACE is the
+  # stale spawn-time value (degrades to the initial value after a switch) and
+  # is NOT reliable. The CLI always queries the local desktop daemon (main is
+  # the source of truth):
+  #   workspace         - print this session's bound workspace absolute path
+  #   workspace list    - list named workspaces under the current path scope
+  #   workspace bind --name X [--new] - upsert (new -> name+pin; exists -> switch)
+  #   workspace new     - switch to a fresh empty temp workspace (named stays pinned)
+  #   workspace unpin [--name X] - strip name+pinned; becomes reclaimable
+  # main unreachable (ping/HTTP fails) -> exit 1 (no $env fallback, ADR 2.7).
   param($Config, [string[]]$CmdArgs)
-  if ($CmdArgs.Count -gt 0) {
-    Die $script:EXIT_USAGE 'workspace: does not accept arguments'
+  $sub = if ($CmdArgs.Count -gt 0) { [string]$CmdArgs[0] } else { '' }
+  $subArgs = if ($CmdArgs.Count -gt 1) { $CmdArgs[1..($CmdArgs.Count - 1)] } else { @() }
+
+  # All subcommands query main (SERVICE + TOKEN + TERMINAL_ID). workspace no
+  # longer reads $env.
+  if (-not $Config.Service) { Die $script:EXIT_OFFLINE 'MARINA_SERVICE is unset (not in a Marina terminal, or file panel is disabled)' }
+  if (-not $Config.Token) { Die $script:EXIT_OFFLINE 'MARINA_TOKEN is unset' }
+  if (-not $Config.Terminal) { Die $script:EXIT_OFFLINE 'TERMINAL_ID is unset' }
+
+  switch ($sub) {
+    '' {
+      # workspace (no subcommand): print the bound workspace absolute path.
+      $resp = Send-MarinaRequest -Config $Config -Method 'GET' -Path "/workspace?terminal=$($Config.Terminal)"
+      if (-not $resp.path) { Die $script:EXIT_REJECTED 'session has no bound workspace' }
+      [Console]::Out.WriteLine([string]$resp.path)
+      return $script:EXIT_OK
+    }
+    'list' {
+      Assert-NoUnknownOptions -CmdArgs $subArgs -Allowed @('--json') -CmdName 'workspace list'
+      $resp = Send-MarinaRequest -Config $Config -Method 'GET' -Path "/workspace/list?terminal=$($Config.Terminal)"
+      # PS deserializes a 1-element JSON array into a single object (not an array),
+      # so force it into an array for uniform Count/iteration.
+      $items = @($resp.items)
+      $json = $subArgs -contains '--json'
+      if ($json) {
+        [Console]::Out.WriteLine(($items | ConvertTo-Json -Compress -Depth 10))
+      } else {
+        if ($items.Count -eq 0) { [Console]::Out.WriteLine('(no named workspaces under the current path scope)') }
+        else {
+          foreach ($it in $items) {
+            $name = if ($it.name) { [string]$it.name } else { '(unnamed)' }
+            $pinnedTag = if ($it.pinned) { ' [pinned]' } else { '' }
+            # createdAt is epoch ms; format to local time. Guard against null/missing.
+            $dtStr = ''
+            if ($it.createdAt) {
+              try { $dtStr = [datetimeoffset]::FromUnixTimeMilliseconds([long]$it.createdAt).LocalTime.ToString('yyyy-MM-dd HH:mm') } catch { $dtStr = '' }
+            }
+            [Console]::Out.WriteLine($name + '  ' + [string]$it.fileCount + ' files  ' + $dtStr + $pinnedTag)
+          }
+        }
+      }
+      return $script:EXIT_OK
+    }
+    'bind' {
+      Assert-NoUnknownOptions -CmdArgs $subArgs -Allowed @('--name', '--new') -CmdName 'workspace bind'
+      $name = $null; $forceNew = $false
+      $i = 0
+      while ($i -lt $subArgs.Count) {
+        $a = [string]$subArgs[$i]
+        if ($a -eq '--name') { $i++; if ($i -ge $subArgs.Count) { Die $script:EXIT_USAGE 'workspace bind: --name requires a value' }; $name = [string]$subArgs[$i] }
+        elseif ($a -eq '--new') { $forceNew = $true }
+        $i++
+      }
+      if (-not $name) { Die $script:EXIT_USAGE 'workspace bind: --name X is required' }
+      $resp = Send-MarinaRequest -Config $Config -Method 'POST' -Path '/workspace/bind' -Body @{ terminal = $Config.Terminal; name = $name; new = $forceNew }
+      if ($resp.kind -eq 'created') {
+        [Console]::Out.WriteLine("Named current workspace '$name' (pinned)")
+      } else {
+        # switched: hint this is a switch to an existing workspace (ADR 2.2 A2)
+        $dtStr = ''
+        if ($resp.createdAt) {
+          try { $dtStr = [datetimeoffset]::FromUnixTimeMilliseconds([long]$resp.createdAt).LocalTime.ToString('yyyy-MM-dd HH:mm') } catch { $dtStr = '' }
+        }
+        [Console]::Out.WriteLine("Switched to existing workspace '$name' (created $dtStr, $([string]$resp.fileCount) files)")
+      }
+      return $script:EXIT_OK
+    }
+    'new' {
+      Assert-NoUnknownOptions -CmdArgs $subArgs -Allowed @() -CmdName 'workspace new'
+      if ($subArgs.Count -gt 0) { Die $script:EXIT_USAGE 'workspace new: takes no arguments' }
+      $resp = Send-MarinaRequest -Config $Config -Method 'POST' -Path '/workspace/new' -Body @{ terminal = $Config.Terminal }
+      [Console]::Out.WriteLine("Switched to a fresh empty workspace: $([string]$resp.dir)")
+      return $script:EXIT_OK
+    }
+    'unpin' {
+      Assert-NoUnknownOptions -CmdArgs $subArgs -Allowed @('--name') -CmdName 'workspace unpin'
+      $name = $null
+      $i = 0
+      while ($i -lt $subArgs.Count) {
+        $a = [string]$subArgs[$i]
+        if ($a -eq '--name') { $i++; if ($i -ge $subArgs.Count) { Die $script:EXIT_USAGE 'workspace unpin: --name requires a value' }; $name = [string]$subArgs[$i] }
+        $i++
+      }
+      $body = @{ terminal = $Config.Terminal }
+      if ($name) { $body['name'] = $name }
+      $resp = Send-MarinaRequest -Config $Config -Method 'POST' -Path '/workspace/unpin' -Body $body | Out-Null
+      [Console]::Out.WriteLine('Unpinned (stripped name+pinned; now reclaimable)')
+      return $script:EXIT_OK
+    }
+    default { Die $script:EXIT_USAGE "workspace: unknown subcommand: $sub. Available: list / bind / new / unpin" }
   }
-  if (-not $Config.Workspace) {
-    Die $script:EXIT_OFFLINE 'MARINA_WORKSPACE is unset (not in a Marina terminal, or this session predates managed workspaces)'
-  }
-  $p = Resolve-AbsPath -P $Config.Workspace
-  if (-not (Test-Path -LiteralPath $p -PathType Container)) {
-    Die $script:EXIT_REJECTED "MARINA_WORKSPACE is not an existing directory: $p"
-  }
-  [Console]::Out.WriteLine($p)
-  return $script:EXIT_OK
 }
 
 # Reject any unrecognized --foo / -x token instead of silently swallowing it.
@@ -449,7 +535,18 @@ read automatically; do not pass them as CLI options.
 
 commands:
   ping              check whether Marina is reachable (exit 0/1)
-  workspace         print this session's managed scratch directory
+  workspace         print this session's bound workspace path (queries main;
+                    $env:MARINA_WORKSPACE is stale after a switch, always query)
+  workspace list    list named workspaces under the current path scope
+                    --json      raw JSON output
+  workspace bind --name X [--new]
+                    upsert: new name -> name+pin current; existing -> switch
+                    --new + existing name -> error (must be a fresh create)
+  workspace new     switch this session to a fresh empty temp workspace
+                    (previously named workspace stays pinned)
+  workspace unpin [--name X]
+                    strip name+pinned; the workspace becomes reclaimable
+                    (no `remove` command -- unpin is the safe exit)
   show <PATH>       open an existing file in the panel
                     -q, --quiet suppress success output
   close <PATH>      close one file (exact path, or just the file name)

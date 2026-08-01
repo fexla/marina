@@ -92,11 +92,19 @@ Instead:
 
 ### Where to write the artifact: resolve the managed workspace first
 
-Marina injects a per-terminal scratch directory as `MARINA_WORKSPACE`.
-Throwaway display-only artifacts belong there; source-controlled deliverables
-still belong in the project's `docs/`. The managed directory is isolated per
+Marina maintains a per-terminal managed scratch directory. Throwaway
+display-only artifacts belong there; source-controlled deliverables still
+belong in the project's `docs/`. The managed directory is isolated per
 terminal and automatically reclaimed after the session closes (default
 retention 7 days, configurable; `0` deletes immediately).
+
+> **v0.3.3 contract change:** the directory used to be fixed at PTY spawn and
+> readable from `$env:MARINA_WORKSPACE`. It is now **decoupled from the session
+> and can switch at runtime** (bind a name, switch to a named workspace, start
+> a fresh one). So `$env:MARINA_WORKSPACE` is the **stale spawn-time value** —
+> after a `workspace bind`/`workspace new` switch it no longer points at the
+> active directory. **Always resolve the current path via the CLI**, which
+> queries Marina's main process (the source of truth).
 
 **Critical path rule:** shell variable syntax is expanded only by that shell.
 A file-writing API/tool (`write`, `edit`, Python `open`, Node `fs`, etc.) does
@@ -124,6 +132,34 @@ artifact="${workspace}/architecture-review.md"
 printf '# Architecture review\n\n...' > "$artifact"
 ./marina show "$artifact"
 ```
+
+#### Workspace lifecycle subcommands (v0.3.3)
+
+These let you name and reuse a scratch directory across the session, or hand
+work off between tasks. They all query main (require the Marina env vars);
+there is **no `remove`** command — to stop preserving a named workspace use
+`unpin` and it becomes reclaimable after the retention window.
+
+- `marina workspace` — print this session's **current** bound workspace path
+  (always query this; `$env:MARINA_WORKSPACE` is stale after a switch).
+- `marina workspace list [--json]` — list named workspaces under the current
+  path scope (name / created / file count / pinned).
+- `marina workspace bind --name X [--new]` — **upsert**. If `X` is new, the
+  current scratch dir is **named** `X` and pinned (preserved across restarts).
+  If `X` already exists in this path scope, this session **switches** to that
+  existing directory (the prior unnamed scratch is released; the command
+  prints a hint so you notice it was a switch, not a create). `--new` forces a
+  fresh create and **errors** if `X` already exists.
+- `marina workspace new` — switch this session to a fresh empty unnamed
+  scratch directory (a previously named workspace stays pinned).
+- `marina workspace unpin [--name X]` — strip the name + pinned flag so the
+  workspace returns to ordinary retention (reclaimed after the window). With
+  no `--name`, unpins the session's current workspace.
+
+Typical agent flow: do work in the default scratch; once you want to preserve
+a deliverable for later reuse, `marina workspace bind --name <task>` early
+(before accumulating throwaway output), then `marina workspace bind --name
+<task>` again later to return to it.
 
 When using a non-shell file-writing tool, follow this exact sequence:
 

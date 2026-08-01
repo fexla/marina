@@ -345,30 +345,97 @@ describeOrSkip('marina.cmd launcher + marina.ps1 (requires PowerShell + Python m
     }
   });
 
-  // ── workspace:把 env 安全解析为非 shell 工具可用的绝对路径 ─────────
-  it('workspace:输出当前 session 的具体绝对目录', () => {
-    const managed = join(workspace, 'managed scratch 空格');
-    mkdirSync(managed, { recursive: true });
-    const r = runMarina(['workspace'], { env: { MARINA_WORKSPACE: managed } });
+  // ── workspace(v0.3.3 ADR-024):查 main,不读 $env ──────────────
+  // workspaceId 与 sessionId 解耦后,$env:MARINA_WORKSPACE 是 spawn 时陈旧值,
+  // CLI 一律查当前桌面 daemon。子命令:无/list/bind/new/unpin。
+  it('workspace:查 main 打印当前 session 绑定的绝对路径', () => {
+    const r = runMarina(['workspace'], {
+      env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+    });
     expect(r.status, `stderr: ${r.stderr}`).toBe(0);
-    expect(resolve(r.stdout.trim())).toBe(resolve(managed));
+    expect(r.stdout.trim()).toBe('C:\\mock\\workspace\\current');
   });
 
-  it('workspace:MARINA_WORKSPACE 未注入时 exit 1', () => {
-    const r = runMarina(['workspace']);
+  it('workspace:缺 SERVICE/TOKEN/TERMINAL_ID → exit 1(不 fallback $env)', () => {
+    // $env 仍设着(MARINA_WORKSPACE),但 workspace 不再读它,缺 main 连接 → exit 1。
+    const r = runMarina(['workspace'], { env: { MARINA_WORKSPACE: 'C:\\stale' } });
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain('MARINA_WORKSPACE is unset');
   });
 
-  it('workspace:目录不存在时 exit 3,多余参数时 exit 2', () => {
-    const missing = join(workspace, 'missing');
-    const absent = runMarina(['workspace'], { env: { MARINA_WORKSPACE: missing } });
-    expect(absent.status).toBe(3);
-    expect(absent.stderr).toContain('not an existing directory');
+  it('workspace list:列命名 workspace', () => {
+    const r = runMarina(['workspace', 'list'], {
+      env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+    });
+    expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+    expect(r.stdout).toContain('feat-x');
+    expect(r.stdout).toContain('pinned');
+  });
 
-    const extra = runMarina(['workspace', 'literal-name']);
-    expect(extra.status).toBe(2);
-    expect(extra.stderr).toContain('does not accept arguments');
+  it('workspace list --json:原始 JSON', () => {
+    const r = runMarina(['workspace', 'list', '--json'], {
+      env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+    });
+    expect(r.status).toBe(0);
+    const parsed = JSON.parse(r.stdout);
+    // PS ConvertTo-Json may emit a single object (not array) for a 1-element list;
+    // normalize to array.
+    const arr = Array.isArray(parsed) ? parsed : [parsed];
+    expect(arr[0].name).toBe('feat-x');
+  });
+
+  it('workspace bind --name X:新建命名 → created 提示', () => {
+    const r = runMarina(['workspace', 'bind', '--name', 'fresh'], {
+      env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+    });
+    expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+    expect(r.stdout).toContain('Named current');
+  });
+
+  it('workspace bind --name X(已存在):切换 → switched 提示', () => {
+    const r = runMarina(['workspace', 'bind', '--name', 'feat-x'], {
+      env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('Switched to existing');
+  });
+
+  it('workspace bind --name X --new(已存在)→ exit 3(NameConflict 409)', () => {
+    const r = runMarina(['workspace', 'bind', '--name', 'feat-x', '--new'], {
+      env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+    });
+    expect(r.status).toBe(3);
+    expect(r.stderr).toContain('409');
+  });
+
+  it('workspace bind 缺 --name → exit 2', () => {
+    const r = runMarina(['workspace', 'bind'], {
+      env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+    });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('--name');
+  });
+
+  it('workspace new:切到新空临时 → 提示新路径', () => {
+    const r = runMarina(['workspace', 'new'], {
+      env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+    });
+    expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+    expect(r.stdout).toContain('fresh');
+  });
+
+  it('workspace unpin:剥 name+pinned → 提示', () => {
+    const r = runMarina(['workspace', 'unpin'], {
+      env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+    });
+    expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+    expect(r.stdout).toContain('Unpinned');
+  });
+
+  it('workspace 未知子命令 → exit 2', () => {
+    const r = runMarina(['workspace', 'bogus'], {
+      env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+    });
+    expect(r.status).toBe(2);
   });
 
   // ── show:路径模式唯一(无 stdin / 无 --as)────────────────────

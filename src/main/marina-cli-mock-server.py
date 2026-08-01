@@ -176,6 +176,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             )
             self._send_bytes(200, "image/png", png)
             return
+        # v0.3.3 ADR-024 / Feature D: workspace routes.
+        if p == "/workspace":
+            self._send(200, {"path": "C:\\mock\\workspace\\current"})
+            return
+        if p == "/workspace/list":
+            self._send(200, {"items": [
+                {"workspaceId": "w1", "name": "feat-x", "createdAt": 1700000000000,
+                 "closedAt": None, "pinned": True, "pathScope": "C:\\proj", "fileCount": 2},
+            ]})
+            return
         self._send(404, {"error": "not found"})
 
     def do_POST(self):
@@ -195,6 +205,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if p == "/close-files":
             self._send(200, close_files_response(parsed))
+            return
+        # v0.3.3 ADR-024 / Feature D: workspace POST routes.
+        if p == "/workspace/bind":
+            # 模拟 upsert:forceNew + name=feat-x → 冲突(让 CLI 测 409 路径)。
+            if parsed.get("new") and parsed.get("name") == "feat-x":
+                self._send(409, {"error": "name exists", "code": "NameConflict"})
+                return
+            kind = "created" if parsed.get("name") != "feat-x" else "switched"
+            if kind == "switched":
+                self._send(200, {"kind": "switched", "workspaceId": "w1",
+                                 "dir": "C:\\mock\\w1", "createdAt": 1700000000000, "fileCount": 2})
+            else:
+                self._send(200, {"kind": "created", "workspaceId": "w-new",
+                                 "dir": "C:\\mock\\w-new"})
+            return
+        if p == "/workspace/new":
+            self._send(200, {"workspaceId": "w-fresh", "dir": "C:\\mock\\fresh"})
+            return
+        if p == "/workspace/unpin":
+            self._send(200, {"workspaceId": "w1"})
             return
         self._send(404, {"error": "not found"})
 
