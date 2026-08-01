@@ -41,12 +41,12 @@
  */
 import { EventEmitter } from 'node:events';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { promises as fs, watch, type FSWatcher, type Stats } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import type { OpenedFile } from '@shared/types';
 import { detectFileKind } from '@shared/file-kind';
-import type { FilePanelSnapshot, ReadFileResponse, ReadImageResponse } from '@shared/protocol';
+import type { FilePanelSnapshot, ReadFileResponse, ReadImageResponse, GalleryResolveImageResponse } from '@shared/protocol';
 import { isRemoteUrl } from '@shared/url-scheme';
 import { normalizePath } from './path-manager';
 import { logger } from './logger';
@@ -57,6 +57,12 @@ const MODULE = 'FilePanelService';
 const MAX_READ_TEXT_BYTES = 2 * 1024 * 1024;
 /** 图片读取上限(字节)。超出直接拒绝(base64 会撑爆 IPC)。 */
 const MAX_READ_IMAGE_BYTES = 10 * 1024 * 1024;
+/** 网络图下载上限(字节)。超出拒绝(与本地图片上限一致,防撑爆 IPC/workspace)。 */
+const MAX_NETWORK_IMAGE_BYTES = 10 * 1024 * 1024;
+/** 网络图下载超时(ms)。超过视为失败(renderer 显示占位+重试)。 */
+const NETWORK_IMAGE_TIMEOUT_MS = 10_000;
+/** gallery 网络图缓存子目录名(落在 session 绑定的 workspace 下,随 workspace 回收)。 */
+const GALLERY_CACHE_DIR = '__marina_gallery__';
 /** fs.watch 防抖间隔(ms):编辑器连续保存时只触发一次刷新。 */
 const WATCH_DEBOUNCE_MS = 200;
 /** 绑定地址:仅回环,本机外部网络不可达。 */
@@ -502,6 +508,32 @@ export class FilePanelService extends EventEmitter {
    */
   async readImageAsset(sessionId: string, mdPath: string, src: string): Promise<ReadImageResponse> {
     if (!src || typeof src !== 'string') return { error: 'empty src' };
+    // 网络 / data: / blob: → renderer 直接用 <img>,不经此通道(传进来也拒)
+    if (isRemoteUrl(src)) {
+      return { error: 'not a local image' };
+    }
+    const resolved = await this.resolveLocalImageAbs(sessionId, mdPath, src);
+    if ('error' in resolved) return { error: resolved.error };
+    try {
+      const buf = await fs.readFile(resolved.abs);
+      return { dataUrl: `data:${resolved.mime};base64,${buf.toString('base64')}` };
+    } catch (err) {
+      return { error: `read failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
+  /**
+   * 解析本地图引用为磁盘绝对路径 + mime。复用于 readImageAsset(读 dataUrl)/
+   * gallery 本地图(resolve + open),保证两条路径走**同一套**安全面:
+   * decode → 成员校验 → 相对 md 目录 resolve → stat(须 isFile)→ 大小上限 → MIME 白名单。
+   *
+   * @returns 成功 {abs, mime};失败 {error}(不读文件内容,只 resolve+stat)。
+   */
+  private async resolveLocalImageAbs(
+    sessionId: string,
+    mdPath: string,
+    src: string,
+  ): Promise<{ abs: string; mime: string } | { error: string }> {
     // renderer 预处理把空格转 %20 防 CommonMark 截断(用户自己 %20 转义的也兼容)。
     // decode 还原真实文件路径 —— fs.readFile 要真实路径,不认 %20。
     let decoded = src;
@@ -509,10 +541,6 @@ export class FilePanelService extends EventEmitter {
       decoded = decodeURIComponent(src);
     } catch {
       // % 后非 hex 等 malformed sequence,保留原值让 resolve 尝试
-    }
-    // 网络 / data: / blob: → renderer 直接用 <img>,不经此通道(传进来也拒)
-    if (isRemoteUrl(decoded)) {
-      return { error: 'not a local image' };
     }
     // 成员校验:mdPath 必须是该 session 已打开列表里的 md 文件(与 readFile 同防线)。
     // 防 renderer 被诱导用任意 mdPath + src 读磁盘任意目录的图片 —— 此前没这道门,
@@ -543,12 +571,212 @@ export class FilePanelService extends EventEmitter {
     const ext = abs.slice(abs.lastIndexOf('.') + 1).toLowerCase();
     const mime = IMAGE_MIME[ext];
     if (!mime) return { error: `unsupported image type: .${ext}` };
+    return { abs, mime };
+  }
+
+  /**
+   * v0.3.3 Feature A(ADR-026):解析 gallery 单张图为 dataUrl。
+   *
+   * - 本地图:复用 resolveLocalImageAbs(成员校验 + 相对 md 目录 + 大小/MIME 上限)
+   *   后读 dataUrl。与 readImageAsset 走同一安全面。
+   * - 网络图(http(s)):daemon 下载到 workspace 的 `__marina_gallery__/<hash>.<ext>`
+   *   缓存(超时 NETWORK_IMAGE_TIMEOUT_MS、上限 MAX_NETWORK_IMAGE_BYTES),读成 dataUrl。
+   *   prod CSP `img-src 'self' data:` 禁直接渲染远程 URL,故必须落盘转 dataUrl。
+   *   缓存命中(URL hash 不变)不重复下载。下载缓存随 workspace 回收。
+   *
+   * @副作用:网络图首次解析会在 workspace 下创建缓存子目录并写文件。
+   *
+   * @常见问题排查:
+   * - 返回 'workspace not available' → 该 session 未绑定 workspace(workspaceOps 未注入);
+   *   网络图必须落盘,无 workspace 无法缓存。
+   * - 返回 'network timeout' / 'network too large' / 'network fetch failed' →
+   *   检查 URL 可达性 / 图片大小 / daemon 机器网络。
+   */
+  async resolveGalleryImage(
+    sessionId: string,
+    mdPath: string,
+    src: string,
+  ): Promise<GalleryResolveImageResponse> {
+    if (!src || typeof src !== 'string') return { error: 'empty src' };
+    // 网络图:http(s) 下载落盘。data:/blob: 在 gallery 语境无意义(无运行时生成),
+    // 走本地分支会被 resolveLocalImageAbs 的 MIME 校验拒。
+    if (isRemoteUrl(src) && /^https?:/i.test(src)) {
+      const dl = await this.downloadNetworkImage(sessionId, src);
+      if ('error' in dl) return { error: dl.error };
+      return { dataUrl: `data:${dl.mime};base64,${dl.buf.toString('base64')}` };
+    }
+    // 本地图(含 data:/blob:/无协议):复用 read-image 的解析路径
+    const resolved = await this.resolveLocalImageAbs(sessionId, mdPath, src);
+    if ('error' in resolved) return { error: resolved.error };
     try {
-      const buf = await fs.readFile(abs);
-      return { dataUrl: `data:${mime};base64,${buf.toString('base64')}` };
+      const buf = await fs.readFile(resolved.abs);
+      return { dataUrl: `data:${resolved.mime};base64,${buf.toString('base64')}` };
     } catch (err) {
       return { error: `read failed: ${err instanceof Error ? err.message : String(err)}` };
     }
+  }
+
+  /**
+   * v0.3.3 Feature A(ADR-026):用系统图片查看器打开 gallery 某张图。
+   *
+   * 返回的是已 resolve 的磁盘绝对路径(本地图原路径;网络图缓存路径),
+   * 由 ipc 层调 shell.openPath。**不把路径返给 renderer**(防泄露——与
+   * SYSTEM_OPEN_PATH 不同,后者要求 renderer 持路径;本通道全程 main 解析)。
+   *
+   * 安全:本地图复用 resolveLocalImageAbs(同成员校验 + 路径解析);网络图
+   * 走 downloadNetworkImage(缓存命中不重复下载)确保缓存存在后返缓存路径。
+   *
+   * @returns {path} 成功(ipc 层 openPath);{error} 失败。
+   */
+  async openGalleryImage(
+    sessionId: string,
+    mdPath: string,
+    src: string,
+  ): Promise<{ path: string } | { error: string }> {
+    if (!src || typeof src !== 'string') return { error: 'empty src' };
+    if (isRemoteUrl(src) && /^https?:/i.test(src)) {
+      const dl = await this.downloadNetworkImage(sessionId, src);
+      if ('error' in dl) return { error: dl.error };
+      return { path: dl.cachePath };
+    }
+    const resolved = await this.resolveLocalImageAbs(sessionId, mdPath, src);
+    if ('error' in resolved) return { error: resolved.error };
+    return { path: resolved.abs };
+  }
+
+  /**
+   * 下载网络图到 workspace 缓存并返回 Buffer + 落盘路径 + mime。缓存命中(URL
+   * hash 不变)直接读磁盘不重复下载。缓存目录在 session 绑定的 workspace 下,
+   * 随 workspace 回收(ADR-026 §2.5:不留全局孤儿)。
+   *
+   * @安全:URL 必须是 http(s)(调用方已判);用 AbortController 超时防卡死;
+   *   下载流累计字节数超 MAX_NETWORK_IMAGE_BYTES 立即中断(防超大响应撑爆磁盘)。
+   * @returns {buf, mime, cachePath} 成功;{error} 失败(workspace 未绑定/超时/超大/非图片)。
+   */
+  private async downloadNetworkImage(
+    sessionId: string,
+    url: string,
+  ): Promise<
+    { buf: Buffer; mime: string; cachePath: string } | { error: string }
+  > {
+    if (!this.workspaceOps) return { error: 'workspace not available (ops not injected)' };
+    const wsPath = this.workspaceOps.getCurrentPath(sessionId);
+    if (!wsPath) return { error: 'workspace not available' };
+    const cacheDir = resolve(wsPath, GALLERY_CACHE_DIR);
+    // URL → sha1 hash 作为缓存键(不含 URL 明文入文件名,避免非法字符/长度溢出)。
+    const hash = createHash('sha1').update(url).digest('hex');
+    // 从 URL 路径段推扩展名;取不到或非图片扩展名 → 默认 .img(mime 用响应头定)。
+    let ext = '';
+    try {
+      const u = new URL(url);
+      const last = u.pathname.split('/').pop() ?? '';
+      const dot = last.lastIndexOf('.');
+      if (dot >= 0) ext = last.slice(dot + 1).toLowerCase();
+    } catch {
+      // 非 URL 形态(理论上不会,调用方已判 http(s)),ext 保持空
+    }
+    const knownExt = ext && IMAGE_MIME[ext] ? ext : 'img';
+    const cachePath = resolve(cacheDir, `${hash}.${knownExt}`);
+    // 缓存命中:直接读磁盘(不重复下载)。stat 失败/为空 → 走下载。
+    try {
+      const st = await fs.stat(cachePath);
+      if (st.isFile() && st.size > 0 && st.size <= MAX_NETWORK_IMAGE_BYTES) {
+        const buf = await fs.readFile(cachePath);
+        const mime = IMAGE_MIME[knownExt] ?? this.sniffImageMime(buf) ?? 'application/octet-stream';
+        return { buf, mime, cachePath };
+      }
+    } catch {
+      // 缓存未命中,继续下载
+    }
+    // 下载:AbortController 超时 + 累计字节上限中断
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), NETWORK_IMAGE_TIMEOUT_MS);
+    let resp: Response;
+    try {
+      resp = await fetch(url, { signal: controller.signal, redirect: 'follow' });
+    } catch (err) {
+      return { error: `network fetch failed: ${err instanceof Error ? err.message : String(err)}` };
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!resp.ok) return { error: `network fetch failed (HTTP ${resp.status})` };
+    // 流式读 + 累计字节上限(防超大响应撑爆磁盘/内存)
+    const reader = resp.body?.getReader();
+    if (!reader) return { error: 'network fetch failed (no body)' };
+    const chunks: Buffer[] = [];
+    let total = 0;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          total += value.byteLength;
+          if (total > MAX_NETWORK_IMAGE_BYTES) {
+            try {
+              await reader.cancel();
+            } catch {
+              /* ignore */
+            }
+            return { error: `network too large (${total} > ${MAX_NETWORK_IMAGE_BYTES})` };
+          }
+          chunks.push(Buffer.from(value));
+        }
+      }
+    } catch (err) {
+      return { error: `network read failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    const buf = Buffer.concat(chunks);
+    if (buf.length === 0) return { error: 'network fetch failed (empty body)' };
+    // mime:响应头优先,其次扩展名映射,其次 magic sniff,兜底 octet-stream
+    const mime =
+      resp.headers.get('content-type')?.split(';')[0]?.trim() ||
+      IMAGE_MIME[knownExt] ||
+      this.sniffImageMime(buf) ||
+      'application/octet-stream';
+    // 落盘缓存(确保目录存在)
+    try {
+      await fs.mkdir(cacheDir, { recursive: true });
+      await fs.writeFile(cachePath, buf);
+    } catch (err) {
+      // 落盘失败不影响本次返回(已拿到 buf + mime);只是下次会重下。记 warn。
+      logger.warn(
+        MODULE,
+        `gallery 缓存写入失败(不影响本次渲染): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    return { buf, mime, cachePath };
+  }
+
+  /**
+   * 从图片字节流前几个字节嗅探 mime(fetch 无 content-type 且扩展名无映射时的兜底)。
+   * 只识别最常见的几种;识别不出返 null。
+   */
+  private sniffImageMime(buf: Buffer): string | null {
+    if (buf.length < 4) return null;
+    // PNG: 89 50 4E 47
+    if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47)
+      return 'image/png';
+    // JPEG: FF D8 FF
+    if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+    // GIF: 47 49 46 38
+    if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38)
+      return 'image/gif';
+    // WebP: RIFF....WEBP
+    if (
+      buf.length >= 12 &&
+      buf[0] === 0x52 &&
+      buf[1] === 0x49 &&
+      buf[2] === 0x46 &&
+      buf[3] === 0x46 &&
+      buf[8] === 0x57 &&
+      buf[9] === 0x45 &&
+      buf[10] === 0x42 &&
+      buf[11] === 0x50
+    )
+      return 'image/webp';
+    return null;
   }
 
   /**

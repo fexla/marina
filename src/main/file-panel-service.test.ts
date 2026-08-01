@@ -3,7 +3,7 @@
  * @purpose 验证 FilePanelService 的状态机 / read / HTTP 鉴权与路由 / 路径解析 /
  *   session 销毁清理 / fs.watch 自动刷新。用真实临时目录(AGENTS.md §9.1)。
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1031,3 +1031,212 @@ describe('FilePanelService - HTTP /opening-files stale + /close-files (#3,#4)', 
     expect(r.status).toBe(400);
   });
 });
+
+// ──────────────────────────────────────────────────────────────────
+// v0.3.3 Feature A(ADR-026):gallery 图片表 —— resolveGalleryImage / openGalleryImage
+// 本地图复用 read-image 解析;网络图 daemon fetch 下载落盘 workspace 缓存。
+// fetch 用 vi.stubGlobal mock(不起真实 HTTP 服务,精确控制状态码/响应体/超时)。
+// ──────────────────────────────────────────────────────────────────
+describe('FilePanelService - gallery (Feature A)', () => {
+  let dir: string;
+  let svc: FilePanelService;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'marina-fp-gallery-'));
+    svc = new FilePanelService();
+    svc.attachSessionLookup(makeLookup({ s1: { currentCwd: dir, ownerWindowId: 'w1' } }));
+    // gallery 网络图需要 workspace 缓存目录:注入返回临时 dir 的 ops。
+    svc.attachWorkspaceOps({
+      getCurrentPath: () => dir,
+      bind: async () => ({ kind: 'created', workspaceId: 'w1', dir }),
+      list: async () => [],
+      newWorkspace: async () => ({ workspaceId: 'w1', dir }),
+      unpin: async () => ({ workspaceId: 'w1' }),
+    });
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await svc.stop();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('本地图 → dataUrl(复用 read-image:成员校验 + 相对 md 目录 + MIME)', async () => {
+    // 造一个 1x1 PNG(md 同级目录)
+    await writeFile(join(dir, 'r.md'), '# hi');
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    await writeFile(join(dir, 'a.png'), png);
+    await svc.openFile('s1', 'r.md');
+    const mdPath = join(dir, 'r.md');
+
+    const r = await svc.resolveGalleryImage('s1', mdPath, 'a.png');
+    expect('dataUrl' in r).toBe(true);
+    if ('dataUrl' in r) {
+      expect(r.dataUrl).toMatch(/^data:image\/png;base64,/);
+    }
+  });
+
+  it('本地图:mdPath 不在面板 → error(成员校验防线)', async () => {
+    await writeFile(join(dir, 'a.png'), Buffer.alloc(8));
+    const r = await svc.resolveGalleryImage('s1', join(dir, 'other.md'), 'a.png');
+    expect('error' in r).toBe(true);
+    if ('error' in r) expect(r.error).toBe('md file not in this panel');
+  });
+
+  it('本地图:文件不存在 → error', async () => {
+    await writeFile(join(dir, 'r.md'), '# hi');
+    await svc.openFile('s1', 'r.md');
+    const r = await svc.resolveGalleryImage('s1', join(dir, 'r.md'), 'nope.png');
+    expect('error' in r).toBe(true);
+    if ('error' in r) expect(r.error).toBe('not found');
+  });
+
+  it('网络图 → 下载成功返 dataUrl(走 fetch,content-type 定 mime)', async () => {
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    vi.stubGlobal('fetch', async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (k: string) => (k === 'content-type' ? 'image/png' : null) },
+      body: { getReader: () => makeReader(png) },
+    }));
+
+    const r = await svc.resolveGalleryImage('s1', join(dir, 'x.md'), 'https://e.com/a.png');
+    expect('dataUrl' in r).toBe(true);
+    if ('dataUrl' in r) expect(r.dataUrl).toMatch(/^data:image\/png;base64,/);
+  });
+
+  it('网络图:HTTP 非 2xx → error', async () => {
+    vi.stubGlobal('fetch', async () => ({ ok: false, status: 404, headers: new Map(), body: null }));
+    const r = await svc.resolveGalleryImage('s1', join(dir, 'x.md'), 'https://e.com/a.png');
+    expect('error' in r).toBe(true);
+    if ('error' in r) expect(r.error).toMatch(/HTTP 404/);
+  });
+
+  it('网络图:响应超 MAX_NETWORK_IMAGE_BYTES → error(流式累计中断)', async () => {
+    // 喂一个超过上限的流(每块 1MB,超 10MB 中断)
+    const chunk = Buffer.alloc(1024 * 1024, 0xff);
+    let calls = 0;
+    vi.stubGlobal('fetch', async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'image/png' },
+      body: {
+        getReader: () => ({
+          read: async () => {
+            calls++;
+            if (calls > 20) return { done: true as const, value: undefined };
+            return { done: false as const, value: chunk };
+          },
+          cancel: async () => {},
+        }),
+      },
+    }));
+    const r = await svc.resolveGalleryImage('s1', join(dir, 'x.md'), 'https://e.com/big.png');
+    expect('error' in r).toBe(true);
+    if ('error' in r) expect(r.error).toMatch(/too large/);
+  });
+
+  it('网络图:fetch 抛错 → error', async () => {
+    vi.stubGlobal('fetch', async () => {
+      throw new Error('ETIMEDOUT');
+    });
+    const r = await svc.resolveGalleryImage('s1', join(dir, 'x.md'), 'https://e.com/a.png');
+    expect('error' in r).toBe(true);
+    if ('error' in r) expect(r.error).toMatch(/network fetch failed/);
+  });
+
+  it('网络图:缓存命中(同 URL 二次 resolve)不重复 fetch', async () => {
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    let fetchCalls = 0;
+    vi.stubGlobal('fetch', async () => {
+      fetchCalls++;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => 'image/png' },
+        body: { getReader: () => makeReader(png) },
+      };
+    });
+    const url = 'https://e.com/cached.png';
+    const r1 = await svc.resolveGalleryImage('s1', join(dir, 'x.md'), url);
+    const r2 = await svc.resolveGalleryImage('s1', join(dir, 'x.md'), url);
+    expect(fetchCalls).toBe(1); // 第二次命中缓存
+    expect('dataUrl' in r1 && 'dataUrl' in r2).toBe(true);
+  });
+
+  it('网络图:workspace 未绑定 → error(无缓存目录)', async () => {
+    // 用一个 workspaceOps 返回 null 的 service
+    const svc2 = new FilePanelService();
+    svc2.attachSessionLookup(makeLookup({ s1: { currentCwd: dir, ownerWindowId: 'w1' } }));
+    svc2.attachWorkspaceOps({
+      getCurrentPath: () => null,
+      bind: async () => ({ kind: 'created', workspaceId: 'w', dir }),
+      list: async () => [],
+      newWorkspace: async () => ({ workspaceId: 'w', dir }),
+      unpin: async () => ({ workspaceId: 'w' }),
+    });
+    vi.stubGlobal('fetch', async () => ({ ok: true, status: 200, headers: new Map(), body: null }));
+    const r = await svc2.resolveGalleryImage('s1', join(dir, 'x.md'), 'https://e.com/a.png');
+    expect('error' in r).toBe(true);
+    if ('error' in r) expect(r.error).toMatch(/workspace not available/);
+    await svc2.stop();
+  });
+
+  it('openGalleryImage 本地图 → 返回磁盘绝对路径(供 ipc openPath)', async () => {
+    await writeFile(join(dir, 'r.md'), '# hi');
+    const png = Buffer.alloc(8, 0x89);
+    await writeFile(join(dir, 'a.png'), png);
+    await svc.openFile('s1', 'r.md');
+    const r = await svc.openGalleryImage('s1', join(dir, 'r.md'), 'a.png');
+    expect('path' in r).toBe(true);
+    if ('path' in r) expect(r.path).toBe(join(dir, 'a.png'));
+  });
+
+  it('openGalleryImage 网络图 → 返回缓存落盘路径', async () => {
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    vi.stubGlobal('fetch', async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'image/png' },
+      body: { getReader: () => makeReader(png) },
+    }));
+    const r = await svc.openGalleryImage('s1', join(dir, 'x.md'), 'https://e.com/a.png');
+    expect('path' in r).toBe(true);
+    if ('path' in r) {
+      expect(r.path).toContain('__marina_gallery__');
+      expect(r.path).toMatch(/\.png$/);
+    }
+  });
+
+  it('openGalleryImage 本地图不存在 → error', async () => {
+    await writeFile(join(dir, 'r.md'), '# hi');
+    await svc.openFile('s1', 'r.md');
+    const r = await svc.openGalleryImage('s1', join(dir, 'r.md'), 'nope.png');
+    expect('error' in r).toBe(true);
+  });
+});
+
+/** 造一个 Web ReadableStream 风格的 reader(一次性吐 buffer 后 done)。 */
+function makeReader(buf: Buffer) {
+  let done = false;
+  return {
+    read: async () => {
+      if (done) return { done: true as const, value: undefined };
+      done = true;
+      return { done: false as const, value: new Uint8Array(buf) };
+    },
+    cancel: async () => {},
+  };
+}

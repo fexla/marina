@@ -94,6 +94,10 @@ import {
   type ReadFilePayload,
   type ReadImagePayload,
   type ReadImageResponse,
+  type GalleryResolveImagePayload,
+  type GalleryResolveImageResponse,
+  type GalleryOpenImagePayload,
+  type GalleryOpenImageResponse,
   type GetMdThemeCssPayload,
   type GetMdThemeCssResponse,
   type ListMdThemesResponse,
@@ -1904,6 +1908,39 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
         envelope.payload.mdPath,
         envelope.payload.src,
       ),
+  );
+
+  // v0.3.3 Feature A(ADR-026):gallery 图片表。resolve-image 解析单图为 dataUrl
+  // (本地图复用 read-image;网络图 daemon 下载缓存转 dataUrl 绕 CSP)。open-image
+  // 在 main 端 resolve 绝对路径后 shell.openPath 调系统图片查看器(不把路径返 renderer)。
+  registerHandle(
+    COMMAND_CHANNELS.GALLERY_RESOLVE_IMAGE,
+    async (
+      _e,
+      envelope: CommandEnvelope<GalleryResolveImagePayload>,
+    ): Promise<GalleryResolveImageResponse> =>
+      filePanelService.resolveGalleryImage(
+        envelope.payload.sessionId,
+        envelope.payload.mdPath,
+        envelope.payload.src,
+      ),
+  );
+  registerHandle(
+    COMMAND_CHANNELS.GALLERY_OPEN_IMAGE,
+    async (
+      _e,
+      envelope: CommandEnvelope<GalleryOpenImagePayload>,
+    ): Promise<GalleryOpenImageResponse> => {
+      const r = await filePanelService.openGalleryImage(
+        envelope.payload.sessionId,
+        envelope.payload.mdPath,
+        envelope.payload.src,
+      );
+      if ('error' in r) return r;
+      // shell.openPath 返空串=成功打开,非空串=错误信息(OS 语义)。
+      const openError = await shell.openPath(r.path);
+      return openError ? { error: openError } : { ok: true };
+    },
   );
 }
 
