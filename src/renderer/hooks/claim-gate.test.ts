@@ -7,12 +7,13 @@
  *   claim-gate 是纯模块级逻辑(无 JSX/无 DOM/无 React),与 store.test.ts 同类。
  *   它的契约一旦破坏会让所有面板 race 回归,所以必须有回归保护。
  *
- * @核心契约:
- *   1. 无 in-flight claim 时,waitForClaim 立即 resolve(不阻塞常规切换)。
+ * @核心契约(2026-08-01 改造后):
+ *   1. 无 in-flight claim 时,waitForClaim 立即返回 { ok: true }(不阻塞常规切换)。
  *   2. claimSession 登记后,waitForClaim 等到 invoke resolve 才 resolve。
- *   3. claim 失败时 waitForLogin... 不,claim 失败时 waitForClaim 仍 resolve
- *      (gate 吞 reject),不向上抛 —— 面板的 await 不会因 claim 失败而 throw。
- *   4. claim settle 后从 gate 清除,waitForClaim 退回立即返回。
+ *   3. claim 成功时 waitForClaim 返回 { ok: true };claim 失败时返回 { ok: false }
+ *      (不向上抛),面板据此决定是否发请求 —— 失败必须中止,不发注定 NotOwner 的 IPC。
+ *   4. claim settle 后从 gate 清除,waitForClaim 退回立即返回 { ok: true }。
+ *   5. 面板消费契约:outcome.ok === false 时不得发数据请求(NotOwner race 的根治)。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { _resetClaimGateForTest, claimSession, waitForClaim } from './claim-gate';
@@ -41,8 +42,8 @@ afterEach(() => {
 });
 
 describe('claim-gate', () => {
-  it('无 in-flight claim 时,waitForClaim 立即 resolve(常规切换/已持有不阻塞)', async () => {
-    await expect(waitForClaim('s1')).resolves.toBeUndefined();
+  it('无 in-flight claim 时,waitForClaim 立即返回 { ok: true }(常规切换/已持有不阻塞)', async () => {
+    await expect(waitForClaim('s1')).resolves.toEqual({ ok: true });
     // 且不触发任何 window.api 调用 —— waitForClaim 是纯读,不该有副作用。
     expect(fakeApi.invoke).not.toHaveBeenCalled();
   });
@@ -67,39 +68,45 @@ describe('claim-gate', () => {
     await Promise.resolve(); // flush 微任务
     expect(gateResolved).toBe(false);
 
-    // main 端 claim 完成 → gate 放行。
+    // main 端 claim 完成 → gate 放行,返回 { ok: true }。
     resolveClaim({ scrollback: '', lastSeq: 0 });
-    await waitForClaim('s2'); // 应在 claim settle 后 resolve
+    await expect(waitForClaim('s2')).resolves.toEqual({ ok: true });
     expect(gateResolved).toBe(true);
 
     // 原始 claim promise 也能拿到正常返回值(不受 gate 包装影响)。
     await expect(claim).resolves.toEqual({ scrollback: '', lastSeq: 0 });
   });
 
-  it('claim 失败(reject)时,waitForClaim 仍 resolve,不向上抛', async () => {
+  it('claim 失败(reject)时,waitForClaim 返回 { ok: false },不向上抛', async () => {
     // 模拟 SessionAlreadyOwned / SessionNotFound 等 claim 失败。
     fakeApi.invoke.mockRejectedValue(new Error('SessionAlreadyOwned'));
 
+    // 必须先 claimSession 登记(否则 waitForClaim 无 inflight 会立即返回 { ok: true })。
+    // claimSession 发起 invoke(reject) 同时登记进 gate。
+    const claimPromise = claimSession('s3');
+
     // waitForClaim 不应抛 —— 面板的 await waitForClaim 不会因 claim 失败而进入 catch。
-    await expect(waitForClaim('s3')).resolves.toBeUndefined();
+    // 但返回值标明失败:面板必须据此中止数据请求,不发注定 NotOwner 的 IPC。
+    await expect(waitForClaim('s3')).resolves.toEqual({ ok: false });
 
     // 原始 claimSession 返回的 promise 仍 reject(调用方据此 rollback),
-    // gate 只是把「等待」做成永不 reject 的副本,不影响调用方对失败的感知。
-    await expect(claimSession('s3b')).rejects.toThrow('SessionAlreadyOwned');
+    // gate 只是把「等待」做成永不 reject 的 {ok} 副本,不影响调用方对失败的感知。
+    await expect(claimPromise).rejects.toThrow('SessionAlreadyOwned');
   });
 
-  it('claim settle 后从 gate 清除,waitForClaim 退回立即返回', async () => {
+  it('claim settle 后从 gate 清除,waitForClaim 退回立即返回 { ok: true }', async () => {
     fakeApi.invoke.mockResolvedValue({ scrollback: '', lastSeq: 9 });
 
     const claim = claimSession('s4');
     await waitForClaim('s4'); // 等 claim 完成
     await claim;
 
-    // settle 后 gate 已清除:再次 waitForClaim 不应再阻塞(无需 await 新的 claim)。
+    // settle 后 gate 已清除:再次 waitForClaim 不应再阻塞(无需 await 新的 claim),
+    // 且退回「无 in-flight」语义 → { ok: true }(session 现已确实归本窗口持有)。
     // 用一个微任务探针:若 gate 残留 pending promise,resolvedAfterTick 会是 false。
     let resolvedAfterTick = false;
-    void waitForClaim('s4').then(() => {
-      resolvedAfterTick = true;
+    void waitForClaim('s4').then((outcome) => {
+      resolvedAfterTick = outcome.ok;
     });
     await Promise.resolve();
     expect(resolvedAfterTick).toBe(true);
@@ -129,7 +136,7 @@ describe('claim-gate', () => {
     const bGate = waitForClaim('s-b');
     const aGate = waitForClaim('s-a');
     resolveB({ scrollback: '', lastSeq: 0 });
-    await expect(bGate).resolves.toBeUndefined(); // b settle
+    await expect(bGate).resolves.toEqual({ ok: true }); // b settle 成功
 
     // a 还没 resolve:它应处于 pending。用 race 探测 — 给它一个微任务机会仍不 resolve。
     let aSettled = false;
@@ -140,7 +147,29 @@ describe('claim-gate', () => {
     expect(aSettled).toBe(false);
 
     resolveA({ scrollback: '', lastSeq: 0 });
-    await expect(aGate).resolves.toBeUndefined();
+    await expect(aGate).resolves.toEqual({ ok: true });
     expect(aSettled).toBe(true);
+  });
+
+  it('面板消费契约:outcome.ok === false 时不得发数据请求(NotOwner race 根治)', async () => {
+    // 模拟一个「面板等 claim」的消费者:它 await waitForClaim,只在 ok 时发请求。
+    // 这是 FileTreePanel / GitPanel / useGitPollingDemand 的契约缩影。
+    fakeApi.invoke.mockRejectedValueOnce(new Error('SessionAlreadyOwned'));
+
+    const requested: string[] = [];
+    const panelConsume = async (sessionId: string): Promise<void> => {
+      const outcome = await waitForClaim(sessionId);
+      // 关键:失败时不发请求 —— 旧契约(void)这里会无条件发,命中 NotOwner。
+      if (outcome.ok) requested.push(sessionId);
+    };
+
+    // claimSession 先登记进 gate(否则 waitForClaim 立即返回 { ok: true },测不到失败路径)。
+    const claimPromise = claimSession('s-fail');
+    await panelConsume('s-fail');
+
+    // 失败 claim 不得触发面板请求。
+    expect(requested).toEqual([]);
+    // 原始 claim 仍 reject,调用方 rollback。
+    await expect(claimPromise).rejects.toThrow('SessionAlreadyOwned');
   });
 });

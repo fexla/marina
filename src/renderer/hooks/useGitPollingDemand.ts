@@ -36,17 +36,20 @@ export function useGitPollingDemand({
       if (!force && lastSentRef.current === level) return;
       lastSentRef.current = level;
       // 若该 session 正在被 claim(乐观接管 orphan),等 claim 完成(main 端 owner 就位)
-      // 再报 demand,消除 NotOwner。常规(已持有)时立即返回。demand 是 best-effort
+      // 再报 demand,消除 NotOwner。claim 失败时 outcome.ok === false —— 此时
+      // main 端 owner 不会就位,不报 demand(失败后果由 rollback + 组件卸载处理)。
+      // 常规(已持有)时立即返回 { ok: true }。demand 是 best-effort
       // (失败已在内部 catch 吞掉),延迟到 claim 后不影响语义。
-      void waitForClaim(sessionId).then(() =>
+      void waitForClaim(sessionId).then((outcome) => {
+        if (!outcome.ok) return;
         window.api
           .invoke(COMMAND_CHANNELS.GIT_SET_POLLING_DEMAND, { sessionId, level })
           .catch((error: unknown) => {
             // 失败不影响面板；清 lastSent 让下一次 focus/visibility/state 变化可重试。
             if (lastSentRef.current === level) lastSentRef.current = null;
             console.warn('[useGitPollingDemand] demand update failed', error);
-          }),
-      );
+          });
+      });
     },
     [sessionId],
   );

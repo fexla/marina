@@ -155,9 +155,12 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
     // 在这里 setDirectories({}) 反而会清掉刚从缓存恢复的展开态(需求3)。
     setRecursiveResults({});
     // 若该 session 正在被 claim(乐观接管 orphan),等 claim 完成(main 端 owner 就位)
-    // 再发请求,消除 NotOwner race。常规切换(已持有)时 waitForClaim 立即返回。
-    void waitForClaim(sessionId).then(() => {
-      if (cancelled) return;
+    // 再发请求,消除 NotOwner race。claim 失败(SessionAlreadyOwned/传输 reject)时
+    // outcome.ok === false —— 此时 main 端 owner 不会就位,硬发只会命中 NotOwner
+    // 然后渲染错误态,所以必须中止请求(失败后果由各 claim 调用方的 rollback +
+    // 组件卸载处理)。常规切换(已持有)时 waitForClaim 立即返回 { ok: true }。
+    void waitForClaim(sessionId).then((outcome) => {
+      if (cancelled || !outcome.ok) return;
       window.api
         .invoke<{ sessionId: string }, GetFileTreeRootsResponse>(
           COMMAND_CHANNELS.FILE_TREE_GET_ROOTS,

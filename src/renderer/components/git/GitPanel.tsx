@@ -147,8 +147,11 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
 
   const loadStatus = useCallback(async (): Promise<void> => {
     // 若该 session 正在被 claim(乐观接管 orphan),等 claim 完成(main 端 owner 就位)
-    // 再发请求,消除 NotOwner race。常规切换(已持有)时立即返回。
-    await waitForClaim(sessionId);
+    // 再发请求,消除 NotOwner race。claim 失败(SessionAlreadyOwned/传输 reject)时
+    // outcome.ok === false —— 此时 main 端 owner 不会就位,中止请求(失败后果由
+    // rollback + 组件卸载处理)。常规切换(已持有)时立即返回 { ok: true }。
+    const outcome = await waitForClaim(sessionId);
+    if (!outcome.ok) return;
     // 关键:后台刷新时不把已有 snapshot 清掉(避免秒显后闪烁)。
     // loading 标志用于指示"后台正在刷",但 UI 分支里只要 snapshot/unavailable 还在
     // 就继续显示旧值,不回到 loading 占位。
