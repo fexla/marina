@@ -538,6 +538,35 @@ function bootstrap(): void {
         logger.error('main', 'file-panel service start failed (degraded, app continues)', err);
       }
       filePanelService.attachSessionLookup(sessionManager);
+      // v0.3.3 T12(testability enabler):注入截图回调 —— agent/CLI 走 HTTP /screenshot
+      // 自测 UI。闭合 sessionManager.get→ownerWindowId→windowManager.getById→
+      // webContents.capturePage→toPNG。不引 electron 进 service 层(保持可测)。
+      // 无 owner / 窗口销毁 / capturePage 抛错都返 {error},路由转 400。
+      filePanelService.attachWindowCapture((sessionId) => {
+        const session = sessionManager.get(sessionId);
+        const ownerWindowId = session?.ownerWindowId ?? null;
+        if (!ownerWindowId) {
+          return Promise.resolve({ error: 'session 无 owner 窗口(无法截图)' });
+        }
+        const win = windowManager.getById(ownerWindowId);
+        if (!win || win.isDestroyed()) {
+          return Promise.resolve({ error: 'owner 窗口已关闭或销毁' });
+        }
+        // capturePage:窗口最小化/隐藏时返回当前内容(可能为空图);webContents 销毁时拒。
+        const wc = win.webContents;
+        if (wc.isDestroyed()) {
+          return Promise.resolve({ error: 'webContents 已销毁' });
+        }
+        return wc
+          .capturePage()
+          .then((img) => ({ png: img.toPNG() }))
+          .catch(
+            (err: unknown) =>
+              ({
+                error: `capturePage 失败: ${err instanceof Error ? err.message : String(err)}`,
+              }) as { error: string },
+          );
+      });
       // v0.3.0:注入 Git 可用性判定回调。GitService.evaluateAvailability 是纯函数
       // (只接受 cwd + pathKind,不持 session 引用),避免循环依赖。注入后,
       // 已存在 + 后续新 session 都会异步评估 → Git tab 出现/消失。

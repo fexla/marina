@@ -492,6 +492,79 @@ describe('FilePanelService - HTTP 鉴权与路由', () => {
   });
 });
 
+// v0.3.3 T12(testability enabler):GET /screenshot —— agent/CLI 远程截图自测 UI。
+// windowCapture 注入式(mock webContents),验证鉴权 / 成功返 image/png / 错误返 400 / 未注入返 503。
+describe('FilePanelService - HTTP /screenshot (T12)', () => {
+  let svc: FilePanelService;
+  let baseUrl: string;
+  let token: string;
+
+  beforeEach(async () => {
+    svc = new FilePanelService();
+    svc.attachSessionLookup(makeLookup({ s1: { currentCwd: '/', ownerWindowId: 'w1' } }));
+    const url = await svc.start({ enabled: true, port: 0 });
+    baseUrl = url!.baseUrl;
+    token = url!.token;
+  });
+
+  afterEach(async () => {
+    await svc.stop();
+  });
+
+  function authHeaders(): Record<string, string> {
+    return { Authorization: `Bearer ${token}` };
+  }
+
+  it('无鉴权 → 401(同其他路由)', async () => {
+    const r = await fetch(`${baseUrl}/screenshot?terminal=s1`);
+    expect(r.status).toBe(401);
+  });
+
+  it('windowCapture 未注入 → 503(功能未启用,不崩)', async () => {
+    const r = await fetch(`${baseUrl}/screenshot?terminal=s1`, { headers: authHeaders() });
+    expect(r.status).toBe(503);
+  });
+
+  it('缺 terminal 查询参数 → 400', async () => {
+    svc.attachWindowCapture(async () => ({ png: Buffer.alloc(0) }));
+    const r = await fetch(`${baseUrl}/screenshot`, { headers: authHeaders() });
+    expect(r.status).toBe(400);
+  });
+
+  it('capture 成功 → 200 + image/png + PNG 字节', async () => {
+    // 模拟一个 1×1 PNG(webContents.capturePage→toPNG 的替身)
+    const fakePng = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
+      'base64',
+    );
+    svc.attachWindowCapture(async (sessionId) => {
+      expect(sessionId).toBe('s1');
+      return { png: fakePng };
+    });
+    const r = await fetch(`${baseUrl}/screenshot?terminal=s1`, { headers: authHeaders() });
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type')).toBe('image/png');
+    const buf = Buffer.from(await r.arrayBuffer());
+    expect(buf.equals(fakePng)).toBe(true);
+  });
+
+  it('capture 返 {error}(无 owner/窗口销毁)→ 400 + JSON error', async () => {
+    svc.attachWindowCapture(async () => ({ error: 'owner 窗口已关闭' }));
+    const r = await fetch(`${baseUrl}/screenshot?terminal=s1`, { headers: authHeaders() });
+    expect(r.status).toBe(400);
+    const body = (await r.json()) as { error: string };
+    expect(body.error).toContain('owner');
+  });
+
+  it('capture 抛异常 → 500(服务端 bug 兼底)', async () => {
+    svc.attachWindowCapture(async () => {
+      throw new Error('boom');
+    });
+    const r = await fetch(`${baseUrl}/screenshot?terminal=s1`, { headers: authHeaders() });
+    expect(r.status).toBe(500);
+  });
+});
+
 describe('FilePanelService - 销毁清理与自动刷新', () => {
   let dir: string;
   let svc: FilePanelService;

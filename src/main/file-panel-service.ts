@@ -85,6 +85,17 @@ export interface FilePanelSessionLookup {
   get(sessionId: string): { currentCwd: string; ownerWindowId: string | null } | null;
 }
 
+/**
+ * v0.3.3 T12(testability enabler):按 sessionId 截其 owner window 的屏。
+ * 注入式回调(FilePanelService 不引 electron,保持可测)—— index.ts 闭合
+ * sessionManager.get → ownerWindowId → windowManager.getById → webContents.capturePage
+ * → NativeImage.toPNG()。成功返回 PNG Buffer;不可截(无 owner/窗口已销毁/最小化)
+ * 返回 {error}。HTTP /screenshot 路由调它。
+ */
+export type WindowCaptureFn = (
+  sessionId: string,
+) => Promise<{ png: Buffer } | { error: string }>;
+
 interface PanelState {
   files: OpenedFile[];
   activePath: string | null;
@@ -137,6 +148,8 @@ function snapshot(state: PanelState | undefined): FilePanelSnapshot {
 export class FilePanelService extends EventEmitter {
   private readonly panels = new Map<string, PanelState>();
   private lookup: FilePanelSessionLookup | null = null;
+  /** v0.3.3 T12:截图回调,由 index.ts 注入(不引 electron,保持服务可测)。null=未注入,/screenshot 503。 */
+  private windowCapture: WindowCaptureFn | null = null;
   private server: Server | null = null;
   private baseUrl: string | null = null;
   private token: string | null = null;
@@ -155,6 +168,15 @@ export class FilePanelService extends EventEmitter {
   /** 组装期后绑定 session 查询能力(见文件头"循环依赖破除")。 */
   attachSessionLookup(lookup: FilePanelSessionLookup): void {
     this.lookup = lookup;
+  }
+
+  /**
+   * v0.3.3 T12:注入截图回调(/screenshot 路由用)。不引 electron,服务层保持可测:
+   * index.ts 闭合 sessionManager→ownerWindow→webContents.capturePage→toPNG。
+   * 未注入时 /screenshot 返 503(功能未启用),不崩。
+   */
+  attachWindowCapture(capture: WindowCaptureFn): void {
+    this.windowCapture = capture;
   }
 
   /** 注入终端 env 用:返回服务地址 + token;未启动 / 被禁用时返回 null。 */
@@ -804,6 +826,13 @@ export class FilePanelService extends EventEmitter {
       return;
     }
 
+    // v0.3.3 T12:GET /screenshot?terminal=<id> —— 截该 session owner window 的屏,返 image/png。
+    // 给 agent/CLI 自测 UI 用(消除人工截图)。鉴权同其他路由;capture 回调未注入返 503。
+    if (method === 'GET' && u.pathname === '/screenshot') {
+      if (!terminal) return this.send(res, 400, { error: 'missing query: terminal' });
+      return void this.handleScreenshot(res, terminal);
+    }
+
     this.send(res, 404, { error: `not found: ${method} ${u.pathname}` });
   }
 
@@ -898,6 +927,30 @@ export class FilePanelService extends EventEmitter {
     }
   }
 
+  /**
+   * v0.3.3 T12:GET /screenshot?terminal=<id>。调注入的 windowCapture 回调截 owner window
+   * 的屏,成功返 image/png 二进制;失败(无 owner/窗口销毁/最小化/capture 抛错)返 JSON 错误。
+   * capture 回调未注入(旧启动/单测未设)→ 503 明确表示功能未启用,不崩。
+   */
+  private async handleScreenshot(res: ServerResponse, terminal: string): Promise<void> {
+    if (!this.windowCapture) {
+      this.send(res, 503, { error: 'screenshot 未启用(windowCapture 未注入)' });
+      return;
+    }
+    try {
+      const result = await this.windowCapture(terminal);
+      if ('error' in result) {
+        // 400 = 客户端可理解的原因(无 owner / 窗口已关 / 最小化),不是服务端 bug
+        this.send(res, 400, { error: result.error });
+        return;
+      }
+      this.sendPng(res, result.png);
+    } catch (err) {
+      logger.error(MODULE, 'screenshot failed', err);
+      this.send(res, 500, { error: 'screenshot internal error' });
+    }
+  }
+
   private sendError(res: ServerResponse, err: unknown): void {
     if (err instanceof FilePanelError) {
       const status = err.code === 'NotFound' ? 404 : err.code === 'SessionMissing' ? 404 : 400; // NotFile / ResolveFailed
@@ -938,6 +991,16 @@ export class FilePanelService extends EventEmitter {
       'Cache-Control': 'no-store',
     });
     res.end(json);
+  }
+
+  /** v0.3.3 T12:发 image/png 二进制(/screenshot 用)。同样 no-store,截图要实时。 */
+  private sendPng(res: ServerResponse, png: Buffer): void {
+    res.writeHead(200, {
+      'Content-Type': 'image/png',
+      'Content-Length': png.byteLength,
+      'Cache-Control': 'no-store',
+    });
+    res.end(png);
   }
 }
 
