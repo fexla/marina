@@ -567,6 +567,46 @@ export interface SessionWorkspaceSource {
    * SessionManager 的 getWorkspacePathForSession 代理调它。
    */
   getPathForWorkspace(workspaceId: string): string | null;
+  /** bind = upsert（SessionManager 编排:传 pathScope = session.pathId）。 */
+  bind(
+    currentWorkspaceId: string,
+    name: string,
+    pathScope: string,
+    forceNew: boolean,
+  ): Promise<
+    | { kind: 'created'; workspaceId: string; dir: string }
+    | { kind: 'switched'; workspaceId: string; dir: string; createdAt: number; fileCount: number }
+  >;
+  /** 列 pathScope 下的命名 workspace。 */
+  list(pathScope: string): Promise<
+    Array<{
+      workspaceId: string;
+      name: string | null;
+      createdAt: number;
+      closedAt: number | null;
+      pinned: boolean;
+      pathScope: string | null;
+      fileCount: number;
+    }>
+  >;
+  /** 建新空临时 workspace（switchToNew）。 */
+  switchToNew(): Promise<{ workspaceId: string; dir: string }>;
+  /** 剥 name+pinned。occupied=当前 session 是否仍占用。 */
+  unpin(workspaceId: string, occupied: boolean): Promise<void>;
+  /** 按 name+pathScope 解析 workspaceId（unpin --name 用）。 */
+  resolveByName(name: string, pathScope: string): string | null;
+  /** 取 record（判断 pinned/状态）。 */
+  getRecord(workspaceId: string): {
+    name: string | null;
+    createdAt: number;
+    closedAt: number | null;
+    pinned: boolean;
+    pathScope: string | null;
+  } | null;
+  /** 读文件面板快照。 */
+  readSnapshot(workspaceId: string): Promise<unknown>;
+  /** 写文件面板快照。 */
+  writeSnapshot(workspaceId: string, data: unknown): Promise<void>;
 }
 
 export interface SessionManagerOptions {
@@ -1520,6 +1560,143 @@ export class SessionManager extends EventEmitter {
     const wsId = this.sessionWorkspaceBindings.get(sessionId);
     if (!wsId || !this.workspaceManager) return null;
     return this.workspaceManager.getPathForWorkspace(wsId);
+  }
+
+  /**
+   * v0.3.3 ADR-024:bind = upsert(orchestration 层)。sessionId→pathScope(=pathId),
+   * currentWorkspaceId 从绑定映射取。成功后更新绑定(切到目标 workspace)。
+   * @throws 'SessionNotFound' / workspace manager 的 InvalidName|NameConflict|WorkspaceNotFound。
+   */
+  async bindWorkspace(
+    sessionId: string,
+    name: string,
+    forceNew: boolean,
+  ): Promise<
+    | { kind: 'created'; workspaceId: string; dir: string }
+    | { kind: 'switched'; workspaceId: string; dir: string; createdAt: number; fileCount: number }
+  > {
+    if (!this.workspaceManager) {
+      throw Object.assign(new Error('workspace manager not configured'), {
+        code: 'WorkspaceNotConfigured',
+      });
+    }
+    const info = this.sessions.get(sessionId);
+    if (!info) {
+      throw Object.assign(new Error(`session not found: ${sessionId}`), {
+        code: 'SessionNotFound',
+      });
+    }
+    const currentWsId = this.sessionWorkspaceBindings.get(sessionId);
+    if (!currentWsId) {
+      throw Object.assign(new Error(`session has no workspace binding: ${sessionId}`), {
+        code: 'WorkspaceNotFound',
+      });
+    }
+    // pathScope = session.pathId(本地目录或 ssh:profileId:path)。
+    const pathScope = info.info.pathId;
+    const result = await this.workspaceManager.bind(currentWsId, name, pathScope, forceNew);
+    if (result.kind === 'switched') {
+      // 切到已存在 workspace:旧临时 release(若是未命名临时)、更新绑定。
+      const oldRecord = this.workspaceManager.getRecord(currentWsId);
+      if (oldRecord && !oldRecord.pinned) {
+        this.workspaceManager.release(currentWsId);
+      }
+      this.sessionWorkspaceBindings.set(sessionId, result.workspaceId);
+    }
+    return result;
+  }
+
+  /** 列当前 session 的 pathScope 下的命名 workspace。 */
+  async listWorkspaces(
+    sessionId: string,
+  ): Promise<
+    Array<{
+      workspaceId: string;
+      name: string | null;
+      createdAt: number;
+      closedAt: number | null;
+      pinned: boolean;
+      pathScope: string | null;
+      fileCount: number;
+    }>
+  > {
+    if (!this.workspaceManager) return [];
+    const info = this.sessions.get(sessionId);
+    if (!info) {
+      throw Object.assign(new Error(`session not found: ${sessionId}`), {
+        code: 'SessionNotFound',
+      });
+    }
+    return this.workspaceManager.list(info.info.pathId);
+  }
+
+  /**
+   * new:把当前 session 切到一个新空临时 workspace(原命名 pinned 不动)。
+   * 更新绑定;旧临时(未命名)release。
+   */
+  async switchToNewWorkspace(
+    sessionId: string,
+  ): Promise<{ workspaceId: string; dir: string }> {
+    if (!this.workspaceManager) {
+      throw Object.assign(new Error('workspace manager not configured'), {
+        code: 'WorkspaceNotConfigured',
+      });
+    }
+    const oldWsId = this.sessionWorkspaceBindings.get(sessionId);
+    const created = await this.workspaceManager.switchToNew();
+    // 旧临时(未命名)release;命名 pinned 的不删(等 unpin/到期)。
+    if (oldWsId) {
+      const oldRecord = this.workspaceManager.getRecord(oldWsId);
+      if (oldRecord && !oldRecord.pinned) {
+        this.workspaceManager.release(oldWsId);
+      }
+    }
+    this.sessionWorkspaceBindings.set(sessionId, created.workspaceId);
+    return created;
+  }
+
+  /**
+   * unpin:剥 name+pinned。name 省略=当前绑定 workspace。occupied 由当前 session
+   * 是否仍绑定该 workspace 判断。成功后若是当前 workspace,不解除占用(unpin 只退回收态)。
+   */
+  async unpinWorkspace(
+    sessionId: string,
+    name: string | null,
+  ): Promise<{ workspaceId: string } | null> {
+    if (!this.workspaceManager) return null;
+    const info = this.sessions.get(sessionId);
+    if (!info) {
+      throw Object.assign(new Error(`session not found: ${sessionId}`), {
+        code: 'SessionNotFound',
+      });
+    }
+    let wsId: string | null;
+    if (name) {
+      wsId = this.workspaceManager.resolveByName(name.trim(), info.info.pathId);
+    } else {
+      wsId = this.sessionWorkspaceBindings.get(sessionId) ?? null;
+    }
+    if (!wsId) return null;
+    // occupied = 当前 session 是否仍绑定此 workspace。
+    const occupied = this.sessionWorkspaceBindings.get(sessionId) === wsId;
+    await this.workspaceManager.unpin(wsId, occupied);
+    return { workspaceId: wsId };
+  }
+
+  /** 读当前 session 绑定 workspace 的文件面板快照(bind 恢复用)。 */
+  async readWorkspaceSnapshot(sessionId: string): Promise<unknown> {
+    if (!this.workspaceManager) return null;
+    const wsId = this.sessionWorkspaceBindings.get(sessionId);
+    if (!wsId) return null;
+    return this.workspaceManager.readSnapshot(wsId);
+  }
+
+  /** 写当前 session 绑定 workspace 的文件面板快照(renderer debounce 触发)。 */
+  async writeWorkspaceSnapshot(sessionId: string, data: unknown): Promise<void> {
+    if (!this.workspaceManager) return;
+    const wsId = this.sessionWorkspaceBindings.get(sessionId);
+    if (!wsId) return;
+    await this.workspaceManager.writeSnapshot(wsId, data);
   }
 
   /**

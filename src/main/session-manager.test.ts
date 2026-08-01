@@ -293,6 +293,15 @@ function makeManager(
       discard(workspaceId: string): Promise<void>;
       release(workspaceId: string): void;
       getPathForWorkspace(workspaceId: string): string | null;
+      // v0.3.3 ADR-024 编排方法(测试不覆盖 bind/list/new/unpin 时传 stub 即可)。
+      bind?(): Promise<unknown>;
+      list?(): Promise<unknown[]>;
+      switchToNew?(): Promise<{ workspaceId: string; dir: string }>;
+      unpin?(): Promise<void>;
+      resolveByName?(): string | null;
+      getRecord?(workspaceId: string): unknown;
+      readSnapshot?(workspaceId: string): Promise<unknown>;
+      writeSnapshot?(workspaceId: string, data: unknown): Promise<void>;
     };
   } = {},
 ): {
@@ -315,7 +324,9 @@ function makeManager(
     emitBatchMs: opts.emitBatchMs ?? 0,
     skipCwdValidation: true,
     filePanelService: opts.filePanelService ?? null,
-    workspaceManager: opts.workspaceManager ?? null,
+    workspaceManager: (opts.workspaceManager ?? null) as
+      | import('./session-manager').SessionWorkspaceSource
+      | null,
   });
   return { mgr, win, path };
 }

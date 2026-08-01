@@ -565,6 +565,148 @@ describe('FilePanelService - HTTP /screenshot (T12)', () => {
   });
 });
 
+// v0.3.3 ADR-024 / Feature D:workspace HTTP 路由(CLI `marina workspace*` 用)。
+describe('FilePanelService - HTTP /workspace* (T10)', () => {
+  let svc: FilePanelService;
+  let baseUrl: string;
+  let token: string;
+
+  beforeEach(async () => {
+    svc = new FilePanelService();
+    svc.attachSessionLookup(makeLookup({ s1: { currentCwd: '/', ownerWindowId: 'w1' } }));
+    const url = await svc.start({ enabled: true, port: 0 });
+    baseUrl = url!.baseUrl;
+    token = url!.token;
+  });
+
+  afterEach(async () => {
+    await svc.stop();
+  });
+
+  function authHeaders(): Record<string, string> {
+    return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  }
+
+  it('workspaceOps 未注入 → 所有路由 503', async () => {
+    const r = await fetch(`${baseUrl}/workspace?terminal=s1`, { headers: authHeaders() });
+    expect(r.status).toBe(503);
+  });
+
+  it('GET /workspace → 当前 session 绑定路径;无绑定 → 404', async () => {
+    let path = 'C:\\ws\\abc';
+    svc.attachWorkspaceOps({
+      getCurrentPath: () => path,
+      bind: async () => ({ kind: 'created', workspaceId: 'w', dir: path }),
+      list: async () => [],
+      newWorkspace: async () => ({ workspaceId: 'w', dir: path }),
+      unpin: async () => ({ workspaceId: 'w' }),
+    });
+    const r = await fetch(`${baseUrl}/workspace?terminal=s1`, { headers: authHeaders() });
+    expect(r.status).toBe(200);
+    expect((await r.json()) as { path: string }).toEqual({ path });
+
+    path = '';
+    const r2 = await fetch(`${baseUrl}/workspace?terminal=s1`, { headers: authHeaders() });
+    expect(r2.status).toBe(404);
+  });
+
+  it('GET /workspace/list → items', async () => {
+    svc.attachWorkspaceOps({
+      getCurrentPath: () => null,
+      bind: async () => ({ kind: 'created', workspaceId: 'w', dir: 'd' }),
+      list: async () => [
+        { workspaceId: 'w1', name: 'a', createdAt: 1, closedAt: null, pinned: true, pathScope: 'P', fileCount: 2 },
+      ],
+      newWorkspace: async () => ({ workspaceId: 'w', dir: 'd' }),
+      unpin: async () => ({ workspaceId: 'w' }),
+    });
+    const r = await fetch(`${baseUrl}/workspace/list?terminal=s1`, { headers: authHeaders() });
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { items: unknown[] };
+    expect(body.items).toHaveLength(1);
+  });
+
+  it('POST /workspace/bind → created 结果;NameConflict → 409', async () => {
+    let forceNewSeen = false;
+    svc.attachWorkspaceOps({
+      getCurrentPath: () => null,
+      bind: async (_sid, _name, fn) => {
+        forceNewSeen = fn;
+        return { kind: 'created', workspaceId: 'w', dir: 'd' };
+      },
+      list: async () => [],
+      newWorkspace: async () => ({ workspaceId: 'w', dir: 'd' }),
+      unpin: async () => ({ workspaceId: 'w' }),
+    });
+    const r = await fetch(`${baseUrl}/workspace/bind`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ terminal: 's1', name: 'feat', new: true }),
+    });
+    expect(r.status).toBe(200);
+    expect(forceNewSeen).toBe(true);
+    expect((await r.json()) as { kind: string }).toEqual({ kind: 'created', workspaceId: 'w', dir: 'd' });
+  });
+
+  it('POST /workspace/bind 缺字段 → 400', async () => {
+    svc.attachWorkspaceOps({
+      getCurrentPath: () => null,
+      bind: async () => ({ kind: 'created', workspaceId: 'w', dir: 'd' }),
+      list: async () => [],
+      newWorkspace: async () => ({ workspaceId: 'w', dir: 'd' }),
+      unpin: async () => ({ workspaceId: 'w' }),
+    });
+    const r = await fetch(`${baseUrl}/workspace/bind`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ terminal: 's1' }),
+    });
+    expect(r.status).toBe(400);
+  });
+
+  it('POST /workspace/new → 新 workspace', async () => {
+    svc.attachWorkspaceOps({
+      getCurrentPath: () => null,
+      bind: async () => ({ kind: 'created', workspaceId: 'w', dir: 'd' }),
+      list: async () => [],
+      newWorkspace: async () => ({ workspaceId: 'nw', dir: 'nd' }),
+      unpin: async () => ({ workspaceId: 'w' }),
+    });
+    const r = await fetch(`${baseUrl}/workspace/new`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ terminal: 's1' }),
+    });
+    expect(r.status).toBe(200);
+    expect((await r.json()) as { workspaceId: string }).toEqual({ workspaceId: 'nw', dir: 'nd' });
+  });
+
+  it('POST /workspace/unpin → 结果;未找到 → 404', async () => {
+    let found = true;
+    svc.attachWorkspaceOps({
+      getCurrentPath: () => null,
+      bind: async () => ({ kind: 'created', workspaceId: 'w', dir: 'd' }),
+      list: async () => [],
+      newWorkspace: async () => ({ workspaceId: 'w', dir: 'd' }),
+      unpin: async () => (found ? { workspaceId: 'w' } : null),
+    });
+    const r = await fetch(`${baseUrl}/workspace/unpin`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ terminal: 's1', name: 'x' }),
+    });
+    expect(r.status).toBe(200);
+
+    found = false;
+    const r2 = await fetch(`${baseUrl}/workspace/unpin`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ terminal: 's1' }),
+    });
+    expect(r2.status).toBe(404);
+  });
+});
+
 describe('FilePanelService - 销毁清理与自动刷新', () => {
   let dir: string;
   let svc: FilePanelService;

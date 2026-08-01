@@ -289,6 +289,24 @@ export const COMMAND_CHANNELS = {
   REMOTE_DAEMON_GET_STATUS: 'cmd:remote-daemon:get-status',
   REMOTE_DAEMON_SET_PORT: 'cmd:remote-daemon:set-port',
   REMOTE_DAEMON_SET_PASSWORD: 'cmd:remote-daemon:set-password',
+
+  // Workspace 域(v0.3.3 ADR-024 / Feature D)—— 绑定/复用/状态持久化。
+  // workspaceId 与 sessionId 解耦;操作当前客户端机器的本地 daemon 状态
+  // (session→workspaceId 绑定 + 本地受管目录),故入 LOCAL_CONTROL_COMMANDS_SET。
+  /** 查当前 session 绑定的 workspace 绝对路径(CLI `workspace` 用)。 */
+  WORKSPACE_GET_CURRENT: 'cmd:workspace:get-current',
+  /** 列当前 pathScope 下的命名 workspace。 */
+  WORKSPACE_LIST: 'cmd:workspace:list',
+  /** bind = upsert:新→命名+pin;存在→切+恢复快照。forceNew=true + 存在→报错。 */
+  WORKSPACE_BIND: 'cmd:workspace:bind',
+  /** 切回新空临时 workspace(原命名 pinned 不动)。 */
+  WORKSPACE_NEW: 'cmd:workspace:new',
+  /** 剥 name+pinned,workspace 退回可回收态(name 省略=当前绑定)。 */
+  WORKSPACE_UNPIN: 'cmd:workspace:unpin',
+  /** 读某 workspace 的文件面板快照(bind 切换后恢复用;renderer 触发)。 */
+  WORKSPACE_READ_SNAPSHOT: 'cmd:workspace:read-snapshot',
+  /** 写某 workspace 的文件面板快照(renderer 状态变化 debounce 后触发)。 */
+  WORKSPACE_WRITE_SNAPSHOT: 'cmd:workspace:write-snapshot',
 } as const;
 
 export type CommandChannel = (typeof COMMAND_CHANNELS)[keyof typeof COMMAND_CHANNELS];
@@ -349,6 +367,15 @@ const LOCAL_CONTROL_COMMANDS_SET: ReadonlySet<string> = new Set<CommandChannel>(
   COMMAND_CHANNELS.PERFORMANCE_CAPTURE_CPU_PROFILE,
   // 用户点击链接时应在当前桌面打开浏览器，不能在 headless daemon 主机打开。
   COMMAND_CHANNELS.SYSTEM_OPEN_EXTERNAL,
+  // v0.3.3 ADR-024:workspace 操作改的是当前客户端机器的本地 daemon 状态
+  // (session→workspaceId 绑定 + 本地受管目录),远程窗口里必须发到当前桌面 daemon。
+  COMMAND_CHANNELS.WORKSPACE_GET_CURRENT,
+  COMMAND_CHANNELS.WORKSPACE_LIST,
+  COMMAND_CHANNELS.WORKSPACE_BIND,
+  COMMAND_CHANNELS.WORKSPACE_NEW,
+  COMMAND_CHANNELS.WORKSPACE_UNPIN,
+  COMMAND_CHANNELS.WORKSPACE_READ_SNAPSHOT,
+  COMMAND_CHANNELS.WORKSPACE_WRITE_SNAPSHOT,
 ]);
 
 /** 查询某 channel 的路由域。preload 用这个决定走本地 IPC 还是 WS。 */
@@ -1528,6 +1555,46 @@ export interface FilePanelUpdatedPayload {
   activePath: string | null;
   /** 仅 openFile 成功时为 true，请求 renderer 激活「已打开」面板。 */
   requestActivation?: boolean;
+}
+
+// ── v0.3.3 ADR-024 / Feature D:workspace 域 payload ──────────────────
+
+/** 文件面板状态快照的一个运行结果条目(与 code-block-run-cache 的 snapshot 对齐)。 */
+export interface WorkspaceRunEntry {
+  key: string;
+  state: string;
+  output: string;
+  exitCode: number | null;
+}
+
+/** bind 切换后推给 renderer 恢复的快照(<workspace>/__marina_state__/file-panel.json)。 */
+export interface WorkspaceFilePanelSnapshot {
+  version: 1;
+  openedFiles: Array<{ path: string; kind: string; external: boolean }>;
+  activeFilePath: string | null;
+  scroll: Record<string, { scrollTop: number; scrollLeft: number }>;
+  runs: WorkspaceRunEntry[];
+}
+
+/** list() 返回项。 */
+export interface WorkspaceSummary {
+  workspaceId: string;
+  name: string | null;
+  createdAt: number;
+  closedAt: number | null;
+  pinned: boolean;
+  pathScope: string | null;
+  fileCount: number;
+}
+
+/** bind 结果(CLI `bind` 打印 / renderer 决定是否推快照恢复)。 */
+export interface WorkspaceBindResult {
+  kind: 'created' | 'switched';
+  workspaceId: string;
+  dir: string;
+  /** switched 才有:让 CLI 打印提示「已切到现有 X」。 */
+  createdAt?: number;
+  fileCount?: number;
 }
 
 /** ReadFileResponse 的 kind 与 FileKind 的交集(排除 web,本轮不支持)。 */

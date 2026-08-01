@@ -183,6 +183,9 @@ import {
   type StopCodeBlockPayload,
   type CodeBlockOutputPayload,
   type CodeBlockExitedPayload,
+  type WorkspaceFilePanelSnapshot,
+  type WorkspaceSummary,
+  type WorkspaceBindResult,
 } from '@shared/protocol';
 import type { AppSnapshot, MdTheme, RemoteDaemonProfile, Settings, Template } from '@shared/types';
 import type { CaptureCpuProfilePayload } from '@shared/performance-types';
@@ -302,6 +305,7 @@ export function installIpcLayer(deps: IpcLayerDeps): void {
   registerFileTreeHandlers(deps);
   registerGitHandlers(deps);
   registerCodeBlockHandlers(deps);
+  registerWorkspaceHandlers(deps);
   registerMdThemeHandlers(deps);
   wireEventBroadcasts(deps);
 }
@@ -2400,6 +2404,100 @@ function decryptStoredPassword(blob: string): { password?: string } {
   } catch {
     return {};
   }
+}
+
+// ────────────────────────────────────────────────────────────────
+// v0.3.3 ADR-024 / Feature D:workspace 域 IPC handler(renderer 快照同步 +
+// workspace 操作)。CLI 走 HTTP(/workspace*),renderer 走这些 IPC。
+// 编排全部委托给 SessionManager(它维护 session↔workspaceId 绑定 + pathScope)。
+function registerWorkspaceHandlers(deps: IpcLayerDeps): void {
+  const { sessionManager } = deps;
+
+  // 查当前 session 绑定的 workspace 绝对路径。
+  registerHandle(
+    COMMAND_CHANNELS.WORKSPACE_GET_CURRENT,
+    (_e, envelope: CommandEnvelope<{ sessionId: string }>): { path: string | null } => {
+      return { path: sessionManager.getWorkspacePathForSession(envelope.payload.sessionId) };
+    },
+  );
+
+  // 列当前 session pathScope 下的命名 workspace。
+  registerHandle(
+    COMMAND_CHANNELS.WORKSPACE_LIST,
+    async (
+      _e,
+      envelope: CommandEnvelope<{ sessionId: string }>,
+    ): Promise<{ items: WorkspaceSummary[] }> => {
+      const items = await sessionManager.listWorkspaces(envelope.payload.sessionId);
+      return { items };
+    },
+  );
+
+  // bind = upsert。
+  registerHandle(
+    COMMAND_CHANNELS.WORKSPACE_BIND,
+    async (
+      _e,
+      envelope: CommandEnvelope<{ sessionId: string; name: string; new?: boolean }>,
+    ): Promise<WorkspaceBindResult> => {
+      return sessionManager.bindWorkspace(
+        envelope.payload.sessionId,
+        envelope.payload.name,
+        envelope.payload.new === true,
+      );
+    },
+  );
+
+  // 切回新空临时 workspace。
+  registerHandle(
+    COMMAND_CHANNELS.WORKSPACE_NEW,
+    async (
+      _e,
+      envelope: CommandEnvelope<{ sessionId: string }>,
+    ): Promise<{ workspaceId: string; dir: string }> => {
+      return sessionManager.switchToNewWorkspace(envelope.payload.sessionId);
+    },
+  );
+
+  // unpin(name 省略=当前绑定 workspace)。
+  registerHandle(
+    COMMAND_CHANNELS.WORKSPACE_UNPIN,
+    async (
+      _e,
+      envelope: CommandEnvelope<{ sessionId: string; name?: string | null }>,
+    ): Promise<{ workspaceId: string } | null> => {
+      return sessionManager.unpinWorkspace(
+        envelope.payload.sessionId,
+        envelope.payload.name ?? null,
+      );
+    },
+  );
+
+  // 读当前 session 绑定 workspace 的文件面板快照(bind 恢复用)。
+  registerHandle(
+    COMMAND_CHANNELS.WORKSPACE_READ_SNAPSHOT,
+    async (
+      _e,
+      envelope: CommandEnvelope<{ sessionId: string }>,
+    ): Promise<{ snapshot: WorkspaceFilePanelSnapshot | null }> => {
+      const snap = await sessionManager.readWorkspaceSnapshot(envelope.payload.sessionId);
+      return { snapshot: (snap as WorkspaceFilePanelSnapshot | null) ?? null };
+    },
+  );
+
+  // 写当前 session 绑定 workspace 的文件面板快照(renderer debounce 触发)。
+  registerHandle(
+    COMMAND_CHANNELS.WORKSPACE_WRITE_SNAPSHOT,
+    async (
+      _e,
+      envelope: CommandEnvelope<{ sessionId: string; snapshot: WorkspaceFilePanelSnapshot }>,
+    ): Promise<void> => {
+      await sessionManager.writeWorkspaceSnapshot(
+        envelope.payload.sessionId,
+        envelope.payload.snapshot,
+      );
+    },
+  );
 }
 
 async function assertDirectory(path: string): Promise<void> {

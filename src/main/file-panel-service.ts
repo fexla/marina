@@ -96,6 +96,41 @@ export type WindowCaptureFn = (
   sessionId: string,
 ) => Promise<{ png: Buffer } | { error: string }>;
 
+/**
+ * v0.3.3 ADR-024:workspace 操作回调(由 index.ts 闭合到 SessionManager)。
+ * FilePanelService 不持有 SessionManager(保持可测),只拿这些 op 供 HTTP 路由用。
+ * 未注入时 workspace 路由返 503。
+ */
+export interface WorkspaceOps {
+  /** 查当前 session 绑定的 workspace 绝对路径(CLI `workspace`)。 */
+  getCurrentPath(sessionId: string): string | null;
+  /** bind = upsert。forceNew=true + 存在→抛 NameConflict。 */
+  bind(
+    sessionId: string,
+    name: string,
+    forceNew: boolean,
+  ): Promise<
+    | { kind: 'created'; workspaceId: string; dir: string }
+    | { kind: 'switched'; workspaceId: string; dir: string; createdAt: number; fileCount: number }
+  >;
+  /** 列当前 session pathScope 下的命名 workspace。 */
+  list(sessionId: string): Promise<
+    Array<{
+      workspaceId: string;
+      name: string | null;
+      createdAt: number;
+      closedAt: number | null;
+      pinned: boolean;
+      pathScope: string | null;
+      fileCount: number;
+    }>
+  >;
+  /** 切回新空临时 workspace。 */
+  newWorkspace(sessionId: string): Promise<{ workspaceId: string; dir: string }>;
+  /** 剥 name+pinned(name=null=当前)。返 null=未找到。 */
+  unpin(sessionId: string, name: string | null): Promise<{ workspaceId: string } | null>;
+}
+
 interface PanelState {
   files: OpenedFile[];
   activePath: string | null;
@@ -150,6 +185,8 @@ export class FilePanelService extends EventEmitter {
   private lookup: FilePanelSessionLookup | null = null;
   /** v0.3.3 T12:截图回调,由 index.ts 注入(不引 electron,保持服务可测)。null=未注入,/screenshot 503。 */
   private windowCapture: WindowCaptureFn | null = null;
+  /** v0.3.3 ADR-024:workspace 操作回调(workspace HTTP 路由用)。 */
+  private workspaceOps: WorkspaceOps | null = null;
   private server: Server | null = null;
   private baseUrl: string | null = null;
   private token: string | null = null;
@@ -177,6 +214,11 @@ export class FilePanelService extends EventEmitter {
    */
   attachWindowCapture(capture: WindowCaptureFn): void {
     this.windowCapture = capture;
+  }
+
+  /** v0.3.3 ADR-024:注入 workspace 操作回调(workspace HTTP 路由用)。 */
+  attachWorkspaceOps(ops: WorkspaceOps): void {
+    this.workspaceOps = ops;
   }
 
   /** 注入终端 env 用:返回服务地址 + token;未启动 / 被禁用时返回 null。 */
@@ -833,6 +875,30 @@ export class FilePanelService extends EventEmitter {
       return void this.handleScreenshot(res, terminal);
     }
 
+    // v0.3.3 ADR-024 / Feature D:workspace HTTP 路由(CLI `marina workspace*` 用)。
+    // workspaceId 与 sessionId 解耦,CLI 一律查当前桌面 daemon(按 terminal→session→
+    // workspaceId→dir);main 是真值源,$env:MARINA_WORKSPACE 不可靠(退化为 spawn 时值)。
+    if (method === 'GET' && u.pathname === '/workspace') {
+      if (!terminal) return this.send(res, 400, { error: 'missing query: terminal' });
+      return void this.handleWorkspaceCurrent(res, terminal);
+    }
+    if (method === 'GET' && u.pathname === '/workspace/list') {
+      if (!terminal) return this.send(res, 400, { error: 'missing query: terminal' });
+      return void this.handleWorkspaceList(res, terminal);
+    }
+    if (method === 'POST' && u.pathname === '/workspace/bind') {
+      void this.handleWorkspaceBind(req, res);
+      return;
+    }
+    if (method === 'POST' && u.pathname === '/workspace/new') {
+      void this.handleWorkspaceNew(req, res);
+      return;
+    }
+    if (method === 'POST' && u.pathname === '/workspace/unpin') {
+      void this.handleWorkspaceUnpin(req, res);
+      return;
+    }
+
     this.send(res, 404, { error: `not found: ${method} ${u.pathname}` });
   }
 
@@ -948,6 +1014,117 @@ export class FilePanelService extends EventEmitter {
     } catch (err) {
       logger.error(MODULE, 'screenshot failed', err);
       this.send(res, 500, { error: 'screenshot internal error' });
+    }
+  }
+
+  // ── v0.3.3 ADR-024 / Feature D:workspace HTTP handlers ───────────
+
+  /** GET /workspace?terminal=<id> → 当前 session 绑定的 workspace 绝对路径。 */
+  private handleWorkspaceCurrent(res: ServerResponse, terminal: string): void {
+    if (!this.workspaceOps) {
+      this.send(res, 503, { error: 'workspace 未启用(workspaceOps 未注入)' });
+      return;
+    }
+    const dir = this.workspaceOps.getCurrentPath(terminal);
+    if (!dir) {
+      this.send(res, 404, { error: 'session 无绑定的 workspace' });
+      return;
+    }
+    this.send(res, 200, { path: dir });
+  }
+
+  /** GET /workspace/list?terminal=<id> → 当前 pathScope 下的命名 workspace 列表。 */
+  private async handleWorkspaceList(res: ServerResponse, terminal: string): Promise<void> {
+    if (!this.workspaceOps) {
+      this.send(res, 503, { error: 'workspace 未启用(workspaceOps 未注入)' });
+      return;
+    }
+    try {
+      const items = await this.workspaceOps.list(terminal);
+      this.send(res, 200, { items });
+    } catch (err) {
+      this.send(res, 400, { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /** POST /workspace/bind body {terminal, name, new?} → upsert。 */
+  private async handleWorkspaceBind(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    if (!this.workspaceOps) {
+      this.send(res, 503, { error: 'workspace 未启用(workspaceOps 未注入)' });
+      return;
+    }
+    try {
+      const body = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
+      const terminal = body?.terminal;
+      const name = body?.name;
+      const forceNew = body?.new === true;
+      if (typeof terminal !== 'string' || typeof name !== 'string') {
+        this.send(res, 400, { error: 'missing fields: terminal, name' });
+        return;
+      }
+      const result = await this.workspaceOps.bind(terminal, name, forceNew);
+      this.send(res, 200, result);
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      const status = code === 'NameConflict' ? 409 : 400;
+      this.send(res, status, {
+        error: err instanceof Error ? err.message : String(err),
+        code,
+      });
+    }
+  }
+
+  /** POST /workspace/new body {terminal} → 切回新空临时 workspace。 */
+  private async handleWorkspaceNew(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    if (!this.workspaceOps) {
+      this.send(res, 503, { error: 'workspace 未启用(workspaceOps 未注入)' });
+      return;
+    }
+    try {
+      const body = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
+      const terminal = body?.terminal;
+      if (typeof terminal !== 'string') {
+        this.send(res, 400, { error: 'missing field: terminal' });
+        return;
+      }
+      const result = await this.workspaceOps.newWorkspace(terminal);
+      this.send(res, 200, result);
+    } catch (err) {
+      this.send(res, 400, { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /** POST /workspace/unpin body {terminal, name?} → 剥 name+pinned。 */
+  private async handleWorkspaceUnpin(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> {
+    if (!this.workspaceOps) {
+      this.send(res, 503, { error: 'workspace 未启用(workspaceOps 未注入)' });
+      return;
+    }
+    try {
+      const body = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
+      const terminal = body?.terminal;
+      const name = typeof body?.name === 'string' ? body.name : null;
+      if (typeof terminal !== 'string') {
+        this.send(res, 400, { error: 'missing field: terminal' });
+        return;
+      }
+      const result = await this.workspaceOps.unpin(terminal, name);
+      if (!result) {
+        this.send(res, 404, { error: 'workspace 未找到' });
+        return;
+      }
+      this.send(res, 200, result);
+    } catch (err) {
+      this.send(res, 400, { error: err instanceof Error ? err.message : String(err) });
     }
   }
 

@@ -572,6 +572,16 @@ function bootstrap(): void {
               }) as { error: string },
           );
       });
+      // v0.3.3 ADR-024 / Feature D:注入 workspace 操作回调(workspace HTTP 路由用)。
+      // 闭合到 SessionManager 的 workspace 编排方法(它维护 session↔workspaceId 绑定 +
+      // 拿 pathScope = session.pathId)。CLI `marina workspace*` 走这些。
+      filePanelService.attachWorkspaceOps({
+        getCurrentPath: (sid) => sessionManager.getWorkspacePathForSession(sid),
+        bind: (sid, name, forceNew) => sessionManager.bindWorkspace(sid, name, forceNew),
+        list: (sid) => sessionManager.listWorkspaces(sid),
+        newWorkspace: (sid) => sessionManager.switchToNewWorkspace(sid),
+        unpin: (sid, name) => sessionManager.unpinWorkspace(sid, name),
+      });
       // v0.3.0:注入 Git 可用性判定回调。GitService.evaluateAvailability 是纯函数
       // (只接受 cwd + pathKind,不持 session 引用),避免循环依赖。注入后,
       // 已存在 + 后续新 session 都会异步评估 → Git tab 出现/消失。
