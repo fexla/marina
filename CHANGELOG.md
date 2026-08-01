@@ -26,6 +26,15 @@
 
 ### 新增
 
+- **Gallery 图片表代码块(Feature A / v0.3.3)。** Markdown 文档里 ``` ` ```gallery ` ` `` ` 代码块
+  (每行一个图片链接:本地路径或 http(s) URL)渲染成幻灯片:一次一张、左右切换、缩略图条
+  快速跳转、指示器 `N/总数`、键盘 ←/→(gallery 聚焦时拦截)。点图用系统图片查看器打开。
+  交互参数按 T05 HITL 原型裁决(ADR-026):主图自适应流式(按比例,上限 480px)、
+  缩略图条 56px 单行横滚、网络图失败占位 + 重试 + ⚠计数(超时 10s 不自动重试)、
+  懒加载 ±1(窗口外骨架)。网络图在 daemon 下载到 workspace 的 `__marina_gallery__/`
+  缓存(绕开 prod CSP `img-src` 限制),随 workspace 回收;缓存命中不重复下载。
+  SSH 远程 session 的本地图不可达走 main 自然降级(失败占位),网络图正常。
+
 - **workspace 绑定/复用 + 文件面板状态持久化(Feature D / v0.3.3)。**
   v0.3.3 最重的 feature(ADR-024)。workspaceId 与 sessionId 解耦,目录 =
   `<root>/<workspaceId>/`,session 运行中可领养别的 workspaceId。CLI `marina workspace`

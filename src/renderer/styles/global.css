@@ -5676,3 +5676,200 @@ button:focus-visible,
     backdrop-filter: none;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+ * v0.3.3 Feature A(ADR-026):Gallery 图片表幻灯片
+ * 主图自适应流式(max-height 480px)+ 缩略图条 56px 单行横滚 +
+ * 失败占位+重试 + 懒加载骨架。配色走语义变量,暗/亮主题自适应。
+ * ═══════════════════════════════════════════════════════════════════ */
+.gallery-viewer {
+  margin: var(--md-block-margin, 12px) 0;
+  border: 1px solid var(--color-border, var(--rp-highlight-med, #403d52));
+  border-radius: 8px;
+  background: var(--color-bg-primary, var(--rp-base, #191724));
+  overflow: hidden;
+  /* gallery 容器可获得焦点(键盘 ←/→ 拦截);focus 轮廓仅在键盘导航时显示 */
+  outline: none;
+}
+.gallery-viewer:focus-visible .gallery-stage {
+  box-shadow: inset 0 0 0 2px var(--color-accent-secondary, var(--rp-foam, #9ccfd8));
+}
+
+.gallery-viewer.gallery-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--color-text-muted, var(--rp-muted, #6e6a86));
+  font-size: 12px;
+}
+
+/* 主图渲染区:深色舞台,点击触发系统查看器。 */
+.gallery-stage {
+  position: relative;
+  min-height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--rp-base, #191724);
+  /* 让深色舞台在亮主题下也呈深色(图片在深底上观感好,与原型一致) */
+  cursor: pointer;
+  overflow: hidden;
+}
+/* 亮主题下舞台仍保持深色(图片观感),用一个略浅的深色避免与外框融成一片 */
+:root[data-theme-mode='light'] .gallery-stage,
+.markdown-body.md-github-light .gallery-stage {
+  background: #12101d;
+}
+
+.gallery-main-img {
+  display: block;
+  max-width: 100%;
+  /* max-height 由 inline style 注入(480px);object-fit contain 不裁剪 */
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 2px;
+}
+
+.gallery-skeleton {
+  width: 100%;
+  min-height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted, var(--rp-muted, #6e6a86));
+  font-size: 12px;
+  animation: gallery-pulse 1.2s infinite alternate;
+}
+
+.gallery-err {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text-muted, var(--rp-muted, #6e6a86));
+  font-size: 12px;
+}
+.gallery-retry {
+  background: var(--color-bg-active, var(--rp-highlight-med, #403d52));
+  color: var(--color-text-primary, var(--rp-text, #e0def4));
+  border: none;
+  border-radius: 4px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.gallery-retry:hover {
+  background: var(--color-success, var(--rp-pine, #31748f));
+}
+
+/* 左右切换按钮:半透明圆钮,hover 高亮。 */
+.gallery-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.7;
+  transition: opacity 0.15s, background 0.15s;
+  z-index: 2;
+}
+.gallery-nav:hover {
+  opacity: 1;
+  background: var(--color-success, var(--rp-pine, #31748f));
+}
+.gallery-nav:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+.gallery-prev {
+  left: 8px;
+}
+.gallery-next {
+  right: 8px;
+}
+
+/* 指示器:N/总数 + ⚠N 失败计数。 */
+.gallery-indicator {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  font-size: 11px;
+  color: var(--color-text-secondary, var(--rp-subtle, #908caa));
+  background: rgba(0, 0, 0, 0.55);
+  padding: 2px 8px;
+  border-radius: 10px;
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* 缩略图条:56px 单行横滚,当前项 foam 边框高亮。 */
+.gallery-thumbs {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  background: var(--color-bg-secondary, var(--rp-highlight-low, #21202e));
+}
+.gallery-thumb {
+  position: relative;
+  flex: 0 0 auto;
+  width: 56px;
+  height: 56px;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0;
+  overflow: hidden;
+  background: var(--color-bg-elevated, var(--rp-overlay, #26233a));
+  color: var(--color-text-muted, var(--rp-muted, #6e6a86));
+}
+.gallery-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.gallery-thumb.active {
+  border-color: var(--color-accent-secondary, var(--rp-foam, #9ccfd8));
+}
+.gallery-thumb.err {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: var(--color-danger, var(--rp-love, #eb6f92));
+}
+.gallery-thumb-idx {
+  font-size: 10px;
+  color: var(--color-text-muted, var(--rp-muted, #6e6a86));
+}
+.gallery-thumb-net {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  font-size: 9px;
+  color: var(--color-text-secondary, var(--rp-subtle, #908caa));
+  background: rgba(0, 0, 0, 0.7);
+  border-radius: 3px;
+  padding: 0 3px;
+  line-height: 1.4;
+}
+
+@keyframes gallery-pulse {
+  from {
+    opacity: 0.35;
+  }
+  to {
+    opacity: 0.8;
+  }
+}

@@ -37,6 +37,7 @@ import { useFileContent } from './useFileContent';
 import { useTranslation } from '../LanguageProvider';
 import { useToast } from '../Toast';
 import { MarkdownCodeBlock, extractCodeBlockInfo } from './MarkdownCodeBlock';
+import { GalleryViewer } from './GalleryViewer';
 import { useAppState } from '../../store';
 
 interface ViewerProps {
@@ -87,6 +88,18 @@ export function MarkdownViewer({ sessionId, file, search, scrollRef }: ViewerPro
           // source offset + code 摘要共同构成 cache identity:切 terminal/remount 后
           // 同一块恢复输出;代码或源位置变化则不错误挂回旧运行结果。
           const sourcePosition = start?.offset ?? `${start?.line ?? 0}:${start?.column ?? 0}`;
+          // v0.3.3 Feature A(ADR-026):```gallery 代码块 → GalleryViewer 幻灯片。
+          // 与可运行代码块并列分发;gallery 不是可运行语言,不走 MarkdownCodeBlock。
+          if (info.className && /language-gallery/.test(info.className)) {
+            return (
+              <GalleryViewer
+                sessionId={sessionId}
+                documentPath={file.path}
+                code={info.code}
+                mtimeMs={file.mtimeMs}
+              />
+            );
+          }
           return (
             <MarkdownCodeBlock
               sessionId={sessionId}
