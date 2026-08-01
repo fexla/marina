@@ -307,6 +307,15 @@ export const COMMAND_CHANNELS = {
   WORKSPACE_READ_SNAPSHOT: 'cmd:workspace:read-snapshot',
   /** 写某 workspace 的文件面板快照(renderer 状态变化 debounce 后触发)。 */
   WORKSPACE_WRITE_SNAPSHOT: 'cmd:workspace:write-snapshot',
+
+  // Gallery 域(v0.3.3 ADR-026 / Feature A)—— 图片表代码块的单图解析。
+  // 本地图相对 md 目录解析读 dataUrl(复用 read-image 安全面);网络图
+  // (http(s)) daemon 拉取落盘 workspace 缓存再转 dataUrl(绕开 prod CSP
+  // img-src 限制)。读的是 session 绑定的文件,在 daemon 机器 → backend-data 域。
+  /** 解析 gallery 单张图为本地图 dataUrl(本地图复用 read-image;网络图下载缓存)。 */
+  GALLERY_RESOLVE_IMAGE: 'cmd:gallery:resolve-image',
+  /** 用系统图片查看器打开 gallery 某张图(main resolve 路径后 shell.openPath)。 */
+  GALLERY_OPEN_IMAGE: 'cmd:gallery:open-image',
 } as const;
 
 export type CommandChannel = (typeof COMMAND_CHANNELS)[keyof typeof COMMAND_CHANNELS];
@@ -1527,6 +1536,33 @@ export interface ReadImagePayload {
 /** cmd:file-panel:read-image 返回。dataUrl 成功;base64 dataUrl 可直接喂 <img src>。
  * error 时 renderer 降级显示占位(图片缺失/非图片/超限/路径不可达)。 */
 export type ReadImageResponse = { dataUrl: string } | { error: string };
+
+/** v0.3.3 Feature A cmd:gallery:resolve-image payload。src 是 gallery 代码块的
+ * 某一行原值(本地图相对 md 目录 / 网络 http(s) URL)。sessionId + mdPath 复用
+ * read-image 的成员校验防线(mdPath 必须是该 session 已打开的 md 文件),防
+ * renderer 被诱导读任意本地图。网络图在 daemon 下载落盘后转 dataUrl 返回。 */
+export interface GalleryResolveImagePayload {
+  sessionId: string;
+  mdPath: string;
+  src: string;
+}
+
+/** cmd:gallery:resolve-image 返回。成功返 dataUrl(本地图直接读;网络图下载
+ * 缓存后读);失败返 error(本地缺失/非图片/超限/网络超时/SSH 远程本地图不可达)。 */
+export type GalleryResolveImageResponse = { dataUrl: string } | { error: string };
+
+/** v0.3.3 Feature A cmd:gallery:open-image payload。与 resolve-image 同 payload;
+ * main 端 resolve 到落盘后的绝对路径(本地图原路径;网络图下载缓存路径)后
+ * 调 shell.openPath 调系统图片查看器。不把绝对路径返给 renderer(防泄露)。 */
+export interface GalleryOpenImagePayload {
+  sessionId: string;
+  mdPath: string;
+  src: string;
+}
+
+/** cmd:gallery:open-image 返回。ok=true 表示已触发系统查看器(具体是否打开成功
+ * 由 OS 决定,shell.openPath 返回空串=无错误);error 时 renderer 可提示。 */
+export type GalleryOpenImageResponse = { ok: true } | { error: string };
 
 /**
  * cmd:file-panel:read 返回。按 kind 区分内容载体:
