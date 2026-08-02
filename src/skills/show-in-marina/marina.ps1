@@ -346,6 +346,46 @@ function Invoke-CmdShow {
   return $script:EXIT_OK
 }
 
+function Invoke-CmdRun {
+  <#
+    Run an arbitrary shell command string in Marina's command panel
+    (ADR-027 / Feature G). The command is run via CodeBlockRunner (bash,
+    in session.currentCwd) and its markdown output renders in the 4th dock
+    panel. All remaining args after `run` are joined into one command string
+    (so quoting is handled by the caller's shell). Optional --title sets the
+    tab display title; --quiet suppresses the success line.
+
+    Examples:
+      marina run "gh issue list --limit 5"
+      marina run --title issues "gh issue list"
+      marina run git status --short
+  #>
+  param($Config, [string[]]$CmdArgs)
+  Assert-NoUnknownOptions -CmdArgs $CmdArgs -Allowed @('--quiet', '-q', '--title') -CmdName 'run'
+  $quiet = $false; $title = $null; $commandParts = @()
+  $i = 0
+  while ($i -lt $CmdArgs.Count) {
+    $a = [string]$CmdArgs[$i]
+    if ($a -eq '--quiet' -or $a -eq '-q') { $quiet = $true; $i++ }
+    elseif ($a -eq '--title') {
+      $i++
+      if ($i -ge $CmdArgs.Count) { Die $script:EXIT_USAGE 'run: --title requires a value' }
+      $title = [string]$CmdArgs[$i]; $i++
+    }
+    else { $commandParts += $a; $i++ }
+  }
+  $command = ($commandParts -join ' ').Trim()
+  if (-not $command) {
+    Die $script:EXIT_USAGE 'run: requires a COMMAND (e.g. `marina run "gh issue list"`)'
+  }
+  if (-not $Config.Terminal) { Die $script:EXIT_OFFLINE 'TERMINAL_ID is unset' }
+  $body = @{ terminal = $Config.Terminal; command = $command }
+  if ($title) { $body['title'] = $title }
+  Send-MarinaRequest -Config $Config -Method 'POST' -Path '/run' -Body $body | Out-Null
+  if (-not $quiet) { [Console]::Out.WriteLine("ran: $command") }
+  return $script:EXIT_OK
+}
+
 <#
   close has four forms:
     close --all                 close every file in this terminal's panel
@@ -528,7 +568,7 @@ function Invoke-CmdScreenshot {
 
 function Print-Usage {
   [Console]::Out.WriteLine(@'
-usage: marina [-h] {ping,workspace,show,close,list,screenshot} ...
+usage: marina [-h] {ping,workspace,show,run,close,list,screenshot} ...
 
 Drive Marina's side file panel from inside a Marina terminal. Env vars are
 read automatically; do not pass them as CLI options.
@@ -549,6 +589,12 @@ commands:
                     (no `remove` command -- unpin is the safe exit)
   show <PATH>       open an existing file in the panel
                     -q, --quiet suppress success output
+  run <COMMAND>     run an arbitrary shell command (bash) and render its
+                    markdown output in the command panel (ADR-027)
+                    all args after `run` are joined into one command string
+                    --title "X"  set the tab display title
+                    -q, --quiet  suppress success output
+                    e.g. marina run "gh issue list --limit 5"
   close <PATH>      close one file (exact path, or just the file name)
   close --all       close every file in this terminal's panel
   close --stale     close only tabs whose file no longer exists on disk
@@ -582,6 +628,7 @@ switch ($Command) {
   'ping' { exit (Invoke-CmdPing -Config $cfg) }
   'workspace' { exit (Invoke-CmdWorkspace -Config $cfg -CmdArgs $Rest) }
   'show' { exit (Invoke-CmdShow -Config $cfg -CmdArgs $Rest) }
+  'run' { exit (Invoke-CmdRun -Config $cfg -CmdArgs $Rest) }
   'close' { exit (Invoke-CmdClose -Config $cfg -CmdArgs $Rest) }
   'list' { exit (Invoke-CmdList -Config $cfg -CmdArgs $Rest) }
   'screenshot' { exit (Invoke-CmdScreenshot -Config $cfg -CmdArgs $Rest) }
