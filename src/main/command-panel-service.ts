@@ -52,9 +52,22 @@ const BACKGROUND_INTERVAL_MS: Readonly<Record<string, number>> = {
   'background-5s': 5_000,
 };
 
+/**
+ * foreground 策略的 hotIntervalMs。
+ *
+ * BackgroundWorkScheduler 的 setDemand('hot') 会立即 enqueue 跑一次,但 run 完后
+ * 按 hotIntervalMs 续排轮询。foreground 语义是"面板可见时跑一次、不主动续排"
+ * (只靠 demand 变化重跑),与 scheduler 轮询模型不完全契合。
+ *
+ * 这里用一个大有限值(24h)让 HOT 跑完后续排间隔实际等同不续(一天内不会自动再跑),
+ * 既绕过 scheduler ">= 10ms 且有限"的校验(0 / Infinity 都会被拒),又符合 foreground
+ * "可见跑一次"的行为。
+ */
+const FOREGROUND_HOT_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
 /** foreground 策略在用户可见时也算 HOT(立即跑一次);后台策略按各自间隔。 */
 function strategyToHotInterval(strategy: CommandRefreshStrategy): number | null {
-  if (strategy === 'foreground') return 0; // HOT 立即跑
+  if (strategy === 'foreground') return FOREGROUND_HOT_INTERVAL_MS; // HOT 立即跑,跑完 24h 内不续
   if (strategy in BACKGROUND_INTERVAL_MS) {
     return BACKGROUND_INTERVAL_MS[strategy as keyof typeof BACKGROUND_INTERVAL_MS]!;
   }
@@ -550,7 +563,9 @@ export class CommandPanelService extends EventEmitter {
       return;
     }
     const interval = BACKGROUND_INTERVAL_MS[entry.strategy];
-    const warmMs = entry.strategy === 'foreground' ? 0 : (interval ?? 30_000);
+    // foreground warmIntervalMs 用同一个大值(面板不可见=demand NONE 时本来就不跑,
+    // warm 只在 HOT→WARM 切换时用,foreground 不进 WARM,这里给个大值避免校验失败)。
+    const warmMs = entry.strategy === 'foreground' ? FOREGROUND_HOT_INTERVAL_MS : (interval ?? 30_000);
     this.scheduler.registerTask(taskKey, {
       hotIntervalMs: hot,
       warmIntervalMs: warmMs,
