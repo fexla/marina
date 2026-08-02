@@ -15,7 +15,7 @@
  *
  * 超过 main 端 MAX_READ_TEXT_BYTES 的尾部被截断,显示截断标记(A6 客户端兜底另见)。
  */
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useLayoutEffect, useState } from 'react';
 import type { OpenedFile } from '@shared/types';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { useFileContent } from './useFileContent';
@@ -24,6 +24,7 @@ import { useMiddleClickPan } from '../../hooks/useMiddleClickPan';
 import { useFileViewerScroll } from '../../hooks/useFileViewerScroll';
 import { useTranslation } from '../LanguageProvider';
 import { highlightLine, detectLanguageByExt } from './highlight';
+import { consumePendingLineJump } from '../../pending-line-jump';
 
 interface ViewerProps {
   sessionId: string;
@@ -40,6 +41,14 @@ export function TextViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
   const content = useFileContent(sessionId, file.path, file.mtimeMs);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const linesRef = useRef<HTMLDivElement | null>(null);
+
+  // v0.3.3 Feature F(T15):从终端 :行号 链接打开时,滚动定位到该行(不做高亮)。
+  // 在 effect 里 consume pending(不在渲染期,避严格模式双跑重复删除)。
+  const [jumpLine, setJumpLine] = useState<number | undefined>(undefined);
+  useEffect(() => {
+    const l = consumePendingLineJump(file.path);
+    if (l !== undefined) setJumpLine(l);
+  }, [file.path]);
 
   // 行级切分 + hljs 语法高亮(按扩展名选语言)。useMemo 保证 content 不变时引用稳定。
   const { lines, htmlLines, truncatedClient } = useMemo(() => {
@@ -86,11 +95,46 @@ export function TextViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
     layoutRef: linesRef,
     ready: content?.kind === 'text',
     restoreVersion: file.mtimeMs,
-    searchActive: search.visible && search.query.length > 0,
+    // 搜索 或 带初始跳行 时都不恢复旧 scrollTop:前者让搜索 scrollIntoView 主导,
+    // 后者让本组件的 scrollToLine 生效(否则 useFileViewerScroll 的 restore fence
+    // 会把滚动拉回旧位置,见 scrollToLine 注释)。
+    searchActive:
+      (search.visible && search.query.length > 0) || jumpLine !== undefined,
   });
 
   // 中键拖动平移(v0.3.3):与浏览器/VS Code 手型工具一致,上下左右自动滚动。
   useMiddleClickPan(containerRef);
+
+  // v0.3.3 Feature F(T15):从终端 :行号 链接打开时滚动到目标行(不做高亮)。
+  // 时序:useFileViewerScroll 在 initialLine 时被 searchActive=true 抑制 restore
+  //  (否则它的 restore fence 会把滚动拉回旧位置);本 effect 用双 rAF 排在它的
+  //  release settle frame 之后,再 scrollIntoView,避免互相覆盖。行高不固定(1.5em),
+  //  必须用 scrollIntoView 而非算像素。目标行超出截断(MAX_RENDER_LINES/2MB)时
+  //  querySelector 返回 null,no-op(ADR 只要求跳转,不强保证超长文件可达)。
+  const jumpedRef = useRef(false);
+  useLayoutEffect(() => {
+    if (jumpLine === undefined || jumpedRef.current) return;
+    if (!content || content.kind !== 'text') return;
+    const targetLine = jumpLine;
+    let f1 = 0;
+    let f2 = 0;
+    // 双 rAF:第一帧让 useFileViewerScroll 的 release settle 跑完,第二帧做 scrollIntoView。
+    f1 = requestAnimationFrame(() => {
+      f2 = requestAnimationFrame(() => {
+        const el = containerRef.current?.querySelector(
+          `.file-text-line[data-line="${targetLine - 1}"]`,
+        );
+        if (el) {
+          el.scrollIntoView({ block: 'center' });
+          jumpedRef.current = true; // 只跳一次,后续 content 刷新不重跳
+        }
+      });
+    });
+    return () => {
+      cancelAnimationFrame(f1);
+      cancelAnimationFrame(f2);
+    };
+  }, [content, jumpLine]);
 
   if (!content) {
     return <div className="file-viewer-loading">{tx('加载中…', 'Loading…')}</div>;
