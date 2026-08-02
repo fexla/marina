@@ -220,6 +220,20 @@ export class WindowManager implements IWindowManager {
       managed.lastFocusedAt = Date.now();
     });
 
+    // renderer console 转发到 main 日志:renderer 的 Uncaught / 运行时 throw 不会
+    // 进 main.log,白屏类问题在 main 日志里完全无线索(开发时只能肉眼盯 DevTools)。
+    // 转发 console-message 让 main.log 能直接看到 renderer 崩溃栈,定位白屏根因。
+    // 不过滤级别:renderer 的 console.log 量小,全转发利大于弊(INFO 级)。
+    // electron console-message level:0 verbose / 1 info / 2 warning / 3 error。
+    win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+      const lvl: 'info' | 'warn' | 'error' =
+        level >= 3 ? 'error' : level >= 2 ? 'warn' : 'info';
+      logger[lvl]('main', `[renderer] ${message} (${sourceId}:${line})`);
+    });
+    win.webContents.on('render-process-gone', (_e, details) => {
+      logger.error('main', '[renderer-process-gone]', details);
+    });
+
     // M1-A:把 maximize 状态变化通过 IPC 事件推给 renderer,renderer 据此切
     // "最大化 / 还原" 按钮图标 + 窗口外圆角(最大化时无圆角)。
     const sendMaxState = (): void => {
