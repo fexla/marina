@@ -689,7 +689,7 @@ function GroupHeader({
   collapsed: boolean;
   onToggleCollapse: () => void;
 }): JSX.Element {
-  const t = useTranslation();
+  const { t } = useTranslation();
   const toast = useToast();
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(group.name);
@@ -818,7 +818,7 @@ function BookmarkCategory({
   onAction?: () => void;
   displayNames: Map<string, string>;
 }): JSX.Element {
-  const t = useTranslation();
+  const { t } = useTranslation();
   // 分组折叠态:L2 偏好(附录 G.1),跨重启保留;默认全展开。
   const [collapsedGroupIds, setCollapsedGroupIds] = usePanelPreference<string[]>(
     'sidebar',
