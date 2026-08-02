@@ -37,7 +37,6 @@ import type {
   CommandRunStatus,
 } from '@shared/protocol';
 import type { CodeBlockError, CodeBlockRunner } from './code-block-runner';
-import type { SessionInfo } from '@shared/types';
 import { logger } from './logger';
 
 const MODULE = 'CommandPanelService';
@@ -261,10 +260,15 @@ export class CommandPanelService extends EventEmitter {
     );
 
     // 同步注册/刷新后台 task(策略非 foreground/manual/off 时)
-    this.syncSchedulerTask(sessionId, entry, session.ownerWindowId ?? sessionId);
+    this.syncSchedulerTask(sessionId, entry);
 
     // 立即跑一次(无论策略 —— 推送即跑,策略只管后续自动重跑)
     await this.spawnRun(sessionId, entry, session, requestingClientId);
+
+    // 推送新指令时请求 renderer 激活命令面板(切到 command tab)。spawnRun 已 emit
+    // 过 running 态(requestActivation=false),这里再 emit 一次带 requestActivation=isNew,
+    // 让 reducer 在新指令时把 activePanel 切到 command(同 file-panel openFile 逻辑)。
+    this.emitUpdated(sessionId, { requestActivation: isNew, commandKey: key });
 
     return this.getSnapshot(sessionId);
   }
@@ -318,8 +322,7 @@ export class CommandPanelService extends EventEmitter {
     const entry = state.commands.find((c) => c.key === commandKey);
     if (!entry || entry.strategy === strategy) return this.getSnapshot(sessionId);
     entry.strategy = strategy;
-    const session = this.lookup?.get(sessionId);
-    this.syncSchedulerTask(sessionId, entry, session?.ownerWindowId ?? sessionId);
+    this.syncSchedulerTask(sessionId, entry);
     logger.info(MODULE, `setStrategy: sid=${sessionId} key=${commandKey} strategy=${strategy}`);
     this.emitUpdated(sessionId, { requestActivation: false, commandKey });
     return this.getSnapshot(sessionId);
@@ -537,7 +540,6 @@ export class CommandPanelService extends EventEmitter {
   private syncSchedulerTask(
     sessionId: string,
     entry: CommandEntry,
-    consumerId: string,
   ): void {
     if (!this.scheduler) return;
     const taskKey = this.schedulerTaskKey(sessionId, entry.key);

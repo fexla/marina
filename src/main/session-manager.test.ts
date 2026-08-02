@@ -24,6 +24,7 @@ import {
   inferDisplayName,
   looksLikeShellStartupGarbage,
   type PtySpawnFn,
+  type SessionWorkspaceSource,
 } from './session-manager';
 import { Osc1337Parser } from './osc1337-parser';
 import { BUILTIN_TEMPLATES, mergeBuiltins } from './templates-manager';
@@ -325,7 +326,7 @@ function makeManager(
     skipCwdValidation: true,
     filePanelService: opts.filePanelService ?? null,
     workspaceManager: (opts.workspaceManager ?? null) as
-      | import('./session-manager').SessionWorkspaceSource
+      SessionWorkspaceSource
       | null,
   });
   return { mgr, win, path };
@@ -2504,7 +2505,7 @@ describe('SessionManager — dynamic Git LayoutNode (v0.3.0)', () => {
     const stack = (tree as { children: unknown[] }).children?.[1] as {
       children: { panelId: string }[];
     };
-    expect(stack.children.map((c) => c.panelId)).toEqual(['file-tree', 'file-panel']);
+    expect(stack.children.map((c) => c.panelId)).toEqual(['file-tree', 'file-panel', 'command']);
   });
 
   it('注入 provider 后,cwd 在仓库内的 session 异步出现 git leaf', async () => {
@@ -2531,7 +2532,7 @@ describe('SessionManager — dynamic Git LayoutNode (v0.3.0)', () => {
       const stack = (tree as { children: unknown[] }).children?.[1] as {
         children: { panelId: string }[];
       };
-      expect(stack.children.map((c) => c.panelId)).toEqual(['file-tree', 'git', 'file-panel']);
+      expect(stack.children.map((c) => c.panelId)).toEqual(['file-tree', 'git', 'file-panel', 'command']);
     });
   });
 
@@ -2550,7 +2551,7 @@ describe('SessionManager — dynamic Git LayoutNode (v0.3.0)', () => {
       const stack = (tree as { children: unknown[] }).children?.[1] as {
         children: { panelId: string }[];
       };
-      expect(stack.children.map((c) => c.panelId)).toEqual(['file-tree', 'file-panel']);
+      expect(stack.children.map((c) => c.panelId)).toEqual(['file-tree', 'file-panel', 'command']);
     });
   });
 

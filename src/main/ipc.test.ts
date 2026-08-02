@@ -30,6 +30,7 @@ import { FilePanelService } from './file-panel-service';
 import { GitService } from './git-service';
 import { MarkdownThemeManager } from './markdown-theme-manager';
 import { CodeBlockRunner } from './code-block-runner';
+import { CommandPanelService } from './command-panel-service';
 import { ClientRegistry } from './client-registry';
 import { makePathId } from './path-manager';
 
@@ -309,6 +310,8 @@ function makeStubs() {
       // wireEventBroadcasts 用它的 on('output'/'exited'),registerCodeBlockHandlers
       // 注册 run/stop。测试不触发真实 spawn(没有用例调 run-code-block)。
       codeBlockRunner: new CodeBlockRunner(() => null),
+      // 命令面板:wireEventBroadcasts 用它的 on('commandPanelUpdated')。
+      commandPanelService: new CommandPanelService(),
       clientRegistry: new ClientRegistry(),
     },
     stubs: {

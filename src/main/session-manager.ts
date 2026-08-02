@@ -174,7 +174,7 @@ const DEFAULT_DOCK_LAYOUTS: Readonly<Record<string, DockLayoutState>> = {
 function createDefaultSessionUiLayout(commandAvailable = true): SessionUiLayout {
   return {
     version: 2,
-    tree: createDefaultSessionLayoutTree(),
+    tree: createDefaultSessionLayoutTree(commandAvailable),
     docks: Object.fromEntries(
       Object.entries(DEFAULT_DOCK_LAYOUTS).map(([dockId, state]) => [dockId, { ...state }]),
     ),

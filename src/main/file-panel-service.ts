@@ -1290,6 +1290,8 @@ export class FilePanelService extends EventEmitter {
     }
   }
 
+  /**
+   * v0.3.3 T12:GET /screenshot?terminal=<id>。调注入的 windowCapture 回调截 owner window
    * 的屏,成功返 image/png 二进制;失败(无 owner/窗口销毁/最小化/capture 抛错)返 JSON 错误。
    * capture 回调未注入(旧启动/单测未设)→ 503 明确表示功能未启用,不崩。
    */
