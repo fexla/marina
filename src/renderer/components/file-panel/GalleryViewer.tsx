@@ -24,7 +24,7 @@ import {
   type GalleryResolveImageResponse,
 } from '@shared/protocol';
 import { parseGalleryCode } from '@shared/gallery-parser';
-import { useTranslation } from '../../i18n';
+import { useTranslation } from '../LanguageProvider';
 
 /** 单张图的解析状态(懒加载 ±1 窗口内才 resolve)。 */
 type ResolvedImage = { dataUrl: string } | { error: string } | null;
