@@ -819,6 +819,8 @@ function BookmarkCategory({
   displayNames: Map<string, string>;
 }): JSX.Element {
   const { t } = useTranslation();
+  const modal = useModal();
+  const toast = useToast();
   // 分组折叠态:L2 偏好(附录 G.1),跨重启保留;默认全展开。
   const [collapsedGroupIds, setCollapsedGroupIds] = usePanelPreference<string[]>(
     'sidebar',
@@ -1013,15 +1015,23 @@ function BookmarkCategory({
     </DndContext>
   );
 
-  /** 新建分组:用原生 prompt 取组名(低频操作,不值得起 modal)。 */
+  /** 新建分组:用自绘 Modal prompt 取名(项目约定:不用 window.prompt — Electron 下不可用,返回 null 致按钮"点没反应")。 */
   async function addGroupPrompt(): Promise<void> {
-    const name = window.prompt(t('sidebar.group.add') || '新建分组(输入组名)');
+    const name = await modal.prompt({
+      title: t('sidebar.group.add') || '新建分组',
+      message: t('sidebar.group.add') || '输入分组名称',
+      placeholder: '分组名',
+      confirmLabel: '新建',
+    });
     if (!name || !name.trim()) return;
     try {
       await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_GROUP_ADD, { name: name.trim() });
     } catch (err) {
-      // 后端校验(唯一/分隔符/长度)失败会 reject;用 alert 直观提示。
-      window.alert(`新建分组失败:${err instanceof Error ? err.message : String(err)}`);
+      // 后端校验(唯一/分隔符/长度)失败会 reject;toast 反馈(与 GroupHeader 一致)。
+      toast.push({
+        kind: 'error',
+        message: `新建分组失败:${err instanceof Error ? err.message : String(err)}`,
+      });
     }
   }
 }
