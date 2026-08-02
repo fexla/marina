@@ -1622,7 +1622,11 @@ function SessionItemImpl({ session, myWindowId, selected, sortableId }: SessionI
     <li
       className={`session-item${selected ? ' selected' : ''}${
         ownedByOther ? ' owned-by-other' : ''
-      }${session.state === 'exited' ? ' exited' : ''}${sortableId && sessionSortable.isDragging ? ' dragging' : ''}`}
+      }${session.state === 'exited' ? ' exited' : ''}${
+        // v0.3.3 E.3(T06 定稿):active 行挂 active-session class,供 CSS 反色文字 +
+        // 满底背景。详见 global.css .session-state-bar 注释。
+        session.state === 'active' ? ' active-session' : ''
+      }${sortableId && sessionSortable.isDragging ? ' dragging' : ''}`}
       style={
         sortableId && sessionSortable.transform
           ? { transform: CSS.Translate.toString(sessionSortable.transform), transition: sessionSortable.transition }
@@ -1640,11 +1644,16 @@ function SessionItemImpl({ session, myWindowId, selected, sortableId }: SessionI
       onContextMenu={handleContextMenu}
       title={fullTitle}
     >
-      {/* v0.3.3 Feature E.3(决策 #16):状态指示从 9px 圆点改为左侧圆角矩形竛条。
-          色:active=绿呼吸 / idle=黄静止 / exited=灰静止。色 + 呼吸走 CSS class
-          (data-state),不 inline style —— 这样 @keyframes 与 prefers-reduced-motion
-          才能生效。竛条很窄(临时宽 3px,精确尺寸待 T06 截图定稿)。
-          exited 的 check/X 图标从圆点迁到行内(竛条太窄放不下,见下行)。 */}
+      {/* v0.3.3 Feature E.3(T06 定稿,2026-08-02):
+          状态色条从「3px 细条颜色呼吸」升级为「细条变宽覆盖整行背景」动画。
+          设计(见原型 docs/prototypes/e3-colorbar-prototype.html + ADR):
+          - 一个绝对定位的背景层(.session-state-bar),背景恒为 info 色;
+          - idle/exited:width 3px(左侧细竛条);active:width 100%(满底覆盖);
+          - width 走 transition(1s cubic-bezier,ease-out-expo),idle↔active 正逆都平滑;
+          - active 稳态:opacity 脉冲(2.6s);active 行文字反色(bg-primary)。
+          配色用 var(--color-info)(跟主题变,T06 裁决),不 color-mix 派生。
+          exited 色=灰(text-muted),死亡态额外靠 exit-code 图标 + 整行 dim 区分。
+          注:旧设计「idle 黄/active 绿呼吸/exited 灰」(T07 issue 原文)已废弃。 */}
       <span
         className="session-state-bar"
         data-state={session.state}

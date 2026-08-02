@@ -1610,46 +1610,78 @@ html[data-maximized='true'] .app-root.with-shell {
   opacity: 0.55;
 }
 
-/* v0.3.3 Feature E.3(决策 #16):状态指示改为左侧圆角矩形竛条(原 9px 圆点)。
-   很窄、垂直占满行高。色 + 呼吸走 [data-state],让 @keyframes / reduced-motion 生效。
-   临时尺寸(width 3px / radius 2px / 行高竛条),精确视觉待 T06 截图定稿。 */
+/* v0.3.3 Feature E.3(T06 定稿,2026-08-02):状态色条从「3px 细条颜色呼吸」
+   升级为「细条变宽覆盖整行背景」动画。一个绝对定位背景层,width 随状态变。
+   idle/exited=左侧 3px 细竛条;active=width 100% 满底覆盖 + 文字反色 + 稳态脉冲。
+   变宽走 transition(idle↔active 正逆都平滑);脉冲走 opacity animation(GPU 友好)。
+   配色用 var(--color-info)(跟主题变),不 color-mix 派生。原型:
+   docs/prototypes/e3-colorbar-prototype.html。
+   注:旧设计「idle 黄/active 绿呼吸/exited 灰」(T07 issue 原文)已废弃。 */
+
+/* session-item 作为定位上下文:色条层 absolute 铺在里面,overflow hidden 裁圆角。 */
+.session-item {
+  position: relative;
+  overflow: hidden;
+}
+/* session-item 的直接子元素(name / 图标 / rename input)都浮在色条背景层之上。 */
+.session-item > *:not(.session-state-bar) {
+  position: relative;
+  z-index: 1;
+}
+
 .session-state-bar {
-  flex: 0 0 auto;
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
   width: 3px;
-  /* 竛条高度略小于行高,上下留 1px 气息(临时,待截图调)。 */
-  align-self: stretch;
-  margin: 2px 0;
-  border-radius: 2px;
-  background-color: var(--color-text-muted, #f0f);
+  z-index: 0;
+  /* 背景恒为 info(主题主色);idle 细条与 active 满底同色,靠 width 区分状态。
+     exited 覆写为灰(见下)。 */
+  background-color: var(--color-info, #f0f);
+  /* 变宽走 transition:idle→active 变宽、active→idle 收回,正逆都用同一条曲线。 */
+  transition: width 1s cubic-bezier(0.16, 1, 0.3, 1);
+  border-radius: 0 2px 2px 0;
 }
 
-/* 状态→色映射。active=绿 / idle=黄静止 / exited=灰静止。 */
+/* active:细条变宽覆盖整行 + 稳态 opacity 脉冲。脉冲 delay 1s(等变宽完成再开始)。 */
 .session-state-bar[data-state='active'] {
-  background-color: var(--color-success, #f0f);
-  animation: marina-session-bar-breathe 2.4s ease-in-out infinite;
+  width: 100%;
+  animation: marina-session-bar-pulse 2.6s 1s ease-in-out infinite;
 }
-.session-state-bar[data-state='idle'] {
-  background-color: var(--color-warning, #f0f);
-}
-.session-state-bar[data-state='exited'] {
+/* exited:灰细条(死亡态去饱和);idle 默认就是 info 细条,无需额外规则。 */
+.session-item.exited .session-state-bar {
   background-color: var(--color-text-muted, #f0f);
 }
 
-/* active 呼吸:opacity 缓动(GPU 友好,避免 box-shadow)。多 active 同存时只动 opacity,
-   开销可控;prefers-reduced-motion 下关闭(无障碍,见下)。 */
-@keyframes marina-session-bar-breathe {
+/* active 行文字反色(bg-primary),保证在 info 满底上可读。transition 与变宽同步。 */
+.session-item.active-session .session-name {
+  color: var(--color-bg-primary, #f0f);
+}
+.session-name {
+  transition: color 1s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* active 稳态脉冲:opacity 缓动(GPU 友好,避免 box-shadow)。多 active 同存时只动
+   opacity,开销可控;prefers-reduced-motion 下关闭(无障碍,见下)。 */
+@keyframes marina-session-bar-pulse {
   0%,
   100% {
     opacity: 1;
   }
   50% {
-    opacity: 0.35;
+    opacity: 0.6;
   }
 }
 
-/* 无障碍:用户设了「减少动态效果」时关闭呼吸(active 退为静止绿条)。
-   保留色不变,只去掉动画。 */
+/* 无障碍:用户设了「减少动态效果」时关闭变宽动画与脉冲(active 直接铺满静止)。
+   保留颜色不变,只去掉动画。 */
 @media (prefers-reduced-motion: reduce) {
+  .session-state-bar,
+  .session-item.active-session .session-name,
+  .session-name {
+    transition: none;
+  }
   .session-state-bar[data-state='active'] {
     animation: none;
   }
