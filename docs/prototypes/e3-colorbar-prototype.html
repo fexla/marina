@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>T06 E.3 色条 — 通用配色验证(多主题对比)</title>
+<style>
+  /* ===== 模拟 4 个主题的语义变量(仅原型;真正实现用主题提供的 var)===== */
+  /* 数据来自 global.css 的 [data-theme] 块(scout 报告) */
+  [data-theme='rose-pine'] {
+    --bg-primary:#191724; --bg-secondary:#1f1d2e; --bg-active:#26233a;
+    --text-primary:#e0def4; --text-muted:#6e6a86;
+    --success:#31748f; --info:#9ccfd8; --warning:#f6c177; --accent:#c4a7e7;
+  }
+  [data-theme='github-dark'] {
+    --bg-primary:#0d1117; --bg-secondary:#161b22; --bg-active:#21262d;
+    --text-primary:#e6edf3; --text-muted:#7d8590;
+    --success:#3fb950; --info:#2f81f7; --warning:#d29922; --accent:#2f81f7;
+  }
+  [data-theme='github-light'] {
+    --bg-primary:#ffffff; --bg-secondary:#f6f8fa; --bg-active:#e8eaed;
+    --text-primary:#1f2328; --text-muted:#656d76;
+    --success:#1a7f37; --info:#0969da; --warning:#9a6700; --accent:#0969da;
+  }
+  [data-theme='cutie'] {
+    --bg-primary:#fff8fb; --bg-secondary:#fbeef4; --bg-active:#f3d9e6;
+    --text-primary:#5c1d3e; --text-muted:#9b6f80;
+    --success:#4d8a5e; --info:#b89cd9; --warning:#d4795c; --accent:#c558a0;
+  }
+  :root { --bg-primary:#191724; --bg-secondary:#1f1d2e; --bg-active:#26233a;
+    --text-primary:#e0def4; --text-muted:#6e6a86;
+    --success:#31748f; --info:#9ccfd8; --warning:#f6c177; --accent:#c4a7e7; }
+
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body {
+    background: var(--bg-primary); color: var(--text-primary);
+    font-family: -apple-system,'Segoe UI',system-ui,sans-serif;
+    font-size:12px; padding:20px; min-height:100vh;
+    transition: background 0.3s, color 0.3s;
+  }
+  h1 { font-size:15px; margin-bottom:6px; color: var(--info); }
+  .hint { color:var(--text-muted); line-height:1.6; margin-bottom:16px; }
+  .hint b { color:var(--text-primary); }
+  .hint code { background:var(--bg-secondary); padding:1px 5px; border-radius:3px; color:var(--warning); }
+
+  /* 控制栏 */
+  .controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center;
+    margin-bottom:16px; padding:10px; background:var(--bg-secondary); border-radius:6px; }
+  .controls label { color:var(--text-muted); font-size:11px; }
+  .controls button { background:var(--bg-active); color:var(--text-primary);
+    border:1px solid var(--text-muted); padding:4px 10px; border-radius:4px;
+    cursor:pointer; font-size:11px; transition:all 0.15s; }
+  .controls button:hover { border-color:var(--info); }
+  .controls button.on { background:var(--info); color:var(--bg-primary); border-color:var(--info); }
+
+  /* 方案说明 */
+  .schemes { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:20px; }
+  .scheme { background:var(--bg-secondary); border-radius:8px; padding:12px; }
+  .scheme h3 { font-size:12px; margin-bottom:4px; }
+  .scheme .desc { color:var(--text-muted); font-size:10px; line-height:1.5; margin-bottom:10px; }
+  .scheme.bad h3 { color:var(--warning); }
+  .scheme.good h3 { color:var(--success); }
+
+  /* session 条目核心 —— 用 transition 双向(idle↔active 正逆都平滑) */
+  .session-item { position:relative; display:flex; align-items:center; gap:6px;
+    padding:6px 10px; cursor:pointer; overflow:hidden; min-height:30px;
+    border-radius:4px; margin-bottom:4px; background:var(--bg-primary); }
+  .layer { position:absolute; left:0; top:0; bottom:0; width:3px; z-index:0;
+    border-radius:0 2px 2px 0;
+    /* 变宽走 transition(双向):width + background-color 都过渡 */
+    transition: width 1s cubic-bezier(0.16,1,0.3,1), opacity 1s cubic-bezier(0.16,1,0.3,1); }
+  .name { position:relative; z-index:1; flex:1 1 auto; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis;
+    transition: color 1s cubic-bezier(0.16,1,0.3,1); }
+
+  /* idle:细条(主色低存在感) */
+  .session-item[data-state='idle'] .layer { width:3px;
+    background: color-mix(in srgb, var(--active-src) 55%, var(--text-muted)); }
+  .session-item[data-state='idle'] .name { color:var(--text-primary); }
+
+  /* —— 方案 A:满底 + 反色(用户原想)—— active 满底主色,文字=bg-primary */
+  .scheme-a .session-item[data-state='active'] .layer { width:100%;
+    background:var(--active-src); animation:pulseA 2.6s 1s ease-in-out infinite; }
+  .scheme-a .session-item[data-state='active'] .name { color:var(--bg-primary); }
+  @keyframes pulseA { 0%,100%{opacity:1} 50%{opacity:0.7} }
+
+  /* —— 方案 B:洗涤(通用可读)—— active 整行淡染主色,文字不变色 */
+  .scheme-b .session-item[data-state='active'] .layer { width:100%;
+    background: color-mix(in srgb, var(--active-src) 32%, transparent);
+    animation:pulseB 2.6s 1s ease-in-out infinite; }
+  .scheme-b .session-item[data-state='active'] .name { color:var(--text-primary); }
+  @keyframes pulseB { 0%,100%{opacity:1} 50%{opacity:0.55} }
+
+  /* 对比度徽章 */
+  .contrast-badge { position:relative; z-index:2; font-size:9px; padding:1px 5px;
+    border-radius:8px; font-weight:600; margin-left:auto; }
+  .contrast-badge.ok { background:color-mix(in srgb, var(--success) 30%, transparent); color:var(--success); }
+  .contrast-badge.warn { background:color-mix(in srgb, var(--warning) 30%, transparent); color:var(--warning); }
+  .contrast-badge.bad { background:color-mix(in srgb, #eb6f92 30%, transparent); color:#eb6f92; }
+
+  /* 多主题矩阵 */
+  .matrix-title { font-size:13px; margin:24px 0 8px; color:var(--text-primary); }
+  .matrix { display:grid; grid-template-columns:90px 1fr 1fr; gap:1px;
+    background:var(--bg-active); border-radius:6px; overflow:hidden; }
+  .matrix > div { background:var(--bg-secondary); padding:6px 8px; }
+  .matrix .hdr { font-size:10px; color:var(--text-muted); font-weight:600; }
+  .matrix .theme-cell { font-size:11px; color:var(--text-primary); display:flex; align-items:center; }
+  .matrix .demo-cell { padding:4px; }
+
+  /* 交互区 */
+  .play-title { font-size:13px; margin:24px 0 8px; }
+  .play-row { display:flex; gap:20px; flex-wrap:wrap; }
+  .play-block { background:var(--bg-secondary); padding:12px; border-radius:6px; }
+  .play-block .lbl { color:var(--text-muted); font-size:10px; margin-bottom:6px; }
+  .play-block .session-item { width:200px; }
+
+  .reduced body.reduced-motion .layer,
+  body.reduced-motion .name { animation:none !important; transition:none !important; }
+  body.reduced-motion .session-item[data-state='active'] .layer { width:100%; opacity:1; }
+</style>
+</head>
+<body data-theme="rose-pine" style="--active-src: var(--info);">
+
+<h1>T06 E.3 色条 · 通用配色验证</h1>
+<p class="hint">
+  <b>核心问题</b>:你想要的"满底覆盖 + 文字反色"在不同主题下<b>可读性会翻车</b>——
+  右边矩阵用 WCAG 对比度证明了这点。下方两个方案并排对比,切主题看差异。<br>
+  当前主题:<code id="ct">rose-pine</code> · active 主色源:<code id="cs">info(青绿)</code>
+</p>
+
+<div class="controls">
+  <label>主题:</label>
+  <button class="on" onclick="setTheme(this,'rose-pine')">rose-pine 暗</button>
+  <button onclick="setTheme(this,'github-dark')">github-dark 暗</button>
+  <button onclick="setTheme(this,'github-light')">github-light 亮</button>
+  <button onclick="setTheme(this,'cutie')">cutie 亮</button>
+  <label style="margin-left:14px">active 主色源:</label>
+  <button class="on" onclick="setSrc(this,'info')">info(主题主色)</button>
+  <button onclick="setSrc(this,'success')">success(运行绿)</button>
+  <label style="margin-left:14px"><input type="checkbox" id="rm" onchange="document.body.classList.toggle('reduced-motion',this.checked)"> reduced-motion</label>
+</div>
+
+<!-- 两方案对比(当前主题) -->
+<div class="schemes">
+  <div class="scheme bad scheme-a">
+    <h3>方案 A:满底 + 文字反色(你原想)</h3>
+    <p class="desc">active 满铺主色,文字反成背景色。覆盖感强,但多主题下白字/底色对比不足(见对比度徽章,❌ 表示不达 4.5:1 小字标准)。</p>
+    <div class="session-item" data-state="idle"><div class="layer"></div><span class="name">idle-session</span><span class="cb"></span></div>
+    <div class="session-item" data-state="active"><div class="layer"></div><span class="name">active-session</span><span class="cb"></span></div>
+  </div>
+  <div class="scheme good scheme-b">
+    <h3>方案 B:洗涤 + 文字不变色(通用可读)</h3>
+    <p class="desc">active 整行 <code>color-mix(主色 32%, transparent)</code> 淡染,文字保持原色。任意主题对比度不变 → 始终可读。覆盖感稍弱,但浓度可调。</p>
+    <div class="session-item" data-state="idle"><div class="layer"></div><span class="name">idle-session</span><span class="cb"></span></div>
+    <div class="session-item" data-state="active"><div class="layer"></div><span class="name">active-session</span><span class="cb"></span></div>
+  </div>
+</div>
+
+<!-- 多主题矩阵:一眼看翻车 -->
+<div class="matrix-title">📊 多主题可读性矩阵(对比度数值,❌&lt;3 警告 ⚠️3-4.5 ❌&gt;=4.5 ✅)</div>
+<div class="matrix" id="matrix"></div>
+
+<!-- 交互区:看逆动画 -->
+<div class="play-title">🎬 点条目切换 idle↔active,看变宽/收回动画(transition 双向,逆动画自动)</div>
+<div class="play-row">
+  <div class="play-block scheme-a">
+    <div class="lbl">方案 A(满底反色)</div>
+    <div class="session-item" data-state="idle" onclick="tog(this)"><div class="layer"></div><span class="name">点我切换</span></div>
+  </div>
+  <div class="play-block scheme-b">
+    <div class="lbl">方案 B(洗涤)</div>
+    <div class="session-item" data-state="idle" onclick="tog(this)"><div class="layer"></div><span class="name">点我切换</span></div>
+  </div>
+</div>
+
+<script>
+// === WCAG 对比度计算 ===
+function hex2rgb(h){h=h.replace('#','');return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];}
+function lin(c){c/=255;return c<=0.03928?c/12.92:Math.pow((c+0.055)/1.055,2.4);}
+function lum(rgb){return 0.2126*lin(rgb[0])+0.7152*lin(rgb[1])+0.0722*lin(rgb[2]);}
+function contrast(c1,c2){const l1=lum(hex2rgb(c1)),l2=lum(hex2rgb(c2));return ((Math.max(l1,l2)+0.05)/(Math.min(l1,l2)+0.05));}
+// 模拟 color-mix(p% alpha 叠 bg):最终 rgb = bg*(1-p) + src*p
+function mixAlpha(src,bg,p){const s=hex2rgb(src),b=hex2rgb(bg);return s.map((v,i)=>Math.round(v*p+b[i]*(1-p)));}
+function rgb2hex(rgb){return '#'+rgb.map(v=>v.toString(16).padStart(2,'0')).join('');}
+function getVar(name){return getComputedStyle(document.body).getPropertyValue(name).trim();}
+function cbClass(c){return c>=4.5?'ok':c>=3?'warn':'bad';}
+
+function setTheme(btn,t){document.body.setAttribute('data-theme',t);document.getElementById('ct').textContent=t+' '+(t.includes('light')||t==='cutie'?'亮':'暗');
+  document.querySelectorAll('.controls button:nth-child(n+1):nth-child(-n+4)').forEach(b=>b.classList.remove('on'));btn.classList.add('on');rebuildMatrix();updateBadges();}
+function setSrc(btn,s){document.body.style.setProperty('--active-src','var(--'+s+')');document.getElementById('cs').textContent=s+(s==='info'?'(青绿)':'(运行绿)');
+  document.querySelectorAll('.controls button').forEach((b,i)=>{if(i>=4&&i<=5)b.classList.remove('on');});btn.classList.add('on');rebuildMatrix();updateBadges();}
+function tog(el){el.setAttribute('data-state',el.getAttribute('data-state')==='idle'?'active':'idle');}
+
+// 实时给两方案的 active 条算对比度徽章
+function updateBadges(){
+  const src=getVar(getVar('--active-src').replace(/var\(--(\w+)\)/,'$1').trim()? '--'+getVar('--active-src').replace(/var\(|\)/g,'').trim() : '--info');
+  const srcHex=src.startsWith('#')?src:getVar('--'+(getVar('--active-src').match(/--([\w-]+)/)||[,'info'])[1]);
+  const bg=getVar('--bg-primary'),text=getVar('--text-primary');
+  // 方案 A:文字=bg-primary 在 src 满底上
+  const cA=contrast(srcHex,bg);
+  // 方案 B:文字=text-primary 在 mix(src,32% bg) 上
+  const washBg=rgb2hex(mixAlpha(srcHex.startsWith('#')?srcHex:getVar(srcHex),bg,0.32));
+  const cB=contrast(washBg,text);
+  document.querySelectorAll('.scheme-a .cb').forEach(e=>{e.className='contrast-badge '+cbClass(cA);e.textContent=cA.toFixed(2)+' :1';});
+  document.querySelectorAll('.scheme-b .cb').forEach(e=>{e.className='contrast-badge '+cbClass(cB);e.textContent=cB.toFixed(2)+' :1';});
+}
+
+// 矩阵:每主题一行,两方案各一个 active 条 + 对比度
+function rebuildMatrix(){
+  const themes=['rose-pine','github-dark','github-light','cutie'];
+  const labels={ 'rose-pine':'rose-pine 暗','github-dark':'github-dark 暗','github-light':'github-light 亮','cutie':'cutie 亮'};
+  const m=document.getElementById('matrix'); m.innerHTML='';
+  // 表头
+  m.appendChild(cell('hdr','主题'));
+  m.appendChild(cell('hdr','方案 A 满底反色(对比度)'));
+  m.appendChild(cell('hdr','方案 B 洗涤(对比度)'));
+  const curSrcVar=(getVar('--active-src').match(/--([\w-]+)/)||[,'info'])[1];
+  themes.forEach(t=>{
+    // 临时取该主题变量值算对比度
+    const tmp=document.createElement('div');tmp.setAttribute('data-theme',t);tmp.style.display='none';document.body.appendChild(tmp);
+    const s=getComputedStyle(tmp).getPropertyValue('--'+curSrcVar).trim();
+    const bg=getComputedStyle(tmp).getPropertyValue('--bg-primary').trim();
+    const text=getComputedStyle(tmp).getPropertyValue('--text-primary').trim();
+    document.body.removeChild(tmp);
+    const cA=contrast(s,bg);
+    const washBg=rgb2hex(mixAlpha(s,bg,0.32));
+    const cB=contrast(washBg,text);
+    m.appendChild(cell('theme-cell',labels[t]));
+    const a=cell('demo-cell',''); a.innerHTML='<span class="contrast-badge '+cbClass(cA)+'">'+cA.toFixed(2)+' :1 '+(cA>=4.5?'✅':cA>=3?'⚠️':'❌')+'</span>';
+    const b=cell('demo-cell',''); b.innerHTML='<span class="contrast-badge '+cbClass(cB)+'">'+cB.toFixed(2)+' :1 '+(cB>=4.5?'✅':cB>=3?'⚠️':'❌')+'</span>';
+    m.appendChild(a);m.appendChild(b);
+  });
+}
+function cell(cls,txt){const d=document.createElement('div');d.className=cls;d.textContent=txt;return d;}
+
+updateBadges();rebuildMatrix();
+</script>
+</body>
+</html>

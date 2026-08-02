@@ -94,14 +94,20 @@
   文件」复用同一通道。纯路径解析逻辑抽到 `src/shared/diff-path.ts`(单测覆盖
   normal/added/deleted/renamed/多文件/含空格路径/二进制等场景)。
 
-- **侧栏 terminal 条目状态色条 + 缩进(Feature E.3 / v0.3.3,结构先行)。**
-  session 行的状态指示从 9px 圆点改为左侧圆角矩形竛条(决策 #16):active 绿
-  呼吸 / idle 黄静止 / exited 灰静止。色与呼吸走 CSS `[data-state]`(不再 JS 内联
-  style),`@keyframes` 用 opacity(GPU 友好),`prefers-reduced-motion` 关闭呼吸
-  (无障碍)。session 行加一级缩进(`--tree-indent-unit`,附录 G 单一真相源)与父
-  path 行形成层级。原叠在圆点上的 exited check/X 迁到行内(竛条太窄),与旧中性
-  exit-code 占位合并为一处成败指示(成功绿勾 / 失败红叉)。竛条精确尺寸(宽/
-  圆角/呼吸曲线)为临时值,**待 T06 截图定稿**(规划 doc「结构先搭,视觉待截图」)。
+- **侧栏 terminal 条目状态色条 + 缩进(Feature E.3 / v0.3.3,T06 视觉定稿)。**
+  session 行的状态指示从 9px 圆点改为**左侧竛条「变宽覆盖整行」动画**。T06 HITL
+  定稿(用户文字描述 + 原型确认,代替截图):idle = 左侧 3px 细竛条(info 色);
+  active = 细条 `cubic-bezier(0.16,1,0.3,1)` 1s 变宽覆盖整个背景 + **文字同步反色**
+  (bg-primary)+ 稳态 opacity 脉冲(2.6s,延迟 1s 等变宽完成)。active→idle 是
+  idle→active 的逆变化(用 `transition` 双向,非 `@keyframes` 定格)。配色用
+  `var(--color-info)`(跟主题变,rose-pine=青绿),不 color-mix 派生。exited 复用
+  灰细条 + 现有 exit-code 图标 + 整行 dim(色条只管 idle/active 两态)。
+  `prefers-reduced-motion` 关闭动画(active 直接铺满静止)。已知取舍:info 满底 +
+  反色在 cutie(淡紫)对比度不足(~2.3:1)、github-dark 满屏高饱和蓝扎眼,用户
+  看过原型矩阵后接受(换取强状态感知;替代的「洗涤 wash」方案通用可读但覆盖感弱
+  被否)。详见 `docs/方案-E3色条动画-20260802.md`。
+  session 行加一级缩进(`--tree-indent-unit`,附录 G 单一真相源)与父 path 行形成层级。
+  exited check/X 图标在行内(竛条太窄),成功绿勾 / 失败红叉。
 
 ### 修复
 
