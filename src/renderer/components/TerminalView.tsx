@@ -110,6 +110,8 @@ import {
 } from '@shared/ime-probe-ring';
 import { isDeviceAttributesResponse } from '@shared/terminal-input-filter';
 import { activateMarinaUnicodeWidth } from '@shared/terminal-unicode-width';
+import { detectFileLinks, parsePathWithLineCol } from '@shared/terminal-path-detector';
+import { setPendingLineJump, movePendingLineJump } from '../pending-line-jump';
 import { useAppDispatch, useAppState, useAppStateRef } from '../store';
 import { useCloseSession } from '../hooks/useCloseSession';
 import { readClipboardText, writeClipboardText } from '../clipboard';
@@ -782,6 +784,42 @@ export function TerminalView({
   // 防 toast 刷屏:多次 sendInput 失败短时间内只弹一次。
   const lastInputRejectToastAtRef = useRef(0);
 
+  // v0.3.3 Feature F(T15):把一个(可能带 :行号的)路径在「已打开」面板打开。
+  // A 自动链接 / B 右键菜单 共用。复用 cmd:file-panel:open(main 侧相对 currentCwd
+  // 解析 + 打开 + 自动切面板)。失败 → toast(IPC reject 丢 error.code 只留 message)。
+  // 行号跳转走 pending-line-jump 缓存:先用相对 path 临时存,invoke 成功后用
+  // snapshot.activePath(绝对路径)重写 key,TextViewer 消费时命中。
+  const openPathFromTerminalRef = useRef<
+    ((path: string, line?: number) => void) | null
+  >(null);
+  const openPathFromTerminal = useCallback(
+    (path: string, line?: number) => {
+      const trimmed = path.trim();
+      if (!trimmed) return;
+      if (line !== undefined) setPendingLineJump(trimmed, line);
+      window.api
+        .invoke<{ files: unknown[]; activePath: string | null }>(
+          COMMAND_CHANNELS.FILE_PANEL_OPEN,
+          { sessionId: session.id, path: trimmed },
+        )
+        .then((snap) => {
+          if (line !== undefined && snap.activePath) {
+            movePendingLineJump(trimmed, snap.activePath);
+          }
+        })
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn('[terminal] open path from terminal failed:', msg);
+          toastRef.current.push({
+            kind: 'error',
+            message: `文件不存在: ${trimmed}`,
+          });
+        });
+    },
+    [session.id],
+  );
+  openPathFromTerminalRef.current = openPathFromTerminal;
+
   // ── 操作:复制 / 粘贴 / 清屏 / 搜索 ──
   //
   // 勘误第二轮:剪贴板从 navigator.clipboard 换到 IPC 走 main 端 Electron
@@ -1152,6 +1190,44 @@ export function TerminalView({
     term.loadAddon(searchAddon);
     fitRef.current = fitAddon;
     searchRef.current = searchAddon;
+
+    // v0.3.3 Feature F(T15,ADR-027 决策 ①③):自定义 link provider,把终端里带斜杠的
+    // 相对路径(src/x.ts:42)变成可点链接(下划线 + pointer,xterm 内置)。点击发
+    // cmd:file-panel:open(复用现有「相对 currentCwd 解析 + 打开 + 切面板」链路)。
+    // WebLinksAddon 先注册=高优先级,URL 由它接管;本 provider 的 STRICT 正则
+    // 只匹配带斜杠的文件路径(裸文件名、属性访问不匹配),intersecting links 机制
+    // 会去重与 URL 重叠的部分。SSH session 不注册(远程本地图不可达)。
+    //
+    // 为什么只做正则不发 IPC(ADR 决策 3):hover 探盘每个命中发 N 次 IPC,性能不可
+    // 接受。这里 provideLinks 只跑正则(零 IO),点击才发 IPC,失败 toast。
+    //
+    // 坐标:provideLinks 的 y 是 1-based buffer 行;translateToString(true) 拿 trimmed
+    // 文本;detectFileLinks 返回字符 index(0-based),+1 转 1-based cell x(单字节
+    // 路径近似相等;宽字符/emoji 误差罕见,v1 不处理)。
+    const isSshSession = session.pathId.startsWith('ssh:');
+    const fileLinkDisposable = isSshSession
+      ? undefined
+      : term.registerLinkProvider({
+          provideLinks(y, callback) {
+            const line = term.buffer.active.getLine(y - 1);
+            if (!line) {
+              callback(undefined);
+              return;
+            }
+            const text = line.translateToString(true);
+            const links = detectFileLinks(text).map((det) => ({
+              range: {
+                start: { x: det.start + 1, y },
+                end: { x: det.end + 1, y },
+              },
+              text: det.raw,
+              activate: () => {
+                openPathFromTerminalRef.current?.(det.path, det.line);
+              },
+            }));
+            callback(links.length > 0 ? links : undefined);
+          },
+        });
 
     // PER-1 / XTM-1:装 WebGL 渲染器替代默认 DOM renderer。
     // 性能 10-50× 提升,长瀑布输出 (npm install / find / Claude Code 流式
@@ -1911,6 +1987,8 @@ export function TerminalView({
       container.removeEventListener('paste', pasteInterceptor, true);
       dataHandler.dispose();
       searchResultsDisposable?.dispose();
+      // v0.3.3 Feature F:释放文件路径 link provider。
+      fileLinkDisposable?.dispose();
       scrollMemoryDisposable.dispose();
       window.removeEventListener('marina:smoke-terminal-scroll', onSmokeScroll);
       // 滚动位置记忆:卸载前立即 flush 最后一帧(取消 pending debounce timer,
@@ -2112,10 +2190,29 @@ export function TerminalView({
           hint: 'Ctrl+F',
           onSelect: handleOpenSearch,
         },
+        // v0.3.3 Feature F(T15,ADR-027 B 部分):把选中的路径在「已打开」面板打开。
+        // 「选中即试」——不做正则预判,选区文本直接丢给 main 按 currentCwd 解析(裸文件
+        // 名也认,因为用户主动选中=意图明确)。SSH session 不显示该项(远程本地图不可达)。
+        ...(session.pathId.startsWith('ssh:')
+          ? []
+          : [
+              {
+                icon: <Icon name="fileText" size={13} />,
+                label: '在面板打开',
+                hint: hasSelection ? '把选中路径在「已打开」面板打开' : '先选中终端里的路径',
+                disabled: !hasSelection,
+                onSelect: () => {
+                  const sel = term?.getSelection();
+                  if (!sel) return;
+                  const { path, line } = parsePathWithLineCol(sel);
+                  openPathFromTerminalRef.current?.(path, line);
+                },
+              } as ContextMenuItem,
+            ]),
       ];
       ctxApi.open({ x: e.clientX, y: e.clientY, title: '终端', items });
     },
-    [rightClickMode, handlePaste, handleCopy, handleClear, handleOpenSearch, ctxApi],
+    [rightClickMode, handlePaste, handleCopy, handleClear, handleOpenSearch, ctxApi, session.pathId],
   );
 
   // Windows Terminal 风格:拖文件进终端 → 把(必要时引号包裹的)路径作为

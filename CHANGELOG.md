@@ -26,6 +26,18 @@
 
 ### 新增
 
+- **终端输出相对路径 → 可点链接(Feature F / v0.3.3)。** 终端里带斜杠的相对路径
+  (`src/x.ts:42`)现在变成可点链接:鼠标移上去出现下划线(xterm 内置),点击在右 dock
+  「已打开」面板只读打开该文件(相对 session.currentCwd 解析,复用 cmd:file-panel:open);
+  带 `:行号` 的路径打开后自动滚动到该行(不做高亮)。两种触发:(A) 自动链接 — xterm
+  自定义 link provider,STRICT 正则(要斜杠+扩展名,挡住属性访问 `.length`/`.map` 和裸
+  文件名,降误识别);(B) 右键菜单「在面板打开」— 选中终端文本后右键,选区文本直接丢给
+  main 解析(裸文件名也认,用户主动选中=意图明确)。URL 由现有 WebLinksAddon 优先接管。
+  SSH session 不启用(远程本地图不可达,套 SshUnsupported 模式)。文件不存在 → toast 提示,
+  不预探盘(hover 不发 IPC)。行号跳转走 renderer 端 pending-line-jump 缓存(不动 protocol/main)。
+  设计依据 ADR-027(T14 grilling 定稿)。TextViewer 新增 scrollToLine 能力(双 rAF 排在
+  useFileViewerScroll 的 restore 抑制之后)。
+
 - **Gallery 图片表代码块(Feature A / v0.3.3)。** Markdown 文档里 ``` ` ```gallery ` ` `` ` 代码块
   (每行一个图片链接:本地路径或 http(s) URL)渲染成幻灯片:一次一张、左右切换、缩略图条
   快速跳转、指示器 `N/总数`、键盘 ←/→(gallery 聚焦时拦截)。点图用系统图片查看器打开。
