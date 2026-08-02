@@ -1,6 +1,6 @@
 /**
  * @file src/renderer/components/command-panel/CommandPanel.tsx
- * @purpose 命令面板(v0.3.3 Feature G / ADR-027)—— 第 4 个 dock 面板的 renderer。
+ * @purpose 命令面板(v0.3.3 Feature G / ADR-028)—— 第 4 个 dock 面板的 renderer。
  *
  * @关键设计:
  * - program-push:AI 经 `marina run "<cmd>"` / HTTP /run / IPC 推任意命令字符串,
@@ -14,7 +14,7 @@
  *   不复用 MarkdownViewer(它耦合 OpenedFile 磁盘路径;命令输出是内存字符串,
  *   抽取它改动面大,违反已封箱代码最小改动原则。后续如需图片/代码块执行再抽取)。
  *
- * @对应文档: ADR-027(docs/方案-命令面板-20260802.md)、ADR-023(CodeBlockRunner)。
+ * @对应文档: ADR-028(docs/方案-命令面板-20260802.md)、ADR-023(CodeBlockRunner)。
  *
  * @不要在这里做的事:
  * - 不直接 spawn 命令(走 IPC → CommandPanelService → CodeBlockRunner)。

@@ -237,7 +237,7 @@ export const COMMAND_CHANNELS = {
   FILE_PANEL_READ_IMAGE: 'cmd:file-panel:read-image',
 
   // Command panel 域 —— AI 经 HTTP /run(或此 IPC)推送任意命令字符串,Marina 跑它
-  // 并把 markdown 输出渲染进第 4 个 dock 面板(ADR-027 / Feature G)。trigger=
+  // 并把 markdown 输出渲染进第 4 个 dock 面板(ADR-028 / Feature G)。trigger=
   // program-push,与 file-panel 同构;区别在内层:这里推的是「指令」而非「文件」,
   // 且每条指令各自带刷新策略(默认仅前台,少数后台轮询走 BackgroundWorkScheduler)。
   /** 拉某 session 当前命令面板状态(指令列表 + active + 每条策略)。claim/接管/切 bind 恢复用 */
@@ -1527,7 +1527,7 @@ export interface GetOpenFilesPayload {
 }
 
 // ──────────────────────────────────────────────────────────────────
-// Command panel(命令面板,ADR-027 / Feature G)
+// Command panel(命令面板,ADR-028 / Feature G)
 // ──────────────────────────────────────────────────────────────────
 
 /**

@@ -267,7 +267,7 @@ export interface IpcLayerDeps {
    */
   codeBlockRunner: CodeBlockRunner;
   /**
-   * 命令面板服务(v0.3.3,ADR-027 / Feature G)。AI 经 marina run / HTTP /run / IPC
+   * 命令面板服务(v0.3.3,ADR-028 / Feature G)。AI 经 marina run / HTTP /run / IPC
    * 推送任意命令字符串,复用 codeBlockRunner 执行(bash),输出渲染 markdown 进第 4 面板。
    * 生产必填;转发逻辑测在 command-panel-service(本层仅转发)。
    */
@@ -2146,7 +2146,7 @@ function registerCodeBlockHandlers(deps: IpcLayerDeps): void {
 }
 
 // ──────────────────────────────────────────────────────────────────
-// 命令面板域 (v0.3.3,ADR-027 / Feature G)
+// 命令面板域 (v0.3.3,ADR-028 / Feature G)
 // - AI 经 marina run / HTTP /run / IPC 推送任意命令字符串
 // - 复用 codeBlockRunner 执行(bash),输出渲染 markdown 进第 4 面板
 // - 多 tab + per-指令 刷新策略(foreground 默认 / background-* 后台轮询)
@@ -2383,7 +2383,7 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     broadcastEvent<FilePanelUpdatedPayload>(EVENT_CHANNELS.FILE_PANEL_UPDATED, p);
   });
 
-  // v0.3.3 命令面板(ADR-027):状态变化(指令增删/active/策略/状态机翻转/输出落定)
+  // v0.3.3 命令面板(ADR-028):状态变化(指令增删/active/策略/状态机翻转/输出落定)
   // 广播给所有窗口。与 file-panel 同策略:per-session 小元数据广播无副作用(orphan
   // 期间的更新不能丢),各自存进 per-session map。流式 output 复用上面的
   // code-block-output(命令面板的 run 就是 codeBlockRunner 跑的,runId 一致)。

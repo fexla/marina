@@ -1,6 +1,6 @@
 /**
  * @file src/main/command-panel-service.ts
- * @purpose 命令面板(v0.3.3 Feature G / ADR-027)—— 第 4 个 dock 面板的后端。
+ * @purpose 命令面板(v0.3.3 Feature G / ADR-028)—— 第 4 个 dock 面板的后端。
  *
  * @关键设计:
  * - trigger=program-push(与 FilePanelService 同构)。AI 经 `marina run "<cmd>"` /
@@ -17,14 +17,14 @@
  * - 持久化(D6,套用 ADR-024):command-panel.json,本服务只持内存态,读写委托
  *   workspaceOps(与 FilePanelService 同款注入)。持久化触发由 renderer/上层驱动。
  *
- * @对应文档: ADR-027(docs/方案-命令面板-20260802.md)、ADR-023(CodeBlockRunner)、
+ * @对应文档: ADR-028(docs/方案-命令面板-20260802.md)、ADR-023(CodeBlockRunner)、
  *            ADR-021(后台调度)、ADR-024(workspace 持久化)、附录 I(后台任务规范)。
  *
  * @不要在这里做的事:
  * - 不经 PTY / 不写终端字节流(那是 SessionManager 的职责)。
  * - 不自己 spawn 子进程(委托 CodeBlockRunner,统一执行 + 清理)。
  * - 不把命令正文 / stdout 写进日志或性能报告(隐私:附录 H 红线)。
- * - 不内建 GitHub/map 耦合(map/ticket 只是命令面板的第一个用例,见 ADR-027 哲学边界)。
+ * - 不内建 GitHub/map 耦合(map/ticket 只是命令面板的第一个用例,见 ADR-028 哲学边界)。
  */
 
 import { EventEmitter } from 'node:events';
