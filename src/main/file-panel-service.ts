@@ -43,7 +43,7 @@ import { EventEmitter } from 'node:events';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { randomBytes, createHash } from 'node:crypto';
 import { promises as fs, watch, type FSWatcher, type Stats } from 'node:fs';
-import { basename, dirname, resolve } from 'node:path';
+import { basename, dirname, resolve, join, isAbsolute } from 'node:path';
 import type { OpenedFile } from '@shared/types';
 import { detectFileKind } from '@shared/file-kind';
 import type { FilePanelSnapshot, ReadFileResponse, ReadImageResponse, GalleryResolveImageResponse } from '@shared/protocol';
@@ -135,6 +135,14 @@ export interface WorkspaceOps {
   newWorkspace(sessionId: string): Promise<{ workspaceId: string; dir: string }>;
   /** 剥 name+pinned(name=null=当前)。返 null=未找到。 */
   unpin(sessionId: string, name: string | null): Promise<{ workspaceId: string } | null>;
+  /**
+   * v0.3.3 Feature D 接线:读当前 session 绑定 workspace 的文件面板快照
+   * (openedFiles/activeFilePath/scroll/runs)。切换 workspace 后用此重建 PanelState
+   * + renderer 恢复 scroll/runs。无绑定/无快照返 null。
+   */
+  readSnapshotForSession?(
+    sessionId: string,
+  ): Promise<{ openedFiles: Array<{ path: string; kind: string; external: boolean }>; activeFilePath: string | null; scroll: Record<string, { scrollTop: number; scrollLeft: number }>; runs: unknown } | null>;
 }
 
 /**
@@ -1063,6 +1071,66 @@ export class FilePanelService extends EventEmitter {
     });
   }
 
+  /**
+   * v0.3.3 Feature D 接线:workspace 切换完成后(bind/new/unpin 后,由 SessionManager
+   * 通过注入的 notify 回调调本方法)重建该 session 的文件面板状态。
+   *
+   * 流程:① 读新 workspace 快照(readSnapshotForSession)② 相对路径拼 workspace 根转绝对
+   * (external 的绝对路径原样保留)③ 清旧 watchers + 重建 PanelState ④ emit filePanelUpdated
+   * (renderer 同步 openedFiles/activePath)⑤ emit 'workspaceChanged'(ipc 广播
+   * evt:workspace:changed,renderer 据此调 restoreWorkspaceSnapshot 恢复 scroll/runs)。
+   *
+   * 快照缺失(新空 workspace / 损坏)→ PanelState 清空(files=[]),符合 new 语义。
+   * 快照里的文件磁盘上已不存在 → 仍加入(用户能看到 tab,打开时 read 失败提示),
+   * 与「打开过就保留」的产品语义一致(CLI list 标 !deleted)。
+   */
+  async onWorkspaceSwitched(sessionId: string): Promise<void> {
+    if (!this.workspaceOps?.readSnapshotForSession) return;
+    // 清旧 PanelState 的 watchers(避免泄漏 + 旧 watcher 触发误 emit)。
+    const old = this.panels.get(sessionId);
+    if (old) {
+      for (const abs of [...old.watchers.keys()]) this.stopWatcher(old, abs);
+      for (const t of old.watchTimers.values()) clearTimeout(t);
+      old.watchTimers.clear();
+    }
+    let files: OpenedFile[] = [];
+    let activePath: string | null = null;
+    try {
+      const snap = await this.workspaceOps.readSnapshotForSession(sessionId);
+      if (snap) {
+        const wsDir = this.workspaceOps.getCurrentPath(sessionId);
+        // 逐文件 stat 拿 size/mtimeMs(失败=文件不存在,标 missing)。串行 stat(N 小,
+        // 且避免并发 fs 压力);全失败也不阻塞(降级 missing)。
+        files = await Promise.all(
+          snap.openedFiles.map(async (f): Promise<OpenedFile> => {
+            const abs = f.external || isAbsolute(f.path) ? f.path : wsDir ? join(wsDir, f.path) : f.path;
+            try {
+              const st = await fs.stat(abs);
+              return { path: abs, name: basename(abs), kind: f.kind as OpenedFile['kind'], size: st.size, mtimeMs: st.mtimeMs };
+            } catch {
+              return { path: abs, name: basename(abs), kind: f.kind as OpenedFile['kind'], size: 0, mtimeMs: 0, missing: true };
+            }
+          }),
+        );
+        activePath = snap.activeFilePath
+          ? snap.openedFiles.find((f) => f.path === snap.activeFilePath)?.external || isAbsolute(snap.activeFilePath)
+            ? snap.activeFilePath
+            : wsDir ? join(wsDir, snap.activeFilePath) : snap.activeFilePath
+          : null;
+      }
+    } catch (err) {
+      // 快照读失败不阻塞切换;降级为空面板(用户可重新打开)。
+      console.warn('[file-panel] onWorkspaceSwitched readSnapshot failed:', err);
+    }
+    // 重建 PanelState(保留 watchers/watchTimers 容器,后续 openFile 会按需建 watcher)。
+    const state: PanelState = { files, activePath, watchers: new Map(), watchTimers: new Map() };
+    this.panels.set(sessionId, state);
+    // renderer 同步 openedFiles/activePath(现有 FILE_PANEL_UPDATED 链路)。
+    this.emitUpdated(sessionId, state);
+    // renderer 恢复 scroll/runs(独立事件,因 main PanelState 不存这俩)。
+    this.emit('workspaceChanged', { sessionId });
+  }
+
   private clearPanel(sessionId: string): void {
     const state = this.panels.get(sessionId);
     if (!state) return;
@@ -1363,6 +1431,11 @@ export class FilePanelService extends EventEmitter {
         return;
       }
       const result = await this.workspaceOps.bind(terminal, name, forceNew);
+      // Feature D:切到已存在 workspace(switched)才需恢复快照;created(首次命名当前
+      // workspace)文件面板不变(同一个 workspace 只是加了名字)。
+      if (result.kind === 'switched') {
+        void this.onWorkspaceSwitched(terminal);
+      }
       this.send(res, 200, result);
     } catch (err) {
       const code = (err as { code?: string })?.code;
@@ -1391,6 +1464,8 @@ export class FilePanelService extends EventEmitter {
         return;
       }
       const result = await this.workspaceOps.newWorkspace(terminal);
+      // Feature D:切到新空 workspace,文件面板清空(新 workspace 无快照)。
+      void this.onWorkspaceSwitched(terminal);
       this.send(res, 200, result);
     } catch (err) {
       this.send(res, 400, { error: err instanceof Error ? err.message : String(err) });

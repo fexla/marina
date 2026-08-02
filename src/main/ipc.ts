@@ -2383,6 +2383,14 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     broadcastEvent<FilePanelUpdatedPayload>(EVENT_CHANNELS.FILE_PANEL_UPDATED, p);
   });
 
+  // v0.3.3 Feature D:workspace 切换完成(bind switched / new)。FilePanelService
+  // .onWorkspaceSwitched 已重建 PanelState 并 emit filePanelUpdated(同步 openedFiles/
+  // activePath);本事件让 renderer 调 restoreWorkspaceSnapshot 恢复 scroll/runs
+  // (main PanelState 不存这俩)。payload={sessionId}。
+  filePanelService.on('workspaceChanged', (p: { sessionId: string }) => {
+    broadcastEvent<{ sessionId: string }>(EVENT_CHANNELS.WORKSPACE_CHANGED, p);
+  });
+
   // v0.3.3 命令面板(ADR-028):状态变化(指令增删/active/策略/状态机翻转/输出落定)
   // 广播给所有窗口。与 file-panel 同策略:per-session 小元数据广播无副作用(orphan
   // 期间的更新不能丢),各自存进 per-session map。流式 output 复用上面的

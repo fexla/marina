@@ -65,6 +65,7 @@ import type {
   WindowInfo,
 } from '@shared/types';
 import type { RegisteredPanelId } from './components/layout/panel-registry';
+import { restoreWorkspaceSnapshot, scheduleWorkspaceSnapshotWrite } from './workspace-snapshot';
 
 /** 右侧文件预览的像素滚动位置；按 sessionId + file.path + kind 隔离。 */
 export interface FileViewerScrollPosition {
@@ -851,6 +852,7 @@ export function useIpcSync(): {
   errorCode: string | null;
 } {
   const dispatch = useAppDispatch();
+  const stateRef = useAppStateRef();
   const [status, setStatus] = useReducer(
     (
       _: { ready: boolean; error: string | null; errorCode: string | null },
@@ -938,15 +940,26 @@ export function useIpcSync(): {
           window.api.on<SessionDestroyedPayload>(EVENT_CHANNELS.SESSION_DESTROYED, (p) =>
             dispatch({ type: 'sessions/destroyed', sessionId: p.sessionId }),
           ),
-          window.api.on<FilePanelUpdatedPayload>(EVENT_CHANNELS.FILE_PANEL_UPDATED, (p) =>
+          window.api.on<FilePanelUpdatedPayload>(EVENT_CHANNELS.FILE_PANEL_UPDATED, (p) => {
             dispatch({
               type: 'file-panel/updated',
               sessionId: p.sessionId,
               files: p.files,
               activePath: p.activePath,
               requestActivation: p.requestActivation === true,
-            }),
-          ),
+            });
+            // Feature D 写入端:文件面板(openedFiles/active)变化 → debounce 写快照。
+            // getWorkspaceDir=null(workspace 路径需 IPC 查,这里降级:所有路径当
+            // external 存绝对路径,restore 时绝对路径直接用,同机器恢复正确)。
+            // scroll/runs 变化的写不在热路径触发(低频,缺失时 restore 跳过)。
+            scheduleWorkspaceSnapshotWrite(p.sessionId, () => stateRef.current, () => null);
+          }),
+          // v0.3.3 Feature D:workspace 切换完成。main 已重建 PanelState 并发了
+          // filePanelUpdated(上面已同步 openedFiles/activePath);这里读新 workspace
+          // 快照恢复 scroll/runs(workspace-snapshot.ts 已实现)。dispatch 闭包可拿。
+          window.api.on<{ sessionId: string }>(EVENT_CHANNELS.WORKSPACE_CHANGED, (p) => {
+            void restoreWorkspaceSnapshot(dispatch, p.sessionId);
+          }),
           window.api.on<CommandPanelSnapshot & { sessionId: string; requestActivation?: boolean }>(
             EVENT_CHANNELS.COMMAND_PANEL_UPDATED,
             (p) =>

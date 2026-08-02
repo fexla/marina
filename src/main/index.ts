@@ -586,6 +586,7 @@ function bootstrap(): void {
         list: (sid) => sessionManager.listWorkspaces(sid),
         newWorkspace: (sid) => sessionManager.switchToNewWorkspace(sid),
         unpin: (sid, name) => sessionManager.unpinWorkspace(sid, name),
+        readSnapshotForSession: (sid) => sessionManager.readWorkspaceSnapshot(sid) as Promise<{ openedFiles: Array<{ path: string; kind: string; external: boolean }>; activeFilePath: string | null; scroll: Record<string, { scrollTop: number; scrollLeft: number }>; runs: unknown } | null>,
       });
       // v0.3.3 ADR-027:命令面板接线。sessionLookup 破循环依赖(同 file-panel);
       // runner 复用 codeBlockRunner(执行 + output/exited 事件订阅);scheduler 复用

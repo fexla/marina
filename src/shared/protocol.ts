@@ -459,6 +459,15 @@ export const EVENT_CHANNELS = {
   FILE_PANEL_UPDATED: 'evt:file-panel:updated',
 
   /**
+   * v0.3.3 ADR-024 / Feature D:workspace 切换完成(bind/new/unpin 后)。
+   * payload = { sessionId, workspaceId }。renderer 收到后调 restoreWorkspaceSnapshot
+   * 恢复 file-panel 的 scroll/runs(openedFiles/activePath 由同次的 FILE_PANEL_UPDATED
+   * 同步,因为 FilePanelService.onWorkspaceSwitched 会重建 PanelState 并 emit)。
+   * 定向推给该 session 的 owner 窗口(同 FILE_PANEL_UPDATED 策略)。
+   */
+  WORKSPACE_CHANGED: 'evt:workspace:changed',
+
+  /**
    * 命令面板状态变化(指令增删/active 切换/策略变更/状态机翻转/输出落定)。
    * 定向推给该 session 的 owner 窗口(与 FILE_PANEL_UPDATED 同策略)。payload 见
    * CommandPanelSnapshot。流式实时输出复用 evt:system:code-block-output/
