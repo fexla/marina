@@ -48,6 +48,17 @@
   `<workspace>/__marina_state__/file-panel.json`,bind 切换后自动恢复(滚动 500ms
   debounce 落盘,不进逐字节热路径)。详见 ADR-024。
 
+- **命令面板(Feature G / v0.3.3)。**
+  第 4 个 dock 面板(ADR-027)。补足「终端被 AI coding agent 占着、没法瞄一眼命令输出」
+  的需求:AI 用 `marina run "<任意命令字符串>"` 推送指令,Marina 复用 CodeBlockRunner
+  (ADR-023)跑它(bash,在 session.currentCwd 下,不经 PTY),把输出渲染成 markdown
+  进面板。多 tab(同 command 去重 upsert)+ per-指令 刷新策略(默认仅前台跑、少数
+  后台轮询走 BackgroundWorkScheduler ADR-021)+ 手动重跑。输出里的 http(s)/mailto
+  链接可点(走系统浏览器)。SSH session 拒绝(对称 Git/代码块)。设计上是通用面板
+  (map/ticket 只是第一个用例),不内建 GitHub 耦合,避免「跨 session 上下文累积」红线。
+  持久化(command-panel.json,套用 ADR-024 机制)接口已就绪,触发器待 Feature D 的
+  renderer 恢复/flush 接线一起完成。
+
 - **侧栏收藏分组 + 拖拽排序(Feature E.1+E.2 / v0.3.3)。**
   收藏路径告别平铺:加**一级分组**虚拟容器(GroupNode,path 身份不变),分组可折叠/重命名/
   删组(删组子路径归未分组,绝不删 path)。**@dnd-kit 拖拽**:收藏路径可组内排序 + 跨组移动
