@@ -250,6 +250,8 @@ export const COMMAND_CHANNELS = {
   COMMAND_PANEL_SHOW: 'cmd:command-panel:show',
   /** 改某条指令的刷新策略(per-指令,D4) */
   COMMAND_PANEL_SET_STRATEGY: 'cmd:command-panel:set-strategy',
+  /** renderer 上报面板 demand(可见性/聚焦 → HOT/WARM/NONE,仿 git:set-polling-demand) */
+  COMMAND_PANEL_SET_DEMAND: 'cmd:command-panel:set-demand',
 
   // File tree 域 —— active owner session 的受限双根只读导航(ADR-016)
   /** 获取 currentCwd / MARINA_WORKSPACE 两个逻辑根的可用性；不返回绝对路径。 */
@@ -1615,6 +1617,13 @@ export interface SetCommandStrategyPayload {
   sessionId: string;
   commandKey: string;
   strategy: CommandRefreshStrategy;
+}
+
+/** cmd:command-panel:set-demand payload(面板可见性/聚焦变化上报)。 */
+export interface SetCommandDemandPayload {
+  sessionId: string;
+  /** none=切走/隐藏;warm=面板可见但未聚焦;hot=面板可见且聚焦。 */
+  level: 'none' | 'warm' | 'hot';
 }
 
 /** evt:command-panel:exited payload。 */

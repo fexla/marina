@@ -34,6 +34,7 @@ import { installIpcLayer, dispatchCommand } from './ipc';
 import { ClientRegistry } from './client-registry';
 import { TerminalViewRegistry } from './terminal-view-registry';
 import { CodeBlockRunner } from './code-block-runner';
+import { CommandPanelService } from './command-panel-service';
 import { RemoteDaemonController } from './remote-daemon-controller';
 import {
   loadOrGenerateDaemonCredentials,
@@ -282,6 +283,10 @@ function bootstrap(): void {
     // PATH 里没有 pwsh.exe / bash 时 spawn ENOENT(-4058)的问题。
     () => sessionManager.listAvailableShells(),
   );
+  // v0.3.3:命令面板后端(ADR-027 / Feature G)。复用 codeBlockRunner 执行 +
+  // backgroundWorkScheduler 后台轮询。HTTP /run 路由在 file-panel-service(复用
+  // 同一 server + Bearer 鉴权),经 commandRunOps 转发回本服务。
+  const commandPanelService = new CommandPanelService();
   // 0.3.2 性能飞行记录器独立于 BrowserWindow 生命周期。关闭全部窗口后仍采样
   // main/GPU/utility 进程、event-loop stall 与固定业务操作；自动报告不含路径/
   // 命令/终端内容。对象在 ready 前构造,start 在 app.whenReady 内调用。
@@ -582,6 +587,16 @@ function bootstrap(): void {
         newWorkspace: (sid) => sessionManager.switchToNewWorkspace(sid),
         unpin: (sid, name) => sessionManager.unpinWorkspace(sid, name),
       });
+      // v0.3.3 ADR-027:命令面板接线。sessionLookup 破循环依赖(同 file-panel);
+      // runner 复用 codeBlockRunner(执行 + output/exited 事件订阅);scheduler 复用
+      // backgroundWorkScheduler(per-指令 后台轮询);HTTP /run 经 commandRunOps 转发。
+      commandPanelService.attachSessionLookup(sessionManager);
+      commandPanelService.attachRunner(codeBlockRunner);
+      commandPanelService.attachScheduler(backgroundWorkScheduler);
+      filePanelService.attachCommandRunOps({
+        runCommand: (sid, command, title, clientId) =>
+          commandPanelService.runCommand(sid, command, title, clientId),
+      });
       // v0.3.0:注入 Git 可用性判定回调。GitService.evaluateAvailability 是纯函数
       // (只接受 cwd + pathKind,不持 session 引用),避免循环依赖。注入后,
       // 已存在 + 后续新 session 都会异步评估 → Git tab 出现/消失。
@@ -665,6 +680,7 @@ function bootstrap(): void {
         skillInstaller,
         markdownThemeManager,
         codeBlockRunner,
+        commandPanelService,
         aiClient,
         remoteDaemonController,
       });

@@ -137,6 +137,20 @@ export interface WorkspaceOps {
   unpin(sessionId: string, name: string | null): Promise<{ workspaceId: string } | null>;
 }
 
+/**
+ * v0.3.3 ADR-027:命令面板的 HTTP /run 路由回调(注入式,与 WorkspaceOps 同款)。
+ * 转发给 CommandPanelService.runCommand。未注入时 /run 返 503。
+ */
+export interface CommandRunOps {
+  /** 推送/重跑一条指令。返回命令面板快照。 */
+  runCommand(
+    sessionId: string,
+    command: string,
+    title: string | null,
+    requestingClientId: string | null,
+  ): Promise<{ commands: unknown[]; activeKey: string | null }>;
+}
+
 interface PanelState {
   files: OpenedFile[];
   activePath: string | null;
@@ -193,6 +207,8 @@ export class FilePanelService extends EventEmitter {
   private windowCapture: WindowCaptureFn | null = null;
   /** v0.3.3 ADR-024:workspace 操作回调(workspace HTTP 路由用)。 */
   private workspaceOps: WorkspaceOps | null = null;
+  /** v0.3.3 ADR-027:命令面板 /run 路由回调(转发给 CommandPanelService)。 */
+  private commandRunOps: CommandRunOps | null = null;
   private server: Server | null = null;
   private baseUrl: string | null = null;
   private token: string | null = null;
@@ -225,6 +241,11 @@ export class FilePanelService extends EventEmitter {
   /** v0.3.3 ADR-024:注入 workspace 操作回调(workspace HTTP 路由用)。 */
   attachWorkspaceOps(ops: WorkspaceOps): void {
     this.workspaceOps = ops;
+  }
+
+  /** v0.3.3 ADR-027:注入命令面板 run 回调(HTTP /run 路由用)。 */
+  attachCommandRunOps(ops: CommandRunOps): void {
+    this.commandRunOps = ops;
   }
 
   /** 注入终端 env 用:返回服务地址 + token;未启动 / 被禁用时返回 null。 */
@@ -1127,6 +1148,14 @@ export class FilePanelService extends EventEmitter {
       return;
     }
 
+    // v0.3.3 ADR-027:POST /run body {terminal, command, title?} —— AI 经
+    // `marina run "<cmd>"` 推送任意命令字符串,转发给 CommandPanelService。
+    // 鉴权同其他路由(Bearer)。owner 校验在 CommandPanelService 内(sessionLookup)。
+    if (method === 'POST' && u.pathname === '/run') {
+      void this.handleRun(req, res);
+      return;
+    }
+
     this.send(res, 404, { error: `not found: ${method} ${u.pathname}` });
   }
 
@@ -1222,7 +1251,45 @@ export class FilePanelService extends EventEmitter {
   }
 
   /**
-   * v0.3.3 T12:GET /screenshot?terminal=<id>。调注入的 windowCapture 回调截 owner window
+   * v0.3.3 ADR-027:POST /run。body {terminal, command, title?}。转发给注入的
+   * commandRunOps(CommandPanelService)。成功返命令面板快照;失败(SSH/shell/spawn/
+   * session 缺失)返 400 + error。ops 未注入返 503。
+   */
+  private async handleRun(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.commandRunOps) {
+      this.send(res, 503, { error: 'command-panel 未启用(commandRunOps 未注入)' });
+      return;
+    }
+    let body: { terminal?: string; command?: string; title?: string };
+    try {
+      body = JSON.parse(await this.readBody(req)) as {
+        terminal?: string;
+        command?: string;
+        title?: string;
+      };
+    } catch {
+      return this.send(res, 400, { error: 'invalid JSON body' });
+    }
+    const { terminal, command, title } = body;
+    if (!terminal) return this.send(res, 400, { error: 'body 需要 { terminal }' });
+    if (!command || !command.trim()) {
+      return this.send(res, 400, { error: 'body 需要 { command } 且非空' });
+    }
+    try {
+      const snapshot = await this.commandRunOps.runCommand(
+        terminal,
+        command,
+        title ?? null,
+        // HTTP 路由无明确发起 client;CommandPanelService 会用 session owner 作为
+        // 事件定向目标(owner 收到后更新面板)。传 null 让 service 兜底。
+        null,
+      );
+      this.send(res, 200, snapshot);
+    } catch (err) {
+      this.sendError(res, err);
+    }
+  }
+
    * 的屏,成功返 image/png 二进制;失败(无 owner/窗口销毁/最小化/capture 抛错)返 JSON 错误。
    * capture 回调未注入(旧启动/单测未设)→ 503 明确表示功能未启用,不崩。
    */

@@ -133,10 +133,18 @@ const DOCK_LAYOUT_RULES: Readonly<Record<string, { minWidth: number; maxWidth: n
  * Git tab。该值由 SessionManager 在 session 创建 + cwd 变更后调
  * gitAvailabilityProvider 异步评估,flip 时重建 tree 并 emit state-changed。
  */
-function createSessionLayoutTree(gitAvailable: boolean): LayoutNode {
+/** pathId 是否表示 SSH session(命令面板/Git 面板均拒 SSH,见 ADR-027 D7)。 */
+function isSshPathId(pathId: string): boolean {
+  return pathId.startsWith('ssh:');
+}
+
+function createSessionLayoutTree(gitAvailable: boolean, commandAvailable = true): LayoutNode {
   const stackChildren: LayoutNode[] = [{ kind: 'leaf', panelId: 'file-tree' }];
   if (gitAvailable) stackChildren.push({ kind: 'leaf', panelId: 'git' });
   stackChildren.push({ kind: 'leaf', panelId: 'file-panel' });
+  // v0.3.3 ADR-027:命令面板(第 4 dock 面板)。SSH session 不生成 command leaf
+  // (CodeBlockRunner 拒 SSH,leaf 出现也无意义,与 git 同款 availability 模式)。
+  if (commandAvailable) stackChildren.push({ kind: 'leaf', panelId: 'command' });
   return {
     kind: 'split',
     direction: 'horizontal',
@@ -153,16 +161,17 @@ function createSessionLayoutTree(gitAvailable: boolean): LayoutNode {
   };
 }
 
-/** 旧名保留:不带 git 的初始保守 tree(createSession 同步路径用)。 */
-function createDefaultSessionLayoutTree(): LayoutNode {
-  return createSessionLayoutTree(false);
+/** 旧名保留:不带 git 的初始保守 tree(createSession 同步路径用)。
+ * commandAvailable:SSH session 传 false(命令面板拒 SSH,ADR-027 D7)。 */
+function createDefaultSessionLayoutTree(commandAvailable = true): LayoutNode {
+  return createSessionLayoutTree(false, commandAvailable);
 }
 
 const DEFAULT_DOCK_LAYOUTS: Readonly<Record<string, DockLayoutState>> = {
   right: { width: 440, collapsed: false },
 };
 
-function createDefaultSessionUiLayout(): SessionUiLayout {
+function createDefaultSessionUiLayout(commandAvailable = true): SessionUiLayout {
   return {
     version: 2,
     tree: createDefaultSessionLayoutTree(),
@@ -1068,7 +1077,7 @@ export class SessionManager extends EventEmitter {
       ownerWindowId: input.ownerWindowId || null,
       state: 'idle',
       createdAt: Date.now(),
-      uiLayout: createDefaultSessionUiLayout(),
+      uiLayout: createDefaultSessionUiLayout(!isSsh),
     };
 
     const disposables: IDisposable[] = [];
@@ -1221,7 +1230,9 @@ export class SessionManager extends EventEmitter {
       );
     }
 
-    const current = managed.info.uiLayout ?? createDefaultSessionUiLayout();
+    const current = managed.info.uiLayout ?? createDefaultSessionUiLayout(
+      !isSshPathId(managed.info.pathId),
+    );
     const next: SessionUiLayout = {
       version: current.version,
       tree: current.tree,
@@ -2419,10 +2430,12 @@ export class SessionManager extends EventEmitter {
     const prev = this.gitAvailabilityBySession.get(managed.info.id) ?? false;
     if (prev === available) return; // 无变化,不 emit
     this.gitAvailabilityBySession.set(managed.info.id, available);
-    const current = managed.info.uiLayout ?? createDefaultSessionUiLayout();
+    const current = managed.info.uiLayout ?? createDefaultSessionUiLayout(
+      !isSshPathId(managed.info.pathId),
+    );
     const next: SessionUiLayout = {
       version: current.version,
-      tree: createSessionLayoutTree(available),
+      tree: createSessionLayoutTree(available, !isSshPathId(managed.info.pathId)),
       docks: current.docks, // 几何不变,只换 tree
     };
     managed.info.uiLayout = next;

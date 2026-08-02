@@ -30,6 +30,7 @@ import type { PerformanceDiagnostics } from './performance-diagnostics';
 import type { SkillInstaller } from './skill-installer';
 import type { MarkdownThemeManager } from './markdown-theme-manager';
 import type { CodeBlockRunner } from './code-block-runner';
+import type { CommandPanelService, CommandPanelUpdateEvent } from './command-panel-service';
 import {
   getExplorerIntegrationStatus,
   setClassicIntegration,
@@ -190,6 +191,13 @@ import {
   type WorkspaceFilePanelSnapshot,
   type WorkspaceSummary,
   type WorkspaceBindResult,
+  type CommandPanelSnapshot,
+  type RunCommandPayload,
+  type CloseCommandPayload,
+  type ShowCommandPayload,
+  type SetCommandStrategyPayload,
+  type SetCommandDemandPayload,
+  type GetCommandPanelStatePayload,
 } from '@shared/protocol';
 import type { AppSnapshot, MdTheme, RemoteDaemonProfile, Settings, Template } from '@shared/types';
 import type { CaptureCpuProfilePayload } from '@shared/performance-types';
@@ -258,6 +266,12 @@ export interface IpcLayerDeps {
    * 不经 PTY。事件经 wireEventBroadcasts 定向回发起 client。
    */
   codeBlockRunner: CodeBlockRunner;
+  /**
+   * 命令面板服务(v0.3.3,ADR-027 / Feature G)。AI 经 marina run / HTTP /run / IPC
+   * 推送任意命令字符串,复用 codeBlockRunner 执行(bash),输出渲染 markdown 进第 4 面板。
+   * 生产必填;转发逻辑测在 command-panel-service(本层仅转发)。
+   */
+  commandPanelService: CommandPanelService;
   /** BETA-031:可选,未注入时 AI_TEST_CONNECTION 返回 ok:false */
   aiClient?: AIClient;
 }
@@ -301,6 +315,9 @@ export function installIpcLayer(deps: IpcLayerDeps): void {
     // v0.3.3:Markdown 代码块执行 —— 发起窗口关闭时杀掉它启动的全部运行,
     // 避免向已销毁的 webContents 推事件 + 回收子进程。
     deps.codeBlockRunner.removeClient(windowId);
+    // v0.3.3:命令面板同理(它复用 codeBlockRunner,但额外要清自己的 runId 路由 +
+    // 后台 demand)。幂等。
+    deps.commandPanelService.onWindowClosed(windowId);
     reg.remove(windowId);
   });
 
@@ -309,6 +326,7 @@ export function installIpcLayer(deps: IpcLayerDeps): void {
   registerFileTreeHandlers(deps);
   registerGitHandlers(deps);
   registerCodeBlockHandlers(deps);
+  registerCommandPanelHandlers(deps);
   registerWorkspaceHandlers(deps);
   registerMdThemeHandlers(deps);
   wireEventBroadcasts(deps);
@@ -2128,6 +2146,70 @@ function registerCodeBlockHandlers(deps: IpcLayerDeps): void {
 }
 
 // ──────────────────────────────────────────────────────────────────
+// 命令面板域 (v0.3.3,ADR-027 / Feature G)
+// - AI 经 marina run / HTTP /run / IPC 推送任意命令字符串
+// - 复用 codeBlockRunner 执行(bash),输出渲染 markdown 进第 4 面板
+// - 多 tab + per-指令 刷新策略(foreground 默认 / background-* 后台轮询)
+// 本层仅转发;执行/状态机测在 command-panel-service。
+// ──────────────────────────────────────────────────────────────────
+function registerCommandPanelHandlers(deps: IpcLayerDeps): void {
+  const { commandPanelService } = deps;
+
+  registerHandle(
+    COMMAND_CHANNELS.COMMAND_PANEL_GET_STATE,
+    (_e, envelope: CommandEnvelope<GetCommandPanelStatePayload>): CommandPanelSnapshot =>
+      commandPanelService.getSnapshot(envelope.payload.sessionId),
+  );
+
+  // 推送/重跑一条指令。envelope.windowId 即发起 client,output/exited 事件定向回它
+  // (复用 code-block-output,runId 一致)。SSH/cwd/shell 失败透传 CodeBlockError。
+  registerHandle(
+    COMMAND_CHANNELS.COMMAND_PANEL_RUN,
+    async (
+      _e,
+      envelope: CommandEnvelope<RunCommandPayload>,
+    ): Promise<CommandPanelSnapshot> =>
+      commandPanelService.runCommand(
+        envelope.payload.sessionId,
+        envelope.payload.command,
+        envelope.payload.title ?? null,
+        envelope.windowId,
+      ),
+  );
+
+  registerHandle(
+    COMMAND_CHANNELS.COMMAND_PANEL_CLOSE,
+    (_e, envelope: CommandEnvelope<CloseCommandPayload>): CommandPanelSnapshot =>
+      commandPanelService.closeCommand(envelope.payload.sessionId, envelope.payload.commandKey),
+  );
+
+  registerHandle(
+    COMMAND_CHANNELS.COMMAND_PANEL_SHOW,
+    (_e, envelope: CommandEnvelope<ShowCommandPayload>): CommandPanelSnapshot =>
+      commandPanelService.showCommand(envelope.payload.sessionId, envelope.payload.commandKey),
+  );
+
+  registerHandle(
+    COMMAND_CHANNELS.COMMAND_PANEL_SET_STRATEGY,
+    (_e, envelope: CommandEnvelope<SetCommandStrategyPayload>): CommandPanelSnapshot =>
+      commandPanelService.setStrategy(
+        envelope.payload.sessionId,
+        envelope.payload.commandKey,
+        envelope.payload.strategy,
+      ),
+  );
+
+  // renderer 上报面板 demand(可见性/聚焦 → HOT/WARM/NONE)。与 git:set-polling-demand
+  // 同策略:驱动 BackgroundWorkScheduler 的 per-指令 后台 task。
+  registerHandle(
+    COMMAND_CHANNELS.COMMAND_PANEL_SET_DEMAND,
+    (_e, envelope: CommandEnvelope<SetCommandDemandPayload>): void => {
+      commandPanelService.setDemand(envelope.payload.sessionId, envelope.payload.level);
+    },
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────
 // Markdown 主题域 (Typora 式可扩展)
 // - 拉主题列表(设置页下拉 + 启动初始化)
 // - 取某主题 CSS 文本(注入 <style>)
@@ -2280,6 +2362,8 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     filePanelService.onSessionDestroyed(e.sessionId);
     // v0.3.0:Git 面板同理清掋 watcher + 防抖 timer。
     gitService.onSessionDestroyed(e.sessionId);
+    // v0.3.3:命令面板同理清状态 + 停 run + 注销后台 task。
+    deps.commandPanelService.onSessionDestroyed(e.sessionId);
     broadcastEvent<SessionDestroyedPayload>(EVENT_CHANNELS.SESSION_DESTROYED, e);
     broadcastAppState(deps);
   });
@@ -2298,6 +2382,22 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   filePanelService.on('filePanelUpdated', (p: FilePanelUpdatedPayload) => {
     broadcastEvent<FilePanelUpdatedPayload>(EVENT_CHANNELS.FILE_PANEL_UPDATED, p);
   });
+
+  // v0.3.3 命令面板(ADR-027):状态变化(指令增删/active/策略/状态机翻转/输出落定)
+  // 广播给所有窗口。与 file-panel 同策略:per-session 小元数据广播无副作用(orphan
+  // 期间的更新不能丢),各自存进 per-session map。流式 output 复用上面的
+  // code-block-output(命令面板的 run 就是 codeBlockRunner 跑的,runId 一致)。
+  deps.commandPanelService.on(
+    'commandPanelUpdated',
+    (p: CommandPanelUpdateEvent) => {
+      broadcastEvent<CommandPanelSnapshot>(EVENT_CHANNELS.COMMAND_PANEL_UPDATED, {
+        sessionId: p.sessionId,
+        ...p.snapshot,
+        requestActivation: p.requestActivation,
+        commandKey: p.commandKey,
+      });
+    },
+  );
 
   // v0.3.3:Markdown 代码块执行的 stdout/stderr 与退出。按 runId 对应的
   // clientId 定向发送(发起窗口),不广播 —— 输出体量可能大且只该窗口关心。
