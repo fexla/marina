@@ -236,6 +236,21 @@ export const COMMAND_CHANNELS = {
   /** 读 markdown 里的本地图片为 dataUrl(相对 md 文件目录解析,绕开 CSP 对 file:// 的禁) */
   FILE_PANEL_READ_IMAGE: 'cmd:file-panel:read-image',
 
+  // Command panel 域 —— AI 经 HTTP /run(或此 IPC)推送任意命令字符串,Marina 跑它
+  // 并把 markdown 输出渲染进第 4 个 dock 面板(ADR-027 / Feature G)。trigger=
+  // program-push,与 file-panel 同构;区别在内层:这里推的是「指令」而非「文件」,
+  // 且每条指令各自带刷新策略(默认仅前台,少数后台轮询走 BackgroundWorkScheduler)。
+  /** 拉某 session 当前命令面板状态(指令列表 + active + 每条策略)。claim/接管/切 bind 恢复用 */
+  COMMAND_PANEL_GET_STATE: 'cmd:command-panel:get-state',
+  /** 推送/重跑一条指令(body {sessionId, command, title?});同 command 用于重跑时按 command 去重 upsert */
+  COMMAND_PANEL_RUN: 'cmd:command-panel:run',
+  /** 关闭某条指令 tab(按 commandKey) */
+  COMMAND_PANEL_CLOSE: 'cmd:command-panel:close',
+  /** 仅切 active(点 tab),不改指令列表 */
+  COMMAND_PANEL_SHOW: 'cmd:command-panel:show',
+  /** 改某条指令的刷新策略(per-指令,D4) */
+  COMMAND_PANEL_SET_STRATEGY: 'cmd:command-panel:set-strategy',
+
   // File tree 域 —— active owner session 的受限双根只读导航(ADR-016)
   /** 获取 currentCwd / MARINA_WORKSPACE 两个逻辑根的可用性；不返回绝对路径。 */
   FILE_TREE_GET_ROOTS: 'cmd:file-tree:get-roots',
@@ -440,6 +455,15 @@ export const EVENT_CHANNELS = {
    * 同策略),renderer 收到后更新 filePanels Map。
    */
   FILE_PANEL_UPDATED: 'evt:file-panel:updated',
+
+  /**
+   * 命令面板状态变化(指令增删/active 切换/策略变更/状态机翻转/输出落定)。
+   * 定向推给该 session 的 owner 窗口(与 FILE_PANEL_UPDATED 同策略)。payload 见
+   * CommandPanelSnapshot。流式实时输出复用 evt:system:code-block-output/
+   * exited(命令面板的 run 就是 CodeBlockRunner 跑的,runId 空间一致,renderer
+   * 按各自 runId 订阅即可,不重复造事件)。
+   */
+  COMMAND_PANEL_UPDATED: 'evt:command-panel:updated',
 
   /**
    * Git 面板仓库变更状态更新。main 预取或 ADR-021 demand-aware task 已附带脱敏
@@ -1499,6 +1523,109 @@ export interface FilePanelSnapshot {
 export interface GetOpenFilesPayload {
   sessionId: string;
 }
+
+// ──────────────────────────────────────────────────────────────────
+// Command panel(命令面板,ADR-027 / Feature G)
+// ──────────────────────────────────────────────────────────────────
+
+/**
+ * 单条命令的刷新策略(per-指令,D4)。
+ * - foreground:仅当用户切到该 tab 且面板可见时才跑(默认,大多数指令,省资源)。
+ * - background-30s / background-5s:即便没在看也按固定频率后台跑(少数监控类)。
+ * - manual:从不自动跑,只有用户点「立即刷新」才跑。
+ * - off:暂停(不跑也不计入轮询);保留 tab 与历史输出。
+ */
+export type CommandRefreshStrategy =
+  | 'foreground'
+  | 'background-30s'
+  | 'background-5s'
+  | 'manual'
+  | 'off';
+
+/** 单条命令的运行状态机(D4)。 */
+export type CommandRunStatus = 'idle' | 'running' | 'exited' | 'error';
+
+/**
+ * 命令面板里的一条指令(program-push,AI 经 marina run / HTTP /run 推送)。
+ *
+ * @关键设计:
+ * - key 是稳定身份:同一 command 字符串去重 upsert(重跑复用同 key),避免重复 tab。
+ * - command 是任意 shell 字符串(bash 执行);「引用内置脚本」不是独立形态,它就是
+ *   command 的一种(如 `bash panel-scripts/map.sh`)。
+ * - output 是最近一次运行的拼接输出(stdout+stderr),renderer 当 markdown 渲染。
+ *   单条上限 OUTPUT_MAX_BYTES(防失控累积),超出尾部裁切保留最新。
+ */
+export interface CommandEntry {
+  /** 稳定身份(由 command 派生),同 command 去重。 */
+  key: string;
+  /** 任意 shell 命令字符串(bash 执行)。 */
+  command: string;
+  /** 可选标题(展示用);缺省取 command 截断。 */
+  title: string | null;
+  /** per-指令 刷新策略。 */
+  strategy: CommandRefreshStrategy;
+  /** 最近一次 runId(用于匹配流式 output/exited 事件)。 */
+  lastRunId: string | null;
+  /** 最近一次退出码(null=仍在跑或被信号杀)。 */
+  lastExitCode: number | null;
+  /** 当前状态机位置。 */
+  status: CommandRunStatus;
+  /** 最近一次输出(stdout+stderr 拼接),renderer 当 markdown 渲染。 */
+  output: string;
+  /** 最近一次运行结束时间(epoch ms),用于展示。 */
+  lastRunAt: number | null;
+}
+
+/** 命令面板快照(与 FilePanelSnapshot 对称)。 */
+export interface CommandPanelSnapshot {
+  /** 指令列表(按推送顺序)。 */
+  commands: CommandEntry[];
+  /** 当前展示的指令 key;无指令或无选中时为 null。 */
+  activeKey: string | null;
+}
+
+/** cmd:command-panel:get-state payload/返回。 */
+export interface GetCommandPanelStatePayload {
+  sessionId: string;
+}
+
+/** cmd:command-panel:run payload(推送/重跑一条指令)。 */
+export interface RunCommandPayload {
+  sessionId: string;
+  /** 任意 shell 命令字符串(bash 执行,在 session.currentCwd 下)。 */
+  command: string;
+  /** 可选展示标题。 */
+  title?: string | null;
+}
+
+/** cmd:command-panel:close payload。 */
+export interface CloseCommandPayload {
+  sessionId: string;
+  commandKey: string;
+}
+
+/** cmd:command-panel:show payload。 */
+export interface ShowCommandPayload {
+  sessionId: string;
+  commandKey: string;
+}
+
+/** cmd:command-panel:set-strategy payload。 */
+export interface SetCommandStrategyPayload {
+  sessionId: string;
+  commandKey: string;
+  strategy: CommandRefreshStrategy;
+}
+
+/** evt:command-panel:exited payload。 */
+export interface CommandExitedPayload {
+  runId: string;
+  exitCode: number | null;
+  signal: string | null;
+}
+
+// 注:命令面板的流式 output/exited 复用 CodeBlockOutputPayload / CodeBlockExitedPayload
+// + evt:system:code-block-output / exited(执行内核同为 CodeBlockRunner,runId 一致)。
 
 /** cmd:file-panel:open / close / show payload。path 可相对 session.currentCwd。 */
 export interface FilePanelActionPayload {
