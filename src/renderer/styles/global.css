@@ -2051,6 +2051,181 @@ html[data-maximized='true'] .app-root.with-shell {
   padding: 0;
 }
 
+/* ── CommandPanel (v0.3.3 ADR-027):AI 推送命令、输出渲染 markdown ── */
+.command-panel-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+}
+.command-panel-tabs {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--color-bg-elevated, #f0f);
+  flex: 0 0 auto;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.command-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 6px;
+  border-radius: 4px;
+  background-color: var(--color-bg-elevated, #f0f);
+  max-width: 180px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.command-tab:hover {
+  background-color: var(--color-bg-hover, #f0f);
+}
+.command-tab.command-tab-active {
+  background-color: var(--color-bg-active, #f0f);
+}
+.command-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 130px;
+}
+.command-tab-close {
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted, #f0f);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 14px;
+  line-height: 1;
+}
+.command-tab-close:hover {
+  color: var(--color-text-primary, #f0f);
+}
+/* 状态点:idle 灰 / running 黄闪 / exited 绿 / error 红 */
+.command-tab-status {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background-color: var(--color-text-muted, #999);
+}
+.command-status-running {
+  background-color: #e8a317;
+  animation: command-pulse 1s ease-in-out infinite;
+}
+.command-status-exited {
+  background-color: #3fb950;
+}
+.command-status-error {
+  background-color: #f85149;
+}
+@keyframes command-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+.command-panel-toolbar {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--color-bg-elevated, #f0f);
+  flex: 0 0 auto;
+}
+.command-strategy-select {
+  font-size: 11px;
+  background-color: var(--color-bg-elevated, #f0f);
+  color: var(--color-text-primary, #f0f);
+  border: 1px solid var(--color-border, #f0f);
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+.command-rerun-btn {
+  border: 1px solid var(--color-border, #f0f);
+  background-color: var(--color-bg-elevated, #f0f);
+  color: var(--color-text-primary, #f0f);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 1px 6px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.command-rerun-btn:hover:not(:disabled) {
+  background-color: var(--color-bg-hover, #f0f);
+}
+.command-rerun-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.command-panel-body {
+  flex: 1 1 0;
+  overflow: auto;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.command-panel-empty {
+  color: var(--color-text-muted, #f0f);
+  text-align: center;
+  padding: 24px 8px;
+}
+.command-panel-hint {
+  font-size: 11px;
+  opacity: 0.8;
+  margin-top: 6px;
+  font-family: var(--font-mono, monospace);
+}
+.command-output {
+  line-height: 1.5;
+  word-break: break-word;
+}
+.command-output pre {
+  background-color: var(--color-bg-elevated, #f0f);
+  padding: 6px 8px;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+.command-output table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 6px 0;
+}
+.command-output th,
+.command-output td {
+  border: 1px solid var(--color-border, #f0f);
+  padding: 3px 6px;
+  text-align: left;
+}
+.command-output td a {
+  overflow-wrap: anywhere;
+}
+.command-output a {
+  color: var(--color-accent, #58a6ff);
+}
+.command-running-indicator {
+  color: #e8a317;
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+.command-output-pending {
+  color: var(--color-text-muted, #f0f);
+  opacity: 0.6;
+}
+.command-output-empty {
+  color: var(--color-text-muted, #f0f);
+  font-style: italic;
+}
+
 /* ── FileTreePanel：固定双根、只读、按需展开 ─────────────────────── */
 .file-tree-panel {
   overflow: auto;

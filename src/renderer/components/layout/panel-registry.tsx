@@ -14,8 +14,9 @@ import type { ComponentType } from 'react';
 import { FilePanel } from '../file-panel/FilePanel';
 import { FileTreePanel } from '../file-tree/FileTreePanel';
 import { GitPanel } from '../git/GitPanel';
+import { CommandPanel } from '../command-panel/CommandPanel';
 
-export type RegisteredPanelId = 'file-tree' | 'git' | 'file-panel';
+export type RegisteredPanelId = 'file-tree' | 'git' | 'file-panel' | 'command';
 
 /**
  * v0.3.1:面板搜索状态(dock 级共享 SearchBar 驱动)。LayoutHost 持有唯一一份,
@@ -71,9 +72,23 @@ export const PANEL_REGISTRY: Readonly<Record<RegisteredPanelId, PanelDefinition>
     trigger: 'program-push',
     Component: FilePanel,
   },
+  command: {
+    id: 'command',
+    label: { zh: '命令', en: 'Command' },
+    // v0.3.3 ADR-027:program-push。AI 经 marina run / HTTP /run 推任意命令字符串,
+    // Marina 跑它、输出渲染 markdown 进面板。与 file-panel 同构(program-push),
+    // 区别在内层:这里推的是「指令」而非「文件」。
+    trigger: 'program-push',
+    Component: CommandPanel,
+  },
 };
 
 /** LayoutNode 由 main 生成,非法/未知 leaf 在 renderer 直接忽略而不是猜测渲染。 */
 export function isRegisteredPanelId(panelId: string): panelId is RegisteredPanelId {
-  return panelId === 'file-tree' || panelId === 'git' || panelId === 'file-panel';
+  return (
+    panelId === 'file-tree' ||
+    panelId === 'git' ||
+    panelId === 'file-panel' ||
+    panelId === 'command'
+  );
 }

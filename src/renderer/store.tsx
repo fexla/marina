@@ -33,6 +33,7 @@ import {
   type BookmarksUpdatedPayload,
   type FilePanelSnapshot,
   type FilePanelUpdatedPayload,
+  type CommandPanelSnapshot,
   type ListMdThemesResponse,
   type MdThemeListUpdatedPayload,
   type GetSnapshotResponse,
@@ -132,6 +133,13 @@ export interface AppState {
    * 按需 cmd:file-panel:read,不存进 state(避免大文件占内存 + 切 tab 浪费)。
    */
   filePanels: Map<string, FilePanelSnapshot>;
+
+  /**
+   * 命令面板(v0.3.3 ADR-027):每个 session 独立的指令列表快照。evt:command-panel
+   * :updated 推来时覆盖;session 销毁时清理。流式 output 不进 store(走
+   * command-output-cache 按 runId 订阅,同 code-block-run-cache 模式)。
+   */
+  commandPanels: Map<string, CommandPanelSnapshot>;
 
   /**
    * 右侧 Markdown/Diff/Text/Image 预览滚动位置。本窗口私有 L1 view state,
@@ -242,6 +250,14 @@ export type AppAction =
       files: OpenedFile[];
       activePath: string | null;
       /** openFile 成功时为 true，请求 LayoutHost 激活「已打开」面板。 */
+      requestActivation: boolean;
+    }
+  | {
+      type: 'command-panel/updated';
+      sessionId: string;
+      commands: CommandPanelSnapshot['commands'];
+      activeKey: string | null;
+      /** 推送新指令时为 true,请求 LayoutHost 激活「命令」面板。 */
       requestActivation: boolean;
     }
   | { type: 'file-panel/clear'; sessionId: string }
@@ -414,6 +430,9 @@ function reducer(state: AppState, action: AppAction): AppState {
       // 文件面板:session 没了,清掉快照、预览滚动位置与活动面板记录。
       const filePanels = new Map(state.filePanels);
       filePanels.delete(action.sessionId);
+      // 命令面板:同理清掋指令列表快照。
+      const commandPanels = new Map(state.commandPanels);
+      commandPanels.delete(action.sessionId);
       const fileViewerScroll = new Map(state.fileViewerScroll);
       fileViewerScroll.delete(action.sessionId);
       const activePanels = new Map(state.activePanels);
@@ -426,6 +445,7 @@ function reducer(state: AppState, action: AppAction): AppState {
         ...state,
         sessions,
         filePanels,
+        commandPanels,
         fileViewerScroll,
         activePanels,
         lastSelectedAt,
@@ -472,6 +492,21 @@ function reducer(state: AppState, action: AppAction): AppState {
         return { ...state, filePanels, fileViewerScroll, activePanels };
       }
       return { ...state, filePanels, fileViewerScroll };
+    }
+    case 'command-panel/updated': {
+      const commandPanels = new Map(state.commandPanels);
+      commandPanels.set(action.sessionId, {
+        commands: action.commands,
+        activeKey: action.activeKey,
+      });
+      // requestActivation=true(推送新指令)时把活动面板设为「命令」(同 file-panel
+      // requestActivation 逻辑)。幂等:已是 command 则只更新 commandPanels。
+      if (action.requestActivation && state.activePanels.get(action.sessionId) !== 'command') {
+        const activePanels = new Map(state.activePanels);
+        activePanels.set(action.sessionId, 'command');
+        return { ...state, commandPanels, activePanels };
+      }
+      return { ...state, commandPanels };
     }
     case 'workspace/snapshot-restored': {
       // v0.3.3 ADR-024:bind 切到某 workspace 后,把其快照(openedFiles/active/scroll)
@@ -723,6 +758,7 @@ export function makeDefaultState(myWindowId: string, myWindowNumber: number): Ap
     // BETA-027:默认普通页面;Explorer 简易模式打开时在 startup 显式 dispatch set
     simpleMode: false,
     filePanels: new Map(),
+    commandPanels: new Map(),
     fileViewerScroll: new Map(),
     activePanels: new Map(),
     lastSelectedAt: new Map(),
@@ -910,6 +946,17 @@ export function useIpcSync(): {
               activePath: p.activePath,
               requestActivation: p.requestActivation === true,
             }),
+          ),
+          window.api.on<CommandPanelSnapshot & { sessionId: string; requestActivation?: boolean }>(
+            EVENT_CHANNELS.COMMAND_PANEL_UPDATED,
+            (p) =>
+              dispatch({
+                type: 'command-panel/updated',
+                sessionId: p.sessionId,
+                commands: p.commands,
+                activeKey: p.activeKey,
+                requestActivation: p.requestActivation === true,
+              }),
           ),
           window.api.on<MdThemeListUpdatedPayload>(EVENT_CHANNELS.MD_THEME_LIST_UPDATED, (p) =>
             dispatch({ type: 'md-themes/update', themes: p.themes }),
