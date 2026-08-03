@@ -424,8 +424,8 @@ function getRemoteErrorDiagnosis(errorCode: string | null): {
         title: '连接密码错误',
         checklist: [
           '对方电脑的“连接密码”改过,或你填的是旧密码。',
-          '去对方 Marina → 远程连接 → 允许远程连接 → 复制最新的连接密码。',
-          '回到这台电脑 → 远程连接 → 连接到其他电脑 → 编辑该电脑,填入新密码。',
+          '去对方 Marina → 设置 → 远程 → 允许远程连接 → 复制最新的连接密码。',
+          '回到这台电脑 → 设置 → 远程 → Marina 电脑 → 编辑该电脑,填入新密码。',
         ],
       };
     case 'TCP_UNREACHABLE':
@@ -458,7 +458,7 @@ function getRemoteErrorDiagnosis(errorCode: string | null): {
     case 'PROFILE_INCOMPLETE':
       return {
         title: '这台远程电脑配置不完整',
-        checklist: ['去 设置 → 远程连接 → 连接到其他电脑,把 IP 和连接密码都填上。'],
+        checklist: ['去 设置 → 远程 → Marina 电脑,把 IP 和连接密码都填上。'],
       };
     default:
       return {
