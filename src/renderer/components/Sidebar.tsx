@@ -54,7 +54,7 @@ import {
   type CreateSessionResponse,
   type PickFolderResponse,
 } from '@shared/protocol';
-import type { GroupNode, PathNode, SessionInfo } from '@shared/types';
+import type { GroupNode, PathNode, SessionInfo, SshProfile } from '@shared/types';
 import { disambiguatePathNames } from '@shared/path-display';
 import { hasAnyRemote } from '@shared/remote-visibility';
 import { useTranslation } from './LanguageProvider';
@@ -136,6 +136,7 @@ export function Sidebar(): JSX.Element {
   const dispatch = useAppDispatch();
   const toast = useToast();
   const modal = useModal();
+  const ctxMenu = useContextMenuApi();
   const { t } = useTranslation();
   const [dragOver, setDragOver] = useState(false);
 
@@ -286,15 +287,44 @@ export function Sidebar(): JSX.Element {
   };
 
   /**
+   * 远程段:给指定 SSH profile 弹路径 prompt 并添加远程收藏。
+   * 与设置页「添加远程文件夹」同协议(REMOTE_BOOKMARK_ADD)。
+   */
+  const promptRemotePathFor = async (profile: SshProfile): Promise<void> => {
+    const remotePath = await modal.prompt({
+      title: `添加远程文件夹 — ${profile.name}`,
+      message: `输入 ${profile.username}@${profile.host} 上的目录路径。`,
+      placeholder: '~/project',
+      defaultValue: '~',
+      confirmLabel: '加入',
+    });
+    const path = remotePath?.trim();
+    if (!path) return;
+    try {
+      await window.api.invoke<unknown, AddBookmarkResponse>(
+        COMMAND_CHANNELS.REMOTE_BOOKMARK_ADD,
+        { sshProfileId: profile.id, remotePath: path },
+      );
+      toast.push({ kind: 'success', message: `已添加远程文件夹 ${path}` });
+    } catch (err) {
+      toast.push({
+        kind: 'error',
+        message: `添加远程文件夹失败:${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  };
+
+  /**
    * 收藏栏 "+" 按钮。按当前 segment 走不同流程:
    *
    * - 本地段:beta.9 行为 — 系统 folder picker → BOOKMARK_ADD
-   * - 远程段:用首个 SSH profile 弹 prompt 让用户输远端路径。多 profile
-   *   时提示"用 X profile;要别的请去 设置 → 远程"。零 profile 时 toast
-   *   引导用户去设置(showSegmented 已经保证不会出现 0 profile + 不能切
-   *   远程段的状态,但 enableRemote=true 仍可能 0 profile)。
+   * - 远程段:先定服务器再输远端路径。单 profile 直接 prompt(标题带服务器名);
+   *   多 profile 弹服务器菜单让用户选(v1.14 修复 —— 原实现硬编码
+   *   profiles[0],配了多个服务器时侧栏只能给第一个加收藏,要别的得绕设置页)。
+   *   零 profile 时 toast 引导用户去设置(showSegmented 已经保证不会出现
+   *   0 profile + 不能切远程段的状态,但 enableRemote=true 仍可能 0 profile)。
    */
-  const handleAddBookmark = async (): Promise<void> => {
+  const handleAddBookmark = async (e?: React.MouseEvent<HTMLButtonElement>): Promise<void> => {
     if (effectiveSegment === 'remote') {
       const profiles = state.sshProfiles;
       if (profiles.length === 0) {
@@ -304,31 +334,20 @@ export function Sidebar(): JSX.Element {
         });
         return;
       }
-      const profile = profiles[0]!;
-      const remotePath = await modal.prompt({
-        title: `添加远程文件夹 — ${profile.name}`,
-        message:
-          profiles.length > 1
-            ? `用 ${profile.name}(${profile.username}@${profile.host}) 添加。改用其他服务器请去 设置 → 远程`
-            : `输入 ${profile.username}@${profile.host} 上的目录路径。`,
-        placeholder: '~/project',
-        defaultValue: '~',
-        confirmLabel: '加入',
-      });
-      const path = remotePath?.trim();
-      if (!path) return;
-      try {
-        await window.api.invoke<unknown, AddBookmarkResponse>(
-          COMMAND_CHANNELS.REMOTE_BOOKMARK_ADD,
-          { sshProfileId: profile.id, remotePath: path },
-        );
-        toast.push({ kind: 'success', message: `已添加远程文件夹 ${path}` });
-      } catch (err) {
-        toast.push({
-          kind: 'error',
-          message: `添加远程文件夹失败:${err instanceof Error ? err.message : String(err)}`,
-        });
+      if (profiles.length === 1) {
+        void promptRemotePathFor(profiles[0]!);
+        return;
       }
+      // 多 profile:先选服务器(菜单锚在 + 按钮正下方)。
+      const rect = e?.currentTarget.getBoundingClientRect();
+      ctxMenu.open({
+        x: rect?.left ?? 0,
+        y: rect ? rect.bottom : 0,
+        items: profiles.map((p) => ({
+          label: `${p.name} (${p.username}@${p.host})`,
+          onSelect: () => void promptRemotePathFor(p),
+        })),
+      });
       return;
     }
     // 本地段:beta.9 行为
@@ -560,7 +579,7 @@ export function Sidebar(): JSX.Element {
           onToggleCollapsed={() => handleToggleCategory('bookmark')}
           actionLabel={<Icon name="plus" size={12} />}
           actionTitle={t('sidebar.addBookmark.title')}
-          onAction={() => void handleAddBookmark()}
+          onAction={(e) => void handleAddBookmark(e)}
           displayNames={bookmarkDisplayNames}
         />
         <Category
@@ -621,7 +640,8 @@ interface CategoryProps {
   /** affordance 内容 — 通常是 lucide icon (<Icon name="plus" .../>) */
   actionLabel?: ReactNode;
   actionTitle?: string;
-  onAction?: () => void;
+  /** 事件带出,供调用方定位弹层锚点(如远程段选服务器菜单) */
+  onAction?: (e: React.MouseEvent<HTMLButtonElement>) => void;
 }
 
 function Category({
@@ -661,7 +681,7 @@ function Category({
             className="sidebar-category-action"
             onClick={(e) => {
               e.stopPropagation();
-              onAction?.();
+              onAction?.(e);
             }}
             title={actionTitle}
           >
@@ -845,7 +865,8 @@ function BookmarkCategory({
   onToggleCollapsed: () => void;
   actionLabel?: ReactNode;
   actionTitle?: string;
-  onAction?: () => void;
+  /** 事件带出,供调用方定位弹层锚点(如远程段选服务器菜单) */
+  onAction?: (e: React.MouseEvent<HTMLButtonElement>) => void;
   displayNames: Map<string, string>;
 }): JSX.Element {
   const { t } = useTranslation();
@@ -980,7 +1001,7 @@ function BookmarkCategory({
               className="sidebar-category-action"
               onClick={(e) => {
                 e.stopPropagation();
-                onAction?.();
+                onAction?.(e);
               }}
               title={actionTitle}
             >
