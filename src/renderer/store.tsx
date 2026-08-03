@@ -269,14 +269,11 @@ export type AppAction =
     }
   | {
       /**
-       * v0.3.3 ADR-024:bind 切到某 workspace 后,main 推其文件面板快照给 renderer,
-       * renderer 用此 action 把 openedFiles/active/scroll 灌进 store(覆盖当前)。
-       * runs 由 code-block-run-cache 单独导入(见 restoreWorkspaceSnapshot)。
+       * v0.3.3 ADR-024:bind 后 renderer 只恢复 scroll；完整 openedFiles/active 由 main
+       * FilePanelService 先通过 file-panel/updated 给出，runs 进独立缓存。
        */
       type: 'workspace/snapshot-restored';
       sessionId: string;
-      files: OpenedFile[];
-      activePath: string | null;
       scroll: Record<string, { scrollTop: number; scrollLeft: number; kind: FileKind }>;
     }
   | { type: 'md-themes/update'; themes: MdTheme[] };
@@ -510,12 +507,8 @@ function reducer(state: AppState, action: AppAction): AppState {
       return { ...state, commandPanels };
     }
     case 'workspace/snapshot-restored': {
-      // v0.3.3 ADR-024:bind 切到某 workspace 后,把其快照(openedFiles/active/scroll)
-      // 灌进 store 覆盖当前 file-panel 状态。文件缺失/失效由 main 端 readSnapshot
-      // 已过滤;这里直接覆盖。注意:这里只恢复 scroll 位置,runs 由 code-block-run-cache
-      // 批量导入(见 restoreWorkspaceSnapshot),不在 store 里。
-      const filePanels = new Map(state.filePanels);
-      filePanels.set(action.sessionId, { files: action.files, activePath: action.activePath });
+      // 文件列表/active 已由有完整 stat 元数据的 file-panel/updated 更新；这里仅补
+      // renderer 私有 scroll。runs 由 code-block-run-cache 单独导入。
       const scrollMap = new Map<string, FileViewerScrollPosition>();
       for (const [path, pos] of Object.entries(action.scroll)) {
         scrollMap.set(path, { kind: pos.kind, scrollTop: pos.scrollTop, scrollLeft: pos.scrollLeft });
@@ -523,7 +516,7 @@ function reducer(state: AppState, action: AppAction): AppState {
       const fileViewerScroll = new Map(state.fileViewerScroll);
       if (scrollMap.size > 0) fileViewerScroll.set(action.sessionId, scrollMap);
       else fileViewerScroll.delete(action.sessionId);
-      return { ...state, filePanels, fileViewerScroll };
+      return { ...state, fileViewerScroll };
     }
     case 'file-panel/clear': {
       // 快照、viewer scroll、active panel 任一有记录都统一清理。

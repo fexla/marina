@@ -22,7 +22,7 @@ import type {
   COMMAND_CHANNELS,
   WorkspaceFilePanelSnapshot,
 } from '@shared/protocol';
-import type { FileKind, OpenedFile } from '@shared/types';
+import type { FileKind } from '@shared/types';
 import { restoreCodeBlockRuns, exportCodeBlockRuns } from './components/file-panel/code-block-run-cache';
 
 type Dispatch = (action: AppAction) => void;
@@ -69,18 +69,13 @@ export async function restoreWorkspaceSnapshot(
       scrollWithKind[path] = { scrollTop: pos.scrollTop, scrollLeft: pos.scrollLeft, kind };
     }
 
-    // openedFiles 补 external 标记 + kind(快照已含)。
-    const files: OpenedFile[] = snapshot.openedFiles.map((f) => ({
-      path: f.path,
-      kind: f.kind as FileKind,
-      // external 在 OpenedFile 里是否必填取决于类型定义;快照已存,直接带。
-    })) as OpenedFile[];
-
+    // 文件列表/active 不在这里恢复：main 的 FilePanelService.onWorkspaceSwitched
+    // 已先 stat 并 emit 完整 OpenedFile(name/size/mtime/path)。旧实现把磁盘快照的
+    // {path,kind} 强转为 OpenedFile[] 覆盖完整事件，file.name=undefined 最终让
+    // fileIconFor 崩溃白屏。renderer 只补 main PanelState 不持有的 scroll/runs。
     dispatch({
       type: 'workspace/snapshot-restored',
       sessionId,
-      files,
-      activePath: snapshot.activeFilePath,
       scroll: scrollWithKind,
     });
 
