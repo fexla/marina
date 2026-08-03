@@ -28,7 +28,16 @@ import {
   type MouseEvent,
   type ReactNode,
 } from 'react';
-import { AlertTriangle, Check, ChevronDown, ChevronRight, FolderInput, Pencil, Trash2, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  FolderInput,
+  Pencil,
+  Trash2,
+  X,
+} from 'lucide-react';
 import {
   DndContext,
   PointerSensor,
@@ -37,11 +46,7 @@ import {
   closestCenter,
   type DragEndEvent,
 } from '@dnd-kit/core';
-import {
-  SortableContext,
-  useSortable,
-  verticalListSortingStrategy,
-} from '@dnd-kit/sortable';
+import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
   COMMAND_CHANNELS,
@@ -51,6 +56,7 @@ import {
 } from '@shared/protocol';
 import type { GroupNode, PathNode, SessionInfo } from '@shared/types';
 import { disambiguatePathNames } from '@shared/path-display';
+import { hasAnyRemote } from '@shared/remote-visibility';
 import { useTranslation } from './LanguageProvider';
 import { findMyOwnedSessionId, useAppDispatch, useAppState, useAppStateRef } from '../store';
 import { Icon, type IconName } from './icons';
@@ -130,40 +136,24 @@ export function Sidebar(): JSX.Element {
   const dispatch = useAppDispatch();
   const toast = useToast();
   const modal = useModal();
-  const ctxMenu = useContextMenuApi();
   const { t } = useTranslation();
   const [dragOver, setDragOver] = useState(false);
 
-  // 远程连接入口(footer 按钮):点击展开已保存的远程电脑菜单,选中开新窗口连过去。
-  // 0 台引导去设置;未设密码(hasToken=false)灰显。
-  const handleRemoteEntry = (e: React.MouseEvent<HTMLButtonElement>): void => {
-    const profiles = state.remoteBackendProfiles;
-    if (profiles.length === 0) {
-      toast.push({ kind: 'info', message: '请先在 设置 → 远程连接 添加一台电脑' });
-      return;
+  // v1.14(方案-远程UI统一 §III.2):segmented 远程 tab 顶部的「Marina 电脑」区段。
+  // 数据源 = state.remoteBackendProfiles —— store 已保证它在任何窗口(含远程窗口)
+  // 都是客户端本机保存的电脑列表(snapshot/load 前用 REMOTE_PROFILE_LIST 覆盖,
+  // 之后由本地 REMOTE_PROFILES_UPDATED 事件持续同步,见 store.tsx snapshot 处理)。
+  const localProfiles = state.remoteBackendProfiles;
+  const openRemoteWindow = async (profileId: string): Promise<void> => {
+    try {
+      // WINDOW_CREATE 是 local-control,远程窗口里也由客户端本地 main 创建新窗口。
+      await window.api.invoke(COMMAND_CHANNELS.WINDOW_CREATE, { backendProfileId: profileId });
+    } catch (err) {
+      toast.push({
+        kind: 'error',
+        message: `打开远程窗口失败:${err instanceof Error ? err.message : String(err)}`,
+      });
     }
-    const rect = e.currentTarget.getBoundingClientRect();
-    ctxMenu.open({
-      x: rect.left,
-      y: rect.top,
-      items: profiles.map((p) => ({
-        label: `${p.displayName} (${p.host})`,
-        disabled: !p.hasToken,
-        ...(p.hasToken ? {} : { hint: '未设密码(去设置填写)' }),
-        onSelect: async () => {
-          try {
-            await window.api.invoke(COMMAND_CHANNELS.WINDOW_CREATE, {
-              backendProfileId: p.id,
-            });
-          } catch (err) {
-            toast.push({
-              kind: 'error',
-              message: `打开远程窗口失败:${err instanceof Error ? err.message : String(err)}`,
-            });
-          }
-        },
-      })),
-    });
   };
   const [collapsedCategoryIds, setCollapsedCategoryIds] = useState<Set<string>>(() => new Set());
   const [segment, setSegmentState] = useState<SidebarSegment>(() => readSegmentFromStorage());
@@ -234,11 +224,20 @@ export function Sidebar(): JSX.Element {
 
   const enableRemote = state.settings?.advanced?.enableRemote === true;
   const hasSshProfiles = state.sshProfiles.length > 0;
+  const hasDaemonProfiles = state.remoteBackendProfiles.length > 0;
+  const daemonRunning = state.remoteDaemonStatus?.running === true;
   /**
-   * 本地不变式的核心:没 profile 且没勾 enableRemote 时,segmented control
-   * 整体不渲染,segment 强制视为 'local',sidebar 跟 beta.9 完全一致。
+   * 本地不变式的核心:v1.14 起显示条件统一走 hasAnyRemote(SSH profile /
+   * 远程电脑 / enableRemote / daemon 运行 任一为真),不再各自写条件。
+   * 全 false 时 segmented control 整体不渲染,segment 强制视为 'local',
+   * sidebar 跟 beta.9 完全一致。
    */
-  const showSegmented = hasSshProfiles || enableRemote;
+  const showSegmented = hasAnyRemote({
+    hasSshProfiles,
+    hasDaemonProfiles,
+    enableRemote,
+    daemonRunning,
+  });
   const effectiveSegment: SidebarSegment = showSegmented ? segment : 'local';
 
   // SSH 方案 v2.1 §II.3:三栏按 segment 过滤(本地 = kind==='local',包含
@@ -491,7 +490,7 @@ export function Sidebar(): JSX.Element {
         <div
           className="sidebar-segmented"
           role="tablist"
-          aria-label={t('sidebar.segment.label') || '路径来源'}
+          aria-label={t('sidebar.segment.label') || '本地 / 远程'}
           data-testid="sidebar-segmented"
         >
           <button
@@ -515,6 +514,43 @@ export function Sidebar(): JSX.Element {
             {t('sidebar.segment.remote') || '远程'}
           </button>
         </div>
+      )}
+      {effectiveSegment === 'remote' && (
+        <section className="sidebar-computers">
+          <header className="sidebar-computers-header">
+            <span className="sidebar-category-icon" aria-hidden="true">
+              <Icon name="server" size={12} />
+            </span>
+            {t('sidebar.computers.title') || 'Marina 电脑'}
+          </header>
+          {localProfiles.length === 0 ? (
+            <p className="sidebar-computers-empty">
+              {t('sidebar.computers.empty') || '去 设置 → 远程 添加'}
+            </p>
+          ) : (
+            <ul className="sidebar-computers-list">
+              {localProfiles.map((p) => (
+                <li key={p.id}>
+                  <button
+                    type="button"
+                    className="sidebar-computer-item"
+                    disabled={!p.hasToken}
+                    title={
+                      p.hasToken
+                        ? `${p.displayName} (${p.host}) — ${t('sidebar.computers.openTitle') || '在新窗口打开'}`
+                        : `${p.displayName} (${p.host}) — ${t('sidebar.computers.noTokenTitle') || '未设密码,去 设置 → 远程 填写'}`
+                    }
+                    onClick={() => void openRemoteWindow(p.id)}
+                  >
+                    <Icon name="server" size={12} />
+                    <span className="sidebar-computer-name">{p.displayName}</span>
+                    <span className="sidebar-computer-host">{p.host}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       )}
       <div className="sidebar-bookmarks-dropzone" data-segment={effectiveSegment}>
         <BookmarkCategory
@@ -548,15 +584,6 @@ export function Sidebar(): JSX.Element {
         />
       </div>
       <div className="sidebar-footer">
-        <button
-          type="button"
-          className="settings-entry"
-          onClick={handleRemoteEntry}
-          title="连接到其他电脑"
-        >
-          <Icon name="server" size={14} />
-          <span>远程</span>
-        </button>
         <button
           type="button"
           className="settings-entry"
@@ -723,7 +750,10 @@ function GroupHeader({
     window.api
       .invoke(COMMAND_CHANNELS.BOOKMARK_GROUP_REMOVE, { id: group.id })
       .then(() =>
-        toast.push({ kind: 'success', message: `已删除分组「${group.name}」,其下路径已归到未分组` }),
+        toast.push({
+          kind: 'success',
+          message: `已删除分组「${group.name}」,其下路径已归到未分组`,
+        }),
       )
       .catch((err: unknown) => {
         toast.push({
@@ -845,9 +875,7 @@ function BookmarkCategory({
     return m;
   }, [paths, groups]);
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-  );
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
   /**
    * 拖完重算完整布局并发 BOOKMARK_REORDER。
@@ -864,8 +892,7 @@ function BookmarkCategory({
       UNGROUPED_CONTAINER;
     // over 可能是某 path(有 containerId),也可能是空容器的 droppable id(=containerId 本身)
     const overContainer =
-      (over.data.current?.sortable as { containerId?: string } | undefined)?.containerId ??
-      overId;
+      (over.data.current?.sortable as { containerId?: string } | undefined)?.containerId ?? overId;
 
     // 取源 / 目标容器的当前顺序(克隆后操作)。
     const listFor = (containerId: string): PathNode[] => {
@@ -1076,7 +1103,11 @@ function PathItem({
       ? { transform: CSS.Translate.toString(sortable.transform), transition: sortable.transition }
       : undefined;
   const sortableProps = sortableId
-    ? { ref: sortable.setNodeRef as React.LiHTMLAttributes<HTMLLIElement>['ref'], ...sortable.attributes, ...sortable.listeners }
+    ? {
+        ref: sortable.setNodeRef as React.LiHTMLAttributes<HTMLLIElement>['ref'],
+        ...sortable.attributes,
+        ...sortable.listeners,
+      }
     : {};
 
   // v0.3.3 Feature E.2:同 path 下 session 拖序(各 path 独立 DndContext;决策 #15)。
@@ -1478,7 +1509,12 @@ interface SessionItemProps {
  * 用 React.memo 包裹后,sessions/state-changed 仅会让"那个真正变化的
  * session"对应的 SessionItem 重渲,其余引用未变的 props 被 memo 跳过。
  */
-function SessionItemImpl({ session, myWindowId, selected, sortableId }: SessionItemProps): JSX.Element {
+function SessionItemImpl({
+  session,
+  myWindowId,
+  selected,
+  sortableId,
+}: SessionItemProps): JSX.Element {
   const dispatch = useAppDispatch();
   const ctxMenu = useContextMenuApi();
   const toast = useToast();
@@ -1639,7 +1675,10 @@ function SessionItemImpl({ session, myWindowId, selected, sortableId }: SessionI
       }${sortableId && sessionSortable.isDragging ? ' dragging' : ''}`}
       style={
         sortableId && sessionSortable.transform
-          ? { transform: CSS.Translate.toString(sessionSortable.transform), transition: sessionSortable.transition }
+          ? {
+              transform: CSS.Translate.toString(sessionSortable.transform),
+              transition: sessionSortable.transition,
+            }
           : undefined
       }
       {...(sortableId
@@ -1648,8 +1687,7 @@ function SessionItemImpl({ session, myWindowId, selected, sortableId }: SessionI
             ...sessionSortable.attributes,
             ...sessionSortable.listeners,
           }
-        : {})
-      }
+        : {})}
       onClick={() => void handleClick()}
       onContextMenu={handleContextMenu}
       title={fullTitle}
