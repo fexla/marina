@@ -287,6 +287,49 @@ export function Sidebar(): JSX.Element {
   };
 
   /**
+   * 新建收藏分组。
+   *
+   * 入口统一放在根级分类与现有分组的右键菜单中，不再在收藏列表底部常驻一个
+   * 虚线按钮：分组是低频组织动作，常驻按钮会打断路径列表的视觉节奏。仍使用
+   * 项目自绘 Modal；Electron renderer 中原生 window.prompt 会直接返回 null。
+   */
+  const addGroupPrompt = async (): Promise<void> => {
+    const name = await modal.prompt({
+      title: t('sidebar.group.add') || '新建分组',
+      message: t('sidebar.group.add') || '输入分组名称',
+      placeholder: '分组名',
+      confirmLabel: '新建',
+    });
+    if (!name?.trim()) return;
+    try {
+      await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_GROUP_ADD, { name: name.trim() });
+    } catch (err) {
+      toast.push({
+        kind: 'error',
+        message: `新建分组失败:${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  };
+
+  /** 根级分类（收藏 / 临时 / 最近）共用的新建分组右键菜单。 */
+  const openAddGroupContextMenu = (e: MouseEvent<HTMLElement>, title: string): void => {
+    e.preventDefault();
+    e.stopPropagation();
+    ctxMenu.open({
+      x: e.clientX,
+      y: e.clientY,
+      title,
+      items: [
+        {
+          label: t('sidebar.group.add') || '新建分组',
+          icon: <FolderInput size={13} />,
+          onSelect: () => void addGroupPrompt(),
+        },
+      ],
+    });
+  };
+
+  /**
    * 远程段:给指定 SSH profile 弹路径 prompt 并添加远程收藏。
    * 与设置页「添加远程文件夹」同协议(REMOTE_BOOKMARK_ADD)。
    */
@@ -577,6 +620,10 @@ export function Sidebar(): JSX.Element {
           groups={groupsFiltered}
           collapsed={isCategoryCollapsed('bookmark')}
           onToggleCollapsed={() => handleToggleCategory('bookmark')}
+          onContextMenu={(e) =>
+            openAddGroupContextMenu(e, t('sidebar.category.bookmark') || '收藏')
+          }
+          onRequestAddGroup={() => void addGroupPrompt()}
           actionLabel={<Icon name="plus" size={12} />}
           actionTitle={t('sidebar.addBookmark.title')}
           onAction={(e) => void handleAddBookmark(e)}
@@ -589,6 +636,9 @@ export function Sidebar(): JSX.Element {
           paths={temporaryFiltered}
           collapsed={isCategoryCollapsed('temporary')}
           onToggleCollapsed={handleToggleCategory}
+          onContextMenu={(e) =>
+            openAddGroupContextMenu(e, t('sidebar.category.temporary') || '临时')
+          }
           actionLabel={<Icon name="plus" size={12} />}
           actionTitle={t('sidebar.addTemporary.title')}
           onAction={() => void handlePickFolderForTemp()}
@@ -600,6 +650,7 @@ export function Sidebar(): JSX.Element {
           paths={recentFiltered}
           collapsed={isCategoryCollapsed('recent')}
           onToggleCollapsed={handleToggleCategory}
+          onContextMenu={(e) => openAddGroupContextMenu(e, t('sidebar.category.recent') || '最近')}
         />
       </div>
       <div className="sidebar-footer">
@@ -637,6 +688,8 @@ interface CategoryProps {
   emptyLabel?: string;
   collapsed: boolean;
   onToggleCollapsed: (categoryId: string) => void;
+  /** 根级分类右键菜单（v0.3.3：提供低频的“新建分组”入口）。 */
+  onContextMenu?: (e: MouseEvent<HTMLElement>) => void;
   /** affordance 内容 — 通常是 lucide icon (<Icon name="plus" .../>) */
   actionLabel?: ReactNode;
   actionTitle?: string;
@@ -652,6 +705,7 @@ function Category({
   emptyLabel = '空',
   collapsed,
   onToggleCollapsed,
+  onContextMenu,
   actionLabel,
   actionTitle,
   onAction,
@@ -663,6 +717,7 @@ function Category({
       <header
         className="sidebar-category-header"
         onClick={() => onToggleCollapsed(categoryId)}
+        onContextMenu={onContextMenu}
         title={collapsed ? '展开分组' : '折叠分组'}
       >
         <span className="sidebar-category-chevron" aria-hidden="true">
@@ -726,18 +781,22 @@ const UNGROUPED_CONTAINER = '__marina_ungrouped__';
 /**
  * 分组头:折叠/展开、组名、重命名、删组。
  * 折叠态走 usePanelPreference(panelId='sidebar', key='groupCollapsed', 默认空 Set)。
+ * 右键菜单集中承载“新建 / 重命名 / 删除”；行尾编辑按钮仍保留为可见快捷入口。
  */
 function GroupHeader({
   group,
   collapsed,
   onToggleCollapse,
+  onRequestAddGroup,
 }: {
   group: GroupNode;
   collapsed: boolean;
   onToggleCollapse: () => void;
+  onRequestAddGroup: () => void;
 }): JSX.Element {
   const { t } = useTranslation();
   const toast = useToast();
+  const ctxMenu = useContextMenuApi();
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(group.name);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -783,8 +842,41 @@ function GroupHeader({
       });
   };
 
+  const openGroupContextMenu = (e: MouseEvent<HTMLDivElement>): void => {
+    e.preventDefault();
+    e.stopPropagation();
+    ctxMenu.open({
+      x: e.clientX,
+      y: e.clientY,
+      title: group.name,
+      items: [
+        {
+          label: t('sidebar.group.add') || '新建分组',
+          icon: <FolderInput size={13} />,
+          onSelect: onRequestAddGroup,
+        },
+        { divider: true, label: '' },
+        {
+          label: t('sidebar.group.rename') || '重命名分组',
+          icon: <Pencil size={13} />,
+          onSelect: beginRename,
+        },
+        {
+          label: t('sidebar.group.remove') || '删除分组',
+          icon: <Trash2 size={13} />,
+          danger: true,
+          onSelect: handleDelete,
+        },
+      ],
+    });
+  };
+
   return (
-    <div className="sidebar-group-header" onClick={onToggleCollapse}>
+    <div
+      className="sidebar-group-header"
+      onClick={onToggleCollapse}
+      onContextMenu={openGroupContextMenu}
+    >
       <span className="sidebar-group-chevron" aria-hidden="true">
         {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
       </span>
@@ -854,6 +946,8 @@ function BookmarkCategory({
   groups,
   collapsed,
   onToggleCollapsed,
+  onContextMenu,
+  onRequestAddGroup,
   actionLabel,
   actionTitle,
   onAction,
@@ -863,6 +957,8 @@ function BookmarkCategory({
   groups: GroupNode[];
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  onContextMenu: (e: MouseEvent<HTMLElement>) => void;
+  onRequestAddGroup: () => void;
   actionLabel?: ReactNode;
   actionTitle?: string;
   /** 事件带出,供调用方定位弹层锚点(如远程段选服务器菜单) */
@@ -870,8 +966,6 @@ function BookmarkCategory({
   displayNames: Map<string, string>;
 }): JSX.Element {
   const { t } = useTranslation();
-  const modal = useModal();
-  const toast = useToast();
   // 分组折叠态:L2 偏好(附录 G.1),跨重启保留;默认全展开。
   const [collapsedGroupIds, setCollapsedGroupIds] = usePanelPreference<string[]>(
     'sidebar',
@@ -983,6 +1077,7 @@ function BookmarkCategory({
         <header
           className="sidebar-category-header"
           onClick={onToggleCollapsed}
+          onContextMenu={onContextMenu}
           title={collapsed ? '展开分组' : '折叠分组'}
         >
           <span className="sidebar-category-chevron" aria-hidden="true">
@@ -1033,6 +1128,7 @@ function BookmarkCategory({
                     group={g}
                     collapsed={isCollapsed}
                     onToggleCollapse={() => toggleGroup(g.id)}
+                    onRequestAddGroup={onRequestAddGroup}
                   />
                   {!isCollapsed && (
                     <SortableContext
@@ -1048,40 +1144,11 @@ function BookmarkCategory({
                 </div>
               );
             })}
-            {/* 新建分组按钮(底部)。*/}
-            <button
-              type="button"
-              className="sidebar-group-add"
-              onClick={() => void addGroupPrompt()}
-              title={t('sidebar.group.add') || '新建分组'}
-            >
-              <FolderInput size={12} /> {t('sidebar.group.add') || '新建分组'}
-            </button>
           </div>
         )}
       </section>
     </DndContext>
   );
-
-  /** 新建分组:用自绘 Modal prompt 取名(项目约定:不用 window.prompt — Electron 下不可用,返回 null 致按钮"点没反应")。 */
-  async function addGroupPrompt(): Promise<void> {
-    const name = await modal.prompt({
-      title: t('sidebar.group.add') || '新建分组',
-      message: t('sidebar.group.add') || '输入分组名称',
-      placeholder: '分组名',
-      confirmLabel: '新建',
-    });
-    if (!name || !name.trim()) return;
-    try {
-      await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_GROUP_ADD, { name: name.trim() });
-    } catch (err) {
-      // 后端校验(唯一/分隔符/长度)失败会 reject;toast 反馈(与 GroupHeader 一致)。
-      toast.push({
-        kind: 'error',
-        message: `新建分组失败:${err instanceof Error ? err.message : String(err)}`,
-      });
-    }
-  }
 }
 
 function PathItem({

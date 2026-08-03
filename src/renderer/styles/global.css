@@ -1538,27 +1538,11 @@ html[data-maximized='true'] .app-root.with-shell {
 .sidebar-group-paths {
   padding-left: 10px;
 }
-.sidebar-group-add {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin: 2px 8px;
-  padding: 3px 6px;
-  font-size: 11px;
-  color: var(--color-text-secondary, inherit);
-  background: transparent;
-  border: 1px dashed var(--color-border, #555);
-  border-radius: 4px;
-  cursor: pointer;
-}
-.sidebar-group-add:hover {
-  background: var(--color-hover, rgba(255, 255, 255, 0.05));
-}
+
 /* 拖拽中的行:半透明 + 不影响布局的轻微缩放提示。 */
 .path-item.dragging {
   opacity: 0.4;
 }
-
 
 .path-item {
   font-size: 12px;
