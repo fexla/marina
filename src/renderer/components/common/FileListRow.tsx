@@ -49,6 +49,8 @@ export interface FileListRowProps {
   variant: 'list' | 'tab';
   /** 主图标(folder / file / gitBranch 等)。null = 不渲染图标槽。 */
   icon: IconName | null;
+  /** 主图标右下角的短角标（例如已打开 Diff 页签的 “D”）。 */
+  iconCornerBadge?: string | undefined;
   /** 主标签(文件名 / tab 名)。可为 ReactNode(如搜索高亮 <mark> 片段)。 */
   label: ReactNode;
   /** tooltip(完整路径等)。 */
@@ -91,6 +93,7 @@ export interface FileListRowProps {
 export function FileListRow({
   variant,
   icon,
+  iconCornerBadge,
   label,
   title,
   depth = 0,
@@ -115,6 +118,17 @@ export function FileListRow({
     ctxMenu.open({ x: e.clientX, y: e.clientY, items });
   };
 
+  const renderedIcon = icon ? (
+    iconCornerBadge ? (
+      <span className="file-list-row-icon-with-badge" aria-hidden="true">
+        <Icon name={icon} size={14} />
+        <span className="file-list-row-icon-corner-badge">{iconCornerBadge}</span>
+      </span>
+    ) : (
+      <Icon name={icon} size={14} />
+    )
+  ) : null;
+
   // variant=tab 时整体是一个带 × 按钮的容器(既有 file-tab 视觉);label 区可点。
   // variant=list 时整体是一个 button(既有 file-tree-entry-button 视觉)。
   if (variant === 'tab') {
@@ -126,7 +140,7 @@ export function FileListRow({
         title={title}
         onContextMenu={handleContextMenu}
       >
-        {icon && <Icon name={icon} size={14} />}
+        {renderedIcon}
         <button
           type="button"
           className="file-list-row-label"
@@ -166,7 +180,7 @@ export function FileListRow({
         aria-label={ariaLabel}
       >
         {leading}
-        {icon && <Icon name={icon} size={14} />}
+        {renderedIcon}
         <span className="file-list-row-label-text">{label}</span>
         {statusBadge && (
           <span className={`file-list-row-badge tone-${statusBadge.tone}`}>

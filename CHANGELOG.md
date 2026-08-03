@@ -22,6 +22,11 @@
   分组整块均显式注册 droppable，并显示落点描边。真实 Electron 指针验证“同组交换并
   恢复”和“未分组 → 空组 → 未分组”均通过，原布局完整恢复；新增 7 个布局回归测试。
 
+- **“已打开”中的 Diff 页签可一眼区分。**
+  Diff 继续使用源文件类型 icon，并在右下角叠加 8px 的 “D” 角标；普通文本、Markdown
+  等页签不显示角标。角标 icon 外层固定 14px，不会重新引入长文件名压扁图标的问题。
+  真实 renderer 验证当前 Diff 页签显示 D，三个普通页签无角标，图标保持 14×14px。
+
 - **workspace 切回不再因残缺 `OpenedFile` 白屏。**
   main 已先恢复带 `name/size/mtimeMs` 的完整文件列表，但 renderer 随后的快照恢复又把
   `{path, kind}` 强转为 `OpenedFile[]` 覆盖它，最终 `fileIconFor(undefined)` 抛错、整窗

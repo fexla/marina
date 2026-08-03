@@ -186,6 +186,7 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
                 key={file.path}
                 variant="tab"
                 icon={fileIconFor(file.name)}
+                iconCornerBadge={file.kind === 'diff' ? 'D' : undefined}
                 label={
                   <HighlightedText
                     text={file.name}
