@@ -65,7 +65,9 @@ import type {
 } from '@shared/types';
 import type { DeepPartial } from '@shared/types-helpers';
 import type { Settings } from '@shared/types';
+import { hasAnyRemote } from '@shared/remote-visibility';
 import { useAppDispatch, useAppState } from '../store';
+import { useBackendLabel } from '../hooks/useBackendLabel';
 import {
   RECOMMENDED_TERMINAL_FONTS,
   RECOMMENDED_UI_FONTS,
@@ -87,7 +89,6 @@ type CategoryId =
   | 'behavior'
   | 'data'
   | 'remote'
-  | 'remote-connection'
   | 'system-integration'
   | 'ai'
   | 'advanced'
@@ -102,17 +103,13 @@ interface CategoryDef {
 // CP-4 勘误 #11:用 lucide 图标替换原有 Emoji。BETA-031 新增 'AI 助手'。
 // BETA-004:title 改 i18n key,渲染时由 t() 转。
 // SSH 方案 v2.1 §II.6:'remote' 分类条件渲染(见 buildVisibleCategories);
-// 本地用户(无 SshProfile 且未开 enableRemote)视野永远是 8 个分类。
+// v1.14(方案-远程UI统一):删除常驻 'remote-connection' 分类,两种远程模式
+// 合并进同一个「远程」分类 —— 本地用户(无任何远程配置)视野永远是 8 个分类。
 const BASE_CATEGORIES: CategoryDef[] = [
   { id: 'appearance', iconName: 'appearance', titleKey: 'settings.category.appearance' },
   { id: 'shell', iconName: 'shell', titleKey: 'settings.category.shell' },
   { id: 'behavior', iconName: 'behavior', titleKey: 'settings.category.behavior' },
   { id: 'data', iconName: 'data', titleKey: 'settings.category.data' },
-  {
-    id: 'remote-connection',
-    iconName: 'server',
-    titleKey: 'settings.category.remoteConnection',
-  },
   {
     id: 'system-integration',
     iconName: 'systemIntegration',
@@ -130,21 +127,19 @@ const REMOTE_CATEGORY: CategoryDef = {
 };
 
 /**
- * SSH 方案 v2.1 §II.6:本地用户视野守护。'remote' 分类只在以下任一条件下
- * 显示:
- *   1. 已有至少一个 SshProfile(用户已经在配置远程)
- *   2. advanced.enableRemote === true(用户主动想看远程入口)
- *
- * 否则隐藏 — 设置页永远是 8 个分类,跟 beta.9 一致。
+ * v1.14(方案-远程UI统一 §III.4):'remote' 分类显示条件统一走 hasAnyRemote
+ * (SSH profile / 远程电脑 / enableRemote / daemon 运行 任一为真)。
+ * 全部为 false 时隐藏 —— 设置页永远是 8 个分类,跟 beta.9 一致。
  * 'remote' 插入位置:放在 'data' 之后、'system-integration' 之前,语义上跟
  * "数据"分类的"远程文件夹"延续。
  */
 function buildVisibleCategories(input: {
   hasSshProfiles: boolean;
+  hasDaemonProfiles: boolean;
   enableRemote: boolean;
+  daemonRunning: boolean;
 }): CategoryDef[] {
-  const showRemote = input.hasSshProfiles || input.enableRemote;
-  if (!showRemote) return BASE_CATEGORIES;
+  if (!hasAnyRemote(input)) return BASE_CATEGORIES;
   const result: CategoryDef[] = [];
   for (const c of BASE_CATEGORIES) {
     result.push(c);
@@ -177,9 +172,16 @@ export function SettingsView(): JSX.Element {
     () =>
       buildVisibleCategories({
         hasSshProfiles: state.sshProfiles.length > 0,
+        hasDaemonProfiles: state.remoteBackendProfiles.length > 0,
         enableRemote: state.settings?.advanced?.enableRemote === true,
+        daemonRunning: state.remoteDaemonStatus?.running === true,
       }),
-    [state.sshProfiles.length, state.settings?.advanced?.enableRemote],
+    [
+      state.sshProfiles.length,
+      state.remoteBackendProfiles.length,
+      state.settings?.advanced?.enableRemote,
+      state.remoteDaemonStatus?.running,
+    ],
   );
 
   // 当前 active 分类被移除时(例如用户在 remote 面板把 enableRemote 关掉且
@@ -255,8 +257,6 @@ function CategoryPanel({ categoryId, setError }: CategoryPanelProps): JSX.Elemen
       return <DataPanel setError={setError} />;
     case 'remote':
       return <RemotePanel setError={setError} />;
-    case 'remote-connection':
-      return <RemoteConnectionPanel setError={setError} />;
     case 'system-integration':
       return <SystemIntegrationPanel setError={setError} />;
     case 'ai':
@@ -285,8 +285,11 @@ function CategoryPanel({ categoryId, setError }: CategoryPanelProps): JSX.Elemen
  *
  * 设计动机:用户不需要懂 daemon/client/backend/server/profile 这些技术词,
  * 只需要理解"让别人连这台"和"连去别的电脑"两件事。文案全部用户化。
+ *
+ * v1.14(方案-远程UI统一 §III.1):从常驻「远程连接」分类改为「远程」分类的
+ * 两个子区块(② Marina 电脑 / ③ 允许远程连接),由 RemotePanel 挂载。
  */
-function RemoteConnectionPanel({
+function RemoteConnectionBlocks({
   setError,
 }: {
   setError: (msg: string | null) => void;
@@ -443,15 +446,7 @@ function RemoteConnectionPanel({
     : tx('未启动', 'Not running');
 
   return (
-    <section className="settings-panel" data-testid="settings-remote-connection-panel">
-      <h2 className="settings-panel-title">{tx('远程连接', 'Remote Connection')}</h2>
-      <p className="settings-panel-desc">
-        {tx(
-          '用一台电脑的 Marina 操作另一台。两件事:① 允许别人连这台电脑;② 从这台连去别的电脑。',
-          'Use one computer\u2019s Marina to drive another. Two things: \u2460 let others connect to this computer; \u2461 connect from this computer to another.',
-        )}
-      </p>
-
+    <>
       {/* ── 区块 A:允许远程连接 ── */}
       <div className="settings-subsection">
         <h3 className="settings-subsection-title">
@@ -566,11 +561,9 @@ function RemoteConnectionPanel({
 
       <div className="settings-subsection-divider" />
 
-      {/* ── 区块 B:连接到其他电脑 ── */}
+      {/* ── 区块 B:Marina 电脑(客户端角色)────────────────────── */}
       <div className="settings-subsection">
-        <h3 className="settings-subsection-title">
-          {tx('连接到其他电脑', 'Connect to Another Computer')}
-        </h3>
+        <h3 className="settings-subsection-title">{tx('Marina 电脑', 'Marina computers')}</h3>
         <p className="settings-subsection-desc">
           {tx(
             '保存要远程操作的电脑。点“打开”会在新窗口连过去(本窗口不受影响)。对方需先在它的 Marina 里“允许远程连接”。',
@@ -679,7 +672,7 @@ function RemoteConnectionPanel({
           </div>
         </div>
       </div>
-    </section>
+    </>
   );
 }
 
@@ -2043,6 +2036,9 @@ function DataPanel({ setError }: { setError: (msg: string | null) => void }): JS
 function RemotePanel({ setError }: { setError: (msg: string | null) => void }): JSX.Element {
   const { tx } = useTranslation();
   const state = useAppState();
+  // v1.14(方案-远程UI统一 §III.1):远程窗口说明条用 —— 本面板的「Marina 电脑」/
+  // 「允许远程连接」是客户端本机(local-control)配置,不是正在连接的 daemon 的。
+  const backendLabel = useBackendLabel();
   const [sshName, setSshName] = useState('');
   const [sshHost, setSshHost] = useState('');
   const [sshPort, setSshPort] = useState('22');
@@ -2241,14 +2237,34 @@ function RemotePanel({ setError }: { setError: (msg: string | null) => void }): 
   return (
     <section className="settings-panel" data-testid="settings-remote-panel">
       <h2 className="settings-panel-title">{tx('远程', 'Remote')}</h2>
-
-      <SettingRow
-        label={tx('SSH 服务器', 'SSH servers')}
-        hint={tx(
-          '保存连接参数;勾选"保存密码"会用 OS 凭据加密保存,登录时需 sshpass 才能自动注入',
-          'Saves connection parameters; "Save password" stores the password via OS keychain — auto-login requires sshpass on PATH',
+      <p className="settings-panel-desc">
+        {tx(
+          '远程 = 操作别的机器。SSH 服务器连没装 Marina 的机器(远程 shell);Marina 电脑连装了 Marina 的机器(完整体验)。也可以开启「允许远程连接」让别人操作本机。',
+          'Remote = drive another machine. SSH servers connect to machines without Marina (remote shell); Marina computers connect to machines running Marina (full experience). You can also enable "Allow Remote Connections" so others can drive this machine.',
         )}
-      >
+      </p>
+
+      {/* v1.14(方案-远程UI统一 §III.1):远程窗口里「Marina 电脑」/「允许远程连接」
+          是客户端本机(local-control)配置,不是正在连接的 daemon 的 —— 必须显式
+          告知,否则用户会以为在改对方机器。 */}
+      {backendLabel && (
+        <div className="settings-local-control-note" role="note">
+          {tx(
+            `「Marina 电脑」与「允许远程连接」属于本机,不是正在连接的 ${backendLabel}`,
+            `"Marina computers" and "Allow Remote Connections" below belong to this machine, not the connected ${backendLabel}`,
+          )}
+        </div>
+      )}
+
+      {/* ── 区块 1:SSH 服务器(SSH 方案 v2.1)────────────────────────── */}
+      <div className="settings-subsection">
+        <h3 className="settings-subsection-title">{tx('SSH 服务器', 'SSH servers')}</h3>
+        <p className="settings-subsection-desc">
+          {tx(
+            '保存连接参数;勾选"保存密码"会用 OS 凭据加密保存,登录时需 sshpass 才能自动注入',
+            'Saves connection parameters; "Save password" stores the password via OS keychain — auto-login requires sshpass on PATH',
+          )}
+        </p>
         <div className="ssh-profile-form">
           {state.sshProfiles.length > 0 && (
             <ul className="ssh-profile-list">
@@ -2392,230 +2408,243 @@ function RemotePanel({ setError }: { setError: (msg: string | null) => void }): 
             )}
           </div>
         </div>
-      </SettingRow>
 
-      <SettingRow
-        label={tx('添加远程文件夹', 'Add remote folder')}
-        hint={tx(
-          '添加后会出现在左侧对应服务器分组;双击即通过 SSH 进入该远程目录',
-          'Appears under the matching server group; double-click opens SSH in that remote directory',
-        )}
-      >
-        <div className="remote-bookmark-form">
-          <select
-            className="settings-input"
-            value={remoteProfileId || state.sshProfiles[0]?.id || ''}
-            onChange={(e) => setRemoteProfileId(e.target.value)}
-            disabled={state.sshProfiles.length === 0}
-          >
-            {state.sshProfiles.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-          <input
-            className="settings-input"
-            value={remotePath}
-            onChange={(e) => setRemotePath(e.target.value)}
-            placeholder="/home/user/project"
-          />
-          <input
-            className="settings-input"
-            value={remoteName}
-            onChange={(e) => setRemoteName(e.target.value)}
-            placeholder={tx('显示名(可选)', 'Display name (optional)')}
-          />
-          <button
-            type="button"
-            className="settings-button"
-            onClick={() => void handleAddRemoteBookmark()}
-          >
-            {tx('加入收藏', 'Add bookmark')}
-          </button>
-        </div>
-      </SettingRow>
-
-      <SettingRow
-        label={tx('SSH-agent 状态', 'SSH agent status')}
-        hint={tx(
-          '查询当前 ssh-agent 是否运行 + 已加载的密钥。POSIX 通过 SSH_AUTH_SOCK / Windows 通过 OpenSSH Service。',
-          'Probes ssh-agent (via SSH_AUTH_SOCK on POSIX, OpenSSH Service on Windows) and lists loaded keys.',
-        )}
-      >
-        <div className="ssh-agent-card">
-          {agentStatus === null ? (
-            <span className="settings-info-text">{tx('正在探测…', 'Probing…')}</span>
-          ) : agentStatus.status === 'agent-running' ? (
-            <>
-              <span className="ssh-agent-status-line ok">
-                ✅ {tx('agent 正在运行', 'agent running')}
-                {agentStatus.keys.length === 0
-                  ? tx('(0 把密钥)', ' (0 keys)')
-                  : tx(
-                      `,已加载 ${agentStatus.keys.length} 把密钥`,
-                      `, ${agentStatus.keys.length} key(s) loaded`,
-                    )}
-              </span>
-              {agentStatus.keys.length > 0 && (
-                <ul className="ssh-agent-key-list">
-                  {agentStatus.keys.map((k) => (
-                    <li key={k.fingerprint}>
-                      <code>{k.fingerprint}</code> · {k.keyType} · {k.bits} bit
-                      {k.comment && ` · ${k.comment}`}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </>
-          ) : (
-            <span className="ssh-agent-status-line warn">⚠️ {agentStatus.message}</span>
+        <SettingRow
+          label={tx('添加远程文件夹', 'Add remote folder')}
+          hint={tx(
+            '添加后会出现在左侧对应服务器分组;双击即通过 SSH 进入该远程目录',
+            'Appears under the matching server group; double-click opens SSH in that remote directory',
           )}
-          <button type="button" className="settings-button" onClick={refreshAgent}>
-            {tx('刷新', 'Refresh')}
-          </button>
-        </div>
-      </SettingRow>
+        >
+          <div className="remote-bookmark-form">
+            <select
+              className="settings-input"
+              value={remoteProfileId || state.sshProfiles[0]?.id || ''}
+              onChange={(e) => setRemoteProfileId(e.target.value)}
+              disabled={state.sshProfiles.length === 0}
+            >
+              {state.sshProfiles.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <input
+              className="settings-input"
+              value={remotePath}
+              onChange={(e) => setRemotePath(e.target.value)}
+              placeholder="/home/user/project"
+            />
+            <input
+              className="settings-input"
+              value={remoteName}
+              onChange={(e) => setRemoteName(e.target.value)}
+              placeholder={tx('显示名(可选)', 'Display name (optional)')}
+            />
+            <button
+              type="button"
+              className="settings-button"
+              onClick={() => void handleAddRemoteBookmark()}
+            >
+              {tx('加入收藏', 'Add bookmark')}
+            </button>
+          </div>
+        </SettingRow>
 
-      <SettingRow
-        label={tx('集成 ~/.ssh/config', 'Integrate ~/.ssh/config')}
-        hint={tx(
-          '启用后,sidebar / 设置页同时显示 ssh_config 里的 Host 条目(只读;改请直接编辑 ~/.ssh/config)。Match 块当前跳过,V1 仅支持 Host + Include。',
-          'When on, Host entries from ssh_config appear in the sidebar / settings (read-only — edit ~/.ssh/config directly). Match blocks are skipped in V1; Host + Include supported.',
-        )}
-      >
-        <div className="ssh-agent-card">
+        <SettingRow
+          label={tx('SSH-agent 状态', 'SSH agent status')}
+          hint={tx(
+            '查询当前 ssh-agent 是否运行 + 已加载的密钥。POSIX 通过 SSH_AUTH_SOCK / Windows 通过 OpenSSH Service。',
+            'Probes ssh-agent (via SSH_AUTH_SOCK on POSIX, OpenSSH Service on Windows) and lists loaded keys.',
+          )}
+        >
+          <div className="ssh-agent-card">
+            {agentStatus === null ? (
+              <span className="settings-info-text">{tx('正在探测…', 'Probing…')}</span>
+            ) : agentStatus.status === 'agent-running' ? (
+              <>
+                <span className="ssh-agent-status-line ok">
+                  ✅ {tx('agent 正在运行', 'agent running')}
+                  {agentStatus.keys.length === 0
+                    ? tx('(0 把密钥)', ' (0 keys)')
+                    : tx(
+                        `,已加载 ${agentStatus.keys.length} 把密钥`,
+                        `, ${agentStatus.keys.length} key(s) loaded`,
+                      )}
+                </span>
+                {agentStatus.keys.length > 0 && (
+                  <ul className="ssh-agent-key-list">
+                    {agentStatus.keys.map((k) => (
+                      <li key={k.fingerprint}>
+                        <code>{k.fingerprint}</code> · {k.keyType} · {k.bits} bit
+                        {k.comment && ` · ${k.comment}`}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            ) : (
+              <span className="ssh-agent-status-line warn">⚠️ {agentStatus.message}</span>
+            )}
+            <button type="button" className="settings-button" onClick={refreshAgent}>
+              {tx('刷新', 'Refresh')}
+            </button>
+          </div>
+        </SettingRow>
+
+        <SettingRow
+          label={tx('集成 ~/.ssh/config', 'Integrate ~/.ssh/config')}
+          hint={tx(
+            '启用后,sidebar / 设置页同时显示 ssh_config 里的 Host 条目(只读;改请直接编辑 ~/.ssh/config)。Match 块当前跳过,V1 仅支持 Host + Include。',
+            'When on, Host entries from ssh_config appear in the sidebar / settings (read-only — edit ~/.ssh/config directly). Match blocks are skipped in V1; Host + Include supported.',
+          )}
+        >
+          <div className="ssh-agent-card">
+            <label className="settings-checkbox">
+              <input
+                type="checkbox"
+                checked={includeSshConfig}
+                onChange={(e) =>
+                  void updateSettings(
+                    { advanced: { includeSshConfig: e.target.checked } },
+                    setError,
+                  )
+                }
+              />
+              <span>
+                {tx('合并 ~/.ssh/config 到 profile 列表', 'Merge ~/.ssh/config into profile list')}
+              </span>
+            </label>
+            {includeSshConfig && (
+              <>
+                <span className="settings-info-text">
+                  {tx(
+                    `发现 ${sshConfigEntries.length} 条 Host`,
+                    `Discovered ${sshConfigEntries.length} Host entries`,
+                  )}
+                </span>
+                {sshConfigEntries.length > 0 && (
+                  <ul className="ssh-config-list">
+                    {sshConfigEntries.slice(0, 20).map((e) => (
+                      <li key={`${e.sourceFile}#${e.alias}`} title={e.sourceFile}>
+                        <strong>{e.alias}</strong> → {e.user ? `${e.user}@` : ''}
+                        {e.hostName}:{e.port}
+                        {e.proxyJump.length > 0 && (
+                          <span className="ssh-config-hint">
+                            {' '}
+                            · {tx('via', 'via')} {e.proxyJump.join(',')}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                    {sshConfigEntries.length > 20 && (
+                      <li className="ssh-config-hint">
+                        {tx(
+                          `… 还有 ${sshConfigEntries.length - 20} 条未显示`,
+                          `… ${sshConfigEntries.length - 20} more not shown`,
+                        )}
+                      </li>
+                    )}
+                  </ul>
+                )}
+                <button type="button" className="settings-button" onClick={refreshSshConfig}>
+                  {tx('重新加载 ssh_config', 'Reload ssh_config')}
+                </button>
+              </>
+            )}
+          </div>
+        </SettingRow>
+
+        <SettingRow
+          label={tx('启用 ControlMaster 连接复用', 'Enable ControlMaster connection sharing')}
+          hint={tx(
+            '同一主机的多个 session 共享首次握手,从 ~3 秒降到 <100ms。Windows OpenSSH 8.x+ 走 named pipe;不稳定时 OpenSSH 自动回退到新连接。',
+            'Reuse the first SSH handshake across sessions to the same host (~3s → <100ms). Windows OpenSSH 8.x+ uses a named pipe; falls back to a fresh connection if unavailable.',
+          )}
+        >
           <label className="settings-checkbox">
             <input
               type="checkbox"
-              checked={includeSshConfig}
+              checked={enableControlMaster}
               onChange={(e) =>
-                void updateSettings({ advanced: { includeSshConfig: e.target.checked } }, setError)
+                void updateSettings(
+                  { advanced: { enableControlMaster: e.target.checked } },
+                  setError,
+                )
               }
             />
-            <span>
-              {tx('合并 ~/.ssh/config 到 profile 列表', 'Merge ~/.ssh/config into profile list')}
-            </span>
+            <span>{tx('启用 ControlMaster(推荐)', 'Enable ControlMaster (recommended)')}</span>
           </label>
-          {includeSshConfig && (
-            <>
-              <span className="settings-info-text">
-                {tx(
-                  `发现 ${sshConfigEntries.length} 条 Host`,
-                  `Discovered ${sshConfigEntries.length} Host entries`,
+        </SettingRow>
+
+        <SettingRow
+          label={tx('已知主机指纹', 'Known host fingerprints')}
+          hint={tx(
+            '解析 ~/.ssh/known_hosts;同主机指纹变化时高亮(可能是 MITM 或服务器换 key)。Marina 记录指纹历史跨重启保留。',
+            'Parses ~/.ssh/known_hosts; highlights host-key changes (potential MITM or server key rotation). Marina keeps fingerprint history across restarts.',
+          )}
+        >
+          <div className="ssh-agent-card">
+            {knownHosts === null ? (
+              <span className="settings-info-text">{tx('正在加载…', 'Loading…')}</span>
+            ) : (
+              <>
+                {knownHosts.changes.length > 0 && (
+                  <ul className="ssh-known-hosts-changes">
+                    {knownHosts.changes.map((c) => (
+                      <li key={`${c.host}:${c.newFingerprint}`}>
+                        ⚠️ <strong>{c.host}</strong> {c.keyType}{' '}
+                        {tx('指纹已变化', 'fingerprint changed')}:
+                        <br />
+                        &nbsp;&nbsp;{tx('原', 'was')}: <code>{c.previousFingerprint}</code>
+                        <br />
+                        &nbsp;&nbsp;{tx('现', 'now')}: <code>{c.newFingerprint}</code>
+                      </li>
+                    ))}
+                  </ul>
                 )}
-              </span>
-              {sshConfigEntries.length > 0 && (
-                <ul className="ssh-config-list">
-                  {sshConfigEntries.slice(0, 20).map((e) => (
-                    <li key={`${e.sourceFile}#${e.alias}`} title={e.sourceFile}>
-                      <strong>{e.alias}</strong> → {e.user ? `${e.user}@` : ''}
-                      {e.hostName}:{e.port}
-                      {e.proxyJump.length > 0 && (
-                        <span className="ssh-config-hint">
-                          {' '}
-                          · {tx('via', 'via')} {e.proxyJump.join(',')}
-                        </span>
-                      )}
-                    </li>
-                  ))}
-                  {sshConfigEntries.length > 20 && (
-                    <li className="ssh-config-hint">
-                      {tx(
-                        `… 还有 ${sshConfigEntries.length - 20} 条未显示`,
-                        `… ${sshConfigEntries.length - 20} more not shown`,
-                      )}
-                    </li>
-                  )}
-                </ul>
-              )}
-              <button type="button" className="settings-button" onClick={refreshSshConfig}>
-                {tx('重新加载 ssh_config', 'Reload ssh_config')}
-              </button>
-            </>
-          )}
-        </div>
-      </SettingRow>
+                <span className="settings-info-text">
+                  {tx(`共 ${knownHosts.entries.length} 条`, `${knownHosts.entries.length} entries`)}
+                </span>
+                {knownHosts.entries.length > 0 && (
+                  <ul className="ssh-known-hosts-list">
+                    {knownHosts.entries.slice(0, 10).map((e) => (
+                      <li key={`${e.hosts}#${e.fingerprint}`}>
+                        <strong>{e.isHashed ? '(hashed)' : e.hosts}</strong> · {e.keyType} ·{' '}
+                        <code>{e.fingerprint}</code>
+                      </li>
+                    ))}
+                    {knownHosts.entries.length > 10 && (
+                      <li className="ssh-config-hint">
+                        {tx(
+                          `… 还有 ${knownHosts.entries.length - 10} 条未显示`,
+                          `… ${knownHosts.entries.length - 10} more not shown`,
+                        )}
+                      </li>
+                    )}
+                  </ul>
+                )}
+                <button type="button" className="settings-button" onClick={refreshKnownHosts}>
+                  {tx('刷新', 'Refresh')}
+                </button>
+              </>
+            )}
+          </div>
+        </SettingRow>
+      </div>
 
-      <SettingRow
-        label={tx('启用 ControlMaster 连接复用', 'Enable ControlMaster connection sharing')}
-        hint={tx(
-          '同一主机的多个 session 共享首次握手,从 ~3 秒降到 <100ms。Windows OpenSSH 8.x+ 走 named pipe;不稳定时 OpenSSH 自动回退到新连接。',
-          'Reuse the first SSH handshake across sessions to the same host (~3s → <100ms). Windows OpenSSH 8.x+ uses a named pipe; falls back to a fresh connection if unavailable.',
-        )}
-      >
-        <label className="settings-checkbox">
-          <input
-            type="checkbox"
-            checked={enableControlMaster}
-            onChange={(e) =>
-              void updateSettings({ advanced: { enableControlMaster: e.target.checked } }, setError)
-            }
-          />
-          <span>{tx('启用 ControlMaster(推荐)', 'Enable ControlMaster (recommended)')}</span>
-        </label>
-      </SettingRow>
+      <div className="settings-subsection-divider" />
 
-      <SettingRow
-        label={tx('已知主机指纹', 'Known host fingerprints')}
-        hint={tx(
-          '解析 ~/.ssh/known_hosts;同主机指纹变化时高亮(可能是 MITM 或服务器换 key)。Marina 记录指纹历史跨重启保留。',
-          'Parses ~/.ssh/known_hosts; highlights host-key changes (potential MITM or server key rotation). Marina keeps fingerprint history across restarts.',
-        )}
-      >
-        <div className="ssh-agent-card">
-          {knownHosts === null ? (
-            <span className="settings-info-text">{tx('正在加载…', 'Loading…')}</span>
-          ) : (
-            <>
-              {knownHosts.changes.length > 0 && (
-                <ul className="ssh-known-hosts-changes">
-                  {knownHosts.changes.map((c) => (
-                    <li key={`${c.host}:${c.newFingerprint}`}>
-                      ⚠️ <strong>{c.host}</strong> {c.keyType}{' '}
-                      {tx('指纹已变化', 'fingerprint changed')}:
-                      <br />
-                      &nbsp;&nbsp;{tx('原', 'was')}: <code>{c.previousFingerprint}</code>
-                      <br />
-                      &nbsp;&nbsp;{tx('现', 'now')}: <code>{c.newFingerprint}</code>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <span className="settings-info-text">
-                {tx(`共 ${knownHosts.entries.length} 条`, `${knownHosts.entries.length} entries`)}
-              </span>
-              {knownHosts.entries.length > 0 && (
-                <ul className="ssh-known-hosts-list">
-                  {knownHosts.entries.slice(0, 10).map((e) => (
-                    <li key={`${e.hosts}#${e.fingerprint}`}>
-                      <strong>{e.isHashed ? '(hashed)' : e.hosts}</strong> · {e.keyType} ·{' '}
-                      <code>{e.fingerprint}</code>
-                    </li>
-                  ))}
-                  {knownHosts.entries.length > 10 && (
-                    <li className="ssh-config-hint">
-                      {tx(
-                        `… 还有 ${knownHosts.entries.length - 10} 条未显示`,
-                        `… ${knownHosts.entries.length - 10} more not shown`,
-                      )}
-                    </li>
-                  )}
-                </ul>
-              )}
-              <button type="button" className="settings-button" onClick={refreshKnownHosts}>
-                {tx('刷新', 'Refresh')}
-              </button>
-            </>
-          )}
-        </div>
-      </SettingRow>
+      {/* v1.14:Marina 电脑 + 允许远程连接两区块(原「远程连接」分类内容) */}
+      <RemoteConnectionBlocks setError={setError} />
+
+      <div className="settings-subsection-divider" />
 
       <SettingRow
         label={tx('始终显示远程入口', 'Always show remote entry')}
         hint={tx(
-          '即使没有 SSH 服务器,也在 sidebar 顶部和设置页保留远程入口。关闭后,如果当前没有 profile,本面板会被隐藏(刷新设置后生效)。',
-          'Show the remote entry in the sidebar and settings even without any SSH server. Turning this off hides this panel if no profile exists (takes effect after re-entering settings).',
+          '即使没有 SSH 服务器或远程电脑,也在 sidebar 顶部和设置页保留远程入口。关闭后,如果当前没有任何远程配置,本面板会被隐藏(刷新设置后生效)。',
+          'Show the remote entry in the sidebar and settings even without any SSH server or remote computer. Turning this off hides this panel when there is no remote configuration (takes effect after re-entering settings).',
         )}
       >
         <label className="settings-checkbox">
