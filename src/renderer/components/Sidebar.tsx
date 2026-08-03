@@ -43,6 +43,7 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
+  useDroppable,
   closestCenter,
   type DragEndEvent,
 } from '@dnd-kit/core';
@@ -57,6 +58,7 @@ import {
 import type { GroupNode, PathNode, SessionInfo, SshProfile } from '@shared/types';
 import { disambiguatePathNames } from '@shared/path-display';
 import { hasAnyRemote } from '@shared/remote-visibility';
+import { BOOKMARK_UNGROUPED_CONTAINER, moveBookmarkInLayout } from '@shared/bookmark-dnd-layout';
 import { useTranslation } from './LanguageProvider';
 import { findMyOwnedSessionId, useAppDispatch, useAppState, useAppStateRef } from '../store';
 import { Icon, type IconName } from './icons';
@@ -776,7 +778,7 @@ function Category({
 // - 临时/最近栏不受影响(决策 #13:只收藏可分组/可拖序)。
 // - 排序能力直接内联进 PathItem 的 <li>(传 sortableId 才启用),避免额外的
 //   包裹 <li> 造成 li 嵌套(无效 HTML)。临时/最近不传 → 零 dnd 开销。
-const UNGROUPED_CONTAINER = '__marina_ungrouped__';
+const UNGROUPED_CONTAINER = BOOKMARK_UNGROUPED_CONTAINER;
 
 /**
  * 分组头:折叠/展开、组名、重命名、删组。
@@ -933,6 +935,48 @@ function GroupHeader({
   );
 }
 
+/** 未分组容器也必须是 droppable；否则所有路径都进组后，没有目标可把它们拖出来。 */
+function BookmarkUngroupedDropZone({ children }: { children: ReactNode }): JSX.Element {
+  const { setNodeRef, isOver } = useDroppable({
+    id: UNGROUPED_CONTAINER,
+    data: { type: 'bookmark-container', containerId: UNGROUPED_CONTAINER },
+  });
+  return (
+    <ul
+      ref={setNodeRef}
+      className={`sidebar-paths sidebar-ungrouped bookmark-drop-zone${isOver ? ' drop-over' : ''}`}
+    >
+      {children}
+    </ul>
+  );
+}
+
+/**
+ * 分组整块（含折叠组头）注册为 droppable。
+ * 空组没有 sortable path，旧实现因此永远无法成为 over；整块注册后，空组和折叠组
+ * 都能接收路径，展开且有路径时仍由更精确的 sortable item 决定插入位置。
+ */
+function BookmarkGroupDropZone({
+  groupId,
+  children,
+}: {
+  groupId: string;
+  children: ReactNode;
+}): JSX.Element {
+  const { setNodeRef, isOver } = useDroppable({
+    id: groupId,
+    data: { type: 'bookmark-container', containerId: groupId },
+  });
+  return (
+    <div
+      ref={setNodeRef}
+      className={`sidebar-group bookmark-drop-zone${isOver ? ' drop-over' : ''}`}
+    >
+      {children}
+    </div>
+  );
+}
+
 /**
  * 收藏栏:带分组的布局 + @dnd-kit 拖序。
  *
@@ -999,64 +1043,35 @@ function BookmarkCategory({
    */
   const handleDragEnd = (event: DragEndEvent): void => {
     const { active, over } = event;
-    if (!over || active.id === over.id) return;
-    const activeId = String(active.id);
+    if (!over) return;
+
     const overId = String(over.id);
-    const fromContainer =
-      (active.data.current?.sortable as { containerId?: string } | undefined)?.containerId ??
-      UNGROUPED_CONTAINER;
-    // over 可能是某 path(有 containerId),也可能是空容器的 droppable id(=containerId 本身)
-    const overContainer =
-      (over.data.current?.sortable as { containerId?: string } | undefined)?.containerId ?? overId;
+    // Sortable path 的容器来自 sortable.containerId；空组 / 折叠组头由显式
+    // useDroppable 提供 containerId。二者都没有才退回 over.id。
+    const overContainerId =
+      (over.data.current?.sortable as { containerId?: string } | undefined)?.containerId ??
+      (over.data.current as { containerId?: string } | undefined)?.containerId ??
+      overId;
+    const nextLayout = moveBookmarkInLayout(
+      {
+        ungrouped: ungrouped.map((path) => path.id),
+        groups: groups.map((group) => ({
+          id: group.id,
+          childOrder: (byGroup.get(group.id) ?? []).map((path) => path.id),
+        })),
+      },
+      {
+        activeId: String(active.id),
+        overId,
+        overContainerId,
+      },
+    );
+    if (!nextLayout) return;
 
-    // 取源 / 目标容器的当前顺序(克隆后操作)。
-    const listFor = (containerId: string): PathNode[] => {
-      if (containerId === UNGROUPED_CONTAINER) return ungrouped.slice();
-      return (byGroup.get(containerId) ?? []).slice();
-    };
-    const fromList = listFor(fromContainer);
-    const toList = fromContainer === overContainer ? fromList : listFor(overContainer);
-
-    const fromIdx = fromList.findIndex((p) => p.id === activeId);
-    if (fromIdx < 0) return;
-    const [moved] = fromList.splice(fromIdx, 1);
-
-    if (fromContainer === overContainer) {
-      const overIdx = toList.findIndex((p) => p.id === overId);
-      if (overIdx < 0) toList.push(moved);
-      else toList.splice(overIdx, 0, moved);
-    } else {
-      // 跨容器:落到 over path 前;over 是空容器占位则追加末尾。
-      const overIdx = toList.findIndex((p) => p.id === overId);
-      if (overIdx < 0) toList.push(moved);
-      else toList.splice(overIdx, 0, moved);
-    }
-
-    // 回填到 ungrouped / byGroup 的视图(本次 render 内的乐观更新);
-    // 真值由后端 BOOKMARK_REORDER 后 evt:path:tree-updated 回灌。
-    if (fromContainer === UNGROUPED_CONTAINER) {
-      ungrouped.splice(0, ungrouped.length, ...fromList);
-    } else {
-      byGroup.set(fromContainer, fromList);
-    }
-    if (overContainer === UNGROUPED_CONTAINER) {
-      ungrouped.splice(0, ungrouped.length, ...toList);
-    } else if (overContainer !== fromContainer) {
-      byGroup.set(overContainer, toList);
-    }
-
-    // 组装分层 payload(groups 顺序 = 当前 groups 数组顺序)。
-    const payloadGroups = groups.map((g) => ({
-      id: g.id,
-      childOrder: (byGroup.get(g.id) ?? []).map((p) => p.id),
-    }));
-    const ungroupedIds = ungrouped.map((p) => p.id);
-    window.api
-      .invoke(COMMAND_CHANNELS.BOOKMARK_REORDER, { ungrouped: ungroupedIds, groups: payloadGroups })
-      .catch((err: unknown) => {
-        // 后端校验失败(理论上不会,因为我们用真值组装)——吞掉,等 tree 回灌纠偏。
-        console.warn('[BookmarkCategory] reorder rejected:', err);
-      });
+    // 不修改 useMemo 派生数组；main 的 reorder 会广播 path tree，作为唯一真值回灌。
+    window.api.invoke(COMMAND_CHANNELS.BOOKMARK_REORDER, nextLayout).catch((err: unknown) => {
+      console.warn('[BookmarkCategory] reorder rejected:', err);
+    });
   };
 
   const renderPath = (p: PathNode): JSX.Element => {
@@ -1114,16 +1129,14 @@ function BookmarkCategory({
               strategy={verticalListSortingStrategy}
               id={UNGROUPED_CONTAINER}
             >
-              {ungrouped.length > 0 && (
-                <ul className="sidebar-paths sidebar-ungrouped">{ungrouped.map(renderPath)}</ul>
-              )}
+              <BookmarkUngroupedDropZone>{ungrouped.map(renderPath)}</BookmarkUngroupedDropZone>
             </SortableContext>
             {/* 各分组块(按 groups 顺序)。*/}
             {groups.map((g) => {
               const gPaths = byGroup.get(g.id) ?? [];
               const isCollapsed = collapsedSet.has(g.id);
               return (
-                <div className="sidebar-group" key={g.id}>
+                <BookmarkGroupDropZone groupId={g.id} key={g.id}>
                   <GroupHeader
                     group={g}
                     collapsed={isCollapsed}
@@ -1141,7 +1154,7 @@ function BookmarkCategory({
                       </ul>
                     </SortableContext>
                   )}
-                </div>
+                </BookmarkGroupDropZone>
               );
             })}
           </div>

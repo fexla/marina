@@ -1469,6 +1469,17 @@ html[data-maximized='true'] .app-root.with-shell {
   display: flex;
   flex-direction: column;
 }
+/* dnd-kit 的 SortableContext 本身不会注册空容器；保留一条极窄的未分组落点，
+   并在命中任一容器时给出明确反馈。 */
+.sidebar-ungrouped.bookmark-drop-zone:empty {
+  min-height: 8px;
+}
+.bookmark-drop-zone.drop-over {
+  background: var(--color-bg-hover, rgba(255, 255, 255, 0.05));
+  outline: 1px solid var(--color-accent-special, #f0f);
+  outline-offset: -1px;
+  border-radius: 4px;
+}
 .sidebar-group-header {
   display: flex;
   align-items: center;
