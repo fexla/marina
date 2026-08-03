@@ -1211,6 +1211,81 @@ html[data-maximized='true'] .app-root.with-shell {
   background-color: color-mix(in srgb, var(--color-accent-special, #c4a7e7) 22%, transparent);
 }
 
+/* v1.14(方案-远程UI统一 §III.2):远程 tab 顶部的「Marina 电脑」区段。
+   电脑是窗口级连接(每窗口后端),点击 = 开新窗口;与下面路径三栏
+   (SSH 路径 = 路径级连接)视觉分开:server 图标 + 显示名 + host。 */
+.sidebar-computers {
+  padding: 6px 8px 2px;
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--color-text-muted, #888) 12%, transparent);
+}
+
+.sidebar-computers-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-muted, #888);
+}
+
+.sidebar-computers-empty {
+  padding: 3px 6px 6px;
+  font-size: 11px;
+  color: var(--color-text-muted, #888);
+}
+
+.sidebar-computers-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sidebar-computer-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--color-text-primary, #fff);
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar-computer-item:hover:not(:disabled) {
+  background-color: var(--color-bg-hover, #f0f);
+}
+
+.sidebar-computer-item:disabled {
+  color: var(--color-text-muted, #888);
+  cursor: default;
+}
+
+.sidebar-computer-name {
+  flex: 0 0 auto;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-computer-host {
+  flex: 1 1 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--color-text-muted, #888);
+}
+
 /* F11(beta 勘误2 续 v4):dropzone 视觉 — 纯背景洗涤 + 居中浮卡。
  *
  * 历史尝试与撤回原因:
@@ -3620,6 +3695,20 @@ html[data-maximized='true'] .app-root.with-shell {
   padding: 24px;
 }
 
+/* v1.14(方案-远程UI统一 §III.3):远程窗口主区的"我在哪"上下文行。
+   放最顶,welcome 态与 empty-path 态共用。 */
+.remote-context-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--color-text-muted, #888);
+  background-color: color-mix(in srgb, var(--color-accent-special, #c4a7e7) 10%, transparent);
+  border-radius: 12px;
+}
+
 .welcome-state h2 {
   margin: 0 0 12px;
   color: var(--color-accent-special, #f0f);
@@ -4477,6 +4566,20 @@ textarea.settings-input::-webkit-scrollbar-corner {
   height: 1px;
   margin: 24px 0;
   background-color: var(--color-bg-elevated, #f0f);
+}
+
+/* v1.14(方案-远程UI统一 §III.1):远程窗口里「Marina 电脑」/「允许远程连接」
+   属于本机(local-control)的说明条。醒目但克制 —— 用 accent 左条 + 次级
+   背景,区别于普通 desc。 */
+.settings-local-control-note {
+  margin: 0 0 16px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-secondary, #f0f);
+  background-color: var(--color-bg-elevated, #f0f);
+  border-left: 3px solid var(--color-accent-special, #c4a7e7);
+  border-radius: 4px;
 }
 
 /* 区块 A:服务端状态行 */

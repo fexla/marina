@@ -1,11 +1,9 @@
 {
   "_meta": "Marina English strings. Keys follow dot.path naming, roughly aligned with src/renderer/components. Missing translations fall back to the key literal so dev-mode reveals gaps.",
-
   "lastSession.title": "Close Marina?",
   "lastSession.message": "{count} active session(s) will be terminated.",
   "lastSession.confirm": "Close",
   "lastSession.cancel": "Cancel",
-
   "sidebar.category.bookmark": "Bookmarks",
   "sidebar.category.temporary": "Temporary",
   "sidebar.category.recent": "Recent",
@@ -17,10 +15,9 @@
   "sidebar.addTemporary.title": "Pick a folder and open a temporary terminal",
   "sidebar.path.invalid": "Path is not accessible",
   "sidebar.dropHint": "Drop to add to bookmarks",
-  "sidebar.segment.label": "Path source",
+  "sidebar.segment.label": "Local / Remote",
   "sidebar.segment.local": "Local",
   "sidebar.segment.remote": "Remote",
-
   "settings.title": "Settings",
   "settings.close": "Close settings",
   "settings.category.appearance": "Appearance",
@@ -28,12 +25,10 @@
   "settings.category.behavior": "Behavior",
   "settings.category.data": "Data",
   "settings.category.remote": "Remote",
-  "settings.category.remoteConnection": "Remote Connection",
   "settings.category.systemIntegration": "System Integration",
   "settings.category.ai": "AI Assistant",
   "settings.category.advanced": "Advanced",
   "settings.category.about": "About",
-
   "settings.appearance.theme.label": "Theme",
   "settings.appearance.theme.hint": "Applies to all windows immediately; xterm colors stay in sync",
   "settings.appearance.language.label": "Language",
@@ -43,14 +38,11 @@
   "settings.appearance.windowStyle.hint": "Title bar layout and control button position (does not affect theme colors)",
   "settings.appearance.macOSHover.label": "Traffic light hover symbols",
   "settings.appearance.macOSHover.hint": "On macOS style, whether to show ×/−/+ on hover. Off by default (more restrained).",
-
   "settings.toneTag.dark": "dark",
   "settings.toneTag.light": "light",
-
   "settings.data.dir.label": "Data directory",
   "settings.data.dir.hint": "Where all Marina config files are stored",
   "settings.data.openInExplorer": "Open in Explorer",
-
   "settings.ai.title": "AI Assistant",
   "settings.ai.intro": "Marina's first LLM integration. Currently used only for BETA-006: an active→idle LLM recheck so long-output tools like Vite are not mis-classified as idle. All API calls go through the main process; keys are never exposed to the renderer.",
   "settings.ai.provider.label": "Provider",
@@ -70,7 +62,6 @@
   "settings.ai.statusRecheck.hint": "LLM rechecks before active→idle; falls back to the threshold on failure, never blocks",
   "settings.ai.statusRecheckSource.label": "Recheck input source",
   "settings.ai.statusRecheckSource.hint": "headless = pre-rendered character matrix (no ANSI noise, no redraw residue)",
-
   "common.enable": "Enable",
   "common.disable": "Disable",
   "common.confirm": "Confirm",
@@ -86,7 +77,6 @@
   "common.minimize": "Minimize",
   "common.maximize": "Maximize",
   "common.restore": "Restore",
-
   "terminal.toolbar.copyAll": "Copy all scrollback",
   "terminal.toolbar.clear": "Clear",
   "terminal.toolbar.search": "Search (Ctrl+F)",
@@ -94,15 +84,15 @@
   "terminal.toolbar.fromSimple": "Exit simple view",
   "terminal.toolbar.copied": "Copied {lines} lines of scrollback",
   "terminal.toolbar.emptyScrollback": "Scrollback is empty",
-
   "tray.openWindow": "Open window",
   "tray.quit": "Quit Marina",
-
   "toast.win11MenuUpdated": "Right-click menu updated. Restart your computer to ensure changes take effect.",
-
   "modal.multilinePaste.title": "Multi-line paste confirmation",
   "modal.multilinePaste.message": "About to paste {count} lines.\nMulti-line content may be executed as separate commands.\nEnable bracketed paste in Settings → Behavior to keep the paste literal.",
-
   "appearance.theme.toneTag.dark": "dark",
-  "appearance.theme.toneTag.light": "light"
+  "appearance.theme.toneTag.light": "light",
+  "sidebar.computers.title": "Marina computers",
+  "sidebar.computers.empty": "Add in Settings → Remote",
+  "sidebar.computers.openTitle": "Open in a new window",
+  "sidebar.computers.noTokenTitle": "No password; fill it in Settings → Remote"
 }
