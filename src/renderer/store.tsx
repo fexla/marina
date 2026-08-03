@@ -1061,7 +1061,7 @@ export function useIpcSync(): {
       cancelled = true;
       for (const c of cleanups) c();
     };
-  }, [dispatch]);
+  }, [dispatch, stateRef]);
 
   return status;
 }
