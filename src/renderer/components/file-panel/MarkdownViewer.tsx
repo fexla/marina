@@ -218,7 +218,13 @@ function MdLink({ href, children, sessionId, mdPath }: MdLinkProps): JSX.Element
   const toast = useToast();
   const handle = (e: React.MouseEvent<HTMLAnchorElement>): void => {
     if (!href) return;
-    if (href.startsWith('#')) return; // 页内锚点 → 默认滚动
+    if (href.startsWith('#')) {
+      // react-markdown 默认不会给 heading 加 id，旧实现直接放行浏览器默认行为，
+      // 实际无目标可跳。按文档内 heading 文本生成 GitHub 风格 slug 后主动定位。
+      e.preventDefault();
+      scrollToMarkdownAnchor(e.currentTarget, href);
+      return;
+    }
     e.preventDefault();
     // 决策 #4:外链 = 完整 http(s)/mailto scheme。其余一律当本地文件。
     if (isExternalLink(href)) {
@@ -260,6 +266,38 @@ function MdLink({ href, children, sessionId, mdPath }: MdLinkProps): JSX.Element
  */
 function isExternalLink(href: string): boolean {
   return /^(?:https?:|mailto:)/i.test(href);
+}
+
+/**
+ * 在当前 Markdown 容器内定位 `#slug` 对应 heading。
+ *
+ * 不引入 remark-slug：该依赖只为一个行为增加构建面，且项目技术栈边界要求新包
+ * 先审批。这里的 slug 规则覆盖 Marina 文档常用中英文标题：Unicode 字母/数字保留，
+ * 标点删除，连续空白/连字符折成 `-`。重复标题定位第一个，与浏览器重复 id 行为一致。
+ */
+function scrollToMarkdownAnchor(anchor: HTMLAnchorElement, href: string): void {
+  let wanted = href.slice(1);
+  try {
+    wanted = decodeURIComponent(wanted);
+  } catch {
+    // 畸形 percent-encoding 保留原串；找不到目标时安全 no-op。
+  }
+  const root = anchor.closest('.markdown-body');
+  if (!root) return;
+  const target = Array.from(root.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6')).find(
+    (heading) => markdownHeadingSlug(heading.textContent ?? '') === wanted,
+  );
+  target?.scrollIntoView({ block: 'start' });
+}
+
+/** GitHub 风格 heading slug 的最小实现；保持中文等 Unicode 字母。 */
+function markdownHeadingSlug(text: string): string {
+  return text
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, '')
+    .replace(/[\s-]+/g, '-')
+    .replace(/^-|-$/g, '');
 }
 
 interface ImgProps {
