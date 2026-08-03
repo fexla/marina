@@ -12,7 +12,15 @@
  *
  * @对应文档章节:软件定义书.md ADR-016；docs/方案-主工作区布局架构-20260712.md。
  */
-import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+} from 'react';
 import { COMMAND_CHANNELS } from '@shared/protocol';
 import type { LayoutNode, SessionInfo } from '@shared/types';
 import { useAppDispatch, useAppState } from '../../store';
@@ -121,6 +129,9 @@ function PanelStack({
   // active panel 自己决定怎么用(列表过滤 / 文件内查找)。
   const [searchVisible, setSearchVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  // 输入框值必须逐键即时更新；面板过滤/高亮可能触及 500~5000 行，用 deferred
+  // 副本把重计算降为可中断更新，避免“大结果集 + 输入一键”冻结整个 renderer。
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
   // v0.3.1 C3:文件内查找的命中数/当前序号由 FileViewer 算后汇报(事件),
   // LayoutHost 只展示。导航(onNext/onPrev)反向 dispatch 事件给 FileViewer。
@@ -249,7 +260,7 @@ function PanelStack({
   // search props 对象(传给 ActivePanel)。每渲染重建,但面板用 useMemo 依赖
   // query/caseSensitive/visible,不会过度重算。
   const searchProps = {
-    query: searchQuery,
+    query: deferredSearchQuery,
     caseSensitive: searchCaseSensitive,
     visible: searchVisible,
   };

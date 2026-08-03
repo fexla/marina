@@ -15,7 +15,7 @@
  * - 不做文件编辑、创建、删除、重命名、上传或下载。
  * - 不显示任意目录、SSH/SFTP 远端目录或 Project/Workspace 容器。
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { startTransition, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   COMMAND_CHANNELS,
   type FileTreeRootInfo,
@@ -54,6 +54,9 @@ interface DirectoryState {
 }
 
 type DirectoryStates = Record<string, DirectoryState | undefined>;
+
+/** 搜索最多挂载 200 行；main 可扫描 5000 项，但全量命中时一次挂大量 DOM 会卡 renderer。 */
+const MAX_VISIBLE_SEARCH_RESULTS = 200;
 
 function directoryKey(rootId: FileTreeRootId, relativePath: string): string {
   return `${rootId}:${relativePath}`;
@@ -130,10 +133,14 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
           { sessionId: string; rootId: FileTreeRootId; relativePath: string },
           ListFileTreeDirectoryResponse
         >(COMMAND_CHANNELS.FILE_TREE_LIST_DIRECTORY, { sessionId, rootId, relativePath });
-        setDirectories((current) => ({
-          ...current,
-          [key]: { expanded: true, loading: false, snapshot },
-        }));
+        // 大目录返回最多 500 项；标记为 transition 让 React concurrent renderer
+        // 可在构建大量行时主动让出主线程，避免一次同步更新冻结整个窗口。
+        startTransition(() => {
+          setDirectories((current) => ({
+            ...current,
+            [key]: { expanded: true, loading: false, snapshot },
+          }));
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.warn('[FileTreePanel] list directory failed', err);
@@ -210,13 +217,17 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
       ),
     ).then((results) => {
       if (cancelled) return;
-      setRecursiveResults((prev) => {
-        const next = { ...prev };
-        for (const row of results) {
-          if (!row) continue;
-          next[row[0]] = row[1];
-        }
-        return next;
+      // 单 root 最多 5000 entries；命中很多时构建过滤结果也会很重。标记为
+      // transition，让搜索输入/窗口拖动可抢占，避免远程大响应落地时冻结整窗。
+      startTransition(() => {
+        setRecursiveResults((prev) => {
+          const next = { ...prev };
+          for (const row of results) {
+            if (!row) continue;
+            next[row[0]] = row[1];
+          }
+          return next;
+        });
       });
     });
     return () => {
@@ -228,10 +239,15 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
     const key = directoryKey(rootId, relativePath);
     const state = directories[key];
     if (state?.snapshot && !state.loading) {
-      setDirectories((current) => ({
-        ...current,
-        [key]: { ...state, expanded: !state.expanded },
-      }));
+      const toggleCached = (): void =>
+        setDirectories((current) => ({
+          ...current,
+          [key]: { ...state, expanded: !state.expanded },
+        }));
+      // 展开缓存的大目录仍会同步创建最多 500 行；与首次 load 成功同样必须允许
+      // concurrent renderer 分片。收起只卸载节点，保持同步以获得即时反馈。
+      if (state.expanded) toggleCached();
+      else startTransition(toggleCached);
       return;
     }
     void loadDirectory(rootId, relativePath);
@@ -250,7 +266,7 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
   // v0.3.2:搜索态用全量递归缓存做本地过滤,得扁平匹配列表(跨所有 root 合并)。
   // 匹配 name 或 relativePath(后者让用户能按路径片段搜)。按 relativePath 排序稳定。
   const searchMatches = useMemo(() => {
-    if (!isSearching) return { items: [], truncated: false, dirCount: 0 };
+    if (!isSearching) return { items: [], truncated: false, dirCount: 0, limited: false };
     const q = search.query;
     const cs = search.caseSensitive;
     const out: Array<{
@@ -275,7 +291,12 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
     }
     // 相对路径稳定排序(文件/目录不强制分组,按路径字典序更符合搜索直觉)。
     out.sort((a, b) => a.entry.relativePath.localeCompare(b.entry.relativePath));
-    return { items: out, truncated: anyTruncated, dirCount: totalDirCount };
+    return {
+      items: out.slice(0, MAX_VISIBLE_SEARCH_RESULTS),
+      truncated: anyTruncated,
+      dirCount: totalDirCount,
+      limited: out.length > MAX_VISIBLE_SEARCH_RESULTS,
+    };
   }, [isSearching, search.query, search.caseSensitive, roots, recursiveResults]);
 
   // 需求2(ADR-019):双根切换 —— 顶部 toolbar 选「当前目录 / 临时工作区」,
@@ -383,6 +404,8 @@ interface SearchMatches {
   }>;
   truncated: boolean;
   dirCount: number;
+  /** 匹配数超过 renderer 安全挂载上限；提示用户缩小查询。 */
+  limited: boolean;
 }
 
 /**
@@ -392,7 +415,8 @@ interface SearchMatches {
  * list-recursive 一次拉全量缓存,本地过滤即时响应。label 显示完整 relativePath
  * (高亮匹配片段),让用户能按路径片段搜(如「src/foo」)。
  *
- * 性能:main 端 5000 entry 上限 + BFS,renderer 仅渲染匹配项(过滤后通常 ≤ 几十)。
+ * 性能:main 端 5000 entry 上限 + BFS；renderer 最多挂 200 个匹配项，超出提示
+ * 缩小查询，避免宽泛搜索一次创建数千 DOM。
  */
 function SearchResultsList({
   sessionId,
@@ -489,6 +513,14 @@ function SearchResultsList({
           }
         />
       ))}
+      {matches.limited && (
+        <div className="file-tree-truncated">
+          {tx(
+            `匹配过多，仅显示前 ${MAX_VISIBLE_SEARCH_RESULTS} 项；请缩小搜索范围。`,
+            `Too many matches; showing the first ${MAX_VISIBLE_SEARCH_RESULTS}. Narrow the search to see more.`,
+          )}
+        </div>
+      )}
       {matches.truncated && (
         <div className="file-tree-truncated">
           {tx(

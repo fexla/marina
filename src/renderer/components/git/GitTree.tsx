@@ -14,8 +14,10 @@
  *
  * @不做:
  * - 不做目录级右键菜单(折叠/全部展开等),保持简单;用户手动点目录展开/收起。
- * - 不做懒加载(变更通常 < 500,全展开渲染无压力)。
+ * - 不做远端懒加载(status 已在 main 限 500);大子树展开用 React transition
+ *   分片，避免一次同步 render 卡住整窗。
  */
+import { startTransition } from 'react';
 import type { GitStatusTone } from '@shared/protocol';
 import { fileIconFor } from '@shared/file-icon';
 import { usePanelUiState } from '../../hooks/usePanelUiState';
@@ -78,15 +80,20 @@ export function GitTree({
   );
 
   const toggle = (dirPath: string): void => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(dirPath)) {
-        next.delete(dirPath);
-      } else {
-        next.add(dirPath);
-      }
-      return next;
-    });
+    const update = (): void =>
+      setCollapsed((prev) => {
+        const next = new Set(prev);
+        if (next.has(dirPath)) {
+          next.delete(dirPath);
+        } else {
+          next.add(dirPath);
+        }
+        return next;
+      });
+    // 展开一个大目录可能一次恢复数百变更行；允许 concurrent renderer 分片。
+    // 收起只卸载节点，保持同步即时。
+    if (collapsed.has(dirPath)) startTransition(update);
+    else update();
   };
 
   const renderNode = (node: GitTreeNode, depth: number): JSX.Element => {

@@ -9,6 +9,16 @@
 
 ### 修复
 
+- **大结果集交互不再冻结整个窗口。**
+  真实 Electron/CDP Long Task 基准覆盖四条高风险路径：文件树展开 500 项
+  (旧 max rAF gap 120–175ms)、文件树搜索命中 500 项(180ms)、Git 未跟踪组展开
+  500 项(145ms)、只读 50k 行文本/diff(分别冻结 4.7s/7.0s)。文件树/Git 的大列表
+  更新改为 React transition，面板搜索 query 改用 deferred value；文件树搜索仍扫描
+  5000 项但最多挂载 200 个匹配并提示缩小查询。TextViewer 限 1000 行、DiffViewer
+  限 500 行并修复“先高亮完整 50k 行再 slice”的隐藏全量工作，视口外行用
+  `content-visibility` 跳过 layout/paint。修复后四条基准均无 >100ms Long Task，窗口
+  拖动、终端输入与动画不会再被一次大列表 commit 长时间阻塞。
+
 - **Markdown 表格内链接换行优化(方案 B)。**
   MarkdownViewer 表格窄列里的链接(文字 + URL)原本只在空格处断行,文字留本行、
   URL 挤下一行,视觉上像两条链接、点击区也分裂。现对 `td a` 设

@@ -33,8 +33,12 @@ interface ViewerProps {
   search: PanelSearchProps;
 }
 
-/** 大文件客户端兜底:超过此行数只渲染头部 + 截断提示(A6,防卡死)。 */
-const MAX_RENDER_LINES = 50000;
+/**
+ * 大文件客户端兜底:超过此行数只渲染头部 + 截断提示。
+ * 真实 Electron 31 基准:50k 行冻结 4.7s；2k 行仍有 125ms Long Task；
+ * 1k + content-visibility 为 50–75ms、无 Long Task。不要凭感觉调大。
+ */
+const MAX_RENDER_LINES = 1000;
 
 export function TextViewer({ sessionId, file, search }: ViewerProps): JSX.Element {
   const { tx } = useTranslation();

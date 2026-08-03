@@ -19,7 +19,7 @@
  *   mount 先读缓存秒显,后台静默刷新(loading 不覆盖已有 snapshot)。缓存失效由
  *   main 端 evt:git:status-updated(预取/watcher)或本组件 loadStatus 成功驱动。
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { startTransition, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   COMMAND_CHANNELS,
   EVENT_CHANNELS,
@@ -170,12 +170,16 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
         }));
         setCachedStatus(sessionId, { unavailable: resp.unavailable, at: Date.now() });
       } else {
-        setState((s) => ({
-          ...s,
-          loading: false,
-          unavailable: undefined,
-          snapshot: { groups: resp.groups, truncated: resp.truncated },
-        }));
+        // status 最多 500 项；远程响应落地后构建 flat/tree 行可能很重，使用
+        // transition 让终端输入、窗口拖动等高优先级交互可抢占。
+        startTransition(() => {
+          setState((s) => ({
+            ...s,
+            loading: false,
+            unavailable: undefined,
+            snapshot: { groups: resp.groups, truncated: resp.truncated },
+          }));
+        });
         const entry: GitStatusCacheEntry = {
           groups: resp.groups,
           truncated: resp.truncated,
@@ -217,12 +221,14 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
         } else {
           const groups = payload.groups ?? [];
           const truncated = payload.truncated ?? false;
-          setState((s) => ({
-            ...s,
-            loading: false,
-            unavailable: undefined,
-            snapshot: { groups, truncated },
-          }));
+          startTransition(() => {
+            setState((s) => ({
+              ...s,
+              loading: false,
+              unavailable: undefined,
+              snapshot: { groups, truncated },
+            }));
+          });
           setCachedStatus(sessionId, { groups, truncated, at: Date.now() });
         }
       },
@@ -419,7 +425,17 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
 
   // usePanelPreference 的 setter 已自动持久化,无需再手动 writeViewMode。
   const switchViewMode = (mode: GitViewMode): void => {
-    setViewMode(mode);
+    // tree/flat 都可能重建最多 500 行；偏好仍由 setter 同步落 localStorage，React
+    // 视图更新标为可中断 transition。
+    startTransition(() => setViewMode(mode));
+  };
+
+  const toggleUntracked = (): void => {
+    const update = (): void =>
+      setState((s) => ({ ...s, untrackedExpanded: !s.untrackedExpanded }));
+    // 展开最多 500 个 untracked 行是重操作；收起保持同步即时。
+    if (state.untrackedExpanded) update();
+    else startTransition(update);
   };
 
   return (
@@ -489,10 +505,7 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
               <button
                 type="button"
                 className="git-panel-group-header"
-                onClick={() =>
-                  isUntracked &&
-                  setState((s) => ({ ...s, untrackedExpanded: !s.untrackedExpanded }))
-                }
+                onClick={() => isUntracked && toggleUntracked()}
                 aria-expanded={expanded}
                 disabled={!isUntracked}
               >

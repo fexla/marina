@@ -104,8 +104,11 @@ function signFor(kind: DiffRowKind): string {
   }
 }
 
-/** 大文件客户端兜底(A6):超此行数只渲染头部。 */
-const MAX_RENDER_ROWS = 50000;
+/**
+ * 大 diff 客户端兜底。diff 同时挂 gutter + code 两套行 DOM，预算低于 TextViewer。
+ * 真实 Electron 31 基准:旧 50k 行冻结 7.0s；500 行处理/挂载无 >100ms Long Task。
+ */
+const MAX_RENDER_ROWS = 500;
 
 interface DiffRow {
   key: number;
@@ -118,7 +121,7 @@ interface DiffRow {
 }
 
 /**
- * 把整段 diff 文本切成 DiffRow[]。逐行 highlight,跟踪当前块的语言(遇 +++ b/path 切换),
+ * 把已按预算截取的 diff 行切成 DiffRow[]。逐行 highlight,跟踪当前块的语言(遇 +++ b/path 切换),
  * 并按 hunk header @@ -a,b +c,d @@ 维护 old/new 双侧行号计数器(v0.3.3 行号槽)。
  *
  * 语言选择规则:
@@ -135,8 +138,7 @@ interface DiffRow {
  * 单文件 diff:开头一个 +++ b/foo.ts 设定全块语言。
  * 多文件 diff:每个 diff --git 块重新解析 +++ b/... 切换。
  */
-function buildRows(text: string): DiffRow[] {
-  const lines = text.split('\n');
+function buildRows(lines: readonly string[]): DiffRow[] {
   let currentLang = 'diff'; // 默认 diff 语言(纯行级,无 token)
   // hunk 行号计数器(null = 还没进第一个 hunk,此时代码行不该出现,但防御性给 null)
   let oldLn: number | null = null;
@@ -233,11 +235,17 @@ export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
 
   const { rows, truncatedClient } = useMemo(() => {
     if (!content || content.kind !== 'diff') return { rows: null, truncatedClient: false };
-    const all = buildRows(content.text);
-    if (all.length > MAX_RENDER_ROWS) {
-      return { rows: all.slice(0, MAX_RENDER_ROWS), truncatedClient: true };
-    }
-    return { rows: all, truncatedClient: false };
+    // 旧实现先对完整 2MB/最多 50k 行逐行 highlight，再 slice 前 N 行；即使 DOM
+    // 截断了，隐藏的 49k 行仍在主线程做 hljs，实测单次冻结 7 秒。split 的 limit
+    // 只取 N+1 行用于判断截断，buildRows 从源头只处理可见预算。
+    const visibleLines = content.text.split('\n', MAX_RENDER_ROWS + 1);
+    const truncatedClient = visibleLines.length > MAX_RENDER_ROWS;
+    return {
+      rows: buildRows(
+        truncatedClient ? visibleLines.slice(0, MAX_RENDER_ROWS) : visibleLines,
+      ),
+      truncatedClient,
+    };
   }, [content]);
 
   // v0.3.3 Feature C:从 diff 文本反推「打开源文件」按钮的 relativePath + deleted 态。

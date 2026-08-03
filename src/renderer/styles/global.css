@@ -2782,6 +2782,10 @@ html[data-maximized='true'] .app-root.with-shell {
   grid-template-columns: auto 1fr;
   align-items: baseline;
   min-height: 1.5em;
+  /* 大文件最多数千行；Chromium 对视口外行跳过 layout/paint，避免一次挂载时
+   * 整个 renderer 因不可见行的 grid 计算而冻结。intrinsic size 保持滚动高度稳定。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 1.5em;
 
   /* 不透明底:行号 sticky 时 background:inherit 取这个色,挡住横向滚过来的代码。
    * search-current 时下方规则覆盖此色,inherit 自动跟随。 */
@@ -2998,6 +3002,10 @@ html[data-maximized='true'] .app-root.with-shell {
 .diff-gutter-row,
 .diff-line {
   min-height: 1.5em;
+  /* 两个 pane 各自最多挂载 500 行；视口外行跳过 layout/paint，避免 diff
+   * 首次打开时 gutter + code 两套 DOM 同步计算形成 Long Task。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 1.5em;
   background-color: var(--color-bg-primary, #f0f);
 }
 
