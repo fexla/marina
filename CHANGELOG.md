@@ -9,6 +9,13 @@
 
 ### 修复
 
+- **长文件名只省略文本，不再压扁 icon。**
+  `FileListRow` 的 Lucide SVG 原本继承 flex item 默认 `flex-shrink: 1`；约 196 字符的
+  文件名会把 14px icon 横向压到 4.6px，视觉上像 icon 和文字一起缩小。现在 list/tab
+  的 icon、chevron、关闭按钮固定尺寸，只有 label 槽承担负空间并在末尾 ellipsis。
+  真实 renderer computed layout 验证：短/长文件 icon 均为 14×14px、文字均 12px，
+  长文本保持 `scrollWidth > clientWidth + text-overflow: ellipsis`。
+
 - **大结果集交互不再冻结整个窗口。**
   真实 Electron/CDP Long Task 基准覆盖四条高风险路径：文件树展开 500 项
   (旧 max rAF gap 120–175ms)、文件树搜索命中 500 项(180ms)、Git 未跟踪组展开

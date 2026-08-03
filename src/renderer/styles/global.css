@@ -2390,6 +2390,13 @@ html[data-maximized='true'] .app-root.with-shell {
   padding: 3px 8px;
 }
 
+/* Lucide <svg> 默认是 flex-shrink:1；长文件名会把 14px icon 横向压扁到约 4px。
+ * icon/chevron 是固定视觉槽，负空间只能由 label 承担。tab 同理。 */
+.file-list-row-button > svg,
+.file-list-row-tab > svg {
+  flex: 0 0 auto;
+}
+
 .file-list-row-button:hover:not(:disabled) {
   background-color: var(--color-bg-elevated, #f0f);
 }
@@ -2402,7 +2409,8 @@ html[data-maximized='true'] .app-root.with-shell {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1 1 auto;
+  /* basis=0:只占剩余空间；min-width=0 允许文本槽缩到省略号，而不挤 icon。 */
+  flex: 1 1 0;
   min-width: 0;
 }
 
@@ -2432,6 +2440,8 @@ html[data-maximized='true'] .app-root.with-shell {
   cursor: pointer;
   font-size: 12px;
   padding: 2px 0;
+  flex: 0 1 130px;
+  min-width: 0;
   max-width: 130px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2443,6 +2453,7 @@ html[data-maximized='true'] .app-root.with-shell {
 }
 
 .file-list-row-tab-close {
+  flex: 0 0 auto;
   color: var(--color-text-muted, #f0f);
   cursor: pointer;
   font-size: 14px;
