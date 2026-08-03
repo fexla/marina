@@ -9,6 +9,19 @@
 
 ### 修复
 
+- **workspace 切回不再因残缺 `OpenedFile` 白屏。**
+  main 已先恢复带 `name/size/mtimeMs` 的完整文件列表，但 renderer 随后的快照恢复又把
+  `{path, kind}` 强转为 `OpenedFile[]` 覆盖它，最终 `fileIconFor(undefined)` 抛错、整窗
+  白屏。现在文件列表/active 只认 main 的 `file-panel/updated`，renderer 快照仅补 scroll
+  和 code-run 缓存。真实 CLI 强测通过：bind → new 清空 → bind 恢复；退出重启后同名
+  bind 仍恢复 README，renderer console 0 错误。
+
+- **Markdown 页内锚点真正滚动。**
+  `react-markdown` 默认 heading 没有 id，旧 `#anchor` 分支放行浏览器默认行为却无目标，
+  scrollTop 完全不变。现在按 Unicode-safe GitHub 风格 slug 在当前 Markdown 容器内定位
+  h1–h6 并 `scrollIntoView`；实测 smoke 文档从 scrollTop 301.9 回到 8.1。同步修正
+  v0.3.3 smoke fixture 的仓库相对链接层级（`docs/test-fixtures` 到根应为 `../../`）。
+
 - **长文件名只省略文本，不再压扁 icon。**
   `FileListRow` 的 Lucide SVG 原本继承 flex item 默认 `flex-shrink: 1`；约 196 字符的
   文件名会把 14px icon 横向压到 4.6px，视觉上像 icon 和文字一起缩小。现在 list/tab
