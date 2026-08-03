@@ -47,6 +47,7 @@ import { useModal } from './Modal';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { useCloseSession } from '../hooks/useCloseSession';
 import { claimSession } from '../hooks/claim-gate';
+import { useBackendLabel } from '../hooks/useBackendLabel';
 import { buildSessionContextMenu } from './sessionContextMenu';
 import { useTranslation } from './LanguageProvider';
 
@@ -170,9 +171,7 @@ export function MainPane(): JSX.Element {
     <main className="main-pane" ref={containerRef}>
       {/* BETA-027:简易模式下 Tab bar 隐藏(浮动工具栏由 App.tsx 直接渲染)
           issue #4:appearance.hideTopTabBar=true 时也隐藏 TabBar(Sidebar 仍在) */}
-      {state.selectedPathId &&
-        !state.simpleMode &&
-        !state.settings.appearance?.hideTopTabBar && (
+      {state.selectedPathId && !state.simpleMode && !state.settings.appearance?.hideTopTabBar && (
         <TabBar
           sessions={sessions}
           selectedSessionId={state.selectedSessionId}
@@ -214,12 +213,33 @@ function WelcomeState(): JSX.Element {
   const { tx } = useTranslation();
   return (
     <div className="welcome-state">
+      <RemoteContextLine />
       <h2>Marina</h2>
       <p>
         {tx('从左侧选一个路径开始,或点击', 'Pick a path on the left, or click')}{' '}
         <strong>{tx('收藏 +', 'Bookmark +')}</strong> {tx('添加文件夹。', 'to add a folder.')}
       </p>
     </div>
+  );
+}
+
+/**
+ * v1.14(方案-远程UI统一 §III.3):远程窗口(每窗口后端)主区的"我在哪"上下文。
+ * 只靠标题栏小字不够 —— 用户切到远程窗口,主区第一眼要有"这是那台机器"的信号。
+ * 本地窗口返回 null 不渲染。断连 = 关窗口(窗口零成本开关哲学),文案直接说明。
+ */
+function RemoteContextLine(): JSX.Element | null {
+  const { tx } = useTranslation();
+  const backendLabel = useBackendLabel();
+  if (!backendLabel) return null;
+  return (
+    <p className="remote-context-line">
+      <Icon name="server" size={13} />
+      {tx(
+        `正在操作 ${backendLabel} 上的 Marina · 关闭窗口断开`,
+        `Operating Marina on ${backendLabel} · close window to disconnect`,
+      )}
+    </p>
   );
 }
 
@@ -309,6 +329,7 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
 
   return (
     <div className="empty-path-state">
+      <RemoteContextLine />
       <p className="empty-hint">
         {tx('在', 'New terminal in')} <code>{displayPath}</code>
         {tx(' 新建终端', '')}
