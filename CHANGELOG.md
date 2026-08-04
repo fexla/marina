@@ -11,6 +11,12 @@
 
 ### 修复
 
+- **Windows 包严格剔除非目标 node-pty 二进制。**
+  `files` 负 glob 与 `asarUnpack` 合用时仍会把 macOS / ARM64 prebuild 带入 staging
+  （ISO-2）。新增 `afterPack` 钩子，只清理本次 `appOutDir`，按目标平台/架构保留
+  node-pty；绝不修改开发机 `node_modules`。`0.3.3-preview` 首次严格校验由 2 个
+  Mach-O 错误转为 3/3 Windows `.node` 匹配、0 错误、0 警告。
+
 - **新建收藏分组入口收进侧栏右键菜单。**
   移除收藏列表底部突兀的虚线“新建分组”按钮；现在右键根级分类（收藏 / 临时 /
   最近）均可新建，右键已有分组则统一显示新建、重命名、删除。仍使用项目自绘

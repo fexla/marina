@@ -1,6 +1,6 @@
 # ISO-2 · electron-builder 平台过滤部分失效:Windows 包仍夹带 darwin-* / win32-arm64 prebuilds
 
-**状态**:**待修**(2026-05-25 发现于 v0.2.0 实际产物)
+**状态**:**已修复**(2026-08-04，`0.3.3-preview` 严格产物校验通过)
 
 **优先级**:P3(产物功能完整,无 SIGSEGV 风险;仅 ~1MB 死重 + ISO-1 文档承诺的"零污染"目标未达成)
 
@@ -112,7 +112,23 @@ electron-builder 的 file 解析按数组顺序处理 include / exclude。如果
 
 ---
 
-## 修复方向(候选)
+## 实际修复（2026-08-04）
+
+采用比“删除开发机 prebuilds”更安全的 staging 后处理：
+
+- `electron-builder.yml` 注册 `scripts/filter-node-pty-after-pack.cjs`。
+- 钩子只操作 electron-builder 本次生成的 `context.appOutDir`，**不修改仓库
+  `node_modules`**，所以不会破坏后续跨平台开发。
+- Windows / macOS 仅保留匹配 `platform-arch` 的 prebuild，并移除 staging 内
+  `build/`；Linux 移除全部 prebuilds，仅保留构建环境编译的 `build/Release`。
+- 架构或平台未知、目标 prebuild 缺失时 fail closed，宁可阻塞打包也不猜。
+
+`0.3.3-preview` 实证：第一次严格校验抓到 2 个 Darwin Mach-O；接入钩子重打后，
+`win-unpacked` 从 8 个 `.node` 降为 3 个 `win32-x64` `.node`，
+`verify-artifacts --strict` 为 **0 错误 / 0 警告**。Portable SHA256：
+`a385a63463bbe846c2c5f0a9e001c85a69dfc28f33ff6520dc553a761d0c8be4`。
+
+## 历史修复方向（已由 afterPack 方案收敛）
 
 按代价递增排:
 
@@ -152,7 +168,9 @@ node_modules/node-pty/prebuilds/
 └── win32-x64/   ← 只有这一个
 ```
 
-且自动化 verify 脚本(`scripts/verify-artifacts.mjs` 已存在,但当前依赖 `release.mjs` 调用 — 见 ISO-3)能在 CI 上以 exit 1 拦截违反此规则的产物。
+且自动化 verify 脚本(`scripts/verify-artifacts.mjs`)能以 exit 1 拦截违反此规则的产物。
+
+- [x] `0.3.3-preview` Windows x64：只剩 `prebuilds/win32-x64`，严格校验通过。
 
 Linux 包同理:
 

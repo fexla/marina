@@ -30,6 +30,10 @@ asar: true
 asarUnpack:
   - node_modules/node-pty/**
 
+# ISO-2:files 负 glob 与 asarUnpack 合用时仍会把 darwin/错误架构 prebuild
+# 带进 Windows 包。afterPack 只清本次 staging(appOutDir),不碰开发机 node_modules。
+afterPack: scripts/filter-node-pty-after-pack.cjs
+
 # Shell hook 脚本不能放在 asar 内 — pwsh.exe / bash.exe 是外部进程,无法
 # 读 asar 虚拟文件系统。放在 `<install>\resources\shell-hooks\` 旁与 app.asar
 # 同级,运行期通过 process.resourcesPath 定位。
