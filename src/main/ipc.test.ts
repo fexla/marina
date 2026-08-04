@@ -58,15 +58,25 @@ const { handlers, mockApp, mockBrowserWindow, mockClipboard, mockDialog, mockShe
     };
     const mockBrowserWindow = {
       getAllWindows: (): unknown[] => [],
-      fromWebContents: (): unknown => null,
+      getFocusedWindow: (): unknown => null,
+      // Electron 的真实 fromWebContents(undefined) 会在内部访问
+      // webContents.getOwnerBrowserWindow 并抛 TypeError；mock 必须保留这个失败模式，
+      // 否则 WS fakeEvent.sender=undefined 的远程回归永远测不出来。
+      fromWebContents: (webContents: unknown): unknown => {
+        if (!webContents) {
+          throw new TypeError("Cannot read properties of undefined (reading 'getOwnerBrowserWindow')");
+        }
+        return null;
+      },
     };
     const mockClipboard = {
       readText: (): string => '',
       writeText: (): void => {},
     };
     const mockDialog = {
-      showSaveDialog: (): Promise<unknown> => Promise.resolve({ canceled: true }),
-      showOpenDialog: (): Promise<unknown> => Promise.resolve({ canceled: true }),
+      showSaveDialog: vi.fn((): Promise<unknown> => Promise.resolve({ canceled: true })),
+      showOpenDialog: vi.fn((): Promise<unknown> => Promise.resolve({ canceled: true })),
+      showMessageBox: vi.fn((): Promise<unknown> => Promise.resolve({ response: 0 })),
     };
     const mockShell = {
       openExternal: vi.fn((): Promise<void> => Promise.resolve()),
@@ -479,6 +489,36 @@ describe('IPC SESSION_CREATE', () => {
       tmuxMode: 'attach-or-create',
       tmuxOnMissing: 'fallback-shell',
     });
+  });
+});
+
+describe('IPC dialog commands over remote transport', () => {
+  it.each([
+    COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER,
+    COMMAND_CHANNELS.SSH_PROFILE_PICK_KEY_FILE,
+    COMMAND_CHANNELS.SETTINGS_EXPORT,
+    COMMAND_CHANNELS.SETTINGS_IMPORT,
+  ])('%s 返回明确的不支持错误，而不是访问 undefined sender', async (channel) => {
+    const { installIpcLayer, dispatchCommand } = await freshIpc();
+    const { deps } = makeStubs();
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    const result = await dispatchCommand(channel, {
+      windowId: 'remote-client',
+      requestId: `remote-dialog-${channel}`,
+      payload: {},
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: 'RemoteDialogUnavailable',
+        message: expect.stringContaining(channel),
+      },
+    });
+    expect(mockDialog.showOpenDialog).not.toHaveBeenCalled();
+    expect(mockDialog.showSaveDialog).not.toHaveBeenCalled();
+    expect(mockDialog.showMessageBox).not.toHaveBeenCalled();
   });
 });
 

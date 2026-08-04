@@ -25,6 +25,7 @@ import { app, BrowserWindow, clipboard, ipcMain, dialog, safeStorage, shell } fr
 import { getBuildType } from './build-type';
 import type { FilePanelService } from './file-panel-service';
 import type { FileTreeService } from './file-tree-service';
+import { listDirectoryPickerEntries } from './directory-picker-service';
 import type { GitService } from './git-service';
 import type { PerformanceDiagnostics } from './performance-diagnostics';
 import type { SkillInstaller } from './skill-installer';
@@ -138,6 +139,8 @@ import {
   type PathTreeUpdatedPayload,
   type PickFolderPayload,
   type PickFolderResponse,
+  type ListDirectoryPickerPayload,
+  type ListDirectoryPickerResponse,
   type PickSshKeyFilePayload,
   type PickSshKeyFileResponse,
   type QuitPayload,
@@ -364,9 +367,9 @@ function sendEventTo<P>(clientId: string, channel: string, payload: P): void {
 // (dispatchCommand)从表查,用 fakeEvent 调同一组 handler —— 两种 transport
 // 同构,业务逻辑零重复,75 个 handler 签名零改动。
 //
-// 远程 client 无 BrowserWindow,handler 里用 _e.sender 的命令(dialog 类文件
-// 选择)在 WS 下 sender=undefined 会失败 —— 这些命令远程不支持(loopback 核心
-// 是 session/shell;远程后端本就不该 daemon 弹本地对话框)。
+// 远程 client 无 BrowserWindow,dialog 类命令在 WS 下必须返回明确的
+// RemoteDialogUnavailable,不能把 sender=undefined 交给 Electron 后再泄漏 TypeError。
+// Renderer 也必须在远程后端窗口改用路径输入,不能要求 headless daemon 弹对话框。
 type RawHandler = (e: Electron.IpcMainInvokeEvent, envelope: CommandEnvelope) => unknown;
 const rawHandlers = new Map<string, RawHandler>();
 
@@ -413,6 +416,29 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
     'then' in value &&
     typeof (value as { then?: unknown }).then === 'function'
   );
+}
+
+/**
+ * 返回 native dialog 的父窗口；远程 transport 没有 webContents 时明确拒绝。
+ *
+ * 为什么不能静默回退 `BrowserWindow.getFocusedWindow()`:daemon 可能同时运行着
+ * 一套本机 GUI，把远程用户的文件选择器弹到无人看到或错误用户的桌面上；更常见
+ * 的 headless 场景则直接没有窗口。远程 renderer 应改用后端路径输入。
+ */
+function requireLocalDialogOwner(
+  event: Electron.IpcMainInvokeEvent,
+  channel: string,
+): BrowserWindow | undefined {
+  if (!event.sender) {
+    throw makeIpcError(
+      'RemoteDialogUnavailable',
+      `channel="${channel}" requires a local Electron window, but the command arrived through ` +
+        'remote transport without webContents. Possible causes: (1) a remote UI invoked a native ' +
+        'file dialog, (2) the command routing domain is wrong. Use a backend-path input in remote ' +
+        'windows; native dialogs are only available in local windows.',
+    );
+  }
+  return BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow() ?? undefined;
 }
 
 /**
@@ -956,7 +982,10 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   registerHandle(
     COMMAND_CHANNELS.BOOKMARK_GROUP_ADD,
     (_e, envelope: CommandEnvelope<AddBookmarkGroupPayload>): AddBookmarkGroupResponse => {
-      const group = pathManager.addGroup(envelope.payload.name);
+      const group = pathManager.addGroup(
+        envelope.payload.name,
+        envelope.payload.parentId ?? undefined,
+      );
       return { id: group.id };
     },
   );
@@ -985,16 +1014,31 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   registerHandle(
     COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER,
     async (_e, envelope: CommandEnvelope<PickFolderPayload>): Promise<PickFolderResponse> => {
-      const fromWindow = BrowserWindow.fromWebContents(_e.sender);
-      const result = await dialog.showOpenDialog(fromWindow ?? BrowserWindow.getFocusedWindow()!, {
+      const owner = requireLocalDialogOwner(_e, COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER);
+      const options: Electron.OpenDialogOptions = {
         title: '选择文件夹',
         properties: ['openDirectory'],
         ...(envelope.payload.defaultPath ? { defaultPath: envelope.payload.defaultPath } : {}),
-      });
+      };
+      const result = owner
+        ? await dialog.showOpenDialog(owner, options)
+        : await dialog.showOpenDialog(options);
       if (result.canceled || result.filePaths.length === 0) {
         return { path: null };
       }
       return { path: result.filePaths[0]! };
+    },
+  );
+
+  registerHandle(
+    COMMAND_CHANNELS.DIRECTORY_PICKER_LIST,
+    (
+      _e,
+      envelope: CommandEnvelope<ListDirectoryPickerPayload>,
+    ): Promise<ListDirectoryPickerResponse> => {
+      // backend-data 命令:本地窗口在本机 main 列目录；远程窗口经 WS 在 daemon
+      // 列目录。renderer 因而能用同一个“点击式”选择器浏览正确电脑。
+      return listDirectoryPickerEntries(envelope.payload.path);
     },
   );
 
@@ -1062,12 +1106,15 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       _e,
       envelope: CommandEnvelope<PickSshKeyFilePayload>,
     ): Promise<PickSshKeyFileResponse> => {
-      const fromWindow = BrowserWindow.fromWebContents(_e.sender);
-      const result = await dialog.showOpenDialog(fromWindow ?? BrowserWindow.getFocusedWindow()!, {
+      const owner = requireLocalDialogOwner(_e, COMMAND_CHANNELS.SSH_PROFILE_PICK_KEY_FILE);
+      const options: Electron.OpenDialogOptions = {
         title: '选择 SSH 私钥文件',
         properties: ['openFile', 'showHiddenFiles'],
         ...(envelope.payload.defaultPath ? { defaultPath: envelope.payload.defaultPath } : {}),
-      });
+      };
+      const result = owner
+        ? await dialog.showOpenDialog(owner, options)
+        : await dialog.showOpenDialog(options);
       if (result.canceled || result.filePaths.length === 0) {
         return { path: null };
       }
@@ -1612,8 +1659,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   registerHandle(
     COMMAND_CHANNELS.SETTINGS_EXPORT,
     async (_e, _envelope: CommandEnvelope<undefined>): Promise<ExportSettingsResponse> => {
-      const fromWindow = BrowserWindow.fromWebContents(_e.sender);
-      const owner = fromWindow ?? BrowserWindow.getFocusedWindow()!;
+      const owner = requireLocalDialogOwner(_e, COMMAND_CHANNELS.SETTINGS_EXPORT);
 
       // M1-F:先弹隐私警告 — 模板可能含 API key (env);用户三选一:
       // 取消 / 仅导出公开字段(env 清空) / 完整导出(含敏感凭据)
@@ -1621,7 +1667,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       const hasEnvKeys = tmpls.some((t) => t.env && Object.keys(t.env).length > 0);
       let includeSecrets = false;
       if (hasEnvKeys) {
-        const askRes = await dialog.showMessageBox(owner, {
+        const askOptions: Electron.MessageBoxOptions = {
           type: 'warning',
           title: '导出敏感凭据?',
           message: '归档将包含启动模板里的环境变量,可能含 API key、token 等敏感凭据。',
@@ -1631,7 +1677,10 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
           buttons: ['取消', '仅公开字段', '包含敏感凭据'],
           defaultId: 1,
           cancelId: 0,
-        });
+        };
+        const askRes = owner
+          ? await dialog.showMessageBox(owner, askOptions)
+          : await dialog.showMessageBox(askOptions);
         if (askRes.response === 0) return { filePath: null };
         includeSecrets = askRes.response === 2;
       } else {
@@ -1640,11 +1689,14 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       }
 
       const suffix = hasEnvKeys ? (includeSecrets ? '-with-secrets' : '-public') : '';
-      const result = await dialog.showSaveDialog(owner, {
+      const saveOptions: Electron.SaveDialogOptions = {
         title: '导出 Marina 配置',
         defaultPath: `marina-config-${formatDateForFilename(new Date())}${suffix}.json`,
         filters: [{ name: 'Marina Archive (JSON)', extensions: ['json'] }],
-      });
+      };
+      const result = owner
+        ? await dialog.showSaveDialog(owner, saveOptions)
+        : await dialog.showSaveDialog(saveOptions);
       if (result.canceled || !result.filePath) {
         return { filePath: null };
       }
@@ -1663,12 +1715,15 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   registerHandle(
     COMMAND_CHANNELS.SETTINGS_IMPORT,
     async (_e, _envelope: CommandEnvelope<undefined>): Promise<ImportSettingsResponse> => {
-      const fromWindow = BrowserWindow.fromWebContents(_e.sender);
-      const result = await dialog.showOpenDialog(fromWindow ?? BrowserWindow.getFocusedWindow()!, {
+      const owner = requireLocalDialogOwner(_e, COMMAND_CHANNELS.SETTINGS_IMPORT);
+      const options: Electron.OpenDialogOptions = {
         title: '导入 Marina 配置',
         properties: ['openFile'],
         filters: [{ name: 'Marina Archive (JSON)', extensions: ['json'] }],
-      });
+      };
+      const result = owner
+        ? await dialog.showOpenDialog(owner, options)
+        : await dialog.showOpenDialog(options);
       if (result.canceled || result.filePaths.length === 0) {
         return { status: 'cancelled' };
       }
@@ -1685,18 +1740,18 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
         };
       }
       // 二次确认 — 不再重启应用 (CP-4 勘误 #12)。
-      const confirmRes = await dialog.showMessageBox(
-        fromWindow ?? BrowserWindow.getFocusedWindow()!,
-        {
-          type: 'warning',
-          title: '确认导入',
-          message: '导入将完全覆盖现有配置(收藏 / 最近 / 模板 / 设置)。',
-          detail: '运行中的终端不会被关,继续后所有窗口立即看到新配置。是否继续?',
-          buttons: ['取消', '继续导入'],
-          defaultId: 0,
-          cancelId: 0,
-        },
-      );
+      const confirmOptions: Electron.MessageBoxOptions = {
+        type: 'warning',
+        title: '确认导入',
+        message: '导入将完全覆盖现有配置(收藏 / 最近 / 模板 / 设置)。',
+        detail: '运行中的终端不会被关,继续后所有窗口立即看到新配置。是否继续?',
+        buttons: ['取消', '继续导入'],
+        defaultId: 0,
+        cancelId: 0,
+      };
+      const confirmRes = owner
+        ? await dialog.showMessageBox(owner, confirmOptions)
+        : await dialog.showMessageBox(confirmOptions);
       if (confirmRes.response !== 1) {
         return { status: 'cancelled' };
       }

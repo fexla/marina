@@ -118,6 +118,8 @@ describe('command routing (每窗口后端架构边界)', () => {
     expect(getCommandRouting(COMMAND_CHANNELS.FILE_TREE_GET_ROOTS)).toBe('backend-data');
     expect(getCommandRouting(COMMAND_CHANNELS.FILE_TREE_LIST_DIRECTORY)).toBe('backend-data');
     expect(getCommandRouting(COMMAND_CHANNELS.FILE_TREE_OPEN_FILE)).toBe('backend-data');
+    // 自绘文件夹选择器必须浏览当前 backend；远程窗口不能误列客户端目录。
+    expect(getCommandRouting(COMMAND_CHANNELS.DIRECTORY_PICKER_LIST)).toBe('backend-data');
   });
 
   it('gallery 图片解析/打开路由为 backend-data(读 session 绑定文件 / daemon 下载)', () => {

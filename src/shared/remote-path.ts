@@ -32,3 +32,12 @@ export function normalizeRemotePath(input: string): string {
   if (value.length > 1 && value.endsWith('/')) value = value.slice(0, -1);
   return value;
 }
+
+/**
+ * 把 SSH profile + 远程路径编码成 renderer 可安全回传的 pathId（与
+ * PathManager.makePathId 的 ssh 分支同格式：`ssh:<encodedId>:<encodedPath>`）。
+ * 供侧栏「连接 SSH…」等需要从 renderer 构造 SSH pathId 的场景使用。
+ */
+export function makeSshPathId(sshProfileId: string, remotePath: string): string {
+  return `ssh:${encodeURIComponent(sshProfileId)}:${encodeURIComponent(normalizeRemotePath(remotePath))}`;
+}

@@ -121,6 +121,11 @@ export const COMMAND_CHANNELS = {
   BOOKMARK_REORDER: 'cmd:bookmark:reorder',
   BOOKMARK_SET_DEFAULT_TEMPLATE: 'cmd:bookmark:set-default-template',
   BOOKMARK_PICK_FOLDER: 'cmd:bookmark:pick-folder',
+  /**
+   * 远程后端窗口的自绘文件夹选择器：在当前 backend 分层列目录。
+   * 默认 backend-data，远程窗口必须发到 daemon；绝不能列客户端本地目录。
+   */
+  DIRECTORY_PICKER_LIST: 'cmd:directory-picker:list',
   /** v0.3.3 ADR-025 / Feature E.1:收藏分组 CRUD(低频,各自独立 IPC)。 */
   BOOKMARK_GROUP_ADD: 'cmd:bookmark:group:add',
   BOOKMARK_GROUP_RENAME: 'cmd:bookmark:group:rename',
@@ -799,20 +804,26 @@ export interface RenameBookmarkPayload {
 
 export interface ReorderBookmarksPayload {
   /**
-   * v0.3.3 ADR-025:统一分层 reorder payload。
+   * v0.3.3 ADR-025(用户裁决 2026-08-04 后为组树):统一分层 reorder payload。
    * - `ungrouped` = 未分组 pathId 有序列表(顶置渲染)。
-   * - `groups` = 各分组及其组内 childOrder(数组顺序=分组显示顺序)。
+   * - `groups` = **扁平组表**:含全部组(含子组);`subgroupOrder` 是直接子组
+   *   id 有序列表,roots = 未被任何组引用的 id;`childOrder` 是该组直接
+   *   path 的有序列表。
    * main 校验:ungrouped ∪ 各 childOrder 的并集必须恰好等于当前 bookmarks
-   * 的 pathId 集合(无重复/无未知/无遗漏),然后整体替换顺序 + groupId。
-   * 旧「全部未分组」= `{ ungrouped: [全量], groups: [] }` 的特例。
+   * 的 pathId 集合(无重复/无未知/无遗漏),然后整体替换顺序 + groupId;
+   * 组引用必须存在且无环。旧「全部未分组」= `{ ungrouped: [全量], groups: [] }`。
    */
   ungrouped: string[];
-  groups: { id: string; childOrder: string[] }[];
+  groups: { id: string; childOrder: string[]; subgroupOrder: string[] }[];
 }
 
-/** v0.3.3 ADR-025:新建分组,返回新 groupId。组名收藏内唯一。 */
+/**
+ * v0.3.3 ADR-025:新建分组,返回新 groupId。组名收藏内唯一。
+ * parentId = 父组 id(嵌套子组)；缺省 = 顶层。
+ */
 export interface AddBookmarkGroupPayload {
   name: string;
+  parentId?: string;
 }
 export interface AddBookmarkGroupResponse {
   id: string;
@@ -822,7 +833,7 @@ export interface RenameBookmarkGroupPayload {
   id: string;
   name: string;
 }
-/** v0.3.3 ADR-025:删组,其下 path 的 groupId 清空→归未分组(绝不删 path)。 */
+/** v0.3.3 ADR-025:解散分组,其下 path 与子组提升到父级(绝不删数据)。 */
 export interface RemoveBookmarkGroupPayload {
   id: string;
 }
@@ -847,6 +858,25 @@ export interface PickFolderPayload {
 export interface PickFolderResponse {
   /** 用户取消 → null */
   path: string | null;
+}
+
+/** 自绘 backend 文件夹选择器的一次分层列举请求；省略 path 从 backend home 开始。 */
+export interface ListDirectoryPickerPayload {
+  path?: string;
+}
+
+export interface DirectoryPickerEntry {
+  name: string;
+  /** backend 上的规范化绝对路径；renderer 只展示和回传，不允许文本编辑。 */
+  path: string;
+}
+
+export interface ListDirectoryPickerResponse {
+  currentPath: string;
+  parentPath: string | null;
+  homePath: string;
+  rootPath: string;
+  directories: DirectoryPickerEntry[];
 }
 
 export interface RemoveFromRecentPayload {
