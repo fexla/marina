@@ -11,6 +11,15 @@ set -e
 # Exec=marina --working-directory=%f 才能定位
 ln -sf /opt/Marina/marina /usr/bin/marina
 
+# Electron SUID sandbox:deb 包内 chrome-sandbox 默认 0755(根因见下)。
+# 裸跑 `marina`(不带 --no-sandbox)时 Chromium 要求 SUID 4755,
+# 否则直接 FATAL:setuid_sandbox_host.cc 退出。dpkg 安装后在此补上。
+# 注意:chmod 必须放在所有 chown 之后(先有 owner 才能生效)。
+if [ -f /opt/Marina/chrome-sandbox ]; then
+    chown root:root /opt/Marina/chrome-sandbox
+    chmod 4755 /opt/Marina/chrome-sandbox
+fi
+
 if [ -x /usr/bin/update-alternatives ]; then
     update-alternatives --install /usr/bin/x-terminal-emulator x-terminal-emulator /usr/bin/marina 50
 fi
