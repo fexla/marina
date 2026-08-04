@@ -42,10 +42,25 @@
 
 ## 已知不工作/需开发者关注
 
-1. **真实 Linux 端到端(10.9.0.1)未完成**——SSH 阻塞。详见下方「用户测试指南」的阻塞说明。**单测 + 契约测试已全绿**,缺的是「真实 Linux 机器跑一遍」的人工确认。
+1. ~~**真实 Linux 端到端(10.9.0.1)未完成**——SSH 阻塞~~ **已完成(见下「Linux 端到端验证」)**。
 2. **`docs/方案-skill-Linux支持-20260805.md` 决策点 2(范围)= 只做 Skill**。zsh/fish 的 OSC 1337 cwd hook 缺失(`platform/linux.ts:58-67` 自承)、`cmd` 代码块在 Linux ENOENT(`code-block-runner.ts`)等**其他 Linux 残缺**未在本轮处理——它们是独立 patch,见方案文档第 2 节。
 
-## 我没测的东西(需开发者帮忙)
+## Linux 端到端验证(10.9.0.1)——已通过
 
-- **真实 Linux 机器**上 `./marina ping && ./marina show x.md && ./marina screenshot`(端到端,连真实 Marina Linux 构建)。我没有可用的 Linux 桌面环境。
-- 干净 Linux 上 `deb`/`rpm`/`AppImage` 安装包内 `marina`/`marina.sh` 的执行位是否保留(electron-builder `extraResources` 复制 + `fs.cp` 安装器复制两道关)。
+开发者授权(option A)后,清掉 `known_hosts` 里 10.9.0.1 的旧主机密钥、接受新密钥,以 `fexla@10.9.0.1`(`~/.ssh/fex` 密钥,hostname=FEX)连入。机器:**Ubuntu 26.04 LTS,bash 5.3,curl 8.18,python3 在(jq 也在,但 marina.sh 不依赖它——正好印证零依赖)**。
+
+把 skill 文件 scp 到 `/tmp/marina-verify/`(执行位保留:`marina`/`marina.sh` 均 `755`),跑 `bash scripts/verify-marina-sh-linux.sh`:
+
+```
+== RESULT: pass=25 fail=0 ==
+ALL CHECKS PASSED
+```
+
+覆盖:ping / workspace(path/list/bind/new/unpin)/ show(existing/missing/quiet)/ run / list(mixed 僵尸标记 + json)/ close(--all/--stale/--glob + 互斥)/ screenshot(PNG 字节 + 默认路径)/ env 严格性(`/etc/hostname` 在 Linux 存在,缺 token→exit 1 正确)/ **调度器在无 powershell.exe 时正确路由到 marina.sh** / **执行位保留**。
+
+额外验证(脚本未覆盖):
+- **`./marina ping`**(agent 实际用的相对路径调用)→ `marina: online`,exit 0。
+- **`bash marina ping`** 兜底分支 → 正常。
+- **UTF-8 路径往返**:`show /tmp/utftest/中文目录/报告.md` → exit 0,`shown: .../报告.md`(中文路径端到端存活)。
+
+验证后已清理 `/tmp/marina-verify` 临时目录。`~/.ssh/known_hosts` 现含 10.9.0.1 的新(正确)密钥;`known_hosts.old`(本次 `ssh-keygen -R` 产生的备份)已删。
