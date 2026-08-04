@@ -52,7 +52,6 @@ import {
   useDroppable,
   type CollisionDetection,
   type DragEndEvent,
-  type DragMoveEvent,
   type DragOverEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
@@ -913,6 +912,9 @@ function indentForDepth(depth: number): number {
 function GroupHeader({
   group,
   collapsed,
+  depth,
+  index,
+  parentContainerId,
   onToggleCollapse,
   onRequestAddSubgroup,
   onRequestAddFolder,
@@ -922,6 +924,9 @@ function GroupHeader({
 }: {
   group: GroupNode;
   collapsed: boolean;
+  depth: number;
+  index: number;
+  parentContainerId: string;
   onToggleCollapse: () => void;
   onRequestAddSubgroup: () => void;
   onRequestAddFolder: () => void;
@@ -1049,6 +1054,9 @@ function GroupHeader({
       onKeyDown={handleKeyDown}
       title={`${collapsed ? `展开${group.name}` : `折叠${group.name}`}；拖动整行调整位置与层级`}
       data-bookmark-group-id={group.id}
+      data-group-depth={depth}
+      data-group-index={index}
+      data-group-parent-container={parentContainerId}
     >
       <span className="sidebar-group-chevron" aria-hidden="true">
         {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
@@ -1095,14 +1103,12 @@ function GroupHeader({
  * 「插到哪一行之间」(y) 与「哪一层缩进」(x→容器深度)，本身不占布局高度。
  */
 interface DropIndicatorGeometry {
-  /** 相对提示线锚容器的纵坐标 (px)。对应插入间隙的位置。 */
+  /** 相对提示线锚容器的纵坐标 (px)。 */
   top: number;
   /** 左侧缩进 (px)，编码层级深度。 */
   left: number;
   /** 提示线宽度 (px)；越深越短。 */
   width: number;
-  /** 落点文案（容器名 + 第 N 位/末尾）。 */
-  label: string;
 }
 
 interface BookmarkDragState {
@@ -1172,12 +1178,10 @@ function DropIndicator({ geom }: { geom: DropIndicatorGeometry }): JSX.Element {
   return (
     <div
       className="dnd-drop-indicator"
-      role="status"
-      aria-live="polite"
+      aria-hidden="true"
       style={{ top: `${geom.top}px`, left: `${geom.left}px`, width: `${geom.width}px` }}
     >
       <span className="dnd-drop-indicator-line" />
-      <span className="dnd-drop-indicator-label">{geom.label}</span>
     </div>
   );
 }
@@ -1191,7 +1195,6 @@ function DropIndicator({ geom }: { geom: DropIndicatorGeometry }): JSX.Element {
 function BookmarkPathList({
   paths,
   containerId,
-  containerLabel,
   depth,
   dragState,
   fullLayout,
@@ -1200,26 +1203,27 @@ function BookmarkPathList({
 }: {
   paths: PathNode[];
   containerId: string;
-  containerLabel: string;
   depth: number;
   dragState: BookmarkDragState | null;
   fullLayout: BookmarkOrderLayout;
-  renderPath: (path: PathNode) => JSX.Element;
+  renderPath: (
+    path: PathNode,
+    dndRow?: { containerId: string; index: number; depth: number },
+  ) => JSX.Element;
   className: string;
 }): JSX.Element {
   const activePathId = dragState?.activeType === 'bookmark-path' ? dragState.activeId : undefined;
   const visibleIds = paths.map((path) => path.id);
   const fullIds = bookmarkPathIdsForContainer(fullLayout, containerId) ?? visibleIds;
+  // 末尾兑底的 placement（用全量索引，hidden segment 不丢）。
+  const tailFullIndex = fullIds.filter((id) => id !== activePathId).length;
   const { setNodeRef, isOver } = useDroppable({
     id: `${PATH_LIST_DROP_ID_PREFIX}${encodeURIComponent(containerId)}`,
     data: {
-      kind: 'path-list',
+      rowKind: 'container-tail',
       containerId,
       depth,
-      containerLabel,
-      visibleIds,
-      fullIds,
-      activeId: activePathId,
+      placement: { targetContainerId: containerId, targetIndex: tailFullIndex } as BookmarkPlacement,
     },
   });
   return (
@@ -1232,8 +1236,9 @@ function BookmarkPathList({
         ref={setNodeRef}
         className={`${className}${isOver ? ' drop-over' : ''}`}
         data-container-id={containerId}
+        data-container-depth={depth}
       >
-        {paths.map((path) => renderPath(path))}
+        {paths.map((path, i) => renderPath(path, { containerId, index: i, depth }))}
       </ul>
     </SortableContext>
   );
@@ -1243,7 +1248,6 @@ function BookmarkPathList({
 function BookmarkGroupList({
   groups,
   parentId,
-  parentLabel,
   depth,
   dragState,
   fullLayout,
@@ -1258,14 +1262,16 @@ function BookmarkGroupList({
 }: {
   groups: GroupNode[];
   parentId: string | null;
-  parentLabel: string;
   depth: number;
   dragState: BookmarkDragState | null;
   fullLayout: BookmarkOrderLayout;
   collapsedSet: Set<string>;
   toggleGroup: (groupId: string) => void;
   byGroup: Map<string, PathNode[]>;
-  renderPath: (path: PathNode) => JSX.Element;
+  renderPath: (
+    path: PathNode,
+    dndRow?: { containerId: string; index: number; depth: number },
+  ) => JSX.Element;
   onRequestAddSubgroup: (parentId: string) => void;
   onRequestAddFolder: (groupId: string) => void;
   addFolderDisabledReason?: string;
@@ -1274,22 +1280,20 @@ function BookmarkGroupList({
   const containerId =
     parentId === null ? BOOKMARK_ROOT_GROUP_CONTAINER : bookmarkSubgroupContainerId(parentId);
   const activeGroupId = dragState?.activeType === 'bookmark-group' ? dragState.activeId : undefined;
-  const visibleIds = groups.map((group) => GROUP_ID_PREFIX + group.id);
+  const tailIndex = groups.filter((g) => g.id !== activeGroupId).length;
   const { setNodeRef, isOver } = useDroppable({
     id: `${GROUP_LIST_DROP_ID_PREFIX}${encodeURIComponent(containerId)}`,
     ...(disabled ? { disabled } : {}),
     data: {
-      kind: 'group-list',
+      rowKind: 'container-tail',
       containerId,
       depth,
-      containerLabel: parentLabel,
-      visibleIds,
-      activeId: activeGroupId,
+      placement: { targetContainerId: containerId, targetIndex: tailIndex } as BookmarkPlacement,
     },
   });
   return (
     <SortableContext
-      items={visibleIds}
+      items={groups.map((group) => GROUP_ID_PREFIX + group.id)}
       strategy={verticalListSortingStrategy}
       id={containerId}
     >
@@ -1297,12 +1301,15 @@ function BookmarkGroupList({
         ref={setNodeRef}
         className={`bookmark-group-container${isOver ? ' drop-over' : ''}`}
         data-group-container-id={containerId}
+        data-group-container-depth={depth}
       >
-        {groups.map((group) => (
+        {groups.map((group, i) => (
           <GroupBlock
             key={group.id}
             group={group}
             depth={depth}
+            index={i}
+            containerId={containerId}
             dragState={dragState}
             fullLayout={fullLayout}
             collapsedSet={collapsedSet}
@@ -1327,6 +1334,8 @@ function BookmarkGroupList({
 function GroupBlock({
   group,
   depth,
+  index,
+  containerId,
   dragState,
   fullLayout,
   collapsedSet,
@@ -1339,12 +1348,19 @@ function GroupBlock({
 }: {
   group: GroupNode;
   depth: number;
+  /** 该组在父级 subgroup-list 里的序号（拖拽 v3 行模型用）。 */
+  index: number;
+  /** 该组所在排序容器 id（父级 subgroup-list；根组=BOOKMARK_ROOT_GROUP_CONTAINER）。 */
+  containerId: string;
   dragState: BookmarkDragState | null;
   fullLayout: BookmarkOrderLayout;
   collapsedSet: Set<string>;
   toggleGroup: (groupId: string) => void;
   byGroup: Map<string, PathNode[]>;
-  renderPath: (p: PathNode) => JSX.Element;
+  renderPath: (
+    p: PathNode,
+    dndRow?: { containerId: string; index: number; depth: number },
+  ) => JSX.Element;
   onRequestAddSubgroup: (parentId: string) => void;
   onRequestAddFolder: (groupId: string) => void;
   addFolderDisabledReason?: string;
@@ -1380,20 +1396,23 @@ function GroupBlock({
     id: groupId,
     data: { type: 'bookmark-group', groupId: group.id },
   });
-  // 组标题是“大目标”：group 拖到标题 = 进入该组子列表末尾；path 拖到标题 =
-  // 进入该组 path 列表末尾。前/后排序只由列表里的真实 insertion slot 表达。
+  // 组标题是「行模型」的一行（rowKind='group-head'）：指针 y 在标题上半=插到本组
+  // 之前（同父容器）；下半 + x 靠右=嵌入进本组（拖组→子组末尾；拖路径→路径末尾）；
+  // 下半 + x 靠左=插到本组之后（同父容器）。缩进随选择实时变化，所见即所得。
   const dropTarget = useDroppable({
     id: GROUP_DROP_ID_PREFIX + group.id,
     disabled: !dragState || (dragState.activeType === 'bookmark-group' && groupDropForbidden),
     data: {
-      kind: 'group-head',
+      rowKind: 'group-head',
       type: 'bookmark-group-drop',
       groupId: group.id,
+      containerId,
+      index,
       depth,
-      groupPlacement,
-      pathPlacement,
-      groupTargetLabel: `「${group.name}」内 · 末尾`,
-      pathTargetLabel: `「${group.name}」路径 · 末尾`,
+      // 嵌入本组时的落点（预计算末尾）
+      nestGroupPlacement: groupPlacement,
+      nestPathPlacement: pathPlacement,
+      subgroupContainerId,
     },
   });
 
@@ -1419,6 +1438,9 @@ function GroupBlock({
       <GroupHeader
         group={group}
         collapsed={isCollapsed}
+        depth={depth}
+        index={index}
+        parentContainerId={containerId}
         onToggleCollapse={() => toggleGroup(group.id)}
         onRequestAddSubgroup={() => onRequestAddSubgroup(group.id)}
         onRequestAddFolder={() => onRequestAddFolder(group.id)}
@@ -1431,7 +1453,6 @@ function GroupBlock({
           <BookmarkGroupList
             groups={subgroups}
             parentId={group.id}
-            parentLabel={`「${group.name}」内`}
             depth={depth + 1}
             dragState={dragState}
             fullLayout={fullLayout}
@@ -1447,7 +1468,6 @@ function GroupBlock({
           <BookmarkPathList
             paths={gPaths}
             containerId={group.id}
-            containerLabel={`「${group.name}」路径`}
             depth={depth + 1}
             dragState={dragState}
             fullLayout={fullLayout}
@@ -1579,180 +1599,277 @@ function BookmarkCategory({
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
   /**
-   * droppable 数据。两种形态：
-   * - 列表容器（kind='path-list' | 'group-list'）：携带 containerId/depth/
-   *   visibleIds/fullIds/activeId，碰撞后按指针 y 在其子行中点推导插入索引。
-   * - 组标题（kind='group-head'）：携带预计算好的 groupPlacement/pathPlacement
-   *   及其 label，表达「追加到本组末尾」的大目标。
-   * useSortable 的 wrapper droppable 不携带 kind，被碰撞过滤排除，绝不猜测。
-   */
+   * droppable 数据。拖拽 v3 是「行模型」：每个可见行（路径 li / 组标题）本身是
+   * droppable，携带它在排序容器里的 containerId + index + 视觉 depth。
+   * - rowKind='path'：路径行。y 上半=插到本行前；下半=插到本行后。
+   * - rowKind='group-head'：组标题行。y 上半=插到本组前；下半时 x 靠右=嵌入进本组
+   *   （拖组→子组末尾；拖路径→路径末尾），x 靠左=插到本组后。
+   * - rowKind='container-tail'：空容器的末尾兑底（指针在容器空白区且不命中任何行）。
+   * 这正是「y 选行、x 决定是否嵌入该行对应的组」，所见即所得。 */
   type DndData = {
-    kind?: 'path-list' | 'group-list' | 'group-head';
-    // 兼容旧字段（组标题使用）
+    rowKind?: 'path' | 'group-head' | 'container-tail';
+    // 兼容：useSortable 在 active 上放 type 而非 rowKind
     type?: string;
     groupId?: string;
     containerId?: string;
+    index?: number;
     depth?: number;
-    containerLabel?: string;
-    visibleIds?: string[];
-    fullIds?: string[];
-    activeId?: string | undefined;
-    groupPlacement?: BookmarkPlacement;
-    pathPlacement?: BookmarkPlacement;
-    groupTargetLabel?: string;
-    pathTargetLabel?: string;
+    // group-head 嵌入本组时的预计算落点
+    nestGroupPlacement?: BookmarkPlacement;
+    nestPathPlacement?: BookmarkPlacement;
+    subgroupContainerId?: string;
+    // container-tail 用
+    placement?: BookmarkPlacement;
+  };
+
+  /**  /** 组标题「嵌入」的 x 阈值：指针 x 超过子内容缩进列 = 嵌入。 */
+  const isNestingByX = (rowRect: DOMRect, depth: number, pointerX: number): boolean => {
+    // 子内容左边界（相对 viewport）= 行左 + (depth+1) 级缩进。行左已含 depth 级 padding。
+    const nestLeft = rowRect.left + (depth + 1) * GROUP_TREE_INDENT_PX;
+    return pointerX >= nestLeft;
   };
 
   /**
-   * 拖拽行（DragOverlay）当前跟手的纵坐标（viewport）。dnd-kit 不直接暴露
-   * 指针，但 active.rect.current.translated 是跟随指针的拖拽行矩形，取其
-   * 纵向中点作为「指针 y」最贴近用户感知。
-   */
-  const pointerYFromEvent = (event: DragMoveEvent): number => {
-    const r = event.active.rect.current.translated;
-    return r ? r.top + r.height / 2 : -Infinity;
-  };
-
-  /**
-   * 按 droppable data 在 DOM 里查找容器/组标题节点。overData 可能来自列表
-   * 容器（containerId）或组标题（groupId）。dnd-kit 的 Over 类型不暴露 node，
-   * 故用自定义 data- 属性查。 */
-  const nodeFromOverData = (overData: DndData | undefined): HTMLElement | null => {
+   * 把一次拖拽解析为 {placement, indicator}。纯函数，由 onDragMove 驱动。
+   * - path 行：上半→前置；下半→后置。
+   * - group-head 行：上半→前置（同父）；下半 + x 嵌入→进本组；下半 + x 靠左→后置。
+   * - container-tail：末尾。 */
+  const resolveDrop = (
+    activeType: string | undefined,
+    overData: DndData | undefined,
+    overNode: HTMLElement | null,
+    pointerX: number,
+    pointerY: number,
+  ): { placement: BookmarkPlacement; indicator: DropIndicatorGeometry } | null => {
     if (!overData) return null;
-    const root = indicatorHostRef.current;
-    if (!root) return null;
-    if (overData.kind === 'group-head' && overData.groupId) {
-      return root.querySelector(`[data-bookmark-group-id="${CSS.escape(overData.groupId)}"]`);
+
+    if (overData.rowKind === 'container-tail') {
+      const p = overData.placement;
+      if (!p) return null;
+      const rect = overNode?.getBoundingClientRect();
+      const depth = overData.depth ?? 0;
+      return {
+        placement: p,
+        indicator: { top: rect ? rect.bottom : 0, left: indentForDepth(depth), width: 0 },
+      };
     }
-    if (overData.containerId) {
-      return (
-        root.querySelector(`[data-container-id="${CSS.escape(overData.containerId)}"]`) ??
-        root.querySelector(`[data-group-container-id="${CSS.escape(overData.containerId)}"]`)
-      );
+
+    if (!overNode) return null;
+    const rect = overNode.getBoundingClientRect();
+    const depth = overData.depth ?? 0;
+    const midY = rect.top + rect.height / 2;
+    const upperHalf = pointerY < midY;
+
+    if (overData.rowKind === 'path') {
+      if (activeType !== 'bookmark-path') return null;
+      const containerId = overData.containerId!;
+      const idx = overData.index ?? 0;
+      // 上半→前置；下半→后置（index 都不改相对顺序，只决定插在行前还是行后）。
+      const targetIndex = upperHalf ? idx : idx + 1;
+      return {
+        placement: { targetContainerId: containerId, targetIndex },
+        indicator: {
+          top: upperHalf ? rect.top : rect.bottom,
+          left: indentForDepth(depth),
+          width: 0,
+        },
+      };
+    }
+
+    if (overData.rowKind === 'group-head') {
+      const containerId = overData.containerId!;
+      const idx = overData.index ?? 0;
+      if (upperHalf) {
+        // 前置：插到本组之前（同父容器）。
+        return {
+          placement: { targetContainerId: containerId, targetIndex: idx },
+          indicator: { top: rect.top, left: indentForDepth(depth), width: 0 },
+        };
+      }
+      // 下半：x 决定是「后置兄弟」还是「嵌入本组」。
+      const nest = isNestingByX(rect, depth, pointerX);
+      if (nest) {
+        if (activeType === 'bookmark-group') {
+          const p = overData.nestGroupPlacement;
+          if (!p) return null;
+          return {
+            placement: p,
+            indicator: { top: rect.bottom, left: indentForDepth(depth + 1), width: 0 },
+          };
+        }
+        if (activeType === 'bookmark-path') {
+          const p = overData.nestPathPlacement;
+          if (!p) return null;
+          return {
+            placement: p,
+            indicator: { top: rect.bottom, left: indentForDepth(depth + 1), width: 0 },
+          };
+        }
+        return null;
+      }
+      // 后置兄弟。
+      return {
+        placement: { targetContainerId: containerId, targetIndex: idx + 1 },
+        indicator: { top: rect.bottom, left: indentForDepth(depth), width: 0 },
+      };
     }
     return null;
   };
 
   /**
-   * 把一次拖拽事件解析为 {placement, indicator}。
-   *
-   * 规则：
-   * - over 为组标题 → 追加到本组末尾（预计算 placement），提示线贴标题下沿。
-   * - over 为列表容器 → computeInsertionAtY 推导插入索引，再映射回全量布局索引。
-   * - 不接受同容器内的无意义自递归（源 = 目标且 index 与原位等价）。
-   */
-  const resolveDrop = (
-    activeType: string | undefined,
-    activeId: string | undefined,
-    overData: DndData | undefined,
-    overNode: HTMLElement | null,
-    pointerY: number,
-  ): { placement: BookmarkPlacement; label: string; indicator: DropIndicatorGeometry } | null => {
-    if (!overData) return null;
-
-    // 组标题大目标：group 拖到标题=进子组末尾；path 拖到标题=进本组路径末尾。
-    if (overData.kind === 'group-head') {
-      if (activeType === 'bookmark-group') {
-        const p = overData.groupPlacement;
-        if (!p) return null;
-        const depth = overData.depth ?? 0;
-        const label = overData.groupTargetLabel ?? '移动分组';
-        // 提示线贴组标题下沿（标题节点 top + 标题高），缩进按 depth。
-        const rect = overNode?.getBoundingClientRect();
-        const lineTop = rect ? rect.bottom : 0;
-        return {
-          placement: p,
-          label,
-          indicator: { top: lineTop, left: indentForDepth(depth), width: 0, label },
-        };
-      }
-      if (activeType === 'bookmark-path') {
-        const p = overData.pathPlacement;
-        if (!p) return null;
-        const depth = (overData.depth ?? 0) + 1;
-        const label = overData.pathTargetLabel ?? '移动路径';
-        const rect = overNode?.getBoundingClientRect();
-        const lineTop = rect ? rect.bottom : 0;
-        return {
-          placement: p,
-          label,
-          indicator: { top: lineTop, left: indentForDepth(depth), width: 0, label },
-        };
-      }
-      return null;
-    }
-
-    // 列表容器：按指针 y 在子行中点推导。
-    const isPathList = overData.kind === 'path-list';
-    const isGroupList = overData.kind === 'group-list';
-    if (!isPathList && !isGroupList) return null;
-    if (isPathList && activeType !== 'bookmark-path') return null;
-    if (isGroupList && activeType !== 'bookmark-group') return null;
-    if (!overNode) return null;
-
-    const containerId = overData.containerId!;
-    const depth = overData.depth ?? 0;
-    const visibleIds = overData.visibleIds ?? [];
-    const fullIds = overData.fullIds ?? visibleIds;
-    const srcId = activeId;
-    const idAttr: 'pathId' | 'bookmarkGroupId' = isPathList ? 'pathId' : 'bookmarkGroupId';
-    const { index: visibleIndex, lineTop } = computeInsertionAtY(overNode, pointerY, srcId, idAttr);
-    const overNodeRect = overNode.getBoundingClientRect();
-    const fullIndex =
-      visibleBookmarkSlotToFullIndex(fullIds, visibleIds, srcId, visibleIndex) ??
-      fullIds.filter((id) => id !== srcId).length;
-    const placement: BookmarkPlacement = { targetContainerId: containerId, targetIndex: fullIndex };
-    const containerLabel = overData.containerLabel ?? '';
-    const tail = visibleIndex >= visibleIds.filter((id) => id !== srcId).length;
-    const label = `${containerLabel} · ${tail ? '末尾' : `第 ${visibleIndex + 1} 位`}`;
-    return {
-      placement,
-      label,
-      indicator: { top: overNodeRect.top + lineTop, left: indentForDepth(depth), width: 0, label },
-    };
-  };
-
-  /**
-   * 碰撞：只接受携带 kind 的列表容器与组标题；useSortable wrapper droppable
-   * 不携带 kind → 被过滤。多个命中时优先选「最窄」的那个——嵌套越深的容器
-   * rect 面积越小，这样指针落在子组/路径列表里时会选到那一层而不是外层组容器，
-   * 与「x 决定层级」的所见即所得一致（指针在哪一列就落到哪一层）。 */
+   * 碰撞：只接受携带 rowKind 的行；useSortable wrapper droppable 不携带 rowKind
+   * → 被过滤。指针同时落在「行」与包裹「容器」上时，优先选行（非 container-tail），
+   * 这样 y 选行、x 嵌入才生效。多个行命中时取 depth 最大（最嵌套叶子）。 */
   const slotCollisionDetection: CollisionDetection = (args) => {
-    type Hit = { collision: { id: unknown; data?: unknown }; depth: number; area: number };
+    type Hit = { collision: { id: unknown }; rowKind: string; depth: number; area: number };
     const hits = pointerWithin(args)
       .map((collision): Hit | null => {
         const container = args.droppableContainers.find((c) => c.id === collision.id);
         const data = container?.data.current as DndData | undefined;
-        if (!data?.kind) return null;
+        if (!data?.rowKind) return null;
         const rect = container?.rect.current;
         const area = rect ? rect.width * rect.height : Infinity;
-        return { collision: collision as unknown as Hit['collision'], depth: data.depth ?? 0, area };
+        return {
+          collision: collision as unknown as Hit['collision'],
+          rowKind: data.rowKind,
+          depth: data.depth ?? 0,
+          area,
+        };
       })
       .filter((x): x is Hit => x !== null);
     if (hits.length > 1) {
-      // 深度大的优先（指针落在更嵌套的列）；同深度时面积大的优先
-      // （列表容器 > 组标题，避免「刚进入列表上沿」时误选组标题“末尾”）。
-      hits.sort((a, b) => b.depth - a.depth || b.area - a.area);
+      // 行（path/group-head）优先于 container-tail；同优先级里取 depth 最大、面积最小（最具体）。
+      const rank = (h: Hit): number => (h.rowKind === 'container-tail' ? 1 : 0);
+      hits.sort((a, b) => rank(a) - rank(b) || b.depth - a.depth || a.area - b.area);
     }
     return hits.map((h) => h.collision as unknown as ReturnType<typeof pointerWithin>[number]);
+  };
+
+  /**
+   * 纯坐标驱动的落点解析：用真实指针 (x,y) 在 DOM 里找命中的行，再走 resolveDrop。
+   *
+   * 为什么不依赖 dnd-kit 的碰撞回调：dnd-kit 的 over / pointerWithin 用的是 DragOverlay
+   * 跟随矩形（有抓取偏移且延迟），不是真实指针，导致「指针在 g2 标题、over 却报 g1
+   * 源行」这类错位。用户要「拖到哪就放到哪」，只能用真实 clientX/Y 在 DOM 里命中行。
+   * dnd-kit 退化为只管传感器激活 + DragOverlay + 释放事件。 */
+  const resolveDropFromPoint = (
+    activeType: string | undefined,
+    x: number,
+    y: number,
+  ): { placement: BookmarkPlacement; indicator: DropIndicatorGeometry } | null => {
+    const root = indicatorHostRef.current;
+    if (!root || !activeType) return null;
+    // 先找组标题行（更具体的叶子），再找路径行。
+    const headEl = Array.from(
+      root.querySelectorAll<HTMLElement>('.sidebar-group-header[data-bookmark-group-id]'),
+    ).find((el) => {
+      const r = el.getBoundingClientRect();
+      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    });
+    if (headEl) {
+      const gid = headEl.dataset.bookmarkGroupId!;
+      const depth = Number(headEl.dataset.groupDepth ?? '0');
+      // 嵌入进该组的落点：拖组→该组 subgroup-list 末尾；拖路径→该组 path-list 末尾。
+      const subCount = (allGroupsFlat.find((g) => g.id === gid)?.subgroups ?? []).filter(
+        (sg) => sg.id !== dragState?.activeId,
+      ).length;
+      const pathCount = (byGroup.get(gid) ?? []).filter((p) => p.id !== dragState?.activeId).length;
+      const data: DndData = {
+        rowKind: 'group-head',
+        groupId: gid,
+        containerId: headEl.dataset.groupParentContainer ?? '',
+        index: Number(headEl.dataset.groupIndex ?? '0'),
+        depth,
+        nestGroupPlacement: { targetContainerId: bookmarkSubgroupContainerId(gid), targetIndex: subCount },
+        nestPathPlacement: { targetContainerId: gid, targetIndex: pathCount },
+      };
+      return resolveDrop(activeType, data, headEl, x, y);
+    }
+    // 路径行
+    const pathEl = Array.from(root.querySelectorAll<HTMLElement>('[data-path-id]')).find((el) => {
+      const r = el.getBoundingClientRect();
+      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    });
+    if (pathEl) {
+      const data = {
+        rowKind: 'path' as const,
+        containerId: pathEl.dataset.pathContainerId,
+        index: Number(pathEl.dataset.pathIndex ?? '0'),
+        depth: Number(pathEl.dataset.pathDepth ?? '0'),
+      };
+      return resolveDrop(activeType, data as DndData, pathEl, x, y);
+    }
+    // container-tail 兑底：指针没命中任何行时，取命中的最深容器作为末尾。 */
+    const tailEls = Array.from(
+      root.querySelectorAll<HTMLElement>('[data-container-id],[data-group-container-id]'),
+    ).filter((el) => {
+      const r = el.getBoundingClientRect();
+      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    });
+    // 取面积最小的（最嵌套的容器）。
+    let tailEl: HTMLElement | undefined;
+    let tailArea = Infinity;
+    for (const el of tailEls) {
+      const r = el.getBoundingClientRect();
+      const a = r.width * r.height;
+      if (a < tailArea) { tailArea = a; tailEl = el; }
+    }
+    if (tailEl) {
+      const containerId = tailEl.dataset.containerId ?? tailEl.dataset.groupContainerId ?? '';
+      const depth = Number(tailEl.dataset.containerDepth ?? tailEl.dataset.groupContainerDepth ?? '0');
+      // 末尾索引：该容器直接子行数。 */
+      const childCount = tailEl.querySelectorAll(
+        ':scope > [data-path-id], :scope > [data-bookmark-group-id]',
+      ).length;
+      const placement: BookmarkPlacement = { targetContainerId: containerId, targetIndex: childCount };
+      return resolveDrop(activeType, { rowKind: 'container-tail', containerId, depth, placement }, tailEl, x, y);
+    }
+    return null;
   };
 
   const [dragState, setDragState] = useState<BookmarkDragState | null>(null);
   const clearDragState = (): void => setDragState(null);
   // 提示线错容器：sidebar-bookmark-groups（position:relative）。
   const indicatorHostRef = useRef<HTMLDivElement | null>(null);
-  // 当前指针 clientY。dnd-kit 的 DragMoveEvent 不暴露原始指针坐标，且 active.rect
-  // .translated（DragOverlay）跟随有延迟——快速下拖时它会落后于真实指针，导致
-  // 索引先跳后回（非单调）。故拖拽期间自己监听 pointermove 缓存真实 clientY。
-  const activePointerYRef = useRef<number | null>(null);
+  // dragState 的 ref，供 pointermove 回调读到最新 activeType（避免闭包旧值）。
+  const dragStateRef = useRef<BookmarkDragState | null>(null);
+  dragStateRef.current = dragState;
+  // resolveDropFromPoint 的 ref：它捕获 allGroupsFlat/byGroup（每次 render 重建闭包），
+  // 放进 ref 保证 pointermove 总用最新版，而 effect 本身只在拖拽开关时挂卸。
+  const resolveDropFromPointRef = useRef(resolveDropFromPoint);
+  resolveDropFromPointRef.current = resolveDropFromPoint;
   const isDragging = !!dragState;
+  // 拖拽期间自己监听 pointermove，用真实 clientX/Y 驱动提示线 + 落点。
+  // （dnd-kit 的 over/碰撞用的是 DragOverlay 跟随矩形，有偏移与延迟，不能用来选行。）
   useEffect(() => {
     if (!isDragging) return undefined;
     const onMove = (e: PointerEvent): void => {
-      activePointerYRef.current = e.clientY;
+      const at = dragStateRef.current;
+      if (!at?.activeType) return;
+      const drop = resolveDropFromPointRef.current(at.activeType, e.clientX, e.clientY);
+      const host = indicatorHostRef.current;
+      const hostRect = host?.getBoundingClientRect();
+      const hostWidth = host?.clientWidth ?? 0;
+      const indicator: DropIndicatorGeometry | undefined =
+        drop && hostRect
+          ? {
+              top: drop.indicator.top - hostRect.top + host!.scrollTop,
+              left: drop.indicator.left,
+              width: Math.max(40, hostWidth - drop.indicator.left - DROP_INDICATOR_RIGHT_PAD_PX),
+            }
+          : undefined;
+      setDragState((prev) =>
+        prev
+          ? {
+              ...prev,
+              ...(drop ? { placement: drop.placement } : { placement: undefined }),
+              ...(indicator ? { indicator } : { indicator: undefined }),
+            }
+          : prev,
+      );
     };
-    window.addEventListener('pointermove', onMove, { passive: true });
-    return () => window.removeEventListener('pointermove', onMove);
+    window.addEventListener('pointermove', onMove, { passive: true, capture: true });
+    return () => window.removeEventListener('pointermove', onMove, { capture: true });
   }, [isDragging]);
 
   const handleDragStart = (event: DragStartEvent): void => {
@@ -1766,48 +1883,13 @@ function BookmarkCategory({
     });
   };
 
-  /** onDragOver 仅维护 overId（用于组标题高亮与折叠展开计时）。 */
+  /** onDragOver 仅维护 overId（用于折叠组悬停展开计时）。提示线/落点由 pointermove 驱动。 */
   const handleDragOver = (event: DragOverEvent): void => {
-    setDragState((prev) => ({
-      activeType: prev?.activeType,
-      activeId: prev?.activeId,
-      placement: prev?.placement,
-      targetLabel: prev?.targetLabel,
-      indicator: prev?.indicator,
-      ...(event.over ? { overId: String(event.over.id) } : {}),
-    }));
-  };
-
-  /**
-   * onDragMove 驱动提示线：每次指针移动重算 placement + indicator 几何。
-   * 由于列表高度恒定，子行 rect 稳定，索引随指针 y 单调。
-   */
-  const handleDragMove = (event: DragMoveEvent): void => {
-    const activeType = dragState?.activeType;
-    const activeId = dragState?.activeId;
-    const over = event.over;
-    const overData = over?.data.current as DndData | undefined;
-    const overNode = nodeFromOverData(overData);
-    const pointerY = activePointerYRef.current ?? pointerYFromEvent(event);
-    const drop = resolveDrop(activeType, activeId, overData, overNode, pointerY);
-    // 把 indicator.top 从 viewport 转为相对提示线错容器的坐标。
-    const hostRect = indicatorHostRef.current?.getBoundingClientRect();
-    const hostWidth = indicatorHostRef.current?.clientWidth ?? 0;
-    const indicator: DropIndicatorGeometry | undefined =
-      drop && hostRect
-        ? {
-            ...drop.indicator,
-            top: drop.indicator.top - hostRect.top + indicatorHostRef.current!.scrollTop,
-            width: Math.max(40, hostWidth - drop.indicator.left - DROP_INDICATOR_RIGHT_PAD_PX),
-          }
-        : undefined;
-    setDragState({
-      activeType,
-      activeId,
-      ...(over ? { overId: String(over.id) } : {}),
-      ...(drop ? { placement: drop.placement, targetLabel: drop.label } : {}),
-      ...(indicator ? { indicator } : {}),
-    });
+    setDragState((prev) =>
+      prev
+        ? { ...prev, ...(event.over ? { overId: String(event.over.id) } : {}) }
+        : prev,
+    );
   };
 
   /** 释放只提交最后一次 onDragMove 记下的 placement；没有 placement 等价取消。 */
@@ -1860,13 +1942,14 @@ function BookmarkCategory({
     });
   };
 
-  const renderPath = (p: PathNode): JSX.Element => {
+  const renderPath = (p: PathNode, dndRow?: { containerId: string; index: number; depth: number }): JSX.Element => {
     const override = p.kind === 'ssh' ? undefined : displayNames.get(p.id);
     return (
       <PathItem
         key={p.id}
         node={p}
         sortableId={p.id}
+        {...(dndRow ? { dndRow } : {})}
         {...(override !== undefined ? { displayNameOverride: override } : {})}
         groups={groups}
         onMovePathToGroup={movePathToGroup}
@@ -1887,7 +1970,6 @@ function BookmarkCategory({
       collisionDetection={slotCollisionDetection}
       onDragStart={handleDragStart}
       onDragOver={handleDragOver}
-      onDragMove={handleDragMove}
       onDragEnd={handleDragEnd}
       onDragCancel={clearDragState}
     >
@@ -1933,7 +2015,6 @@ function BookmarkCategory({
             <BookmarkPathList
               paths={ungrouped}
               containerId={UNGROUPED_CONTAINER}
-              containerLabel="未分组"
               depth={0}
               dragState={dragState}
               fullLayout={fullLayout}
@@ -1943,7 +2024,6 @@ function BookmarkCategory({
             <BookmarkGroupList
               groups={groups}
               parentId={null}
-              parentLabel="根级"
               depth={0}
               dragState={dragState}
               fullLayout={fullLayout}
@@ -2012,6 +2092,7 @@ function PathItem({
   node,
   displayNameOverride,
   sortableId,
+  dndRow,
   groups,
   onMovePathToGroup,
 }: {
@@ -2022,6 +2103,11 @@ function PathItem({
    * id = node.id;不传时 useSortable 不被调用,零 dnd 开销。
    */
   sortableId?: string;
+  /**
+   * v0.3.3 拖拽 v3（y 选行/x 定层）：该路径行作为 droppable 携带的排序元数据。
+   * containerId = 所在排序容器（未分组或某组的 path-list），index = 在该容器里的
+   * 可见序号，depth = 视觉深度。仅收藏栏传。 */
+  dndRow?: { containerId: string; index: number; depth: number };
   /** 收藏分组树(仅 BookmarkCategory 传;用于「移动到分组」子菜单)。 */
   groups?: GroupNode[];
   /** 移动到指定组(null = 未分组);仅 BookmarkCategory 传。 */
@@ -2048,7 +2134,7 @@ function PathItem({
   const sortable = useSortable({
     id: sortableId ?? `disabled-path:${node.id}`,
     disabled: !sortableId,
-    data: { type: 'bookmark-path' },
+    data: { type: 'bookmark-path', ...(dndRow ? { rowKind: 'path', ...dndRow } : {}) },
   });
   // DragOverlay 负责跟手；源 li 固定留在原位充当等高 source placeholder。
   const sortableProps = sortableId
@@ -2074,8 +2160,8 @@ function PathItem({
     const onMove = (e: PointerEvent): void => {
       sessionPointerYRef.current = e.clientY;
     };
-    window.addEventListener('pointermove', onMove, { passive: true });
-    return () => window.removeEventListener('pointermove', onMove);
+    window.addEventListener('pointermove', onMove, { passive: true, capture: true });
+    return () => window.removeEventListener('pointermove', onMove, { capture: true });
   }, [isSessionDragging]);
   const sessionCollisionDetection: CollisionDetection = (args) =>
     pointerWithin(args).filter((collision) => {
@@ -2417,6 +2503,13 @@ function PathItem({
       <li
         className={`path-item${selected ? ' selected' : ''}${node.invalid ? ' invalid' : ''}${sortableId && sortable.isDragging ? ' dragging' : ''}`}
         data-path-id={node.id}
+        {...(dndRow
+          ? {
+              'data-path-container-id': dndRow.containerId,
+              'data-path-index': dndRow.index,
+              'data-path-depth': dndRow.depth,
+            }
+          : {})}
         {...sortableProps}
       >
         <div
@@ -2496,7 +2589,6 @@ function PathItem({
                       top: resolved.lineTop,
                       left: 28,
                       width: Math.max(40, ul.clientWidth - 28 - DROP_INDICATOR_RIGHT_PAD_PX),
-                      label: `第 ${resolved.index + 1} 位`,
                     }
                   : undefined;
               setSessionDragState({

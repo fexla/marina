@@ -1544,23 +1544,6 @@ html[data-maximized='true'] .app-root.with-shell {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent-special, #f0f) 30%, transparent);
 }
 
-.dnd-drop-indicator-label {
-  position: absolute;
-  top: -16px;
-  left: 0;
-  max-width: 100%;
-  padding: 0 5px;
-  overflow: hidden;
-  font-size: 9px;
-  font-weight: 600;
-  line-height: 14px;
-  color: var(--color-bg-elevated, #f0f);
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  background: var(--color-accent-special, #f0f);
-  border-radius: 3px;
-}
-
 /* 组标题作为「追加到本组末尾」大目标命中时的高亮（不改变高度）。 */
 .sidebar-group.drop-over > .sidebar-group-header,
 .sidebar-group.drop-over {

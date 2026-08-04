@@ -14,9 +14,14 @@
   跟随延迟 + placeholder 推挤邻居导致行 rect 漂移，出现“向下拖动，落点反而向上”
   的非单调现象。现在：拖动期间**不渲染任何占位 placeholder**，列表整体高度恒定；
   只有一条 `position:absolute` 的提示线，其垂直位置由指针 y 相对各子行中点单调
-  推导（指针用真实 `pointermove` 缓存的 `clientY`，不用延迟的 DragOverlay rect），
-  水平缩进/宽度由落点容器深度决定（x 决定层级，所见即所得）。group/path/session
-  三类拖拽统一适用。最终落点仍为 `{targetContainerId, targetIndex}`，后端不变。
+  推导，水平缩进/宽度由落点容器深度决定。更关键的是落点解析改为**纯坐标驱动**：
+  拖动时不再依赖 dnd-kit 的 over/碰撞（它们用的是 DragOverlay 跟随矩形，有偏移与
+  延迟），而是用真实 `pointermove` 的 clientX/Y 在 DOM 里命中行——**y 选在哪一行的
+  上半/下半，x 决定是否嵌入指针所在的组**（拖路径到组标题、x 靠右=进入该组；
+  x 靠左=作为同级）。提示线只画一条线、不带任何文字，缩进即层级，所见即所得。
+  group/path/session 三类统一适用。已用真实 Electron + CDP 指针验证：向下拖索引
+  单调、列表高度零变化、x 右移缩进加深并真正嵌入目标组、释放后 bookmarks.json
+  正确更新。
 
 ### 新增
 
