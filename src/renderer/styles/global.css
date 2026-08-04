@@ -1495,6 +1495,88 @@ html[data-maximized='true'] .app-root.with-shell {
 .sidebar-group-header:hover {
   background: var(--color-hover, rgba(255, 255, 255, 0.05));
 }
+
+/* v0.3.3 用户裁决:组头可聚焦,F2 重命名 / Delete 解散。焦点环保持克制。 */
+.sidebar-group-header:focus-visible {
+  outline: 1px solid var(--color-accent-special, #f0f);
+  outline-offset: -1px;
+}
+
+/* 组行 ⋯ 菜单按钮(与右键同源;hover 常驻,不用隐藏手势)。 */
+.sidebar-group-more,
+.sidebar-category-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: var(--color-text-muted, #f0f);
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.sidebar-group-more:hover,
+.sidebar-category-more:hover {
+  background-color: var(--color-bg-active, #f0f);
+  color: var(--color-text-primary, #f0f);
+}
+
+/* 组拖拽 drop 视觉:上半 sibling(插入线) / 下半 nest(嵌套高亮)。 */
+.sidebar-group.drop-sibling {
+  background: var(--color-bg-hover, rgba(255, 255, 255, 0.05));
+  box-shadow: 0 2px 0 0 var(--color-accent-special, #f0f);
+  border-radius: 4px;
+}
+
+.sidebar-group.drop-nest {
+  background: var(--color-bg-hover, rgba(255, 255, 255, 0.05));
+  outline: 1px solid var(--color-accent-special, #f0f);
+  outline-offset: -1px;
+  border-radius: 4px;
+}
+
+.sidebar-group.dragging {
+  position: relative;
+  z-index: 2;
+  opacity: 0.55;
+}
+
+.sidebar-group-drag-handle {
+  width: 14px;
+  height: 18px;
+  display: inline-flex;
+  flex: 0 0 14px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: var(--color-text-muted, #f0f);
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  opacity: 0.55;
+  cursor: grab;
+  touch-action: none;
+}
+
+.sidebar-group-drag-handle:hover,
+.sidebar-group-drag-handle:focus-visible {
+  color: var(--color-text-primary, #f0f);
+  background: var(--color-hover, rgba(255, 255, 255, 0.08));
+  opacity: 1;
+  outline: none;
+}
+
+.sidebar-group-drag-handle:active {
+  cursor: grabbing;
+}
+
 .sidebar-group-chevron {
   display: inline-flex;
   align-items: center;
@@ -1533,6 +1615,8 @@ html[data-maximized='true'] .app-root.with-shell {
   opacity: 1;
   background: var(--color-hover, rgba(255, 255, 255, 0.08));
 }
+/* v0.3.3:组动作全部收敛到 ⋯/右键菜单,旧的 hover 铅笔/垃圾桶样式保留为
+   死代码不删(方便以后需要时回滚;stylelint 对未使用 class 无意见)。 */
 .sidebar-group-rename-input {
   flex: 1;
   min-width: 0;
@@ -4086,6 +4170,47 @@ html[data-maximized='true'] .app-root.with-shell {
   text-overflow: ellipsis;
 }
 
+/* ── 子菜单(v0.3.3 用户裁决:路径/分组/session 菜单按任务分层) ── */
+.ctx-menu-item-wrap {
+  position: relative;
+}
+
+.ctx-menu-item.has-submenu .ctx-menu-submenu-arrow {
+  flex: 0 0 auto;
+  margin-left: 8px;
+  color: var(--color-text-secondary, #f0f);
+  font-size: 10px;
+}
+
+.ctx-menu-item-wrap.submenu-open > .ctx-menu-item {
+  background-color: var(--color-bg-active, #f0f);
+}
+
+.ctx-submenu {
+  position: absolute;
+  left: 100%;
+  top: -5px;
+  z-index: 1001;
+  min-width: 180px;
+  max-width: 320px;
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  background-color: var(--color-bg-secondary, #f0f);
+  color: var(--color-text-primary, #f0f);
+  border: 1px solid color-mix(in srgb, var(--color-text-primary, #e0def4) 8%, transparent);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 28%);
+  padding: 4px;
+  font-size: 12px;
+  user-select: none;
+}
+
+/* 视口右侧不足时向左展开。 */
+.ctx-submenu.flip {
+  left: auto;
+  right: 100%;
+}
+
 /* ADR-008: tab 状态点已移除,状态指示统一在侧边栏 session 行展示;
    tab 上仅保留 exited 透明度提示 + cwd 漂移提示 */
 .tab.exited {
@@ -5625,6 +5750,110 @@ select.settings-input option {
   border-color: var(--color-bg-strong, #f0f);
 }
 
+/* 远程 backend 自绘文件夹选择器：native dialog 无法跨 WS 显示，因此在
+ * renderer 内用点击式分层浏览替代。路径只读，严格不提供文本输入。 */
+.backend-directory-picker {
+  width: min(560px, calc(100vw - 32px));
+  min-width: 0;
+  height: min(520px, calc(100vh - 48px));
+}
+
+.backend-directory-picker-location {
+  flex: 0 0 auto;
+  margin-bottom: 8px;
+  padding: 7px 9px;
+  overflow: hidden;
+  color: var(--color-text-secondary, #f0f);
+  background-color: var(--color-bg-primary, #f0f);
+  border: 1px solid var(--color-bg-elevated, #f0f);
+  border-radius: 4px;
+  font-family: var(--terminal-font-family, monospace);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backend-directory-picker-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.backend-directory-picker-toolbar .app-modal-button,
+.backend-directory-picker-state .app-modal-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 5px 9px;
+}
+
+.backend-directory-picker-refresh {
+  margin-left: auto;
+}
+
+.backend-directory-picker-list {
+  flex: 1 1 auto;
+  min-height: 180px;
+  margin-bottom: 12px;
+  overflow: auto;
+  background-color: var(--color-bg-primary, #f0f);
+  border: 1px solid var(--color-bg-elevated, #f0f);
+  border-radius: 4px;
+}
+
+.backend-directory-picker-row {
+  width: 100%;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  overflow: hidden;
+  color: var(--color-text-primary, #f0f);
+  background-color: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--color-bg-elevated, #f0f);
+  text-align: left;
+  cursor: pointer;
+}
+
+.backend-directory-picker-row:last-child {
+  border-bottom: 0;
+}
+
+.backend-directory-picker-row:hover,
+.backend-directory-picker-row:focus-visible {
+  background-color: var(--color-bg-hover, #f0f);
+  outline: none;
+}
+
+.backend-directory-picker-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backend-directory-picker-state {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 20px;
+  color: var(--color-text-muted, #f0f);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.backend-directory-picker-state.error {
+  color: var(--color-danger, #f0f);
+}
+
 /* ── Marina Skill installer ─────────────────────────────────────── */
 .skill-install-dialog {
   width: min(460px, calc(100vw - 32px));
@@ -5682,8 +5911,13 @@ select.settings-input option {
   min-width: 72px;
 }
 
-.app-modal-button:hover {
+.app-modal-button:hover:not(:disabled) {
   background-color: var(--color-bg-active, #f0f);
+}
+
+.app-modal-button:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .app-modal-button:focus-visible {

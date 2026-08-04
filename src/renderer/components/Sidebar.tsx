@@ -33,7 +33,12 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Copy,
   FolderInput,
+  FolderOpen,
+  FolderPlus,
+  GripVertical,
+  MoreHorizontal,
   Pencil,
   Trash2,
   X,
@@ -45,7 +50,10 @@ import {
   useSensors,
   useDroppable,
   closestCenter,
+  type CollisionDetection,
   type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
 } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -58,9 +66,24 @@ import {
 import type { GroupNode, PathNode, SessionInfo, SshProfile, Template } from '@shared/types';
 import { disambiguatePathNames } from '@shared/path-display';
 import { hasAnyRemote } from '@shared/remote-visibility';
-import { BOOKMARK_UNGROUPED_CONTAINER, moveBookmarkInLayout } from '@shared/bookmark-dnd-layout';
+import { makeSshPathId } from '@shared/remote-path';
+import {
+  BOOKMARK_UNGROUPED_CONTAINER,
+  isDescendantGroupInLayout,
+  moveBookmarkGroupInLayout,
+  moveBookmarkInLayout,
+  type BookmarkGroupDropAction,
+  type BookmarkGroupOrder,
+  type BookmarkOrderLayout,
+} from '@shared/bookmark-dnd-layout';
 import { useTranslation } from './LanguageProvider';
-import { findMyOwnedSessionId, useAppDispatch, useAppState, useAppStateRef } from '../store';
+import {
+  findMyOwnedSessionId,
+  findPathNode,
+  useAppDispatch,
+  useAppState,
+  useAppStateRef,
+} from '../store';
 import { Icon, type IconName } from './icons';
 import { useContextMenuApi, type ContextMenuItem } from './ContextMenu';
 import { useModal } from './Modal';
@@ -72,6 +95,7 @@ import { buildSessionContextMenu } from './sessionContextMenu';
 import { closeSessionWithContinue } from '../hooks/useCloseSession';
 import { SkillInstallDialog } from './SkillInstallDialog';
 import { TemplateIcon } from './TemplateIcon';
+import { BackendDirectoryPicker } from './BackendDirectoryPicker';
 
 /**
  * 状态点颜色 (软件定义书 6.2.4 状态指示):
@@ -100,6 +124,7 @@ import { TemplateIcon } from './TemplateIcon';
  * beta.9 完全一致(本地视野不变式)。
  */
 type SidebarSegment = 'local' | 'remote';
+type BackendDirectoryPickerIntent = 'bookmark' | 'temporary';
 const SIDEBAR_SEGMENT_LS_KEY = 'marina.sidebar.segment';
 
 function readSegmentFromStorage(): SidebarSegment {
@@ -142,6 +167,8 @@ export function Sidebar(): JSX.Element {
   const ctxMenu = useContextMenuApi();
   const { t } = useTranslation();
   const [dragOver, setDragOver] = useState(false);
+  const [directoryPickerIntent, setDirectoryPickerIntent] =
+    useState<BackendDirectoryPickerIntent | null>(null);
 
   // v1.14(方案-远程UI统一 §III.2):segmented 远程 tab 顶部的「Marina 电脑」区段。
   // 数据源 = state.remoteBackendProfiles —— store 已保证它在任何窗口(含远程窗口)
@@ -243,6 +270,20 @@ export function Sidebar(): JSX.Element {
     daemonRunning,
   });
   const effectiveSegment: SidebarSegment = showSegmented ? segment : 'local';
+  const isRemoteBackendWindow = window.api.backendProfileId !== null;
+  // 用户裁决 1A:当前电脑段在远程 backend 窗口显示 daemon 的名字（如 FEX），
+  // 本地窗口显示「当前电脑」。名字来自客户端保存的电脑 profile（store 保证
+  // 任何窗口都持有客户端本机列表）。
+  const currentComputerLabel = isRemoteBackendWindow
+    ? localProfiles.find((p) => p.id === window.api.backendProfileId)?.displayName
+    : undefined;
+  // 用户裁决 3A:OS 文件夹拖入只在「客户端本机 backend + 当前电脑段」可用。
+  const dropEnabled = !isRemoteBackendWindow && effectiveSegment === 'local';
+  const selectedBackendPath = state.selectedPathId
+    ? findPathNode(state.pathTree, state.selectedPathId)
+    : undefined;
+  const directoryPickerInitialPath =
+    selectedBackendPath?.kind === 'local' ? selectedBackendPath.path : undefined;
 
   // SSH 方案 v2.1 §II.3:三栏按 segment 过滤(本地 = kind==='local',包含
   // WSL UNC 路径;远程 = kind==='ssh')。本地用户无 profile + 未启 enableRemote
@@ -290,22 +331,24 @@ export function Sidebar(): JSX.Element {
   };
 
   /**
-   * 新建收藏分组。
+   * 新建收藏分组(嵌套版)。
    *
-   * 入口统一放在根级分类与现有分组的右键菜单中，不再在收藏列表底部常驻一个
-   * 虚线按钮：分组是低频组织动作，常驻按钮会打断路径列表的视觉节奏。仍使用
+   * 入口:收藏分类的 ⋯/右键菜单(顶层)与分组右键菜单(新建子组)。仍使用
    * 项目自绘 Modal；Electron renderer 中原生 window.prompt 会直接返回 null。
    */
-  const addGroupPrompt = async (): Promise<void> => {
+  const addGroupPrompt = async (parentId?: string): Promise<void> => {
     const name = await modal.prompt({
-      title: t('sidebar.group.add') || '新建分组',
-      message: t('sidebar.group.add') || '输入分组名称',
-      placeholder: '分组名',
+      title: parentId ? t('sidebar.group.addSub') || '新建子组' : t('sidebar.group.add') || '新建分组',
+      message: parentId ? '输入子组名称' : '输入分组名称',
+      placeholder: parentId ? '子组名' : '分组名',
       confirmLabel: '新建',
     });
     if (!name?.trim()) return;
     try {
-      await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_GROUP_ADD, { name: name.trim() });
+      await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_GROUP_ADD, {
+        name: name.trim(),
+        ...(parentId ? { parentId } : {}),
+      });
     } catch (err) {
       toast.push({
         kind: 'error',
@@ -314,7 +357,7 @@ export function Sidebar(): JSX.Element {
     }
   };
 
-  /** 根级分类（收藏 / 临时 / 最近）共用的新建分组右键菜单。 */
+  /** 收藏分类的「新建分组」菜单（⋯ 按钮与右键共用）。 */
   const openAddGroupContextMenu = (e: MouseEvent<HTMLElement>, title: string): void => {
     e.preventDefault();
     e.stopPropagation();
@@ -332,71 +375,44 @@ export function Sidebar(): JSX.Element {
     });
   };
 
-  /**
-   * 远程段:给指定 SSH profile 弹路径 prompt 并添加远程收藏。
-   * 与设置页「添加远程文件夹」同协议(REMOTE_BOOKMARK_ADD)。
-   */
-  const promptRemotePathFor = async (profile: SshProfile): Promise<void> => {
-    const remotePath = await modal.prompt({
-      title: `添加远程文件夹 — ${profile.name}`,
-      message: `输入 ${profile.username}@${profile.host} 上的目录路径。`,
-      placeholder: '~/project',
-      defaultValue: '~',
-      confirmLabel: '加入',
+  /** ⋯ 按钮版：锚定在按钮下方，菜单内容与右键一致。 */
+  const openBookmarkMoreMenu = (e: React.MouseEvent<HTMLButtonElement>): void => {
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    ctxMenu.open({
+      x: rect.left,
+      y: rect.bottom + 2,
+      title: t('sidebar.category.bookmark') || '收藏',
+      items: [
+        {
+          label: t('sidebar.group.add') || '新建分组',
+          icon: <FolderInput size={13} />,
+          onSelect: () => void addGroupPrompt(),
+        },
+      ],
     });
-    const path = remotePath?.trim();
-    if (!path) return;
-    try {
-      await window.api.invoke<unknown, AddBookmarkResponse>(
-        COMMAND_CHANNELS.REMOTE_BOOKMARK_ADD,
-        { sshProfileId: profile.id, remotePath: path },
-      );
-      toast.push({ kind: 'success', message: `已添加远程文件夹 ${path}` });
-    } catch (err) {
-      toast.push({
-        kind: 'error',
-        message: `添加远程文件夹失败:${err instanceof Error ? err.message : String(err)}`,
-      });
-    }
   };
 
   /**
-   * 收藏栏 "+" 按钮。按当前 segment 走不同流程:
+   * 收藏栏 "+" 按钮。按当前 segment 走不同流程（用户裁决 2A：不手输路径）：
    *
-   * - 本地段:beta.9 行为 — 系统 folder picker → BOOKMARK_ADD
-   * - 远程段:先定服务器再输远端路径。单 profile 直接 prompt(标题带服务器名);
-   *   多 profile 弹服务器菜单让用户选(v1.14 修复 —— 原实现硬编码
-   *   profiles[0],配了多个服务器时侧栏只能给第一个加收藏,要别的得绕设置页)。
-   *   零 profile 时 toast 引导用户去设置(showSegmented 已经保证不会出现
-   *   0 profile + 不能切远程段的状态,但 enableRemote=true 仍可能 0 profile)。
+   * - 当前电脑段：beta.9 行为 — 系统 folder picker → BOOKMARK_ADD；
+   *   远程 backend 窗口则用 renderer 自绘的点击式 backend 目录选择器。
+   * - SSH 段：不手输路径。「连接 SSH…」— 选服务器后从 home 启动 session；
+   *   用户通过 shell 到达目录后，从临时/最近路径点「加入收藏」。
    */
   const handleAddBookmark = async (e?: React.MouseEvent<HTMLButtonElement>): Promise<void> => {
     if (effectiveSegment === 'remote') {
-      const profiles = state.sshProfiles;
-      if (profiles.length === 0) {
-        toast.push({
-          kind: 'warn',
-          message: '请先在 设置 → 远程 添加 SSH 服务器',
-        });
-        return;
-      }
-      if (profiles.length === 1) {
-        void promptRemotePathFor(profiles[0]!);
-        return;
-      }
-      // 多 profile:先选服务器(菜单锚在 + 按钮正下方)。
-      const rect = e?.currentTarget.getBoundingClientRect();
-      ctxMenu.open({
-        x: rect?.left ?? 0,
-        y: rect ? rect.bottom : 0,
-        items: profiles.map((p) => ({
-          label: `${p.name} (${p.username}@${p.host})`,
-          onSelect: () => void promptRemotePathFor(p),
-        })),
-      });
+      openSshConnectionMenu(e, '连接 SSH…');
       return;
     }
-    // 本地段:beta.9 行为
+    // 远程 backend 的“当前电脑段”指 daemon 文件系统。不能把 native dialog
+    // 命令发给 daemon；改用 renderer 自绘、backend-data 驱动的点击式选择器。
+    if (isRemoteBackendWindow) {
+      setDirectoryPickerIntent('bookmark');
+      return;
+    }
+    // 真正的本地窗口保留 beta.9 native folder picker。
     try {
       const result = await window.api.invoke<unknown, PickFolderResponse>(
         COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER,
@@ -414,41 +430,116 @@ export function Sidebar(): JSX.Element {
     }
   };
 
+  /** 在指定 backend 绝对路径创建默认模板 session，并立即选中。 */
+  const createSessionAtPath = async (path: string): Promise<void> => {
+    const templateId = state.defaultTemplateId ?? 'shell';
+    const dims = state.lastTerminalDims;
+    const res = await window.api.invoke<unknown, CreateSessionResponse>(
+      COMMAND_CHANNELS.SESSION_CREATE,
+      {
+        pathId: path,
+        templateId,
+        cols: dims.cols,
+        rows: dims.rows,
+      },
+    );
+    // session 创建后:乐观 dispatch sessions/created 立即写入 state + 选中它。
+    dispatch({ type: 'sessions/created', session: res.session });
+    if (res.warning) toast.push({ kind: 'warn', message: res.warning });
+  };
+
   /**
-   * 勘误第二轮 #6:临时栏 + 按钮 — 选文件夹后直接在该路径起一个 session。
-   * 临时分类完全从 PathManager.sessionToPath 推导,所以"加入临时"=" 在该
-   * 路径起一个 session 后让它自然出现在临时栏"。配合默认模板 (全局默认)。
+   * SSH 段 "+"（收藏 + 临时共用的用户任务）：连接 SSH 服务器并开 session。
+   * 零 profile → 引导去设置；单 profile → 直接连；多 profile → 菜单选。
    */
-  const handlePickFolderForTemp = async (): Promise<void> => {
+  const openSshConnectionMenu = (e?: React.MouseEvent<HTMLButtonElement>, title?: string): void => {
+    const profiles = state.sshProfiles;
+    if (profiles.length === 0) {
+      toast.push({
+        kind: 'warn',
+        message: '请先在 设置 → 远程 添加 SSH 服务器',
+      });
+      return;
+    }
+    const connect = (profile: SshProfile): void => {
+      void connectSshSession(profile);
+    };
+    if (profiles.length === 1) {
+      connect(profiles[0]!);
+      return;
+    }
+    const rect = e?.currentTarget.getBoundingClientRect();
+    ctxMenu.open({
+      x: rect?.left ?? 0,
+      y: rect ? rect.bottom : 0,
+      title: title ?? '连接 SSH…',
+      items: profiles.map((p) => ({
+        label: `${p.name} (${p.username}@${p.host})`,
+        onSelect: () => connect(p),
+      })),
+    });
+  };
+
+  /** 从 profile 的默认远端目录（回退 home）开一个 SSH session。 */
+  const connectSshSession = async (profile: SshProfile): Promise<void> => {
+    try {
+      const pathId = makeSshPathId(profile.id, profile.defaultRemoteCwd ?? '~');
+      await createSessionAtPath(pathId);
+    } catch (err) {
+      toast.push({
+        kind: 'error',
+        message: `连接 SSH 失败:${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  };
+
+  /**
+   * 临时栏 "+" 按钮：当前电脑段 = native picker（远程 backend 窗口用点击式
+   * 选择器）；SSH 段 = 连接 SSH（与收藏 + 同一任务）。选完后共创建 session。
+   */
+  const handlePickFolderForTemp = async (e?: React.MouseEvent<HTMLButtonElement>): Promise<void> => {
+    if (effectiveSegment === 'remote') {
+      openSshConnectionMenu(e, '连接 SSH…');
+      return;
+    }
+    if (isRemoteBackendWindow) {
+      setDirectoryPickerIntent('temporary');
+      return;
+    }
     try {
       const result = await window.api.invoke<unknown, PickFolderResponse>(
         COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER,
         {},
       );
       if (result.path === null) return;
-      const templateId = state.defaultTemplateId ?? 'shell';
-      const dims = state.lastTerminalDims;
-      const res = await window.api.invoke<unknown, CreateSessionResponse>(
-        COMMAND_CHANNELS.SESSION_CREATE,
-        {
-          pathId: result.path,
-          templateId,
-          cols: dims.cols,
-          rows: dims.rows,
-        },
-      );
-      // session 创建后:乐观 dispatch sessions/created 立即写入 state + 选中它
-      // (reducer 同时设 selectedPathId + 展开)。替代原先的 view/select-path +
-      // view/select-session —— 后者在 hideTopTabBar 模式下会因 select-path 清空
-      // selectedSessionId 而闪一下 EmptyPathState(广播晚于 invoke 返回时)。
-      dispatch({ type: 'sessions/created', session: res.session });
-      if (res.warning) {
-        toast.push({ kind: 'warn', message: res.warning });
-      }
+      await createSessionAtPath(result.path);
     } catch (err) {
       toast.push({
         kind: 'error',
         message: `打开文件夹失败:${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  };
+
+  /** 文件夹选择器完成后按打开意图调用 backend 命令；选择器先关闭以归还焦点。 */
+  const handleBackendDirectorySelected = async (path: string): Promise<void> => {
+    const intent = directoryPickerIntent;
+    setDirectoryPickerIntent(null);
+    if (!intent) return;
+    try {
+      if (intent === 'bookmark') {
+        await window.api.invoke<unknown, AddBookmarkResponse>(COMMAND_CHANNELS.BOOKMARK_ADD, {
+          path,
+        });
+      } else {
+        await createSessionAtPath(path);
+      }
+    } catch (err) {
+      toast.push({
+        kind: 'error',
+        message: `${intent === 'bookmark' ? '添加文件夹' : '打开文件夹'}失败:${
+          err instanceof Error ? err.message : String(err)
+        }`,
       });
     }
   };
@@ -500,7 +591,8 @@ export function Sidebar(): JSX.Element {
     // 注意:这里不调 preventDefault / 不设 dropEffect — App.tsx 的 window
     // 监听器是唯一决策点(它会通过 data-drop-zone 属性识别本元素是 drop
     // zone 并设 'copy')。本 handler 只为视觉反馈服务。
-    if (!isFileDrag(e)) return;
+    // 用户裁决 3A:OS 文件夹拖入只在「客户端本机 backend + 当前电脑段」可用。
+    if (!isFileDrag(e) || !dropEnabled) return;
     setDragOver(true);
     clearDragOverSoon();
   };
@@ -512,6 +604,15 @@ export function Sidebar(): JSX.Element {
     if (dragHeartbeatRef.current) {
       clearTimeout(dragHeartbeatRef.current);
       dragHeartbeatRef.current = null;
+    }
+    if (!dropEnabled) {
+      toast.push({
+        kind: 'warn',
+        message: isRemoteBackendWindow
+          ? '远程窗口不支持从文件管理器拖入，请到远程电脑上用「+」选择文件夹'
+          : 'SSH 段不支持拖入本地文件夹，请切回「当前电脑」段或用「+」添加',
+      });
+      return;
     }
     const files = Array.from(e.dataTransfer.files);
     for (const file of files) {
@@ -533,7 +634,7 @@ export function Sidebar(): JSX.Element {
   return (
     <aside
       className={`sidebar${dragOver ? ' drag-over' : ''}`}
-      data-drop-zone="files"
+      data-drop-zone={dropEnabled ? 'files' : undefined}
       style={{ flexBasis: `${sidebarWidth}px` }}
       onClick={(e) => {
         if (e.target === e.currentTarget) {
@@ -555,7 +656,7 @@ export function Sidebar(): JSX.Element {
         <div
           className="sidebar-segmented"
           role="tablist"
-          aria-label={t('sidebar.segment.label') || '本地 / 远程'}
+          aria-label={t('sidebar.segment.label') || '当前电脑 / SSH'}
           data-testid="sidebar-segmented"
         >
           <button
@@ -566,7 +667,7 @@ export function Sidebar(): JSX.Element {
             onClick={() => setSegment('local')}
             data-testid="sidebar-segment-local"
           >
-            {t('sidebar.segment.local') || '本地'}
+            {currentComputerLabel ?? t('sidebar.segment.local') ?? '当前电脑'}
           </button>
           <button
             type="button"
@@ -576,7 +677,7 @@ export function Sidebar(): JSX.Element {
             onClick={() => setSegment('remote')}
             data-testid="sidebar-segment-remote"
           >
-            {t('sidebar.segment.remote') || '远程'}
+            {t('sidebar.segment.remote') ?? 'SSH'}
           </button>
         </div>
       )}
@@ -620,13 +721,15 @@ export function Sidebar(): JSX.Element {
       <div className="sidebar-bookmarks-dropzone" data-segment={effectiveSegment}>
         <BookmarkCategory
           paths={bookmarksFiltered}
+          allPaths={state.pathTree.bookmarks}
           groups={groupsFiltered}
           collapsed={isCategoryCollapsed('bookmark')}
           onToggleCollapsed={() => handleToggleCategory('bookmark')}
           onContextMenu={(e) =>
             openAddGroupContextMenu(e, t('sidebar.category.bookmark') || '收藏')
           }
-          onRequestAddGroup={() => void addGroupPrompt()}
+          onMore={openBookmarkMoreMenu}
+          onRequestAddSubgroup={(parentId) => void addGroupPrompt(parentId)}
           actionLabel={<Icon name="plus" size={12} />}
           actionTitle={t('sidebar.addBookmark.title')}
           onAction={(e) => void handleAddBookmark(e)}
@@ -639,12 +742,9 @@ export function Sidebar(): JSX.Element {
           paths={temporaryFiltered}
           collapsed={isCategoryCollapsed('temporary')}
           onToggleCollapsed={handleToggleCategory}
-          onContextMenu={(e) =>
-            openAddGroupContextMenu(e, t('sidebar.category.temporary') || '临时')
-          }
           actionLabel={<Icon name="plus" size={12} />}
           actionTitle={t('sidebar.addTemporary.title')}
-          onAction={() => void handlePickFolderForTemp()}
+          onAction={(e) => void handlePickFolderForTemp(e)}
         />
         <Category
           categoryId="recent"
@@ -653,7 +753,6 @@ export function Sidebar(): JSX.Element {
           paths={recentFiltered}
           collapsed={isCategoryCollapsed('recent')}
           onToggleCollapsed={handleToggleCategory}
-          onContextMenu={(e) => openAddGroupContextMenu(e, t('sidebar.category.recent') || '最近')}
         />
       </div>
       <div className="sidebar-footer">
@@ -679,6 +778,19 @@ export function Sidebar(): JSX.Element {
         title="拖动调整宽度 (双击复位)"
         aria-hidden="true"
       />
+      {directoryPickerIntent && (
+        <BackendDirectoryPicker
+          title={
+            directoryPickerIntent === 'bookmark'
+              ? '收藏远程电脑上的文件夹'
+              : '在远程电脑上打开终端'
+          }
+          confirmLabel={directoryPickerIntent === 'bookmark' ? '加入收藏' : '打开终端'}
+          {...(directoryPickerInitialPath ? { initialPath: directoryPickerInitialPath } : {})}
+          onCancel={() => setDirectoryPickerIntent(null)}
+          onSelect={(path) => void handleBackendDirectorySelected(path)}
+        />
+      )}
     </aside>
   );
 }
@@ -691,8 +803,11 @@ interface CategoryProps {
   emptyLabel?: string;
   collapsed: boolean;
   onToggleCollapsed: (categoryId: string) => void;
-  /** 根级分类右键菜单（v0.3.3：提供低频的“新建分组”入口）。 */
+  /** 根级分类右键菜单（v0.3.3：仅收藏提供“新建分组”）。 */
   onContextMenu?: (e: MouseEvent<HTMLElement>) => void;
+  /** ⋯ 按钮(与右键同源)。收藏分类用;临时/最近不提供。 */
+  onMore?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  moreTitle?: string;
   /** affordance 内容 — 通常是 lucide icon (<Icon name="plus" .../>) */
   actionLabel?: ReactNode;
   actionTitle?: string;
@@ -709,6 +824,8 @@ function Category({
   collapsed,
   onToggleCollapsed,
   onContextMenu,
+  onMore,
+  moreTitle,
   actionLabel,
   actionTitle,
   onAction,
@@ -721,7 +838,7 @@ function Category({
         className="sidebar-category-header"
         onClick={() => onToggleCollapsed(categoryId)}
         onContextMenu={onContextMenu}
-        title={collapsed ? '展开分组' : '折叠分组'}
+        title={collapsed ? `展开${title}` : `折叠${title}`}
       >
         <span className="sidebar-category-chevron" aria-hidden="true">
           {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
@@ -746,6 +863,20 @@ function Category({
             {actionLabel}
           </button>
         )}
+        {onMore && (
+          <button
+            type="button"
+            className="sidebar-category-more"
+            onClick={(e) => {
+              e.stopPropagation();
+              onMore(e);
+            }}
+            title={moreTitle}
+            aria-label={moreTitle}
+          >
+            <MoreHorizontal size={12} />
+          </button>
+        )}
       </header>
       {collapsed ? null : paths.length === 0 ? (
         <p className="sidebar-empty">{emptyLabel}</p>
@@ -767,35 +898,51 @@ function Category({
   );
 }
 
-// ╔══════════════════════════════════════════════════════════════════╗
+// ═══════════════════════════════════════════════════════════════════╗
 // ║  v0.3.3 ADR-025 / Feature E.1+E.2:收藏分组渲染 + @dnd-kit 拖序       ║
+// ║  用户裁决(2026-08-04):分组可递归嵌套;组动作只放右键/⋯;            ║
+// ║  F2 重命名、Delete 解散(组头焦点内)                                ║
 // ╚══════════════════════════════════════════════════════════════════╝
 // 设计:
 // - 收藏栏(Category=bookmark)用 BookmarkCategory 替换原平铺渲染:
-//   未分组块(隐式,顶置)+ 各分组块(组头:折叠/重命名/删组)。
+//   未分组块(隐式,顶置)+ 分组森林(GroupBlock 递归渲染组头与子组)。
 // - 分组折叠态走 L2 偏好 usePanelPreference(附录 G.1),不裸 localStorage。
 // - 拖序走 @dnd-kit 多容器:未分组 + 各组各为 SortableContext(共享 DndContext),
 //   拖动跨容器=移组,拖动同容器=组内排序;拖完发分层 BOOKMARK_REORDER。
+// - 组拖拽的碰撞检测是树感知的:指针在组行上半 = sibling(同级排序),
+//   下半 = nest(成为子组);拖到 path/未分组 = 无落点(组不能进未分组)。
+//   循环守卫:nest 目标为自身/自身后代时拒绝。
 // - 临时/最近栏不受影响(决策 #13:只收藏可分组/可拖序)。
 // - 排序能力直接内联进 PathItem 的 <li>(传 sortableId 才启用),避免额外的
 //   包裹 <li> 造成 li 嵌套(无效 HTML)。临时/最近不传 → 零 dnd 开销。
 const UNGROUPED_CONTAINER = BOOKMARK_UNGROUPED_CONTAINER;
+const GROUPS_SORTABLE_CONTAINER = '__marina_bookmark_groups__';
+/** 组 draggable id 前缀(避免与 pathId / 容器 id 冲突)。 */
+const GROUP_ID_PREFIX = 'bookmark-group:';
 
 /**
- * 分组头:折叠/展开、组名、重命名、删组。
+ * 分组头:折叠/展开、组名、⋯ 菜单。
+ *
+ * 用户裁决(2026-08-04):组动作**全部只放右键/⋯ 菜单**(去掉 hover 铅笔/垃圾桶)。
+ * 菜单:新建子组 / 重命名 / 解散分组。组头获得焦点时:F2 = 重命名,
+ * Delete = 解散分组(路径与子组提升到上级,绝不删数据)。
  * 折叠态走 usePanelPreference(panelId='sidebar', key='groupCollapsed', 默认空 Set)。
- * 右键菜单集中承载“新建 / 重命名 / 删除”；行尾编辑按钮仍保留为可见快捷入口。
  */
 function GroupHeader({
   group,
   collapsed,
   onToggleCollapse,
-  onRequestAddGroup,
+  onRequestAddSubgroup,
+  dragHandle,
 }: {
   group: GroupNode;
   collapsed: boolean;
   onToggleCollapse: () => void;
-  onRequestAddGroup: () => void;
+  onRequestAddSubgroup: () => void;
+  dragHandle: Pick<
+    ReturnType<typeof useSortable>,
+    'setActivatorNodeRef' | 'attributes' | 'listeners'
+  >;
 }): JSX.Element {
   const { t } = useTranslation();
   const toast = useToast();
@@ -827,59 +974,97 @@ function GroupHeader({
       });
   };
 
-  const handleDelete = (): void => {
-    // 删组:子 path 归未分组,绝不删 path。后端已保证;这里给个 toast 反馈。
+  /** 解散分组:路径与子组提升到上级,绝不删数据。后端已保证;这里给 toast 反馈。 */
+  const handleDissolve = (): void => {
     window.api
       .invoke(COMMAND_CHANNELS.BOOKMARK_GROUP_REMOVE, { id: group.id })
       .then(() =>
         toast.push({
           kind: 'success',
-          message: `已删除分组「${group.name}」,其下路径已归到未分组`,
+          message: `已解散分组「${group.name}」，路径与子组已移至上级，未删除任何数据`,
         }),
       )
       .catch((err: unknown) => {
         toast.push({
           kind: 'error',
-          message: `删除分组失败:${err instanceof Error ? err.message : String(err)}`,
+          message: `解散分组失败:${err instanceof Error ? err.message : String(err)}`,
         });
       });
   };
 
-  const openGroupContextMenu = (e: MouseEvent<HTMLDivElement>): void => {
-    e.preventDefault();
-    e.stopPropagation();
+  const openGroupMenu = (x: number, y: number): void => {
     ctxMenu.open({
-      x: e.clientX,
-      y: e.clientY,
+      x,
+      y,
       title: group.name,
       items: [
         {
-          label: t('sidebar.group.add') || '新建分组',
-          icon: <FolderInput size={13} />,
-          onSelect: onRequestAddGroup,
+          label: t('sidebar.group.addSub') || '新建子组',
+          icon: <FolderPlus size={13} />,
+          onSelect: onRequestAddSubgroup,
         },
         { divider: true, label: '' },
         {
-          label: t('sidebar.group.rename') || '重命名分组',
+          label: t('sidebar.group.rename') || '重命名',
           icon: <Pencil size={13} />,
           onSelect: beginRename,
         },
         {
-          label: t('sidebar.group.remove') || '删除分组',
+          label: t('sidebar.group.dissolve') || '解散分组',
           icon: <Trash2 size={13} />,
           danger: true,
-          onSelect: handleDelete,
+          hint: '路径与子组移至上级，不删除数据',
+          onSelect: handleDissolve,
         },
       ],
     });
   };
 
+  const handleContextMenu = (e: MouseEvent<HTMLDivElement>): void => {
+    e.preventDefault();
+    e.stopPropagation();
+    openGroupMenu(e.clientX, e.clientY);
+  };
+
+  const handleMoreClick = (e: React.MouseEvent<HTMLButtonElement>): void => {
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    openGroupMenu(rect.left, rect.bottom + 2);
+  };
+
+  /** F2/Delete 只在组头自身聚焦时生效;重命名输入框内的按键不触发。 */
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (e.target !== e.currentTarget) return;
+    if (e.key === 'F2') {
+      e.preventDefault();
+      beginRename();
+    } else if (e.key === 'Delete') {
+      e.preventDefault();
+      handleDissolve();
+    }
+  };
+
   return (
     <div
       className="sidebar-group-header"
+      tabIndex={0}
       onClick={onToggleCollapse}
-      onContextMenu={openGroupContextMenu}
+      onContextMenu={handleContextMenu}
+      onKeyDown={handleKeyDown}
+      title={collapsed ? `展开${group.name}` : `折叠${group.name}`}
     >
+      <button
+        ref={dragHandle.setActivatorNodeRef}
+        type="button"
+        className="sidebar-group-drag-handle"
+        {...dragHandle.attributes}
+        {...(dragHandle.listeners ?? {})}
+        onClick={(e) => e.stopPropagation()}
+        title="拖动分组排序/嵌套"
+        aria-label={`拖动分组「${group.name}」`}
+      >
+        <GripVertical size={12} />
+      </button>
       <span className="sidebar-group-chevron" aria-hidden="true">
         {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
       </span>
@@ -908,30 +1093,15 @@ function GroupHeader({
           {group.name}
         </span>
       )}
-      <span className="sidebar-group-actions">
-        <button
-          type="button"
-          className="sidebar-group-action"
-          onClick={(e) => {
-            e.stopPropagation();
-            beginRename();
-          }}
-          title={t('sidebar.group.rename') || '重命名分组'}
-        >
-          <Pencil size={11} />
-        </button>
-        <button
-          type="button"
-          className="sidebar-group-action"
-          onClick={(e) => {
-            e.stopPropagation();
-            handleDelete();
-          }}
-          title={t('sidebar.group.remove') || '删除分组(路径归到未分组)'}
-        >
-          <Trash2 size={11} />
-        </button>
-      </span>
+      <button
+        type="button"
+        className="sidebar-group-more"
+        onClick={handleMoreClick}
+        title={t('sidebar.group.menu') || '分组菜单 (右键/F2/Delete 也可)'}
+        aria-label={`分组「${group.name}」菜单`}
+      >
+        <MoreHorizontal size={12} />
+      </button>
     </div>
   );
 }
@@ -952,28 +1122,113 @@ function BookmarkUngroupedDropZone({ children }: { children: ReactNode }): JSX.E
   );
 }
 
+/** 拖拽过程状态（用于组块 drop 视觉）。collision 的 dropAction 从 event.collisions[0].data 读。 */
+interface BookmarkDragState {
+  activeType?: string | undefined;
+  activeId?: string | undefined;
+  overId?: string | undefined;
+  dropAction?: BookmarkGroupDropAction | undefined;
+}
+
 /**
- * 分组整块（含折叠组头）注册为 droppable。
- * 空组没有 sortable path，旧实现因此永远无法成为 over；整块注册后，空组和折叠组
- * 都能接收路径，展开且有路径时仍由更精确的 sortable item 决定插入位置。
+ * 递归渲染的分组块：自身是父级 SortableContext 的 sortable（拖 grip 排序/嵌套），
+ * 同时也是 path 的 droppable 容器（pathContainerId = 组 id）；内部含子组
+ * SortableContext + 本组 path SortableContext。深度缩进由 paddingLeft 表达。
  */
-function BookmarkGroupDropZone({
-  groupId,
-  children,
+function GroupBlock({
+  group,
+  depth,
+  dragState,
+  nestForbiddenSet,
+  collapsedSet,
+  toggleGroup,
+  byGroup,
+  renderPath,
+  onRequestAddSubgroup,
 }: {
-  groupId: string;
-  children: ReactNode;
+  group: GroupNode;
+  depth: number;
+  dragState: BookmarkDragState | null;
+  /** 该组是当前拖动组的后代 → 禁止 nest（循环守卫，视觉上不亮）。 */
+  nestForbiddenSet: Set<string>;
+  collapsedSet: Set<string>;
+  toggleGroup: (groupId: string) => void;
+  byGroup: Map<string, PathNode[]>;
+  renderPath: (p: PathNode) => JSX.Element;
+  onRequestAddSubgroup: (parentId: string) => void;
 }): JSX.Element {
-  const { setNodeRef, isOver } = useDroppable({
+  const groupId = GROUP_ID_PREFIX + group.id;
+  const sortable = useSortable({
     id: groupId,
-    data: { type: 'bookmark-container', containerId: groupId },
+    data: {
+      type: 'bookmark-group',
+      groupId: group.id,
+      // path 拖到空组/折叠组/组头时，handleDragEnd 用它识别目标 path 容器。
+      pathContainerId: group.id,
+    },
   });
+  const style = sortable.transform
+    ? { transform: CSS.Translate.toString(sortable.transform), transition: sortable.transition }
+    : undefined;
+  const isCollapsed = collapsedSet.has(group.id);
+  const gPaths = byGroup.get(group.id) ?? [];
+  const subgroups = group.subgroups ?? [];
+
+  const isGroupDragging = dragState?.activeType === 'bookmark-group';
+  const overThis = dragState?.overId === groupId;
+  const isNestOver =
+    isGroupDragging && overThis && dragState?.dropAction === 'nest' && !nestForbiddenSet.has(group.id);
+  const isSiblingOver = isGroupDragging && overThis && dragState?.dropAction === 'sibling';
+  const isPathOver = dragState?.activeType === 'bookmark-path' && overThis;
+  const className =
+    'sidebar-group bookmark-drop-zone' +
+    (sortable.isDragging ? ' dragging' : '') +
+    (isNestOver ? ' drop-nest' : '') +
+    (isSiblingOver ? ' drop-sibling' : '') +
+    (isPathOver || (!isGroupDragging && sortable.isOver) ? ' drop-over' : '');
+
   return (
     <div
-      ref={setNodeRef}
-      className={`sidebar-group bookmark-drop-zone${isOver ? ' drop-over' : ''}`}
+      ref={sortable.setNodeRef}
+      style={{ ...style, paddingLeft: depth > 0 ? depth * 10 : undefined }}
+      className={className}
     >
-      {children}
+      <GroupHeader
+        group={group}
+        collapsed={isCollapsed}
+        onToggleCollapse={() => toggleGroup(group.id)}
+        onRequestAddSubgroup={() => onRequestAddSubgroup(group.id)}
+        dragHandle={sortable}
+      />
+      {!isCollapsed && (
+        <>
+          {subgroups.length > 0 && (
+            <SortableContext
+              items={subgroups.map((s) => GROUP_ID_PREFIX + s.id)}
+              strategy={verticalListSortingStrategy}
+              id={`${GROUPS_SORTABLE_CONTAINER}:${group.id}`}
+            >
+              {subgroups.map((sub) => (
+                <GroupBlock
+                  key={sub.id}
+                  group={sub}
+                  depth={depth + 1}
+                  dragState={dragState}
+                  nestForbiddenSet={nestForbiddenSet}
+                  collapsedSet={collapsedSet}
+                  toggleGroup={toggleGroup}
+                  byGroup={byGroup}
+                  renderPath={renderPath}
+                  onRequestAddSubgroup={onRequestAddSubgroup}
+                />
+              ))}
+            </SortableContext>
+          )}
+          <SortableContext items={gPaths.map((p) => p.id)} strategy={verticalListSortingStrategy} id={group.id}>
+            <ul className="sidebar-paths sidebar-group-paths">{gPaths.map(renderPath)}</ul>
+          </SortableContext>
+        </>
+      )}
     </div>
   );
 }
@@ -988,22 +1243,31 @@ function BookmarkGroupDropZone({
  */
 function BookmarkCategory({
   paths,
+  allPaths,
   groups,
   collapsed,
   onToggleCollapsed,
   onContextMenu,
-  onRequestAddGroup,
+  onMore,
+  onRequestAddSubgroup,
   actionLabel,
   actionTitle,
   onAction,
   displayNames,
 }: {
+  /** 当前 local/SSH segment 可见路径（只用于渲染和碰撞）。 */
   paths: PathNode[];
+  /** backend 全量收藏（用于提交完整 reorder，绝不能丢掉另一 segment）。 */
+  allPaths: PathNode[];
+  /** 分组森林（顶层数组；子组递归挂在 subgroups 下）。 */
   groups: GroupNode[];
   collapsed: boolean;
   onToggleCollapsed: () => void;
   onContextMenu: (e: MouseEvent<HTMLElement>) => void;
-  onRequestAddGroup: () => void;
+  /** ⋯ 按钮(与右键同源)。 */
+  onMore: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  /** 新建分组；parentId 给定时新建子组。 */
+  onRequestAddSubgroup: (parentId: string) => void;
   actionLabel?: ReactNode;
   actionTitle?: string;
   /** 事件带出,供调用方定位弹层锚点(如远程段选服务器菜单) */
@@ -1011,6 +1275,7 @@ function BookmarkCategory({
   displayNames: Map<string, string>;
 }): JSX.Element {
   const { t } = useTranslation();
+  const toast = useToast();
   // 分组折叠态:L2 偏好(附录 G.1),跨重启保留;默认全展开。
   const [collapsedGroupIds, setCollapsedGroupIds] = usePanelPreference<string[]>(
     'sidebar',
@@ -1028,50 +1293,217 @@ function BookmarkCategory({
   const ungrouped = useMemo(() => paths.filter((p) => !p.groupId), [paths]);
   const byGroup = useMemo(() => {
     const m = new Map<string, PathNode[]>();
-    for (const g of groups) m.set(g.id, []);
+    const walk = (nodes: GroupNode[]): void => {
+      for (const g of nodes) {
+        m.set(g.id, []);
+        walk(g.subgroups ?? []);
+      }
+    };
+    walk(groups);
     for (const p of paths) {
       if (p.groupId && m.has(p.groupId)) m.get(p.groupId)!.push(p);
     }
     return m;
   }, [paths, groups]);
 
+  // 全部组（扁平遍历），供循环守卫与菜单扁平列表用。
+  const allGroupsFlat = useMemo(() => {
+    const out: GroupNode[] = [];
+    const walk = (nodes: GroupNode[]): void => {
+      for (const g of nodes) {
+        out.push(g);
+        walk(g.subgroups ?? []);
+      }
+    };
+    walk(groups);
+    return out;
+  }, [groups]);
+
+  // BOOKMARK_REORDER 的后端契约要求 payload 覆盖全部收藏。UI 虽只渲染当前
+  // local/SSH segment，拖拽计算必须用全量布局，否则隐藏 segment 的 pathId 会丢失。
+  // 组树 → 扁平组表（subgroupOrder 表达层级）。
+  const fullLayout = useMemo<BookmarkOrderLayout>(() => {
+    const groupIds = new Set<string>();
+    const groupsFlat: BookmarkGroupOrder[] = [];
+    const walk = (node: GroupNode): void => {
+      groupIds.add(node.id);
+      groupsFlat.push({
+        id: node.id,
+        childOrder: allPaths
+          .filter((path) => path.groupId === node.id)
+          .map((path) => path.id),
+        subgroupOrder: (node.subgroups ?? []).map((s) => s.id),
+      });
+      for (const sub of node.subgroups ?? []) walk(sub);
+    };
+    for (const g of groups) walk(g);
+    return {
+      ungrouped: allPaths
+        .filter((path) => !path.groupId || !groupIds.has(path.groupId))
+        .map((path) => path.id),
+      groups: groupsFlat,
+    };
+  }, [allPaths, groups]);
+
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
   /**
-   * 拖完重算完整布局并发 BOOKMARK_REORDER。
-   * 多容器 dnd-kit:active.id 是被拖 pathId,over.id 是落点 pathId(或组占位),
-   * over.data.current?.sortable?.containerId 告诉落在哪个容器。
+   * 树感知碰撞:拖组时只看组行,按指针在行内位置给 dropAction(上半 =
+   * sibling 同级排序,下半 = nest 成为子组);path/未分组不是组落点。
+   * 多级嵌套时指针同时覆盖多个组行 → 取最小面积(最内层)。
+   * 拖 path 时退回 closestCenter(组行仍可作 path 容器)。
+   */
+  const treeCollisionDetection: CollisionDetection = (args) => {
+    const activeData = args.active.data.current as { type?: string } | undefined;
+    if (activeData?.type !== 'bookmark-group') return closestCenter(args);
+    const pointer = args.pointerCoordinates;
+    if (!pointer) return [];
+    type Rect = { left: number; right: number; top: number; bottom: number; width: number; height: number };
+    let best: { id: string; rect: Rect; dropAction: BookmarkGroupDropAction } | null = null;
+    for (const container of args.droppableContainers) {
+      if (container.id === args.active.id) continue;
+      const data = container.data.current as { type?: string } | undefined;
+      if (data?.type !== 'bookmark-group') continue;
+      const rect = container.rect.current as Rect | null;
+      if (!rect) continue;
+      if (pointer.x < rect.left || pointer.x > rect.right || pointer.y < rect.top || pointer.y > rect.bottom) {
+        continue;
+      }
+      if (best && rect.width * rect.height >= best.rect.width * best.rect.height) continue;
+      best = {
+        id: String(container.id),
+        rect,
+        dropAction: pointer.y < rect.top + rect.height / 2 ? 'sibling' : 'nest',
+      };
+    }
+    if (!best) return [];
+    return [{ id: best.id, data: { dropAction: best.dropAction } }];
+  };
+
+  // 拖拽过程状态(用于组块 drop 视觉)。只在 over 变化时更新(dnd-kit 行为)。
+  const [dragState, setDragState] = useState<BookmarkDragState | null>(null);
+  const clearDragState = (): void => setDragState(null);
+
+  const handleDragStart = (event: DragStartEvent): void => {
+    const data = event.active.data.current as { type?: string } | undefined;
+    setDragState({ activeType: data?.type, activeId: String(event.active.id) });
+  };
+
+  const handleDragOver = (event: DragOverEvent): void => {
+    const data = event.active.data.current as { type?: string } | undefined;
+    const dropAction = (
+      event.collisions?.[0]?.data as { dropAction?: BookmarkGroupDropAction } | undefined
+    )?.dropAction;
+    setDragState({
+      activeType: data?.type,
+      activeId: String(event.active.id),
+      overId: event.over ? String(event.over.id) : undefined,
+      dropAction,
+    });
+  };
+
+  // 循环守卫视觉:当前拖动组的后代(含自身)不亮 nest。
+  const nestForbiddenSet = useMemo(() => {
+    const set = new Set<string>();
+    if (dragState?.activeType !== 'bookmark-group' || !dragState.activeId) return set;
+    const activeGroupId = dragState.activeId.startsWith(GROUP_ID_PREFIX)
+      ? dragState.activeId.slice(GROUP_ID_PREFIX.length)
+      : dragState.activeId;
+    for (const group of allGroupsFlat) {
+      if (
+        group.id === activeGroupId ||
+        isDescendantGroupInLayout(fullLayout, activeGroupId, group.id)
+      ) {
+        set.add(group.id);
+      }
+    }
+    return set;
+  }, [dragState, fullLayout, allGroupsFlat]);
+
+  /**
+   * 拖完按 active.data.type 分流 group / path，再发完整 BOOKMARK_REORDER。
+   *
+   * - group:dropAction 决定 sibling(同级排序)/ nest(成为子组);循环由
+   *   moveBookmarkGroupInLayout 守卫(自身/后代 → null)。
+   * - path:over 可是 path、组行(空组/折叠组/任意层级)或未分组容器；计算始终
+   *   基于 fullLayout，不能基于当前 segment 的可见子集。
    */
   const handleDragEnd = (event: DragEndEvent): void => {
+    clearDragState();
     const { active, over } = event;
     if (!over) return;
 
-    const overId = String(over.id);
-    // Sortable path 的容器来自 sortable.containerId；空组 / 折叠组头由显式
-    // useDroppable 提供 containerId。二者都没有才退回 over.id。
-    const overContainerId =
-      (over.data.current?.sortable as { containerId?: string } | undefined)?.containerId ??
-      (over.data.current as { containerId?: string } | undefined)?.containerId ??
-      overId;
-    const nextLayout = moveBookmarkInLayout(
-      {
-        ungrouped: ungrouped.map((path) => path.id),
-        groups: groups.map((group) => ({
-          id: group.id,
-          childOrder: (byGroup.get(group.id) ?? []).map((path) => path.id),
-        })),
-      },
-      {
+    type DndData = {
+      type?: string;
+      groupId?: string;
+      pathContainerId?: string;
+      containerId?: string;
+      sortable?: { containerId?: string };
+    };
+    const activeData = active.data.current as DndData | undefined;
+    const overData = over.data.current as DndData | undefined;
+    let nextLayout: BookmarkOrderLayout | null = null;
+
+    if (activeData?.type === 'bookmark-group') {
+      const overGroupId = overData?.groupId;
+      if (!activeData.groupId || !overGroupId) return;
+      const dropAction =
+        (event.collisions?.[0]?.data as { dropAction?: BookmarkGroupDropAction } | undefined)
+          ?.dropAction ?? 'sibling';
+      nextLayout = moveBookmarkGroupInLayout(
+        fullLayout,
+        activeData.groupId,
+        overGroupId,
+        dropAction,
+      );
+    } else if (activeData?.type === 'bookmark-path') {
+      const overId = String(over.id);
+      // group wrapper 同时是 group sortable 和 path droppable，故 pathContainerId
+      // 优先于外层 group SortableContext 的 sortable.containerId。
+      const overContainerId =
+        overData?.pathContainerId ??
+        overData?.sortable?.containerId ??
+        overData?.containerId ??
+        overId;
+      nextLayout = moveBookmarkInLayout(fullLayout, {
         activeId: String(active.id),
         overId,
         overContainerId,
-      },
-    );
+      });
+    }
     if (!nextLayout) return;
 
-    // 不修改 useMemo 派生数组；main 的 reorder 会广播 path tree，作为唯一真值回灌。
+    // main 广播 path tree 后回灌唯一真值；失败必须 toast，不能只写 DevTools。
     window.api.invoke(COMMAND_CHANNELS.BOOKMARK_REORDER, nextLayout).catch((err: unknown) => {
       console.warn('[BookmarkCategory] reorder rejected:', err);
+      toast.push({
+        kind: 'error',
+        message: `调整收藏顺序失败:${err instanceof Error ? err.message : String(err)}`,
+      });
+    });
+  };
+
+  /** 路径右键「移动到分组」：重算完整布局后发 BOOKMARK_REORDER（组 = 追加末尾）。 */
+  const movePathToGroup = (pathId: string, targetGroupId: string | null): void => {
+    const nextLayout =
+      targetGroupId === null
+        ? moveBookmarkInLayout(fullLayout, {
+            activeId: pathId,
+            overId: BOOKMARK_UNGROUPED_CONTAINER,
+            overContainerId: BOOKMARK_UNGROUPED_CONTAINER,
+          })
+        : moveBookmarkInLayout(fullLayout, {
+            activeId: pathId,
+            overId: targetGroupId,
+            overContainerId: targetGroupId,
+          });
+    if (!nextLayout) return;
+    window.api.invoke(COMMAND_CHANNELS.BOOKMARK_REORDER, nextLayout).catch((err: unknown) => {
+      console.warn('[BookmarkCategory] move-to-group rejected:', err);
+      toast.push({
+        kind: 'error',
+        message: `移动失败:${err instanceof Error ? err.message : String(err)}`,
+      });
     });
   };
 
@@ -1083,18 +1515,31 @@ function BookmarkCategory({
         node={p}
         sortableId={p.id}
         {...(override !== undefined ? { displayNameOverride: override } : {})}
+        groups={groups}
+        onMovePathToGroup={movePathToGroup}
       />
     );
   };
 
   return (
-    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+    <DndContext
+      sensors={sensors}
+      collisionDetection={treeCollisionDetection}
+      onDragStart={handleDragStart}
+      onDragOver={handleDragOver}
+      onDragEnd={handleDragEnd}
+      onDragCancel={clearDragState}
+    >
       <section className={`sidebar-category${collapsed ? ' collapsed' : ''}`}>
         <header
           className="sidebar-category-header"
           onClick={onToggleCollapsed}
           onContextMenu={onContextMenu}
-          title={collapsed ? '展开分组' : '折叠分组'}
+          title={
+            collapsed
+              ? `展开${t('sidebar.category.bookmark')}`
+              : `折叠${t('sidebar.category.bookmark')}`
+          }
         >
           <span className="sidebar-category-chevron" aria-hidden="true">
             {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
@@ -1119,6 +1564,18 @@ function BookmarkCategory({
               {actionLabel}
             </button>
           )}
+          <button
+            type="button"
+            className="sidebar-category-more"
+            onClick={(e) => {
+              e.stopPropagation();
+              onMore(e);
+            }}
+            title={t('sidebar.group.menu') || '收藏菜单'}
+            aria-label={t('sidebar.group.menu') || '收藏菜单'}
+          >
+            <MoreHorizontal size={12} />
+          </button>
         </header>
         {collapsed ? null : paths.length === 0 && groups.length === 0 ? (
           <p className="sidebar-empty">空</p>
@@ -1132,32 +1589,27 @@ function BookmarkCategory({
             >
               <BookmarkUngroupedDropZone>{ungrouped.map(renderPath)}</BookmarkUngroupedDropZone>
             </SortableContext>
-            {/* 各分组块(按 groups 顺序)。*/}
-            {groups.map((g) => {
-              const gPaths = byGroup.get(g.id) ?? [];
-              const isCollapsed = collapsedSet.has(g.id);
-              return (
-                <BookmarkGroupDropZone groupId={g.id} key={g.id}>
-                  <GroupHeader
-                    group={g}
-                    collapsed={isCollapsed}
-                    onToggleCollapse={() => toggleGroup(g.id)}
-                    onRequestAddGroup={onRequestAddGroup}
-                  />
-                  {!isCollapsed && (
-                    <SortableContext
-                      items={gPaths.map((p) => p.id)}
-                      strategy={verticalListSortingStrategy}
-                      id={g.id}
-                    >
-                      <ul className="sidebar-paths sidebar-group-paths">
-                        {gPaths.map(renderPath)}
-                      </ul>
-                    </SortableContext>
-                  )}
-                </BookmarkGroupDropZone>
-              );
-            })}
+            {/* 分组森林:根级 SortableContext 排顶层组;子组各自递归。 */}
+            <SortableContext
+              items={groups.map((group) => GROUP_ID_PREFIX + group.id)}
+              strategy={verticalListSortingStrategy}
+              id={GROUPS_SORTABLE_CONTAINER}
+            >
+              {groups.map((g) => (
+                <GroupBlock
+                  key={g.id}
+                  group={g}
+                  depth={0}
+                  dragState={dragState}
+                  nestForbiddenSet={nestForbiddenSet}
+                  collapsedSet={collapsedSet}
+                  toggleGroup={toggleGroup}
+                  byGroup={byGroup}
+                  renderPath={renderPath}
+                  onRequestAddSubgroup={onRequestAddSubgroup}
+                />
+              ))}
+            </SortableContext>
           </div>
         )}
       </section>
@@ -1169,6 +1621,8 @@ function PathItem({
   node,
   displayNameOverride,
   sortableId,
+  groups,
+  onMovePathToGroup,
 }: {
   node: PathNode;
   displayNameOverride?: string;
@@ -1177,6 +1631,10 @@ function PathItem({
    * id = node.id;不传时 useSortable 不被调用,零 dnd 开销。
    */
   sortableId?: string;
+  /** 收藏分组树(仅 BookmarkCategory 传;用于「移动到分组」子菜单)。 */
+  groups?: GroupNode[];
+  /** 移动到指定组(null = 未分组);仅 BookmarkCategory 传。 */
+  onMovePathToGroup?: (pathId: string, groupId: string | null) => void;
 }): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
@@ -1188,7 +1646,8 @@ function PathItem({
     () => node.sessionIds.map((sid) => state.sessions.get(sid)).filter(Boolean) as SessionInfo[],
     [node.sessionIds, state.sessions],
   );
-  const activeCount = sessions.length;
+  // v0.3.3 用户裁决 8A:badge 只统计未退出的 session(活跃终端数量)。
+  const activeCount = sessions.filter((s) => s.state !== 'exited').length;
   // BETA-014:优先用 Category 算好的去重名;退到本节点 displayName / 末段
   const displayName = displayNameOverride ?? node.displayName ?? formatPathDisplayName(node);
 
@@ -1349,20 +1808,35 @@ function PathItem({
   // Sidebar/MainPane/TerminalView 多处行为一致。
   const copyToClipboard = useCopyToClipboard();
 
-  // M1-C:右键菜单 — 按分类组装条目
+  /** 设置默认模板(「默认模板」子菜单共用;null = 跟随全局默认)。 */
+  const setDefaultTemplate = (templateId: string | null): void => {
+    window.api
+      .invoke(COMMAND_CHANNELS.BOOKMARK_SET_DEFAULT_TEMPLATE, {
+        pathId: node.id,
+        templateId,
+      })
+      .catch((err: unknown) =>
+        toast.push({
+          kind: 'error',
+          message: `设置默认模板失败:${err instanceof Error ? err.message : String(err)}`,
+        }),
+      );
+  };
+
+  // v0.3.3 用户裁决 5A:菜单按用户任务分区;机器相关动作只在用户看得见结果的
+  // 地方出现。分区:打开/定位(仅客户端本机路径)→ 复制 → 组织(收藏)→
+  // 启动方式(收藏)→ 项目工具。移除收藏只做移除,不暗中清最近记录。
+  const showExplorer = window.api.backendProfileId === null && node.kind !== 'ssh';
   const handleContextMenu = (e: MouseEvent<HTMLDivElement>): void => {
     e.preventDefault();
     e.stopPropagation();
     const items: ContextMenuItem[] = [];
 
-    // 通用项
-    items.push({
-      label: '复制路径',
-      onSelect: () => copyToClipboard(node.path, '路径'),
-    });
-    if (node.kind !== 'ssh') {
+    // ── 打开/定位 + 复制 ──
+    if (showExplorer) {
       items.push({
-        label: '在 Explorer 中显示',
+        label: '在文件管理器中显示',
+        icon: <FolderOpen size={13} />,
         onSelect: () => {
           window.api
             .invoke(COMMAND_CHANNELS.SYSTEM_SHOW_IN_EXPLORER, { path: node.path })
@@ -1375,33 +1849,50 @@ function PathItem({
         },
       });
     }
+    items.push({
+      label: '复制路径',
+      icon: <Copy size={13} />,
+      onSelect: () => copyToClipboard(node.path, '路径'),
+    });
 
     if (node.category === 'bookmarked') {
+      // ── 组织(仅收藏) ──
       items.push({ divider: true, label: '' });
-      if (node.kind === 'local' && !node.invalid) {
-        items.push({
-          label: '安装 Marina Skill…',
-          hint: '为 Pi / Claude Code / Codex 安装 show-in-marina',
-          onSelect: () => setSkillInstallerOpen(true),
-        });
+      items.push({ label: '重命名…', icon: <Pencil size={13} />, onSelect: beginRename });
+      if (groups && onMovePathToGroup) {
+        const moveItems: ContextMenuItem[] = [
+          {
+            label: '未分组',
+            checked: !node.groupId,
+            disabled: !node.groupId,
+            onSelect: () => onMovePathToGroup(node.id, null),
+          },
+          { divider: true, label: '' },
+        ];
+        const walk = (nodes: GroupNode[], depth: number): void => {
+          for (const g of nodes) {
+            const indent = depth > 0 ? '　'.repeat(depth) : '';
+            moveItems.push({
+              label: `${indent}${g.name}`,
+              checked: node.groupId === g.id,
+              disabled: node.groupId === g.id,
+              onSelect: () => onMovePathToGroup(node.id, g.id),
+            });
+            walk(g.subgroups ?? [], depth + 1);
+          }
+        };
+        walk(groups, 0);
+        items.push({ label: '移动到分组', icon: <FolderInput size={13} />, submenu: moveItems });
       }
-      items.push({ label: '重命名…', onSelect: beginRename });
       items.push({
         label: '移除收藏',
+        icon: <Trash2 size={13} />,
         danger: true,
         onSelect: () => {
-          const removeBookmark = async (): Promise<void> => {
-            await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_REMOVE, { pathId: node.id });
-            // 首页已经不单独展示"收藏"分组。无 session 的收藏被移除后,
-            // PathManager 会按状态机放入 recent;对用户来说这看起来像"没删掉",
-            // 需要再右键"从最近移除"一次。这里把这两个 UI 动作合成一次。
-            if (node.sessionIds.length === 0) {
-              await window.api.invoke(COMMAND_CHANNELS.PATH_REMOVE_FROM_RECENT, {
-                path: node.id,
-              });
-            }
-          };
-          removeBookmark()
+          // 只移除收藏;无 session 时路径按状态机自动进「最近」,不在这里
+          // 暗中清掉最近记录(菜单项只做它说的事)。
+          window.api
+            .invoke(COMMAND_CHANNELS.BOOKMARK_REMOVE, { pathId: node.id })
             .then(() => toast.push({ kind: 'success', message: `已移除收藏 ${displayName}` }))
             .catch((err: unknown) =>
               toast.push({
@@ -1412,32 +1903,41 @@ function PathItem({
         },
       });
 
-      // 设默认模板(沿用 CP-4 既有逻辑)— 作为子菜单的扁平展开
-      items.push({ divider: true, label: '' });
-      for (const t of state.templates) {
-        items.push({
-          label: `${t.icon} 设默认模板:${t.name}`,
-          hint: t.command ? `启动命令: ${t.command}` : '系统默认 shell',
-          checked: t.id === node.defaultTemplateId,
-          onSelect: () => {
-            window.api
-              .invoke(COMMAND_CHANNELS.BOOKMARK_SET_DEFAULT_TEMPLATE, {
-                pathId: node.id,
-                templateId: t.id,
-              })
-              .catch((err: unknown) =>
-                toast.push({
-                  kind: 'error',
-                  message: `设置默认模板失败:${err instanceof Error ? err.message : String(err)}`,
-                }),
-              );
+      // ── 启动方式:默认模板(子菜单,首项「跟随全局默认」) ──
+      items.push({
+        label: '默认模板',
+        submenu: [
+          {
+            label: '跟随全局默认',
+            checked: !node.defaultTemplateId,
+            onSelect: () => setDefaultTemplate(null),
           },
+          { divider: true, label: '' },
+          ...state.templates.map(
+            (template): ContextMenuItem => ({
+              label: `${template.icon} ${template.name}`,
+              hint: template.command ? `启动命令: ${template.command}` : '系统默认 shell',
+              checked: template.id === node.defaultTemplateId,
+              onSelect: () => setDefaultTemplate(template.id),
+            }),
+          ),
+        ],
+      });
+
+      // ── 项目工具(当前 backend 的本地路径可用) ──
+      if (node.kind === 'local' && !node.invalid) {
+        items.push({ divider: true, label: '' });
+        items.push({
+          label: '安装 Marina Skill…',
+          hint: '为 Pi / Claude Code / Codex 安装 show-in-marina',
+          onSelect: () => setSkillInstallerOpen(true),
         });
       }
     } else if (node.category === 'temporary' || node.category === 'recent') {
       items.push({ divider: true, label: '' });
       items.push({
         label: '加入收藏',
+        icon: <FolderPlus size={13} />,
         onSelect: () => {
           window.api
             .invoke(
@@ -1547,7 +2047,7 @@ function PathItem({
             <span className="path-name">{displayName}</span>
           )}
           {activeCount > 0 && !renaming && (
-            <span className="path-session-count" title={`${activeCount} 个终端`}>
+            <span className="path-session-count" title={`${activeCount} 个活跃终端`}>
               {activeCount}
             </span>
           )}
