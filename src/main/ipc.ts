@@ -438,7 +438,9 @@ function requireLocalDialogOwner(
         'windows; native dialogs are only available in local windows.',
     );
   }
-  return BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow() ?? undefined;
+  return (
+    BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow() ?? undefined
+  );
 }
 
 /**
@@ -707,10 +709,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   registerHandle(
     COMMAND_CHANNELS.SESSION_REORDER,
     (_e, envelope: CommandEnvelope<ReorderSessionsPayload>): void => {
-      pathManager.reorderSessions(
-        envelope.payload.pathId,
-        envelope.payload.orderedSessionIds,
-      );
+      pathManager.reorderSessions(envelope.payload.pathId, envelope.payload.orderedSessionIds);
     },
   );
 
@@ -948,6 +947,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
         ...(envelope.payload.defaultTemplateId
           ? { defaultTemplateId: envelope.payload.defaultTemplateId }
           : {}),
+        ...(envelope.payload.groupId !== undefined ? { groupId: envelope.payload.groupId } : {}),
       });
       return { bookmark };
     },
@@ -1326,6 +1326,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
         ...(envelope.payload.defaultTemplateId
           ? { defaultTemplateId: envelope.payload.defaultTemplateId }
           : {}),
+        ...(envelope.payload.groupId !== undefined ? { groupId: envelope.payload.groupId } : {}),
       });
       return { bookmark };
     },
@@ -1792,7 +1793,9 @@ async function buildArchive(deps: IpcLayerDeps): Promise<SettingsArchiveV1> {
   // 强制先 flush,以保证读盘时拿到最新写入
   await flushAllStores(deps);
   const settings = deps.settingsManager.get();
-  const bookmarks = await readJson<{ paths: unknown[]; groups?: unknown[] }>('bookmarks.json', { paths: [] });
+  const bookmarks = await readJson<{ paths: unknown[]; groups?: unknown[] }>('bookmarks.json', {
+    paths: [],
+  });
   const recent = await readJson<{ paths: unknown[] }>('recent.json', { paths: [] });
   const templates = {
     defaultTemplateId: deps.templatesManager.getDefaultTemplateId(),
@@ -1809,8 +1812,13 @@ async function buildArchive(deps: IpcLayerDeps): Promise<SettingsArchiveV1> {
     // v0.3.3 ADR-025:导出带 groups(可能为 undefined,导入侧 validateGroupsArray 允许缺省→[])。
     // exactOptionalPropertyTypes 下不能直接写 groups: undefined,这里整体断言存档形状。
     bookmarks: (bookmarks.groups
-      ? { paths: bookmarks.paths as SettingsArchiveV1['bookmarks']['paths'], groups: bookmarks.groups as SettingsArchiveV1['bookmarks']['groups'] }
-      : { paths: bookmarks.paths as SettingsArchiveV1['bookmarks']['paths'] }) as SettingsArchiveV1['bookmarks'],
+      ? {
+          paths: bookmarks.paths as SettingsArchiveV1['bookmarks']['paths'],
+          groups: bookmarks.groups as SettingsArchiveV1['bookmarks']['groups'],
+        }
+      : {
+          paths: bookmarks.paths as SettingsArchiveV1['bookmarks']['paths'],
+        }) as SettingsArchiveV1['bookmarks'],
     recent: recent as SettingsArchiveV1['recent'],
     sshProfiles: { profiles: deps.sshProfileManager?.list() ?? [] },
     templates,
@@ -2220,10 +2228,7 @@ function registerCommandPanelHandlers(deps: IpcLayerDeps): void {
   // (复用 code-block-output,runId 一致)。SSH/cwd/shell 失败透传 CodeBlockError。
   registerHandle(
     COMMAND_CHANNELS.COMMAND_PANEL_RUN,
-    async (
-      _e,
-      envelope: CommandEnvelope<RunCommandPayload>,
-    ): Promise<CommandPanelSnapshot> =>
+    async (_e, envelope: CommandEnvelope<RunCommandPayload>): Promise<CommandPanelSnapshot> =>
       commandPanelService.runCommand(
         envelope.payload.sessionId,
         envelope.payload.command,
@@ -2450,17 +2455,14 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   // 广播给所有窗口。与 file-panel 同策略:per-session 小元数据广播无副作用(orphan
   // 期间的更新不能丢),各自存进 per-session map。流式 output 复用上面的
   // code-block-output(命令面板的 run 就是 codeBlockRunner 跑的,runId 一致)。
-  deps.commandPanelService.on(
-    'commandPanelUpdated',
-    (p: CommandPanelUpdateEvent) => {
-      broadcastEvent<CommandPanelSnapshot>(EVENT_CHANNELS.COMMAND_PANEL_UPDATED, {
-        sessionId: p.sessionId,
-        ...p.snapshot,
-        requestActivation: p.requestActivation,
-        commandKey: p.commandKey,
-      });
-    },
-  );
+  deps.commandPanelService.on('commandPanelUpdated', (p: CommandPanelUpdateEvent) => {
+    broadcastEvent<CommandPanelSnapshot>(EVENT_CHANNELS.COMMAND_PANEL_UPDATED, {
+      sessionId: p.sessionId,
+      ...p.snapshot,
+      requestActivation: p.requestActivation,
+      commandKey: p.commandKey,
+    });
+  });
 
   // v0.3.3:Markdown 代码块执行的 stdout/stderr 与退出。按 runId 对应的
   // clientId 定向发送(发起窗口),不广播 —— 输出体量可能大且只该窗口关心。

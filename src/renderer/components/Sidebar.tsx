@@ -19,6 +19,7 @@
  * @对应文档章节: 软件定义书.md 6.2 (左侧栏)、7.3 (拖拽规格)
  */
 import {
+  Fragment,
   memo,
   useEffect,
   useState,
@@ -37,25 +38,25 @@ import {
   FolderInput,
   FolderOpen,
   FolderPlus,
-  MoreHorizontal,
   Pencil,
   Trash2,
   X,
 } from 'lucide-react';
 import {
   DndContext,
+  DragOverlay,
+  MeasuringStrategy,
   PointerSensor,
+  pointerWithin,
   useSensor,
   useSensors,
   useDroppable,
-  closestCenter,
   type CollisionDetection,
   type DragEndEvent,
-  type DragMoveEvent,
+  type DragOverEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 import {
   COMMAND_CHANNELS,
   type AddBookmarkResponse,
@@ -67,15 +68,18 @@ import { disambiguatePathNames } from '@shared/path-display';
 import { hasAnyRemote } from '@shared/remote-visibility';
 import { makeSshPathId } from '@shared/remote-path';
 import {
+  BOOKMARK_ROOT_GROUP_CONTAINER,
   BOOKMARK_UNGROUPED_CONTAINER,
+  bookmarkPathIdsForContainer,
+  bookmarkSubgroupContainerId,
   isDescendantGroupInLayout,
-  moveBookmarkGroupToProjection,
+  moveBookmarkGroupToPlacement,
   moveBookmarkInLayout,
-  projectBookmarkGroupDrop,
-  type BookmarkGroupDropPosition,
-  type BookmarkGroupDropProjection,
+  moveBookmarkToPlacement,
+  visibleBookmarkSlotToFullIndex,
   type BookmarkGroupOrder,
   type BookmarkOrderLayout,
+  type BookmarkPlacement,
 } from '@shared/bookmark-dnd-layout';
 import { useTranslation } from './LanguageProvider';
 import {
@@ -97,6 +101,7 @@ import { closeSessionWithContinue } from '../hooks/useCloseSession';
 import { SkillInstallDialog } from './SkillInstallDialog';
 import { TemplateIcon } from './TemplateIcon';
 import { BackendDirectoryPicker } from './BackendDirectoryPicker';
+import { SshConnectionDialog } from './SshConnectionDialog';
 
 /**
  * 状态点颜色 (软件定义书 6.2.4 状态指示):
@@ -125,7 +130,11 @@ import { BackendDirectoryPicker } from './BackendDirectoryPicker';
  * beta.9 完全一致(本地视野不变式)。
  */
 type SidebarSegment = 'local' | 'remote';
-type BackendDirectoryPickerIntent = 'bookmark' | 'temporary';
+interface BackendDirectoryPickerIntent {
+  kind: 'bookmark' | 'temporary';
+  /** bookmark 从分组菜单发起时，选择结果原子地直接进入该组。 */
+  groupId?: string;
+}
 const SIDEBAR_SEGMENT_LS_KEY = 'marina.sidebar.segment';
 
 function readSegmentFromStorage(): SidebarSegment {
@@ -170,6 +179,7 @@ export function Sidebar(): JSX.Element {
   const [dragOver, setDragOver] = useState(false);
   const [directoryPickerIntent, setDirectoryPickerIntent] =
     useState<BackendDirectoryPickerIntent | null>(null);
+  const [sshConnectionDialogOpen, setSshConnectionDialogOpen] = useState(false);
 
   // v1.14(方案-远程UI统一 §III.2):segmented 远程 tab 顶部的「Marina 电脑」区段。
   // 数据源 = state.remoteBackendProfiles —— store 已保证它在任何窗口(含远程窗口)
@@ -378,44 +388,37 @@ export function Sidebar(): JSX.Element {
     });
   };
 
-  /** ⋯ 按钮版：锚定在按钮下方，菜单内容与右键一致。 */
-  const openBookmarkMoreMenu = (e: React.MouseEvent<HTMLButtonElement>): void => {
-    e.stopPropagation();
-    const rect = e.currentTarget.getBoundingClientRect();
-    ctxMenu.open({
-      x: rect.left,
-      y: rect.bottom + 2,
-      title: t('sidebar.category.bookmark') || '收藏',
-      items: [
-        {
-          label: t('sidebar.group.add') || '新建分组',
-          icon: <FolderInput size={13} />,
-          onSelect: () => void addGroupPrompt(),
-        },
-      ],
-    });
-  };
-
   /**
    * 收藏栏 "+" 按钮。按当前 segment 走不同流程（用户裁决 2A：不手输路径）：
    *
    * - 当前电脑段：beta.9 行为 — 系统 folder picker → BOOKMARK_ADD；
    *   远程 backend 窗口则用 renderer 自绘的点击式 backend 目录选择器。
-   * - SSH 段：不手输路径。「连接 SSH…」— 选服务器后从 home 启动 session；
-   *   用户通过 shell 到达目录后，从临时/最近路径点「加入收藏」。
+   * - SSH 段：打开统一连接面板；0/1/N profile 都可选择已有或就地新建，
+   *   新建后立即从 profile 默认目录启动 session，不跳设置页。
    */
-  const handleAddBookmark = async (e?: React.MouseEvent<HTMLButtonElement>): Promise<void> => {
+  const handleAddBookmark = async (
+    _event?: React.MouseEvent<HTMLButtonElement>,
+    groupId?: string,
+  ): Promise<void> => {
     if (effectiveSegment === 'remote') {
-      openSshConnectionMenu(e, '连接 SSH…');
+      if (groupId) {
+        toast.push({
+          kind: 'warn',
+          message: 'SSH 远端目录浏览尚不可用；不能用文本路径替代选择器',
+        });
+        return;
+      }
+      setSshConnectionDialogOpen(true);
       return;
     }
     // 远程 backend 的“当前电脑段”指 daemon 文件系统。不能把 native dialog
     // 命令发给 daemon；改用 renderer 自绘、backend-data 驱动的点击式选择器。
     if (isRemoteBackendWindow) {
-      setDirectoryPickerIntent('bookmark');
+      setDirectoryPickerIntent({ kind: 'bookmark', ...(groupId ? { groupId } : {}) });
       return;
     }
-    // 真正的本地窗口保留 beta.9 native folder picker。
+    // 真正的本地窗口保留 beta.9 native folder picker；groupId 与 path 在一个
+    // BOOKMARK_ADD 中提交，避免先闪到未分组再 reorder 的半完成状态。
     try {
       const result = await window.api.invoke<unknown, PickFolderResponse>(
         COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER,
@@ -424,6 +427,7 @@ export function Sidebar(): JSX.Element {
       if (result.path === null) return;
       await window.api.invoke<unknown, AddBookmarkResponse>(COMMAND_CHANNELS.BOOKMARK_ADD, {
         path: result.path,
+        ...(groupId ? { groupId } : {}),
       });
     } catch (err) {
       toast.push({
@@ -452,48 +456,15 @@ export function Sidebar(): JSX.Element {
   };
 
   /**
-   * SSH 段 "+"（收藏 + 临时共用的用户任务）：连接 SSH 服务器并开 session。
-   * 零 profile → 引导去设置；单 profile → 直接连；多 profile → 菜单选。
+   * SSH 段 "+"（收藏 + 临时共用）：无论 0/1/N 个 profile 都打开统一连接面板。
+   * profile 数量不再暗中改变交互；“新建 SSH 连接”始终可见。
    */
-  const openSshConnectionMenu = (e?: React.MouseEvent<HTMLButtonElement>, title?: string): void => {
-    const profiles = state.sshProfiles;
-    if (profiles.length === 0) {
-      toast.push({
-        kind: 'warn',
-        message: '请先在 设置 → 远程 添加 SSH 服务器',
-      });
-      return;
-    }
-    const connect = (profile: SshProfile): void => {
-      void connectSshSession(profile);
-    };
-    if (profiles.length === 1) {
-      connect(profiles[0]!);
-      return;
-    }
-    const rect = e?.currentTarget.getBoundingClientRect();
-    ctxMenu.open({
-      x: rect?.left ?? 0,
-      y: rect ? rect.bottom : 0,
-      title: title ?? '连接 SSH…',
-      items: profiles.map((p) => ({
-        label: `${p.name} (${p.username}@${p.host})`,
-        onSelect: () => connect(p),
-      })),
-    });
-  };
+  const openSshConnectionMenu = (): void => setSshConnectionDialogOpen(true);
 
-  /** 从 profile 的默认远端目录（回退 home）开一个 SSH session。 */
+  /** 从 profile 的默认远端目录（回退 home）开 session；错误交给表单就地展示。 */
   const connectSshSession = async (profile: SshProfile): Promise<void> => {
-    try {
-      const pathId = makeSshPathId(profile.id, profile.defaultRemoteCwd ?? '~');
-      await createSessionAtPath(pathId);
-    } catch (err) {
-      toast.push({
-        kind: 'error',
-        message: `连接 SSH 失败:${err instanceof Error ? err.message : String(err)}`,
-      });
-    }
+    const pathId = makeSshPathId(profile.id, profile.defaultRemoteCwd ?? '~');
+    await createSessionAtPath(pathId);
   };
 
   /**
@@ -501,14 +472,14 @@ export function Sidebar(): JSX.Element {
    * 选择器）；SSH 段 = 连接 SSH（与收藏 + 同一任务）。选完后共创建 session。
    */
   const handlePickFolderForTemp = async (
-    e?: React.MouseEvent<HTMLButtonElement>,
+    _event?: React.MouseEvent<HTMLButtonElement>,
   ): Promise<void> => {
     if (effectiveSegment === 'remote') {
-      openSshConnectionMenu(e, '连接 SSH…');
+      openSshConnectionMenu();
       return;
     }
     if (isRemoteBackendWindow) {
-      setDirectoryPickerIntent('temporary');
+      setDirectoryPickerIntent({ kind: 'temporary' });
       return;
     }
     try {
@@ -532,9 +503,10 @@ export function Sidebar(): JSX.Element {
     setDirectoryPickerIntent(null);
     if (!intent) return;
     try {
-      if (intent === 'bookmark') {
+      if (intent.kind === 'bookmark') {
         await window.api.invoke<unknown, AddBookmarkResponse>(COMMAND_CHANNELS.BOOKMARK_ADD, {
           path,
+          ...(intent.groupId ? { groupId: intent.groupId } : {}),
         });
       } else {
         await createSessionAtPath(path);
@@ -542,7 +514,7 @@ export function Sidebar(): JSX.Element {
     } catch (err) {
       toast.push({
         kind: 'error',
-        message: `${intent === 'bookmark' ? '添加文件夹' : '打开文件夹'}失败:${
+        message: `${intent.kind === 'bookmark' ? '添加文件夹' : '打开文件夹'}失败:${
           err instanceof Error ? err.message : String(err)
         }`,
       });
@@ -733,8 +705,11 @@ export function Sidebar(): JSX.Element {
           onContextMenu={(e) =>
             openAddGroupContextMenu(e, t('sidebar.category.bookmark') || '收藏')
           }
-          onMore={openBookmarkMoreMenu}
           onRequestAddSubgroup={(parentId) => void addGroupPrompt(parentId)}
+          onRequestAddFolder={(groupId) => void handleAddBookmark(undefined, groupId)}
+          {...(effectiveSegment === 'remote'
+            ? { addFolderDisabledReason: 'SSH 远端目录浏览尚不可用；不会退化为手输路径' }
+            : {})}
           actionLabel={<Icon name="plus" size={12} />}
           actionTitle={t('sidebar.addBookmark.title')}
           onAction={(e) => void handleAddBookmark(e)}
@@ -786,12 +761,24 @@ export function Sidebar(): JSX.Element {
       {directoryPickerIntent && (
         <BackendDirectoryPicker
           title={
-            directoryPickerIntent === 'bookmark' ? '收藏远程电脑上的文件夹' : '在远程电脑上打开终端'
+            directoryPickerIntent.kind === 'bookmark'
+              ? '收藏远程电脑上的文件夹'
+              : '在远程电脑上打开终端'
           }
-          confirmLabel={directoryPickerIntent === 'bookmark' ? '加入收藏' : '打开终端'}
+          confirmLabel={directoryPickerIntent.kind === 'bookmark' ? '加入收藏' : '打开终端'}
           {...(directoryPickerInitialPath ? { initialPath: directoryPickerInitialPath } : {})}
           onCancel={() => setDirectoryPickerIntent(null)}
           onSelect={(path) => void handleBackendDirectorySelected(path)}
+        />
+      )}
+      {sshConnectionDialogOpen && (
+        <SshConnectionDialog
+          profiles={state.sshProfiles}
+          onCancel={() => setSshConnectionDialogOpen(false)}
+          onConnect={async (profile) => {
+            await connectSshSession(profile);
+            setSshConnectionDialogOpen(false);
+          }}
         />
       )}
     </aside>
@@ -808,9 +795,6 @@ interface CategoryProps {
   onToggleCollapsed: (categoryId: string) => void;
   /** 根级分类右键菜单（v0.3.3：仅收藏提供“新建分组”）。 */
   onContextMenu?: (e: MouseEvent<HTMLElement>) => void;
-  /** ⋯ 按钮(与右键同源)。收藏分类用;临时/最近不提供。 */
-  onMore?: (e: React.MouseEvent<HTMLButtonElement>) => void;
-  moreTitle?: string;
   /** affordance 内容 — 通常是 lucide icon (<Icon name="plus" .../>) */
   actionLabel?: ReactNode;
   actionTitle?: string;
@@ -827,8 +811,6 @@ function Category({
   collapsed,
   onToggleCollapsed,
   onContextMenu,
-  onMore,
-  moreTitle,
   actionLabel,
   actionTitle,
   onAction,
@@ -866,20 +848,6 @@ function Category({
             {actionLabel}
           </button>
         )}
-        {onMore && (
-          <button
-            type="button"
-            className="sidebar-category-more"
-            onClick={(e) => {
-              e.stopPropagation();
-              onMore(e);
-            }}
-            title={moreTitle}
-            aria-label={moreTitle}
-          >
-            <MoreHorizontal size={12} />
-          </button>
-        )}
       </header>
       {collapsed ? null : paths.length === 0 ? (
         <p className="sidebar-empty">{emptyLabel}</p>
@@ -903,7 +871,7 @@ function Category({
 
 // ═══════════════════════════════════════════════════════════════════╗
 // ║  v0.3.3 ADR-025 / Feature E.1+E.2:收藏分组渲染 + @dnd-kit 拖序       ║
-// ║  用户裁决(2026-08-04):分组可递归嵌套;组动作只放右键/⋯;            ║
+// ║  用户裁决(2026-08-04):分组可递归嵌套;组动作只保留右键;             ║
 // ║  F2 重命名、Delete 解散(组头焦点内)                                ║
 // ╚══════════════════════════════════════════════════════════════════╝
 // 设计:
@@ -912,27 +880,26 @@ function Category({
 // - 分组折叠态走 L2 偏好 usePanelPreference(附录 G.1),不裸 localStorage。
 // - 拖序走 @dnd-kit 多容器:未分组 + 各组各为 SortableContext(共享 DndContext),
 //   拖动跨容器=移组,拖动同容器=组内排序;拖完发分层 BOOKMARK_REORDER。
-// - 组拖拽的碰撞检测是树感知的:指针在组行上半 = sibling(同级排序),
-//   下半 = nest(成为子组);拖到 path/未分组 = 无落点(组不能进未分组)。
-//   循环守卫:nest 目标为自身/自身后代时拒绝。
+// - group/path/session 各自只碰撞真实 container 的 0..N insertion slot；
+//   slot 命中后膨胀为等高 placeholder。组标题是“追加到组内”的大目标。
+// - 最终层级/顺序只来自 targetContainerId + targetIndex；自身/后代 slot 禁用。
 // - 临时/最近栏不受影响(决策 #13:只收藏可分组/可拖序)。
 // - 排序能力直接内联进 PathItem 的 <li>(传 sortableId 才启用),避免额外的
 //   包裹 <li> 造成 li 嵌套(无效 HTML)。临时/最近不传 → 零 dnd 开销。
 const UNGROUPED_CONTAINER = BOOKMARK_UNGROUPED_CONTAINER;
-const GROUPS_SORTABLE_CONTAINER = '__marina_bookmark_groups__';
 /** 组 draggable id 前缀(避免与 pathId / 容器 id 冲突)。 */
 const GROUP_ID_PREFIX = 'bookmark-group:';
-/** 组标题专用 droppable id；useSortable wrapper 的 rect 含整个子树，不能用于行落点。 */
 const GROUP_DROP_ID_PREFIX = 'bookmark-group-drop:';
-/** 递归 DOM 每层只加一次该缩进；横向拖动每 24px 明确切换一级。 */
+const GROUP_SLOT_ID_PREFIX = 'bookmark-group-slot:';
+const PATH_SLOT_ID_PREFIX = 'bookmark-path-slot:';
+/** 递归 DOM 每层只加一次该缩进；最终层级只由真实容器决定。 */
 const GROUP_TREE_INDENT_PX = 12;
-const GROUP_DEPTH_DRAG_STEP_PX = 24;
 
 /**
- * 分组头:折叠/展开、组名、⋯ 菜单。
+ * 分组头:折叠/展开、组名、右键菜单。
  *
- * 用户裁决(2026-08-04):组动作**全部只放右键/⋯ 菜单**(去掉 hover 铅笔/垃圾桶)。
- * 菜单:新建子组 / 重命名 / 解散分组。组头获得焦点时:F2 = 重命名,
+ * 用户裁决(2026-08-04):删除重复 ⋯，组动作只放右键菜单。
+ * 菜单:添加文件夹到该组 / 新建子组 / 重命名 / 解散。组头获得焦点时:F2 = 重命名,
  * Delete = 解散分组(路径与子组提升到上级,绝不删数据)。
  * 折叠态走 usePanelPreference(panelId='sidebar', key='groupCollapsed', 默认空 Set)。
  */
@@ -941,6 +908,8 @@ function GroupHeader({
   collapsed,
   onToggleCollapse,
   onRequestAddSubgroup,
+  onRequestAddFolder,
+  addFolderDisabledReason,
   dragHandle,
   dropTarget,
 }: {
@@ -948,6 +917,8 @@ function GroupHeader({
   collapsed: boolean;
   onToggleCollapse: () => void;
   onRequestAddSubgroup: () => void;
+  onRequestAddFolder: () => void;
+  addFolderDisabledReason?: string;
   dragHandle: Pick<
     ReturnType<typeof useSortable>,
     'setActivatorNodeRef' | 'attributes' | 'listeners'
@@ -1009,6 +980,13 @@ function GroupHeader({
       title: group.name,
       items: [
         {
+          label: `添加文件夹到「${group.name}」…`,
+          icon: <FolderInput size={13} />,
+          disabled: !!addFolderDisabledReason,
+          ...(addFolderDisabledReason ? { hint: addFolderDisabledReason } : {}),
+          onSelect: onRequestAddFolder,
+        },
+        {
           label: t('sidebar.group.addSub') || '新建子组',
           icon: <FolderPlus size={13} />,
           onSelect: onRequestAddSubgroup,
@@ -1036,12 +1014,6 @@ function GroupHeader({
     openGroupMenu(e.clientX, e.clientY);
   };
 
-  const handleMoreClick = (e: React.MouseEvent<HTMLButtonElement>): void => {
-    e.stopPropagation();
-    const rect = e.currentTarget.getBoundingClientRect();
-    openGroupMenu(rect.left, rect.bottom + 2);
-  };
-
   /** F2/Delete 只在组头自身聚焦时生效;重命名输入框内的按键不触发。 */
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
     if (e.target !== e.currentTarget) return;
@@ -1063,7 +1035,6 @@ function GroupHeader({
     <div
       ref={setHeaderRef}
       className="sidebar-group-header"
-      tabIndex={0}
       {...dragHandle.attributes}
       {...(dragHandle.listeners ?? {})}
       onClick={onToggleCollapse}
@@ -1101,64 +1072,208 @@ function GroupHeader({
           {group.name}
         </span>
       )}
-      <button
-        type="button"
-        className="sidebar-group-more"
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={handleMoreClick}
-        title={t('sidebar.group.menu') || '分组菜单 (右键/F2/Delete 也可)'}
-        aria-label={`分组「${group.name}」菜单`}
-      >
-        <MoreHorizontal size={12} />
-      </button>
     </div>
   );
 }
 
-/** 未分组容器也必须是 droppable；否则所有路径都进组后，没有目标可把它们拖出来。 */
-function BookmarkUngroupedDropZone({ children }: { children: ReactNode }): JSX.Element {
-  const { setNodeRef, isOver } = useDroppable({
-    id: UNGROUPED_CONTAINER,
-    data: { type: 'bookmark-container', containerId: UNGROUPED_CONTAINER },
-  });
-  return (
-    <ul
-      ref={setNodeRef}
-      className={`sidebar-paths sidebar-ungrouped bookmark-drop-zone${isOver ? ' drop-over' : ''}`}
-    >
-      {children}
-    </ul>
-  );
-}
-
-/** 拖拽过程状态：组拖动携带精确 projection，path 拖动只需目标组。 */
+/** 拖拽过程唯一真值：当前 pointer 命中的真实容器插槽。 */
 interface BookmarkDragState {
   activeType?: string | undefined;
   activeId?: string | undefined;
   overId?: string | undefined;
-  overGroupId?: string | undefined;
-  projection?: BookmarkGroupDropProjection | undefined;
-  dropLabel?: string | undefined;
+  placement?: BookmarkPlacement | undefined;
+  targetLabel?: string | undefined;
 }
 
-/** 精确树落点线：缩进表示最终深度，文字明确最终父级与相对顺序。 */
-function GroupDropIndicator({
-  label,
+function bookmarkSlotId(kind: 'group' | 'path', placement: BookmarkPlacement): string {
+  const prefix = kind === 'group' ? GROUP_SLOT_ID_PREFIX : PATH_SLOT_ID_PREFIX;
+  return `${prefix}${encodeURIComponent(placement.targetContainerId)}:${placement.targetIndex}`;
+}
+
+/**
+ * 拖动时才展开的真实插槽。它本身是有高度的 droppable；命中后膨胀为与行等高的
+ * placeholder 并挤开邻居。重叠的祖先边界会自然渲染成多个纵向排列的 slot，
+ * 不再用横向像素或祖先链猜最终层级。
+ */
+function BookmarkInsertionSlot({
+  kind,
   placement,
+  label,
+  activeType,
 }: {
+  kind: 'group' | 'path';
+  placement: BookmarkPlacement;
   label: string;
-  placement: BookmarkGroupDropProjection['indicatorPlacement'];
+  activeType?: string | undefined;
 }): JSX.Element {
-  const inside = placement === 'inside-start' || placement === 'inside-end';
+  const expectedType = kind === 'group' ? 'bookmark-group' : 'bookmark-path';
+  const enabled = activeType === expectedType;
+  const { setNodeRef, isOver } = useDroppable({
+    id: bookmarkSlotId(kind, placement),
+    disabled: !enabled,
+    data: {
+      type: kind === 'group' ? 'bookmark-group-slot' : 'bookmark-path-slot',
+      placement,
+      targetLabel: label,
+    },
+  });
+  const Tag = kind === 'path' ? 'li' : 'div';
   return (
-    <div
-      className={`sidebar-group-drop-indicator${inside ? ' inside' : ''}`}
-      role="status"
-      aria-live="polite"
+    <Tag
+      ref={setNodeRef as never}
+      className={`bookmark-insertion-slot ${kind}-slot${enabled ? ' active' : ''}${isOver ? ' over' : ''}`}
+      aria-hidden={!enabled}
+      data-target-container-id={placement.targetContainerId}
+      data-target-index={placement.targetIndex}
     >
-      <span className="sidebar-group-drop-line" aria-hidden="true" />
-      <span className="sidebar-group-drop-label">{label}</span>
-    </div>
+      {isOver ? <span>{label}</span> : null}
+    </Tag>
+  );
+}
+
+/** path 容器的 0..N 真实插槽；active 行留在源处充当等高 source placeholder。 */
+function BookmarkPathList({
+  paths,
+  containerId,
+  containerLabel,
+  dragState,
+  fullLayout,
+  renderPath,
+  className,
+}: {
+  paths: PathNode[];
+  containerId: string;
+  containerLabel: string;
+  dragState: BookmarkDragState | null;
+  fullLayout: BookmarkOrderLayout;
+  renderPath: (path: PathNode) => JSX.Element;
+  className: string;
+}): JSX.Element {
+  const activePathId = dragState?.activeType === 'bookmark-path' ? dragState.activeId : undefined;
+  const visibleIds = paths.map((path) => path.id);
+  const fullIds = bookmarkPathIdsForContainer(fullLayout, containerId) ?? visibleIds;
+  const placementAt = (visibleIndex: number): BookmarkPlacement => ({
+    targetContainerId: containerId,
+    targetIndex:
+      visibleBookmarkSlotToFullIndex(fullIds, visibleIds, activePathId, visibleIndex) ??
+      fullIds.filter((id) => id !== activePathId).length,
+  });
+  let targetIndex = 0;
+  return (
+    <SortableContext
+      items={paths.map((path) => path.id)}
+      strategy={verticalListSortingStrategy}
+      id={containerId}
+    >
+      <ul className={className}>
+        {paths.map((path) => {
+          const slotIndex = targetIndex;
+          if (path.id !== activePathId) targetIndex += 1;
+          return (
+            <Fragment key={path.id}>
+              {path.id !== activePathId && (
+                <BookmarkInsertionSlot
+                  kind="path"
+                  placement={placementAt(slotIndex)}
+                  label={`${containerLabel} · 第 ${slotIndex + 1} 位`}
+                  activeType={dragState?.activeType}
+                />
+              )}
+              {renderPath(path)}
+            </Fragment>
+          );
+        })}
+        <BookmarkInsertionSlot
+          kind="path"
+          placement={placementAt(targetIndex)}
+          label={`${containerLabel} · 末尾`}
+          activeType={dragState?.activeType}
+        />
+      </ul>
+    </SortableContext>
+  );
+}
+
+/** group 容器的 0..N 真实插槽。共享边界因递归 DOM 自然展开为“插槽阶梯”。 */
+function BookmarkGroupList({
+  groups,
+  parentId,
+  parentLabel,
+  depth,
+  dragState,
+  fullLayout,
+  collapsedSet,
+  toggleGroup,
+  byGroup,
+  renderPath,
+  onRequestAddSubgroup,
+  onRequestAddFolder,
+  addFolderDisabledReason,
+  disabled,
+}: {
+  groups: GroupNode[];
+  parentId: string | null;
+  parentLabel: string;
+  depth: number;
+  dragState: BookmarkDragState | null;
+  fullLayout: BookmarkOrderLayout;
+  collapsedSet: Set<string>;
+  toggleGroup: (groupId: string) => void;
+  byGroup: Map<string, PathNode[]>;
+  renderPath: (path: PathNode) => JSX.Element;
+  onRequestAddSubgroup: (parentId: string) => void;
+  onRequestAddFolder: (groupId: string) => void;
+  addFolderDisabledReason?: string;
+  disabled?: boolean;
+}): JSX.Element {
+  const containerId =
+    parentId === null ? BOOKMARK_ROOT_GROUP_CONTAINER : bookmarkSubgroupContainerId(parentId);
+  const activeGroupId = dragState?.activeType === 'bookmark-group' ? dragState.activeId : undefined;
+  let targetIndex = 0;
+  return (
+    <SortableContext
+      items={groups.map((group) => GROUP_ID_PREFIX + group.id)}
+      strategy={verticalListSortingStrategy}
+      id={containerId}
+    >
+      <div className="bookmark-group-container" data-group-container-id={containerId}>
+        {groups.map((group) => {
+          const slotIndex = targetIndex;
+          if (group.id !== activeGroupId) targetIndex += 1;
+          return (
+            <Fragment key={group.id}>
+              {group.id !== activeGroupId && (
+                <BookmarkInsertionSlot
+                  kind="group"
+                  placement={{ targetContainerId: containerId, targetIndex: slotIndex }}
+                  label={`${parentLabel} · 第 ${slotIndex + 1} 位`}
+                  activeType={disabled ? undefined : dragState?.activeType}
+                />
+              )}
+              <GroupBlock
+                group={group}
+                depth={depth}
+                dragState={dragState}
+                fullLayout={fullLayout}
+                collapsedSet={collapsedSet}
+                toggleGroup={toggleGroup}
+                byGroup={byGroup}
+                renderPath={renderPath}
+                onRequestAddSubgroup={onRequestAddSubgroup}
+                onRequestAddFolder={onRequestAddFolder}
+                {...(addFolderDisabledReason ? { addFolderDisabledReason } : {})}
+              />
+            </Fragment>
+          );
+        })}
+        <BookmarkInsertionSlot
+          kind="group"
+          placement={{ targetContainerId: containerId, targetIndex }}
+          label={`${parentLabel} · 末尾`}
+          activeType={disabled ? undefined : dragState?.activeType}
+        />
+      </div>
+    </SortableContext>
   );
 }
 
@@ -1171,121 +1286,137 @@ function GroupBlock({
   group,
   depth,
   dragState,
+  fullLayout,
   collapsedSet,
   toggleGroup,
   byGroup,
   renderPath,
   onRequestAddSubgroup,
+  onRequestAddFolder,
+  addFolderDisabledReason,
 }: {
   group: GroupNode;
   depth: number;
   dragState: BookmarkDragState | null;
+  fullLayout: BookmarkOrderLayout;
   collapsedSet: Set<string>;
   toggleGroup: (groupId: string) => void;
   byGroup: Map<string, PathNode[]>;
   renderPath: (p: PathNode) => JSX.Element;
   onRequestAddSubgroup: (parentId: string) => void;
+  onRequestAddFolder: (groupId: string) => void;
+  addFolderDisabledReason?: string;
 }): JSX.Element {
   const groupId = GROUP_ID_PREFIX + group.id;
-  const sortable = useSortable({
-    id: groupId,
-    data: {
-      type: 'bookmark-group',
-      groupId: group.id,
-      depth,
-      // path 拖到空组/折叠组/组头时，handleDragEnd 用它识别目标 path 容器。
-      pathContainerId: group.id,
-    },
-  });
-  // sortable wrapper 的 rect 含完整子树，会导致祖先/后代落点重叠；标题行单独注册
-  // droppable 后，纵向命中只代表用户真正指向的那一行。
-  const dropTarget = useDroppable({
-    id: GROUP_DROP_ID_PREFIX + group.id,
-    data: {
-      type: 'bookmark-group-drop',
-      groupId: group.id,
-      depth,
-      pathContainerId: group.id,
-    },
-  });
-  const style = sortable.transform
-    ? { transform: CSS.Translate.toString(sortable.transform), transition: sortable.transition }
-    : undefined;
   const isCollapsed = collapsedSet.has(group.id);
   const gPaths = byGroup.get(group.id) ?? [];
   const subgroups = group.subgroups ?? [];
+  const activeGroupId = dragState?.activeType === 'bookmark-group' ? dragState.activeId : undefined;
+  const activePathId = dragState?.activeType === 'bookmark-path' ? dragState.activeId : undefined;
+  const groupDropForbidden =
+    !!activeGroupId &&
+    (activeGroupId === group.id || isDescendantGroupInLayout(fullLayout, activeGroupId, group.id));
+  const subgroupContainerId = bookmarkSubgroupContainerId(group.id);
+  const groupPlacement: BookmarkPlacement = {
+    targetContainerId: subgroupContainerId,
+    targetIndex: subgroups.filter((subgroup) => subgroup.id !== activeGroupId).length,
+  };
+  const visiblePathIds = gPaths.map((path) => path.id);
+  const fullPathIds = bookmarkPathIdsForContainer(fullLayout, group.id) ?? visiblePathIds;
+  const pathPlacement: BookmarkPlacement = {
+    targetContainerId: group.id,
+    targetIndex:
+      visibleBookmarkSlotToFullIndex(
+        fullPathIds,
+        visiblePathIds,
+        activePathId,
+        visiblePathIds.filter((id) => id !== activePathId).length,
+      ) ?? fullPathIds.filter((id) => id !== activePathId).length,
+  };
 
-  const isGroupDragging = dragState?.activeType === 'bookmark-group';
-  const isPathOver =
-    dragState?.activeType === 'bookmark-path' && dragState.overGroupId === group.id;
+  const sortable = useSortable({
+    id: groupId,
+    data: { type: 'bookmark-group', groupId: group.id },
+  });
+  // 组标题是“大目标”：group 拖到标题 = 进入该组子列表末尾；path 拖到标题 =
+  // 进入该组 path 列表末尾。前/后排序只由列表里的真实 insertion slot 表达。
+  const dropTarget = useDroppable({
+    id: GROUP_DROP_ID_PREFIX + group.id,
+    disabled: !dragState || (dragState.activeType === 'bookmark-group' && groupDropForbidden),
+    data: {
+      type: 'bookmark-group-drop',
+      groupId: group.id,
+      groupPlacement,
+      pathPlacement,
+      groupTargetLabel: `「${group.name}」内 · 末尾`,
+      pathTargetLabel: `「${group.name}」路径 · 末尾`,
+    },
+  });
+
+  // 折叠组在 pointer 稳定悬停 450ms 后展开；快速划过不会让整棵树乱跳。
+  useEffect(() => {
+    if (!isCollapsed || !dropTarget.isOver || !dragState) return undefined;
+    const timer = window.setTimeout(() => toggleGroup(group.id), 450);
+    return () => window.clearTimeout(timer);
+  }, [dragState, dropTarget.isOver, group.id, isCollapsed, toggleGroup]);
+
+  const headerIsCurrentTarget =
+    dropTarget.isOver && dragState?.overId === GROUP_DROP_ID_PREFIX + group.id;
   const className =
     'sidebar-group bookmark-drop-zone' +
     (sortable.isDragging ? ' dragging' : '') +
-    (isPathOver || (!isGroupDragging && (sortable.isOver || dropTarget.isOver))
-      ? ' drop-over'
-      : '');
-  const projection = isGroupDragging ? dragState?.projection : undefined;
-  const showIndicator = projection?.indicatorGroupId === group.id;
-  const placement = showIndicator ? projection.indicatorPlacement : undefined;
-  const dropLabel = dragState?.dropLabel ?? '调整分组位置';
+    (headerIsCurrentTarget ? ' drop-over' : '');
 
   return (
     <div
       ref={sortable.setNodeRef}
-      style={{ ...style, paddingLeft: depth > 0 ? GROUP_TREE_INDENT_PX : undefined }}
+      style={{ paddingLeft: depth > 0 ? GROUP_TREE_INDENT_PX : undefined }}
       className={className}
     >
-      {placement === 'before' && <GroupDropIndicator label={dropLabel} placement="before" />}
       <GroupHeader
         group={group}
         collapsed={isCollapsed}
         onToggleCollapse={() => toggleGroup(group.id)}
         onRequestAddSubgroup={() => onRequestAddSubgroup(group.id)}
+        onRequestAddFolder={() => onRequestAddFolder(group.id)}
+        {...(addFolderDisabledReason ? { addFolderDisabledReason } : {})}
         dragHandle={sortable}
         dropTarget={dropTarget}
       />
-      {placement === 'inside-start' && (
-        <GroupDropIndicator label={dropLabel} placement="inside-start" />
+      {headerIsCurrentTarget && (
+        <div className="bookmark-target-placeholder inside" role="status" aria-live="polite">
+          {dragState.targetLabel}
+        </div>
       )}
       {!isCollapsed && (
         <>
-          {subgroups.length > 0 && (
-            <SortableContext
-              items={subgroups.map((s) => GROUP_ID_PREFIX + s.id)}
-              strategy={verticalListSortingStrategy}
-              id={`${GROUPS_SORTABLE_CONTAINER}:${group.id}`}
-            >
-              {subgroups.map((sub) => (
-                <GroupBlock
-                  key={sub.id}
-                  group={sub}
-                  depth={depth + 1}
-                  dragState={dragState}
-                  collapsedSet={collapsedSet}
-                  toggleGroup={toggleGroup}
-                  byGroup={byGroup}
-                  renderPath={renderPath}
-                  onRequestAddSubgroup={onRequestAddSubgroup}
-                />
-              ))}
-            </SortableContext>
-          )}
-          {placement === 'inside-end' && (
-            <GroupDropIndicator label={dropLabel} placement="inside-end" />
-          )}
-          <SortableContext
-            items={gPaths.map((p) => p.id)}
-            strategy={verticalListSortingStrategy}
-            id={group.id}
-          >
-            <ul className="sidebar-paths sidebar-group-paths">{gPaths.map(renderPath)}</ul>
-          </SortableContext>
+          <BookmarkGroupList
+            groups={subgroups}
+            parentId={group.id}
+            parentLabel={`「${group.name}」内`}
+            depth={depth + 1}
+            dragState={dragState}
+            fullLayout={fullLayout}
+            collapsedSet={collapsedSet}
+            toggleGroup={toggleGroup}
+            byGroup={byGroup}
+            renderPath={renderPath}
+            onRequestAddSubgroup={onRequestAddSubgroup}
+            onRequestAddFolder={onRequestAddFolder}
+            disabled={groupDropForbidden}
+            {...(addFolderDisabledReason ? { addFolderDisabledReason } : {})}
+          />
+          <BookmarkPathList
+            paths={gPaths}
+            containerId={group.id}
+            containerLabel={`「${group.name}」路径`}
+            dragState={dragState}
+            fullLayout={fullLayout}
+            renderPath={renderPath}
+            className="sidebar-paths sidebar-group-paths"
+          />
         </>
       )}
-      {isCollapsed && placement === 'inside-end' && (
-        <GroupDropIndicator label={dropLabel} placement="inside-end" />
-      )}
-      {placement === 'after' && <GroupDropIndicator label={dropLabel} placement="after" />}
     </div>
   );
 }
@@ -1305,8 +1436,9 @@ function BookmarkCategory({
   collapsed,
   onToggleCollapsed,
   onContextMenu,
-  onMore,
   onRequestAddSubgroup,
+  onRequestAddFolder,
+  addFolderDisabledReason,
   actionLabel,
   actionTitle,
   onAction,
@@ -1321,10 +1453,11 @@ function BookmarkCategory({
   collapsed: boolean;
   onToggleCollapsed: () => void;
   onContextMenu: (e: MouseEvent<HTMLElement>) => void;
-  /** ⋯ 按钮(与右键同源)。 */
-  onMore: (e: React.MouseEvent<HTMLButtonElement>) => void;
   /** 新建分组；parentId 给定时新建子组。 */
   onRequestAddSubgroup: (parentId: string) => void;
+  /** 从组右键菜单直接选择文件夹并原子地加入该组。 */
+  onRequestAddFolder: (groupId: string) => void;
+  addFolderDisabledReason?: string;
   actionLabel?: ReactNode;
   actionTitle?: string;
   /** 事件带出,供调用方定位弹层锚点(如远程段选服务器菜单) */
@@ -1409,99 +1542,42 @@ function BookmarkCategory({
   type DndData = {
     type?: string;
     groupId?: string;
-    depth?: number;
-    pathContainerId?: string;
-    containerId?: string;
-    sortable?: { containerId?: string };
+    placement?: BookmarkPlacement;
+    groupPlacement?: BookmarkPlacement;
+    pathPlacement?: BookmarkPlacement;
+    targetLabel?: string;
+    groupTargetLabel?: string;
+    pathTargetLabel?: string;
+  };
+
+  const placementFromData = (
+    activeType: string | undefined,
+    data: DndData | undefined,
+  ): { placement: BookmarkPlacement; label: string } | null => {
+    if (activeType === 'bookmark-group') {
+      const placement =
+        data?.type === 'bookmark-group-slot' ? data.placement : data?.groupPlacement;
+      if (!placement) return null;
+      return { placement, label: data?.targetLabel ?? data?.groupTargetLabel ?? '移动分组' };
+    }
+    if (activeType === 'bookmark-path') {
+      const placement = data?.type === 'bookmark-path-slot' ? data.placement : data?.pathPlacement;
+      if (!placement) return null;
+      return { placement, label: data?.targetLabel ?? data?.pathTargetLabel ?? '移动路径' };
+    }
+    return null;
   };
 
   /**
-   * 组拖动只与「组标题行」碰撞，完全忽略横向范围：横向位移专门留给层级投影。
-   * wrapper rect 含完整子树，旧实现必须按最小面积猜最内层；标题独立 droppable 后
-   * 只需选纵向中心最近的合法行。自身与后代在这里直接排除，避免循环落点闪烁。
-   * path 拖动仍使用 closestCenter，组标题数据保留 pathContainerId。
+   * 只接受真实 slot 或组标题大目标。useSortable 自带的 wrapper droppable 会出现在
+   * dnd-kit 容器表中，但它不携带 placement，因此在这里被过滤，绝不参与猜测。
    */
-  const treeCollisionDetection: CollisionDetection = (args) => {
-    const activeData = args.active.data.current as DndData | undefined;
-    if (activeData?.type !== 'bookmark-group') return closestCenter(args);
-    const pointer = args.pointerCoordinates;
-    const activeGroupId = activeData.groupId;
-    if (!pointer || !activeGroupId) return [];
-    type Rect = { top: number; height: number };
-    let best: {
-      id: string;
-      distance: number;
-      position: BookmarkGroupDropPosition;
-    } | null = null;
-    for (const container of args.droppableContainers) {
-      const data = container.data.current as DndData | undefined;
-      const overGroupId = data?.groupId;
-      if (
-        data?.type !== 'bookmark-group-drop' ||
-        !overGroupId ||
-        overGroupId === activeGroupId ||
-        isDescendantGroupInLayout(fullLayout, activeGroupId, overGroupId)
-      ) {
-        continue;
-      }
-      const rect = container.rect.current as Rect | null;
-      if (!rect) continue;
-      const centerY = rect.top + rect.height / 2;
-      const distance = Math.abs(pointer.y - centerY);
-      if (best && distance >= best.distance) continue;
-      best = {
-        id: String(container.id),
-        distance,
-        position: pointer.y < centerY ? 'before' : 'after',
-      };
-    }
-    return best ? [{ id: best.id, data: { position: best.position } }] : [];
-  };
-
-  const describeGroupProjection = (projection: BookmarkGroupDropProjection): string => {
-    const anchorName = groupNameById.get(projection.indicatorGroupId) ?? '分组';
-    if (projection.indicatorPlacement === 'inside-start') {
-      return `移入「${anchorName}」· 放在最前`;
-    }
-    if (projection.indicatorPlacement === 'inside-end') {
-      return `移入「${anchorName}」· 放在最后`;
-    }
-    const side = projection.indicatorPlacement === 'before' ? '之前' : '之后';
-    if (projection.parentGroupId === null) {
-      return `根级 · 与「${anchorName}」同级（${side}）`;
-    }
-    const parentName = groupNameById.get(projection.parentGroupId) ?? '分组';
-    return `「${parentName}」内 · 与「${anchorName}」同级（${side}）`;
-  };
-
-  /**
-   * 把 dnd-kit 的像素 delta 转成离散层级。每横移 24px 才切一级，避免手抖；最终
-   * 范围由 projectBookmarkGroupDrop 按命中行 clamp。onDragMove 每帧调用，保证
-   * over 不变时继续横移也会实时更新落点线。
-   */
-  const buildGroupProjection = (
-    event: DragMoveEvent | DragEndEvent,
-  ): BookmarkGroupDropProjection | null => {
-    const activeData = event.active.data.current as DndData | undefined;
-    const overData = event.over?.data.current as DndData | undefined;
-    const position = (
-      event.collisions?.[0]?.data as { position?: BookmarkGroupDropPosition } | undefined
-    )?.position;
-    if (
-      activeData?.type !== 'bookmark-group' ||
-      !activeData.groupId ||
-      typeof activeData.depth !== 'number' ||
-      !overData?.groupId ||
-      !position
-    ) {
-      return null;
-    }
-    const depthDelta = Math.round(event.delta.x / GROUP_DEPTH_DRAG_STEP_PX);
-    return projectBookmarkGroupDrop(fullLayout, {
-      activeGroupId: activeData.groupId,
-      overGroupId: overData.groupId,
-      requestedDepth: activeData.depth + depthDelta,
-      position,
+  const slotCollisionDetection: CollisionDetection = (args) => {
+    const activeType = (args.active.data.current as DndData | undefined)?.type;
+    return pointerWithin(args).filter((collision) => {
+      const data = args.droppableContainers.find((container) => container.id === collision.id)?.data
+        .current as DndData | undefined;
+      return placementFromData(activeType, data) !== null;
     });
   };
 
@@ -1510,60 +1586,44 @@ function BookmarkCategory({
 
   const handleDragStart = (event: DragStartEvent): void => {
     const data = event.active.data.current as DndData | undefined;
-    setDragState({ activeType: data?.type, activeId: String(event.active.id) });
-  };
-
-  const handleDragMove = (event: DragMoveEvent): void => {
-    const data = event.active.data.current as DndData | undefined;
-    const overData = event.over?.data.current as DndData | undefined;
-    const projection = buildGroupProjection(event) ?? undefined;
     setDragState({
       activeType: data?.type,
-      activeId: String(event.active.id),
-      overId: event.over ? String(event.over.id) : undefined,
-      overGroupId: overData?.groupId,
-      projection,
-      dropLabel: projection ? describeGroupProjection(projection) : undefined,
+      activeId:
+        data?.type === 'bookmark-group' && data.groupId ? data.groupId : String(event.active.id),
     });
   };
 
-  /**
-   * 拖完按 active.data.type 分流 group / path，再发完整 BOOKMARK_REORDER。
-   *
-   * - group：使用横向深度投影后的 parentGroupId + destinationIndex；
-   * - path：over 可是 path、组标题（空组/折叠组/任意层级）或未分组容器；
-   * 两者始终基于 fullLayout，不能丢掉当前 segment 隐藏的收藏。
-   */
+  const handleDragOver = (event: DragOverEvent): void => {
+    const activeData = event.active.data.current as DndData | undefined;
+    const overData = event.over?.data.current as DndData | undefined;
+    const target = placementFromData(activeData?.type, overData);
+    setDragState({
+      activeType: activeData?.type,
+      activeId:
+        activeData?.type === 'bookmark-group' && activeData.groupId
+          ? activeData.groupId
+          : String(event.active.id),
+      overId: event.over ? String(event.over.id) : undefined,
+      ...(target ? { placement: target.placement, targetLabel: target.label } : {}),
+    });
+  };
+
+  /** 释放只提交 pointer 当前命中的 placement；没有 placement 就等价于取消。 */
   const handleDragEnd = (event: DragEndEvent): void => {
     clearDragState();
-    const { active, over } = event;
-    if (!over) return;
+    const activeData = event.active.data.current as DndData | undefined;
+    const overData = event.over?.data.current as DndData | undefined;
+    const target = placementFromData(activeData?.type, overData);
+    if (!target) return;
 
-    const activeData = active.data.current as DndData | undefined;
-    const overData = over.data.current as DndData | undefined;
-    let nextLayout: BookmarkOrderLayout | null = null;
-
-    if (activeData?.type === 'bookmark-group') {
-      const projection = buildGroupProjection(event);
-      if (!activeData.groupId || !projection) return;
-      nextLayout = moveBookmarkGroupToProjection(fullLayout, activeData.groupId, projection);
-    } else if (activeData?.type === 'bookmark-path') {
-      const overId = String(over.id);
-      // 组标题是独立 droppable，pathContainerId 明确指向其组；命中标题即追加组尾。
-      const overContainerId =
-        overData?.pathContainerId ??
-        overData?.sortable?.containerId ??
-        overData?.containerId ??
-        overId;
-      nextLayout = moveBookmarkInLayout(fullLayout, {
-        activeId: String(active.id),
-        overId,
-        overContainerId,
-      });
-    }
+    const nextLayout =
+      activeData?.type === 'bookmark-group' && activeData.groupId
+        ? moveBookmarkGroupToPlacement(fullLayout, activeData.groupId, target.placement)
+        : activeData?.type === 'bookmark-path'
+          ? moveBookmarkToPlacement(fullLayout, String(event.active.id), target.placement)
+          : null;
     if (!nextLayout) return;
 
-    // main 广播 path tree 后回灌唯一真值；失败必须 toast，不能只写 DevTools。
     window.api.invoke(COMMAND_CHANNELS.BOOKMARK_REORDER, nextLayout).catch((err: unknown) => {
       console.warn('[BookmarkCategory] reorder rejected:', err);
       toast.push({
@@ -1611,12 +1671,19 @@ function BookmarkCategory({
     );
   };
 
+  const activeOverlayLabel =
+    dragState?.activeType === 'bookmark-group'
+      ? groupNameById.get(dragState.activeId ?? '')
+      : (paths.find((path) => path.id === dragState?.activeId)?.displayName ??
+        paths.find((path) => path.id === dragState?.activeId)?.path);
+
   return (
     <DndContext
       sensors={sensors}
-      collisionDetection={treeCollisionDetection}
+      measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
+      collisionDetection={slotCollisionDetection}
       onDragStart={handleDragStart}
-      onDragMove={handleDragMove}
+      onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
       onDragCancel={clearDragState}
     >
@@ -1654,55 +1721,82 @@ function BookmarkCategory({
               {actionLabel}
             </button>
           )}
-          <button
-            type="button"
-            className="sidebar-category-more"
-            onClick={(e) => {
-              e.stopPropagation();
-              onMore(e);
-            }}
-            title={t('sidebar.group.menu') || '收藏菜单'}
-            aria-label={t('sidebar.group.menu') || '收藏菜单'}
-          >
-            <MoreHorizontal size={12} />
-          </button>
         </header>
         {collapsed ? null : paths.length === 0 && groups.length === 0 ? (
           <p className="sidebar-empty">空</p>
         ) : (
           <div className="sidebar-bookmark-groups">
-            {/* 未分组块(隐式,顶置):有未分组 path 才渲染。*/}
-            <SortableContext
-              items={ungrouped.map((p) => p.id)}
-              strategy={verticalListSortingStrategy}
-              id={UNGROUPED_CONTAINER}
-            >
-              <BookmarkUngroupedDropZone>{ungrouped.map(renderPath)}</BookmarkUngroupedDropZone>
-            </SortableContext>
-            {/* 分组森林:根级 SortableContext 排顶层组;子组各自递归。 */}
-            <SortableContext
-              items={groups.map((group) => GROUP_ID_PREFIX + group.id)}
-              strategy={verticalListSortingStrategy}
-              id={GROUPS_SORTABLE_CONTAINER}
-            >
-              {groups.map((g) => (
-                <GroupBlock
-                  key={g.id}
-                  group={g}
-                  depth={0}
-                  dragState={dragState}
-                  collapsedSet={collapsedSet}
-                  toggleGroup={toggleGroup}
-                  byGroup={byGroup}
-                  renderPath={renderPath}
-                  onRequestAddSubgroup={onRequestAddSubgroup}
-                />
-              ))}
-            </SortableContext>
+            <BookmarkPathList
+              paths={ungrouped}
+              containerId={UNGROUPED_CONTAINER}
+              containerLabel="未分组"
+              dragState={dragState}
+              fullLayout={fullLayout}
+              renderPath={renderPath}
+              className="sidebar-paths sidebar-ungrouped"
+            />
+            <BookmarkGroupList
+              groups={groups}
+              parentId={null}
+              parentLabel="根级"
+              depth={0}
+              dragState={dragState}
+              fullLayout={fullLayout}
+              collapsedSet={collapsedSet}
+              toggleGroup={toggleGroup}
+              byGroup={byGroup}
+              renderPath={renderPath}
+              onRequestAddSubgroup={onRequestAddSubgroup}
+              onRequestAddFolder={onRequestAddFolder}
+              {...(addFolderDisabledReason ? { addFolderDisabledReason } : {})}
+            />
           </div>
         )}
       </section>
+      <DragOverlay dropAnimation={null}>
+        {dragState && activeOverlayLabel ? (
+          <div className={`bookmark-drag-overlay ${dragState.activeType ?? ''}`}>
+            <Icon
+              name={dragState.activeType === 'bookmark-group' ? 'folder' : 'bookmark'}
+              size={12}
+            />
+            <span>{activeOverlayLabel}</span>
+          </div>
+        ) : null}
+      </DragOverlay>
     </DndContext>
+  );
+}
+
+interface SessionDragState {
+  activeId: string;
+  targetIndex?: number;
+}
+
+/** 同一 path 内的真实 session 插槽；跨 path 根本不注册目标。 */
+function SessionInsertionSlot({
+  pathId,
+  targetIndex,
+  enabled,
+}: {
+  pathId: string;
+  targetIndex: number;
+  enabled: boolean;
+}): JSX.Element {
+  const { setNodeRef, isOver } = useDroppable({
+    id: `session-slot:${encodeURIComponent(pathId)}:${targetIndex}`,
+    disabled: !enabled,
+    data: { type: 'session-slot', targetIndex },
+  });
+  return (
+    <li
+      ref={setNodeRef}
+      className={`session-insertion-slot${enabled ? ' active' : ''}${isOver ? ' over' : ''}`}
+      aria-hidden={!enabled}
+      data-target-index={targetIndex}
+    >
+      {isOver ? <span>第 {targetIndex + 1} 位</span> : null}
+    </li>
   );
 }
 
@@ -1744,40 +1838,54 @@ function PathItem({
   // React hooks 规则要求顶层调用,故用 sortableId 是否为空区分启用,但 hook 本身始终调。
   // 临时/最近传 undefined → useSortable({id: undefined}) 不参与任何 SortableContext,零开销。
   const sortable = useSortable({
-    id: sortableId,
+    id: sortableId ?? `disabled-path:${node.id}`,
     disabled: !sortableId,
     data: { type: 'bookmark-path' },
   });
-  const sortableStyle =
-    sortableId && sortable.transform
-      ? { transform: CSS.Translate.toString(sortable.transform), transition: sortable.transition }
-      : undefined;
+  // DragOverlay 负责跟手；源 li 固定留在原位充当等高 source placeholder。
   const sortableProps = sortableId
     ? {
-        ref: sortable.setNodeRef as React.LiHTMLAttributes<HTMLLIElement>['ref'],
+        ref: sortable.setNodeRef,
         ...sortable.attributes,
         ...sortable.listeners,
       }
     : {};
 
-  // v0.3.3 Feature E.2:同 path 下 session 拖序(各 path 独立 DndContext;决策 #15)。
+  // 同 path session 拖拽只认本列表 0..N 真实插槽；没有跨 path 目标。
   const sessionSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
+  const [sessionDragState, setSessionDragState] = useState<SessionDragState | null>(null);
+  const sessionCollisionDetection: CollisionDetection = (args) =>
+    pointerWithin(args).filter((collision) => {
+      const data = args.droppableContainers.find((container) => container.id === collision.id)?.data
+        .current as { type?: string } | undefined;
+      return data?.type === 'session-slot';
+    });
   const handleSessionDragEnd = (event: DragEndEvent, sess: SessionInfo[]): void => {
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
-    const fromIdx = sess.findIndex((s) => s.id === active.id);
-    const overIdx = sess.findIndex((s) => s.id === over.id);
-    if (fromIdx < 0 || overIdx < 0) return;
-    // 重排:从 fromIdx 删掉插到 overIdx 前。
-    const ordered = sess.map((s) => s.id);
-    const [moved] = ordered.splice(fromIdx, 1);
-    ordered.splice(overIdx, 0, moved);
+    setSessionDragState(null);
+    const overData = event.over?.data.current as
+      | { type?: string; targetIndex?: number }
+      | undefined;
+    if (overData?.type !== 'session-slot' || typeof overData.targetIndex !== 'number') return;
+    const activeId = String(event.active.id);
+    const withoutActive = sess.map((session) => session.id).filter((id) => id !== activeId);
+    if (withoutActive.length === sess.length) return;
+    const targetIndex = Math.max(0, Math.min(overData.targetIndex, withoutActive.length));
+    withoutActive.splice(targetIndex, 0, activeId);
+    const current = sess.map((session) => session.id);
+    if (current.every((id, index) => id === withoutActive[index])) return;
     window.api
-      .invoke(COMMAND_CHANNELS.SESSION_REORDER, { pathId: node.id, orderedSessionIds: ordered })
+      .invoke(COMMAND_CHANNELS.SESSION_REORDER, {
+        pathId: node.id,
+        orderedSessionIds: withoutActive,
+      })
       .catch((err: unknown) => {
         console.warn('[PathItem] session reorder rejected:', err);
+        toast.push({
+          kind: 'error',
+          message: `调整终端顺序失败:${err instanceof Error ? err.message : String(err)}`,
+        });
       });
   };
 
@@ -2080,7 +2188,7 @@ function PathItem({
     <>
       <li
         className={`path-item${selected ? ' selected' : ''}${node.invalid ? ' invalid' : ''}${sortableId && sortable.isDragging ? ' dragging' : ''}`}
-        style={sortableStyle}
+        data-path-id={node.id}
         {...sortableProps}
       >
         <div
@@ -2144,26 +2252,75 @@ function PathItem({
         {expanded && sessions.length > 0 && (
           <DndContext
             sensors={sessionSensors}
-            collisionDetection={closestCenter}
-            onDragEnd={(e) => handleSessionDragEnd(e, sessions)}
+            measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
+            collisionDetection={sessionCollisionDetection}
+            onDragStart={(event) => setSessionDragState({ activeId: String(event.active.id) })}
+            onDragOver={(event) => {
+              const data = event.over?.data.current as
+                | { type?: string; targetIndex?: number }
+                | undefined;
+              setSessionDragState({
+                activeId: String(event.active.id),
+                ...(data?.type === 'session-slot' && typeof data.targetIndex === 'number'
+                  ? { targetIndex: data.targetIndex }
+                  : {}),
+              });
+            }}
+            onDragEnd={(event) => handleSessionDragEnd(event, sessions)}
+            onDragCancel={() => setSessionDragState(null)}
           >
             <SortableContext
-              items={sessions.map((s) => s.id)}
+              items={sessions.map((session) => session.id)}
               strategy={verticalListSortingStrategy}
             >
               <ul className="session-list">
-                {sessions.map((s) => (
-                  <SessionItem
-                    key={s.id}
-                    session={s}
-                    myWindowId={state.myWindowId}
-                    selected={state.selectedSessionId === s.id}
-                    template={state.templates.find((template) => template.id === s.templateId)}
-                    sortableId={s.id}
-                  />
-                ))}
+                {(() => {
+                  let targetIndex = 0;
+                  return sessions.map((session) => {
+                    const slotIndex = targetIndex;
+                    if (session.id !== sessionDragState?.activeId) targetIndex += 1;
+                    return (
+                      <Fragment key={session.id}>
+                        {session.id !== sessionDragState?.activeId && (
+                          <SessionInsertionSlot
+                            pathId={node.id}
+                            targetIndex={slotIndex}
+                            enabled={!!sessionDragState}
+                          />
+                        )}
+                        <SessionItem
+                          session={session}
+                          myWindowId={state.myWindowId}
+                          selected={state.selectedSessionId === session.id}
+                          template={state.templates.find(
+                            (template) => template.id === session.templateId,
+                          )}
+                          sortableId={session.id}
+                        />
+                      </Fragment>
+                    );
+                  });
+                })()}
+                <SessionInsertionSlot
+                  pathId={node.id}
+                  targetIndex={
+                    sessions.filter((session) => session.id !== sessionDragState?.activeId).length
+                  }
+                  enabled={!!sessionDragState}
+                />
               </ul>
             </SortableContext>
+            <DragOverlay dropAnimation={null}>
+              {sessionDragState ? (
+                <div className="bookmark-drag-overlay session">
+                  <Icon name="templateShell" size={12} />
+                  <span>
+                    {sessions.find((session) => session.id === sessionDragState.activeId)
+                      ?.displayName ?? '终端'}
+                  </span>
+                </div>
+              ) : null}
+            </DragOverlay>
           </DndContext>
         )}
       </li>
@@ -2223,7 +2380,7 @@ function SessionItemImpl({
 
   // v0.3.3 Feature E.2:同 path 内 session 拖序(仅传 sortableId 时启用)。
   const sessionSortable = useSortable({
-    id: sortableId,
+    id: sortableId ?? `disabled-session:${session.id}`,
     disabled: !sortableId,
     data: { type: 'session' },
   });
@@ -2361,6 +2518,7 @@ function SessionItemImpl({
 
   return (
     <li
+      data-session-id={session.id}
       className={`session-item${selected ? ' selected' : ''}${
         ownedByOther ? ' owned-by-other' : ''
       }${session.state === 'exited' ? ' exited' : ''}${
@@ -2368,17 +2526,9 @@ function SessionItemImpl({
         // 满底背景。详见 global.css .session-state-bar 注释。
         session.state === 'active' ? ' active-session' : ''
       }${sortableId && sessionSortable.isDragging ? ' dragging' : ''}`}
-      style={
-        sortableId && sessionSortable.transform
-          ? {
-              transform: CSS.Translate.toString(sessionSortable.transform),
-              transition: sessionSortable.transition,
-            }
-          : undefined
-      }
       {...(sortableId
         ? {
-            ref: sessionSortable.setNodeRef as React.LiHTMLAttributes<HTMLLIElement>['ref'],
+            ref: sessionSortable.setNodeRef,
             ...sessionSortable.attributes,
             ...sessionSortable.listeners,
           }

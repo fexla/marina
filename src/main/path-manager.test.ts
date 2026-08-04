@@ -52,10 +52,7 @@ class FakeJsonStore<T> {
   }
 }
 
-function makeManager(opts?: {
-  initialBookmarks?: BookmarksFile;
-  initialRecent?: RecentFile;
-}): {
+function makeManager(opts?: { initialBookmarks?: BookmarksFile; initialRecent?: RecentFile }): {
   mgr: PathManager;
   bookmarksStore: FakeJsonStore<BookmarksFile>;
   recentStore: FakeJsonStore<RecentFile>;
@@ -236,13 +233,34 @@ describe('PathManager — addBookmark / removeBookmark', () => {
     expect(bookmarksStore.setHistory[0]!.paths[0]!.path).toBe(TEST_PATH_A);
   });
 
+  it('addBookmark 带 groupId 时原子地直接进入该组', async () => {
+    const { mgr, bookmarksStore } = makeManager();
+    await mgr.initialize();
+    const group = mgr.addGroup('工作');
+
+    const bookmark = mgr.addBookmark({ path: TEST_PATH_A, groupId: group.id });
+
+    expect(bookmark.groupId).toBe(group.id);
+    expect(mgr.getTree().bookmarks[0]?.groupId).toBe(group.id);
+    expect(bookmarksStore.setHistory.at(-1)?.paths[0]?.groupId).toBe(group.id);
+  });
+
+  it('addBookmark 拒绝不存在/空 groupId，且不留下半完成收藏', async () => {
+    const { mgr } = makeManager();
+    await mgr.initialize();
+
+    expect(() => mgr.addBookmark({ path: TEST_PATH_A, groupId: 'missing' })).toThrowError(
+      /GroupNotFound/,
+    );
+    expect(() => mgr.addBookmark({ path: TEST_PATH_A, groupId: '' })).toThrowError(/GroupNotFound/);
+    expect(mgr.getTree().bookmarks).toEqual([]);
+  });
+
   it('addBookmark 重复路径 throw BookmarkAlreadyExists', async () => {
     const { mgr } = makeManager();
     await mgr.initialize();
     mgr.addBookmark({ path: TEST_PATH_A });
-    expect(() => mgr.addBookmark({ path: TEST_PATH_A })).toThrowError(
-      /BookmarkAlreadyExists/,
-    );
+    expect(() => mgr.addBookmark({ path: TEST_PATH_A })).toThrowError(/BookmarkAlreadyExists/);
   });
 
   it('addBookmark 自动从 recent 移除 (避免重复出现)', async () => {
@@ -315,9 +333,7 @@ describe('PathManager — renameBookmark / reorderBookmarks / setDefaultTemplate
     const { mgr } = makeManager();
     await mgr.initialize();
     mgr.addBookmark({ path: TEST_PATH_A });
-    expect(() => mgr.renameBookmark(TEST_PATH_A, 'x'.repeat(101))).toThrowError(
-      /InvalidName/,
-    );
+    expect(() => mgr.renameBookmark(TEST_PATH_A, 'x'.repeat(101))).toThrowError(/InvalidName/);
     expect(() => mgr.renameBookmark(TEST_PATH_A, 123 as unknown as string)).toThrowError(
       /InvalidName/,
     );
@@ -331,11 +347,7 @@ describe('PathManager — renameBookmark / reorderBookmarks / setDefaultTemplate
     mgr.addBookmark({ path: TEST_PATH_C });
     mgr.reorderBookmarks({ ungrouped: [TEST_PATH_C, TEST_PATH_A, TEST_PATH_B], groups: [] });
     const tree = mgr.getTree();
-    expect(tree.bookmarks.map((b) => b.path)).toEqual([
-      TEST_PATH_C,
-      TEST_PATH_A,
-      TEST_PATH_B,
-    ]);
+    expect(tree.bookmarks.map((b) => b.path)).toEqual([TEST_PATH_C, TEST_PATH_A, TEST_PATH_B]);
   });
 
   it('reorderBookmarks 数量不匹配 throw InvalidOrderList', async () => {
@@ -343,9 +355,9 @@ describe('PathManager — renameBookmark / reorderBookmarks / setDefaultTemplate
     await mgr.initialize();
     mgr.addBookmark({ path: TEST_PATH_A });
     mgr.addBookmark({ path: TEST_PATH_B });
-    expect(() =>
-      mgr.reorderBookmarks({ ungrouped: [TEST_PATH_A], groups: [] }),
-    ).toThrowError(/InvalidOrderList/);
+    expect(() => mgr.reorderBookmarks({ ungrouped: [TEST_PATH_A], groups: [] })).toThrowError(
+      /InvalidOrderList/,
+    );
   });
 
   it('reorderBookmarks 含未知 path throw InvalidOrderList', async () => {
@@ -474,9 +486,7 @@ describe('PathManager — Recent 容量与排序', () => {
     expect(tree.recent.length).toBe(30);
     // 最新的 30 个应在,最旧的 5 个被淘汰 (p0-p4)
     const pathsInRecent = new Set(tree.recent.map((r) => r.path));
-    expect(pathsInRecent.has(process.platform === 'win32' ? 'C:\\p34' : '/p34')).toBe(
-      true,
-    );
+    expect(pathsInRecent.has(process.platform === 'win32' ? 'C:\\p34' : '/p34')).toBe(true);
     expect(pathsInRecent.has(process.platform === 'win32' ? 'C:\\p0' : '/p0')).toBe(false);
   });
 
@@ -801,9 +811,7 @@ describe('PathManager — 收藏分组 (ADR-025 / Feature E.1)', () => {
     const sub = mgr.addGroup('子组', g1.id);
     const tree = mgr.getTree();
     expect(tree.groups.map((g) => g.id)).toEqual([g1.id, expect.anything()]);
-    expect(tree.groups.find((g) => g.id === g1.id)!.subgroups!.map((s) => s.id)).toEqual([
-      sub.id,
-    ]);
+    expect(tree.groups.find((g) => g.id === g1.id)!.subgroups!.map((s) => s.id)).toEqual([sub.id]);
     expect(() => mgr.addGroup('孤儿', 'nope')).toThrowError(/GroupNotFound/);
   });
 

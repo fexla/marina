@@ -1504,95 +1504,103 @@ html[data-maximized='true'] .app-root.with-shell {
   outline-offset: -1px;
 }
 
-/* 组行 ⋯ 菜单按钮(与右键同源;hover 常驻,不用隐藏手势)。 */
-.sidebar-group-more,
-.sidebar-category-more {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  flex: 0 0 18px;
-  padding: 0;
-  background: transparent;
-  border: none;
-  border-radius: 3px;
-  color: var(--color-text-muted, #f0f);
-  cursor: pointer;
-  transition:
-    background-color 0.12s ease,
-    color 0.12s ease;
-}
-
-.sidebar-group-more:hover,
-.sidebar-category-more:hover {
-  background-color: var(--color-bg-active, #f0f);
-  color: var(--color-text-primary, #f0f);
-}
-
 /*
- * 精确树拖拽落点：indicator 是 0 高度，不挤动列表也不改变碰撞 rect；它放在
- * JSX 的真实插入位置。inside 仅多缩进一级，文字同时声明最终父级，避免只靠线猜。
+ * 真实容器/插槽拖拽：slot 本身占有物理高度并参与 pointerWithin。普通态完全收起；
+ * 拖动时显示可命中的窄阶梯，命中后膨胀为与侧栏行等高的 placeholder，让邻居
+ * 在释放前实时让位。祖先/父级共享边界会因递归 DOM 形成多个纵向 slot。
  */
-.sidebar-group-drop-indicator {
-  position: relative;
-  z-index: 5;
-  display: block;
+.bookmark-group-container {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.bookmark-insertion-slot {
+  display: flex;
+  align-items: center;
+  min-width: 0;
   height: 0;
   margin: 0 8px;
-  pointer-events: none;
-  color: var(--color-accent-special, #f0f);
-}
-
-.sidebar-group-drop-indicator.inside {
-  margin-left: 20px;
-}
-
-.sidebar-group-drop-line {
-  position: absolute;
-  top: -1px;
-  right: 0;
-  left: 0;
-  height: 2px;
-  border-radius: 999px;
-  background: currentcolor;
-  box-shadow: 0 0 5px color-mix(in srgb, currentcolor 45%, transparent);
-}
-
-.sidebar-group-drop-line::before {
-  position: absolute;
-  top: -3px;
-  left: -1px;
-  width: 8px;
-  height: 8px;
-  content: '';
-  border: 2px solid currentcolor;
-  border-radius: 50%;
-  background: var(--color-bg-primary, #f0f);
-}
-
-.sidebar-group-drop-label {
-  position: absolute;
-  top: 4px;
-  right: 0;
-  max-width: calc(100% - 8px);
-  padding: 2px 5px;
+  padding: 0 6px;
   overflow: hidden;
   font-size: 9px;
   font-weight: 600;
-  line-height: 1.35;
+  line-height: 1;
+  color: var(--color-accent-special, #f0f);
+  list-style: none;
+  border: 0 dashed transparent;
+  border-radius: 4px;
+  opacity: 0;
+  transition:
+    height 90ms ease,
+    opacity 90ms ease,
+    background-color 90ms ease;
+}
+
+.bookmark-insertion-slot.active {
+  height: 12px;
+  border-top-width: 1px;
+  border-top-color: color-mix(in srgb, var(--color-accent-special, #f0f) 38%, transparent);
+  opacity: 1;
+}
+
+.bookmark-insertion-slot.path-slot.active {
+  height: 9px;
+  margin-left: 12px;
+}
+
+.bookmark-insertion-slot.over,
+.bookmark-insertion-slot.path-slot.over,
+.bookmark-target-placeholder {
+  height: 28px;
+  margin-top: 2px;
+  margin-bottom: 2px;
   color: var(--color-text-primary, #f0f);
-  text-overflow: ellipsis;
+  background: color-mix(in srgb, var(--color-accent-special, #f0f) 14%, transparent);
+  border: 1px dashed var(--color-accent-special, #f0f);
+  opacity: 1;
+}
+
+.bookmark-target-placeholder {
+  display: flex;
+  align-items: center;
+  margin-right: 8px;
+  margin-left: 20px;
+  padding: 0 7px;
+  overflow: hidden;
+  font-size: 9px;
+  font-weight: 600;
   white-space: nowrap;
-  background: var(--color-bg-elevated, var(--color-bg-primary, #f0f));
-  border: 1px solid color-mix(in srgb, currentcolor 55%, transparent);
-  border-radius: 3px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.32);
+  border-radius: 4px;
+}
+
+.bookmark-drag-overlay {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 150px;
+  max-width: 250px;
+  height: 28px;
+  padding: 0 8px;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-primary, #f0f);
+  white-space: nowrap;
+  background: var(--color-bg-elevated, #f0f);
+  border: 1px solid var(--color-accent-special, #f0f);
+  border-radius: 5px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.38);
+}
+
+.bookmark-drag-overlay span {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar-group.dragging {
   z-index: 2;
-  opacity: 0.55;
+  opacity: 0.25;
 }
 
 .sidebar-group.dragging > .sidebar-group-header,
@@ -1771,10 +1779,52 @@ html[data-maximized='true'] .app-root.with-shell {
   padding: 0;
 }
 
+.session-insertion-slot {
+  display: flex;
+  align-items: center;
+  height: 0;
+  margin: 0 8px 0 28px;
+  padding: 0 6px;
+  overflow: hidden;
+  color: var(--color-accent-special, #f0f);
+  font-size: 9px;
+  font-weight: 600;
+  list-style: none;
+  border: 0 dashed transparent;
+  border-radius: 4px;
+  opacity: 0;
+  transition:
+    height 90ms ease,
+    opacity 90ms ease,
+    background-color 90ms ease;
+}
+
+.session-insertion-slot.active {
+  height: 9px;
+  border-top-width: 1px;
+  border-top-color: color-mix(in srgb, var(--color-accent-special, #f0f) 38%, transparent);
+  opacity: 1;
+}
+
+.session-insertion-slot.over {
+  height: 26px;
+  margin-top: 2px;
+  margin-bottom: 2px;
+  color: var(--color-text-primary, #f0f);
+  background: color-mix(in srgb, var(--color-accent-special, #f0f) 14%, transparent);
+  border: 1px dashed var(--color-accent-special, #f0f);
+}
+
+.session-item.dragging {
+  opacity: 0.25;
+}
+
 .session-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
+  overflow: hidden;
 
   /* session 内容比 path 行深一级：8px 是所有 sidebar 行的基础内边距，
      --tree-indent-unit 是 ADR-019 的层级单一真相源。状态色条仍固定在整行 x=0，
@@ -1805,11 +1855,6 @@ html[data-maximized='true'] .app-root.with-shell {
    docs/prototypes/e3-colorbar-prototype.html。
    注:旧设计「idle 黄/active 绿呼吸/exited 灰」(T07 issue 原文)已废弃。 */
 
-/* session-item 作为定位上下文:色条层 absolute 铺在里面,overflow hidden 裁圆角。 */
-.session-item {
-  position: relative;
-  overflow: hidden;
-}
 /* session-item 的直接子元素(name / 图标 / rename input)都浮在色条背景层之上。 */
 .session-item > *:not(.session-state-bar) {
   position: relative;
@@ -5877,6 +5922,139 @@ select.settings-input option {
 
 .backend-directory-picker-state.error {
   color: var(--color-danger, #f0f);
+}
+
+/* SSH 连接面板：连接是侧栏即时任务；表单只在“更多选项”展开低频字段。 */
+.ssh-connection-dialog {
+  width: min(520px, calc(100vw - 32px));
+  min-width: 0;
+  max-height: min(680px, calc(100vh - 48px));
+  overflow: auto;
+}
+
+.ssh-connection-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 80px;
+  max-height: 360px;
+  margin: 4px 0 12px;
+  overflow: auto;
+}
+
+.ssh-connection-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 42px;
+  padding: 6px 8px;
+  color: var(--color-text-primary, #f0f);
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.ssh-connection-row:hover,
+.ssh-connection-row:focus-visible {
+  background: var(--color-bg-hover, #f0f);
+  border-color: var(--color-accent-special, #f0f);
+  outline: none;
+}
+
+.ssh-connection-row-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ssh-connection-row-main strong,
+.ssh-connection-row-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ssh-connection-row-main small {
+  margin-top: 2px;
+  color: var(--color-text-muted, #f0f);
+  font-size: 10px;
+}
+
+.ssh-connection-form,
+.ssh-connection-advanced {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.ssh-connection-form > label,
+.ssh-connection-advanced > label,
+.ssh-key-file-row label {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  color: var(--color-text-secondary, #f0f);
+  font-size: 10px;
+}
+
+.ssh-connection-form .app-modal-input {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.ssh-key-file-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.ssh-key-file-row .app-modal-button,
+.ssh-connection-actions .app-modal-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.ssh-connection-checkbox {
+  flex-direction: row !important;
+  align-items: center;
+}
+
+.ssh-connection-advanced-toggle {
+  align-self: flex-start;
+  padding: 2px 0;
+  color: var(--color-text-muted, #f0f);
+  font-size: 10px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.ssh-connection-advanced-toggle:hover {
+  color: var(--color-text-primary, #f0f);
+}
+
+.ssh-connection-advanced {
+  padding: 8px;
+  background: var(--color-bg-primary, #f0f);
+  border-radius: 4px;
+}
+
+.ssh-connection-error {
+  margin-top: 4px;
+  padding: 6px 8px;
+  color: var(--color-danger, #f0f);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+  background: color-mix(in srgb, var(--color-danger, #f0f) 10%, transparent);
+  border-radius: 4px;
 }
 
 /* ── Marina Skill installer ─────────────────────────────────────── */

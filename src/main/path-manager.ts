@@ -237,9 +237,13 @@ export class PathManager extends EventEmitter {
   // ──────────────────────────────────────────────────────────────────
 
   /**
-   * 添加收藏。
+   * 添加收藏，并可原子地直接归入指定分组。
    *
    * @throws PathManagerError BookmarkAlreadyExists 该路径已是收藏
+   * @throws PathManagerError GroupNotFound groupId 不存在（防止创建悬空归属）
+   *
+   * @副作用:更新 bookmarks、移出 recent、持久化两个 store 并广播一次最终树。
+   * 这里接收 groupId 而不是 renderer 先 add 再 reorder，避免未分组闪烁和半完成状态。
    */
   addBookmark(input: {
     path: string;
@@ -247,7 +251,21 @@ export class PathManager extends EventEmitter {
     sshProfileId?: string;
     displayName?: string;
     defaultTemplateId?: string;
+    groupId?: string;
   }): Bookmark {
+    if (
+      input.groupId !== undefined &&
+      (typeof input.groupId !== 'string' ||
+        input.groupId.length === 0 ||
+        !this.findGroupNode(input.groupId))
+    ) {
+      throw new PathManagerError(
+        'GroupNotFound',
+        `[PathManager] addBookmark failed: groupId="${input.groupId}" does not exist. ` +
+          'Possible causes: (1) the group was dissolved in another window, ' +
+          '(2) renderer used a stale path tree. Refresh the sidebar and choose the group again.',
+      );
+    }
     const ref = normalizePathRef({
       kind: input.kind ?? 'local',
       path: input.path,
@@ -262,6 +280,7 @@ export class PathManager extends EventEmitter {
       ref,
       ...(input.displayName ? { displayName: input.displayName } : {}),
       ...(input.defaultTemplateId ? { defaultTemplateId: input.defaultTemplateId } : {}),
+      ...(input.groupId !== undefined ? { groupId: input.groupId } : {}),
       addedAt: Date.now(),
     });
     this.bookmarks.push(bookmark);
@@ -304,9 +323,7 @@ export class PathManager extends EventEmitter {
     if (typeof newDisplayName !== 'string' || newDisplayName.length > 100) {
       throw new PathManagerError(
         'InvalidName',
-        `displayName 必须是 string 且长度 <= 100,实际: ${
-          typeof newDisplayName
-        } len=${newDisplayName?.length}`,
+        `displayName 必须是 string 且长度 <= 100,实际: ${typeof newDisplayName} len=${newDisplayName?.length}`,
       );
     }
     const id = makePathId(pathRefFromId(pathId));
@@ -395,10 +412,7 @@ export class PathManager extends EventEmitter {
       seen.add(id);
       const found = this.findBookmarkByPath(id);
       if (!found) {
-        throw new PathManagerError(
-          'InvalidOrderList',
-          `pathId="${id}" 不在当前 bookmarks 列表`,
-        );
+        throw new PathManagerError('InvalidOrderList', `pathId="${id}" 不在当前 bookmarks 列表`);
       }
       // 原地改 groupId(唯一真相源)。同一条 bookmark 顺序变即重新 push。
       if (assignGroupId === undefined) {
@@ -425,9 +439,7 @@ export class PathManager extends EventEmitter {
     for (const group of payload.groups) {
       // 只从根级(未被任何 subgroupOrder 引用)开始遍历,子组在 walk 内递归,
       // 避免同一组被处理两次。
-      const referenced = payload.groups.some((other) =>
-        other.subgroupOrder.includes(group.id),
-      );
+      const referenced = payload.groups.some((other) => other.subgroupOrder.includes(group.id));
       if (!referenced) walkChildOrders(group);
     }
 
@@ -590,10 +602,7 @@ export class PathManager extends EventEmitter {
       }
       seen.add(sid);
       if (!current.has(sid)) {
-        throw new PathManagerError(
-          'InvalidOrderList',
-          `sessionId="${sid}" 不属于 pathId="${id}"`,
-        );
+        throw new PathManagerError('InvalidOrderList', `sessionId="${sid}" 不属于 pathId="${id}"`);
       }
     }
     this.sessionOrder.set(id, orderedSessionIds.slice());
@@ -799,12 +808,8 @@ export class PathManager extends EventEmitter {
     const isMatch = (kind: PathKind, sshProfileId: string | undefined): boolean =>
       kind === 'ssh' && sshProfileId === profileId;
     return (
-      this.bookmarks.some((b) =>
-        b.kind === 'ssh' ? isMatch(b.kind, b.sshProfileId) : false,
-      ) ||
-      this.recent.some((r) =>
-        r.kind === 'ssh' ? isMatch(r.kind, r.sshProfileId) : false,
-      ) ||
+      this.bookmarks.some((b) => (b.kind === 'ssh' ? isMatch(b.kind, b.sshProfileId) : false)) ||
+      this.recent.some((r) => (r.kind === 'ssh' ? isMatch(r.kind, r.sshProfileId) : false)) ||
       [...this.sessionToPath.values()].some((id) => {
         const ref = pathRefFromId(id);
         return ref.kind === 'ssh' && ref.sshProfileId === profileId;
@@ -922,9 +927,7 @@ export class PathManager extends EventEmitter {
       existing.lastUsedAt = Date.now();
       existing.useCount++;
     } else {
-      this.recent.unshift(
-        buildRecentEntry({ ref, lastUsedAt: Date.now(), useCount: 1 }),
-      );
+      this.recent.unshift(buildRecentEntry({ ref, lastUsedAt: Date.now(), useCount: 1 }));
     }
   }
 
@@ -1039,13 +1042,9 @@ function validateBookmarksArray(input: unknown): Bookmark[] {
         ? (r['groupId'] as string)
         : undefined;
     const kind: PathKind = r['kind'] === 'ssh' ? 'ssh' : 'local';
-    const sshProfileId =
-      typeof r['sshProfileId'] === 'string' ? r['sshProfileId'] : undefined;
+    const sshProfileId = typeof r['sshProfileId'] === 'string' ? r['sshProfileId'] : undefined;
     if (kind === 'ssh' && !sshProfileId) {
-      throw new PathManagerError(
-        'InvalidName',
-        `bookmarks[${i}] kind="ssh" 但缺少 sshProfileId`,
-      );
+      throw new PathManagerError('InvalidName', `bookmarks[${i}] kind="ssh" 但缺少 sshProfileId`);
     }
     const ref = normalizePathRef({
       kind,
@@ -1094,22 +1093,16 @@ function validateRecentArray(input: unknown): RecentEntry[] {
       throw new PathManagerError('InvalidName', `recent[${i}].useCount 非法`);
     }
     const kind: PathKind = o['kind'] === 'ssh' ? 'ssh' : 'local';
-    const sshProfileId =
-      typeof o['sshProfileId'] === 'string' ? o['sshProfileId'] : undefined;
+    const sshProfileId = typeof o['sshProfileId'] === 'string' ? o['sshProfileId'] : undefined;
     if (kind === 'ssh' && !sshProfileId) {
-      throw new PathManagerError(
-        'InvalidName',
-        `recent[${i}] kind="ssh" 但缺少 sshProfileId`,
-      );
+      throw new PathManagerError('InvalidName', `recent[${i}] kind="ssh" 但缺少 sshProfileId`);
     }
     const ref = normalizePathRef({
       kind,
       path: o['path'],
       ...(sshProfileId ? { sshProfileId } : {}),
     });
-    out.push(
-      buildRecentEntry({ ref, lastUsedAt: o['lastUsedAt'], useCount: o['useCount'] }),
-    );
+    out.push(buildRecentEntry({ ref, lastUsedAt: o['lastUsedAt'], useCount: o['useCount'] }));
   }
   return out;
 }
@@ -1236,8 +1229,7 @@ function migrateBookmarkOnLoad(raw: unknown): Bookmark[] {
   if (typeof r['addedAt'] !== 'number') return [];
   const rawKind = r['kind'];
   const kind: PathKind = rawKind === 'ssh' ? 'ssh' : 'local';
-  const sshProfileId =
-    typeof r['sshProfileId'] === 'string' ? r['sshProfileId'] : undefined;
+  const sshProfileId = typeof r['sshProfileId'] === 'string' ? r['sshProfileId'] : undefined;
   if (kind === 'ssh' && !sshProfileId) return [];
   // v0.3.3 ADR-025:保留 groupId(仅 string 有效;损坏类型→丢弃该字段即归未分组)。
   const groupId = typeof r['groupId'] === 'string' ? r['groupId'] : undefined;
@@ -1262,8 +1254,7 @@ function migrateRecentOnLoad(raw: unknown): RecentEntry[] {
   if (typeof r['lastUsedAt'] !== 'number' || typeof r['useCount'] !== 'number') return [];
   const rawKind = r['kind'];
   const kind: PathKind = rawKind === 'ssh' ? 'ssh' : 'local';
-  const sshProfileId =
-    typeof r['sshProfileId'] === 'string' ? r['sshProfileId'] : undefined;
+  const sshProfileId = typeof r['sshProfileId'] === 'string' ? r['sshProfileId'] : undefined;
   if (kind === 'ssh' && !sshProfileId) return [];
   const base = {
     path: r['path'],
@@ -1379,9 +1370,7 @@ function validateGroupLevel(input: unknown, seenIds: Set<string>): GroupNode[] {
     }
     seenIds.add(r['id']);
     const subgroups =
-      r['subgroups'] === undefined
-        ? []
-        : validateGroupLevel(r['subgroups'], seenIds);
+      r['subgroups'] === undefined ? [] : validateGroupLevel(r['subgroups'], seenIds);
     out.push({ id: r['id'], name: r['name'], subgroups });
   }
   return out;

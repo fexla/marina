@@ -787,6 +787,8 @@ export interface AddBookmarkPayload {
   path: string;
   displayName?: string;
   defaultTemplateId?: string;
+  /** 选择器从某个分组菜单打开时，收藏原子地直接进入该组。 */
+  groupId?: string;
 }
 
 export interface AddBookmarkResponse {
@@ -1072,6 +1074,8 @@ export interface AddRemoteBookmarkPayload {
   remotePath: string;
   displayName?: string;
   defaultTemplateId?: string;
+  /** 与本地收藏一致：指定后直接进入该分组，不经过未分组中间态。 */
+  groupId?: string;
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -1304,12 +1308,7 @@ export interface ClipboardWriteTextResponse {
 // - 事件按 runId 定向回发起 client;runId 仅本进程内唯一即可。
 
 /** 归一化后支持的 shell 语言(与 src/shared/markdown-command.ts 同源)。 */
-export type CodeBlockLanguage =
-  | 'bash'
-  | 'sh'
-  | 'powershell'
-  | 'pwsh'
-  | 'cmd';
+export type CodeBlockLanguage = 'bash' | 'sh' | 'powershell' | 'pwsh' | 'cmd';
 
 /** cmd:system:run-code-block payload。 */
 export interface RunCodeBlockPayload {
