@@ -308,6 +308,8 @@ v2.0 引入 `clientId` 后,两个字段名容易混淆,明确边界:
 | `cmd:settings:get-auto-start` | 查询当前是否开机启动 |
 | `cmd:settings:export` | 导出全部配置为 JSON 归档(M1-F:可选含/不含 env 敏感字段) |
 | `cmd:settings:import` | 从 JSON 归档导入(in-memory replace,不重启应用,ADR-009) |
+| `cmd:settings:get-appearance` | **local-control** 拉本机客户端 appearance(远程窗口用,见 §6.3) |
+| `cmd:settings:update-appearance` | **local-control** 写本机客户端 appearance(远程窗口用,见 §6.3) |
 | `cmd:system:show-in-explorer` | 在 Explorer 中显示某路径 |
 | `cmd:system:open-data-dir` | 在 Explorer 中打开 `%APPDATA%\Marina` |
 | `cmd:system:open-logs-dir` | 在 Explorer 中打开日志目录 |
@@ -338,6 +340,7 @@ v2.0 引入 `clientId` 后,两个字段名容易混淆,明确边界:
 | `evt:bookmarks:updated` | 全部 |
 | `evt:templates:updated` | 全部 |
 | `evt:settings:changed` | 全部 |
+| `evt:settings:local-appearance-changed` | 全部(**local-control**;本机 appearance 变更,远程窗口实时同步,见 §6.3) |
 
 > v1.2 起删除:`evt:session:tombstoned` (ADR-008)、`evt:session:cwd-changed` (并入 `evt:session:state-changed` 的 changes.currentCwd 子字段,ADR-008)、`evt:template:list-updated` (重命名为 `evt:templates:updated`,代码一直是后者,文档之前不一致)、`evt:tray:menu-action` (托盘菜单 click handler 直接在 main 端执行,renderer 不参与)。
 
@@ -1282,6 +1285,39 @@ interface UpdateSettingsPayload {
   - `systemIntegration.explorerContextMenu` 变(V1.2)→ 调注册表
 
 > **v1.3 起 `appearance.followSystemTheme` 已删除**(见软件定义书 ADR-009);renderer 不再发送此字段,main 端 schema 也不接受。
+
+---
+
+#### `cmd:settings:get-appearance` / `cmd:settings:update-appearance`(local-control)
+
+**外观归属客户端**(见 `docs/plans/远程窗口外观继承本机.md` / 软件定义书 §14.9)。
+远程后端窗口的外观(`appearance` 整块:theme/字体/语言/zoom 等)归**当前客户端机器**
+所有,而非所连 daemon。这两个通道被声明为 `local-control`,远程窗口调用时走客户端本地
+IPC,读写的是客户端本机 `settingsManager`。
+
+```typescript
+// get-appearance
+// Payload: {}
+// Response
+interface GetAppearanceSettingsResponse {
+  appearance: Settings['appearance'];
+}
+
+// update-appearance
+interface UpdateAppearanceSettingsPayload {
+  partial: Partial<Settings['appearance']>;  // appearance 块的部分更新(字段都是叶子值)
+}
+// Response: {}
+```
+
+**Side Effects**(update-appearance):
+- 合并到本机 appearance 后整体写入本机 `settingsManager`(debounced 写盘)
+- 触发 `settingsChanged` → 广播 `evt:settings:changed`(本机本地窗口) +
+  `evt:settings:local-appearance-changed`(远程窗口实时同步)
+
+> 本地窗口(`backendProfileId === null`)一般直接用 `cmd:settings:get/update`(backend-data)即可;
+> renderer 的 `updateSettings()` 在远程窗口里会自动把 `appearance` 子字段拆出来走这两个 local-control 通道。
+> `cmd:settings:get/update` 仍是 `backend-data`(整体设置含 shell/behavior 等业务状态,归后端)。
 
 ---
 
