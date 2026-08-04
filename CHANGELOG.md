@@ -35,6 +35,13 @@
   4ms 采样验证：Text 切换始终 `rgb(13,17,23)`，Markdown tab 与 README 内本地链接
   打开的 100–250ms loading 期始终为白色，均未出现中间色。
 
+- **侧栏路径与终端层级不再因状态变化跳缩进。**
+  路径无终端时不再 `display:none` 掉展开槽，而是保留固定 12px 槽并隐藏箭头；有无
+  终端的路径名 x 坐标由约 18px 差异归零。session 按 ADR-019 的一级缩进渲染模板
+  icon（内置模板用统一 Lucide，自定义模板保留自定义 icon），内容从 x≈22 开始、名称
+  从 x≈40 开始。active/idle 色条仍独立贴整行 x=0；active 满底时 icon 与名称同步
+  反色，不与层级槽争空间。真实 renderer 几何测量覆盖无/有终端路径与 idle/active。
+
 - **workspace 切回不再因残缺 `OpenedFile` 白屏。**
   main 已先恢复带 `name/size/mtimeMs` 的完整文件列表，但 renderer 随后的快照恢复又把
   `{path, kind}` 强转为 `OpenedFile[]` 覆盖它，最终 `fileIconFor(undefined)` 抛错、整窗

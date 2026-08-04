@@ -55,7 +55,7 @@ import {
   type CreateSessionResponse,
   type PickFolderResponse,
 } from '@shared/protocol';
-import type { GroupNode, PathNode, SessionInfo, SshProfile } from '@shared/types';
+import type { GroupNode, PathNode, SessionInfo, SshProfile, Template } from '@shared/types';
 import { disambiguatePathNames } from '@shared/path-display';
 import { hasAnyRemote } from '@shared/remote-visibility';
 import { BOOKMARK_UNGROUPED_CONTAINER, moveBookmarkInLayout } from '@shared/bookmark-dnd-layout';
@@ -71,6 +71,7 @@ import { claimSession } from '../hooks/claim-gate';
 import { buildSessionContextMenu } from './sessionContextMenu';
 import { closeSessionWithContinue } from '../hooks/useCloseSession';
 import { SkillInstallDialog } from './SkillInstallDialog';
+import { TemplateIcon } from './TemplateIcon';
 
 /**
  * 状态点颜色 (软件定义书 6.2.4 状态指示):
@@ -1568,6 +1569,7 @@ function PathItem({
                     session={s}
                     myWindowId={state.myWindowId}
                     selected={state.selectedSessionId === s.id}
+                    template={state.templates.find((template) => template.id === s.templateId)}
                     sortableId={s.id}
                   />
                 ))}
@@ -1595,6 +1597,8 @@ interface SessionItemProps {
   myWindowId: string;
   /** 父级传入 — 同上,避免订阅 state.selectedSessionId */
   selected: boolean;
+  /** 模板图标数据；snapshot 尚未同步模板时为 undefined，回退通用终端 icon。 */
+  template?: Pick<Template, 'id' | 'icon'> | undefined;
   /**
    * v0.3.3 Feature E.2:传了才启用 @dnd-kit 拖拽(同 path 内排序)。
    * 不传 → useSortable 被 disabled,零 dnd 开销(与 PathItem 同样模式)。
@@ -1614,6 +1618,7 @@ function SessionItemImpl({
   session,
   myWindowId,
   selected,
+  template,
   sortableId,
 }: SessionItemProps): JSX.Element {
   const dispatch = useAppDispatch();
@@ -1808,6 +1813,13 @@ function SessionItemImpl({
         data-state={session.state}
         aria-label={`状态: ${session.state}`}
       />
+      <span className="session-template-icon" aria-hidden="true">
+        {template ? (
+          <TemplateIcon template={template} size={12} />
+        ) : (
+          <Icon name="templateShell" size={12} />
+        )}
+      </span>
       {renaming ? (
         <input
           ref={renameInputRef}

@@ -1585,16 +1585,16 @@ html[data-maximized='true'] .app-root.with-shell {
   justify-content: center;
   width: 12px;
   height: 12px;
+  flex: 0 0 12px;
   color: var(--color-text-muted, #f0f);
   cursor: pointer;
 }
 
-/* beta 反馈 20260516:F2 的"占位 12px 槽位"在最近栏里(几乎全是无会话且
-   非 invalid 的路径)把名字全部推到缩进位,看着不顶格。改为坍缩占位 —
-   有展开箭头 / 警告 icon 的行不受影响(它们走 .path-expand-arrow 的 12px
-   规则),只有什么都没有的行才让名字顶到行 padding-left。 */
+/* 展开槽必须永久占位：路径从“无终端”变成“有终端”时只能出现箭头，文字 x
+   坐标不能跳动。visibility:hidden 保留 12px + gap，且不接收鼠标事件。 */
 .path-expand-arrow.placeholder {
-  display: none;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 /* BETA-043:启动期扫描发现不可访问的路径 — 整行半透明 + ⚠️ icon */
@@ -1659,10 +1659,10 @@ html[data-maximized='true'] .app-root.with-shell {
   align-items: center;
   gap: 6px;
 
-  /* v0.3.3 Feature E.3:session 行加一级缩进,与父 path 行形成层级。
-     走 --tree-indent-unit(附录 G 树形缩进单一真相源),不另设硬编码。
-     与 file-tree/git-tree 子目录同缩进语言(ADR-019 后共用此变量)。 */
-  padding: 3px 8px 3px calc(var(--tree-indent-unit, 14px) * 1);
+  /* session 内容比 path 行深一级：8px 是所有 sidebar 行的基础内边距，
+     --tree-indent-unit 是 ADR-019 的层级单一真相源。状态色条仍固定在整行 x=0，
+     不占内容缩进槽，避免层级 icon 与 active/idle 指示互相挤位置。 */
+  padding: 3px 8px 3px calc(8px + var(--tree-indent-unit, 14px));
   font-size: 12px;
   color: var(--color-text-primary, #f0f);
   cursor: pointer;
@@ -1724,11 +1724,30 @@ html[data-maximized='true'] .app-root.with-shell {
   background-color: var(--color-text-muted, #f0f);
 }
 
-/* active 行文字反色(bg-primary),保证在 info 满底上可读。transition 与变宽同步。 */
-.session-item.active-session .session-name {
+/* 模板 icon 是层级内容，不是状态点：它随 session 内容缩进，状态色条独立贴左。
+   active 满底时 icon 与名称一起反色，避免 info 背景吞掉细线图标。 */
+.session-template-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  color: var(--color-text-muted, #f0f);
+  font-size: 11px;
+  line-height: 1;
+}
+.session-template-icon > svg {
+  flex: 0 0 12px;
+}
+
+/* active 行内容反色(bg-primary),保证在 info 满底上可读。transition 与变宽同步。 */
+.session-item.active-session .session-name,
+.session-item.active-session .session-template-icon {
   color: var(--color-bg-primary, #f0f);
 }
-.session-name {
+.session-name,
+.session-template-icon {
   transition: color 1s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -1749,7 +1768,9 @@ html[data-maximized='true'] .app-root.with-shell {
 @media (prefers-reduced-motion: reduce) {
   .session-state-bar,
   .session-item.active-session .session-name,
-  .session-name {
+  .session-item.active-session .session-template-icon,
+  .session-name,
+  .session-template-icon {
     transition: none;
   }
   .session-state-bar[data-state='active'] {
