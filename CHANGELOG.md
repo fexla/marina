@@ -7,6 +7,17 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+### 修复
+
+- **侧栏拖拽改为不改变高度的单提示线模型（v3，用户裁决）。**
+  此前拖动时会在每个间隙插入等高 placeholder，整列高度随拖动涨缩；且 DragOverlay
+  跟随延迟 + placeholder 推挤邻居导致行 rect 漂移，出现“向下拖动，落点反而向上”
+  的非单调现象。现在：拖动期间**不渲染任何占位 placeholder**，列表整体高度恒定；
+  只有一条 `position:absolute` 的提示线，其垂直位置由指针 y 相对各子行中点单调
+  推导（指针用真实 `pointermove` 缓存的 `clientY`，不用延迟的 DragOverlay rect），
+  水平缩进/宽度由落点容器深度决定（x 决定层级，所见即所得）。group/path/session
+  三类拖拽统一适用。最终落点仍为 `{targetContainerId, targetIndex}`，后端不变。
+
 ### 新增
 
 - **收藏分组可递归嵌套（子组）。**
@@ -14,6 +25,8 @@
   group/path/session 拖拽使用真实容器的 `0..N` insertion slot：拖动时命中插槽会
   膨胀成等高 placeholder，邻居在释放前实时让位；最终层级和顺序只来自
   `targetContainerId + targetIndex`，不再根据起始深度、横向像素或祖先链猜测。
+  （v3 起该“等高 placeholder”模型已被“不改变高度的单提示线”取代，见上。本条
+  保留作为最初实现的说明，真实行为以上述 v3 修复为准。）
   可精确把深层子组提升一级或直接提升到根级；禁止拖入自身或后代（循环守卫）。
   解散分组时路径与子组提升到上级，绝不删数据。磁盘 schema 为 bookmarks.json
   v3（v1/v2 启动期自动迁移）。

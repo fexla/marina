@@ -1505,9 +1505,9 @@ html[data-maximized='true'] .app-root.with-shell {
 }
 
 /*
- * 真实容器/插槽拖拽：slot 本身占有物理高度并参与 pointerWithin。普通态完全收起；
- * 拖动时显示可命中的窄阶梯，命中后膨胀为与侧栏行等高的 placeholder，让邻居
- * 在释放前实时让位。祖先/父级共享边界会因递归 DOM 形成多个纵向 slot。
+ * v0.3.3 拖拽提示线模型（不改变列表高度）：拖动期间不渲染任何占位 placeholder，
+ * 列表整体高度恒定；只有一条 position:absolute 的水平提示线表达「插到哪一行
+ * 间隙」（y）与「哪一层缩进」（x→容器深度）。位置/长度即所见即所得。
  */
 .bookmark-group-container {
   display: flex;
@@ -1515,63 +1515,62 @@ html[data-maximized='true'] .app-root.with-shell {
   min-width: 0;
 }
 
-.bookmark-insertion-slot {
+/* 提示线错容器：侧栏收藏区，需建立定位上下文。 */
+.sidebar-bookmark-groups {
+  position: relative;
+}
+
+/*
+ * 提示线本体：position:absolute，不占布局高度。top/left/width 由拖拽中实时
+ * 计算（见 Sidebar.tsx handleDragMove）。一条 2px 高亮线 + 一个标签。
+ */
+.dnd-drop-indicator {
+  position: absolute;
+  z-index: 5;
   display: flex;
   align-items: center;
-  min-width: 0;
   height: 0;
-  margin: 0 8px;
-  padding: 0 6px;
+  pointer-events: none;
+}
+
+.dnd-drop-indicator-line {
+  position: absolute;
+  top: -1px;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--color-accent-special, #f0f);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent-special, #f0f) 30%, transparent);
+}
+
+.dnd-drop-indicator-label {
+  position: absolute;
+  top: -16px;
+  left: 0;
+  max-width: 100%;
+  padding: 0 5px;
   overflow: hidden;
   font-size: 9px;
   font-weight: 600;
-  line-height: 1;
-  color: var(--color-accent-special, #f0f);
-  list-style: none;
-  border: 0 dashed transparent;
-  border-radius: 4px;
-  opacity: 0;
-  transition:
-    height 90ms ease,
-    opacity 90ms ease,
-    background-color 90ms ease;
-}
-
-.bookmark-insertion-slot.active {
-  height: 12px;
-  border-top-width: 1px;
-  border-top-color: color-mix(in srgb, var(--color-accent-special, #f0f) 38%, transparent);
-  opacity: 1;
-}
-
-.bookmark-insertion-slot.path-slot.active {
-  height: 9px;
-  margin-left: 12px;
-}
-
-.bookmark-insertion-slot.over,
-.bookmark-insertion-slot.path-slot.over,
-.bookmark-target-placeholder {
-  height: 28px;
-  margin-top: 2px;
-  margin-bottom: 2px;
-  color: var(--color-text-primary, #f0f);
-  background: color-mix(in srgb, var(--color-accent-special, #f0f) 14%, transparent);
-  border: 1px dashed var(--color-accent-special, #f0f);
-  opacity: 1;
-}
-
-.bookmark-target-placeholder {
-  display: flex;
-  align-items: center;
-  margin-right: 8px;
-  margin-left: 20px;
-  padding: 0 7px;
-  overflow: hidden;
-  font-size: 9px;
-  font-weight: 600;
+  line-height: 14px;
+  color: var(--color-bg-elevated, #f0f);
   white-space: nowrap;
-  border-radius: 4px;
+  text-overflow: ellipsis;
+  background: var(--color-accent-special, #f0f);
+  border-radius: 3px;
+}
+
+/* 组标题作为「追加到本组末尾」大目标命中时的高亮（不改变高度）。 */
+.sidebar-group.drop-over > .sidebar-group-header,
+.sidebar-group.drop-over {
+  background: color-mix(in srgb, var(--color-accent-special, #f0f) 14%, transparent);
+}
+
+/* 列表容器命中高亮（可选的轻微背景，不改变高度）。 */
+.sidebar-paths.drop-over,
+.bookmark-group-container.drop-over {
+  background: color-mix(in srgb, var(--color-accent-special, #f0f) 6%, transparent);
 }
 
 .bookmark-drag-overlay {
@@ -1777,42 +1776,13 @@ html[data-maximized='true'] .app-root.with-shell {
   list-style: none;
   margin: 0;
   padding: 0;
+  position: relative;
 }
 
-.session-insertion-slot {
-  display: flex;
-  align-items: center;
-  height: 0;
-  margin: 0 8px 0 28px;
-  padding: 0 6px;
-  overflow: hidden;
-  color: var(--color-accent-special, #f0f);
-  font-size: 9px;
-  font-weight: 600;
-  list-style: none;
-  border: 0 dashed transparent;
-  border-radius: 4px;
-  opacity: 0;
-  transition:
-    height 90ms ease,
-    opacity 90ms ease,
-    background-color 90ms ease;
-}
-
-.session-insertion-slot.active {
-  height: 9px;
-  border-top-width: 1px;
-  border-top-color: color-mix(in srgb, var(--color-accent-special, #f0f) 38%, transparent);
-  opacity: 1;
-}
-
-.session-insertion-slot.over {
-  height: 26px;
-  margin-top: 2px;
-  margin-bottom: 2px;
-  color: var(--color-text-primary, #f0f);
-  background: color-mix(in srgb, var(--color-accent-special, #f0f) 14%, transparent);
-  border: 1px dashed var(--color-accent-special, #f0f);
+/* v0.3.3 提示线模型：session 列表同样是 position:relative 错容器，
+   DropIndicator 复用 .dnd-drop-indicator。命中列表时轻微背景高亮（不改变高度）。 */
+.session-list.drop-over {
+  background: color-mix(in srgb, var(--color-accent-special, #f0f) 6%, transparent);
 }
 
 .session-item.dragging {
