@@ -155,6 +155,23 @@ async function updateSettings(
 ): Promise<void> {
   setError(null);
   try {
+    // 外观归属客户端(见 docs/plans/远程窗口外观继承本机.md):远程窗口里改外观
+    // 应写【本机客户端】而非 daemon。appearance 块走 local-control 通道
+    // (SETTINGS_UPDATE_APPEARANCE,写本机),其余字段仍走 backend-data 通道
+    // (SETTINGS_UPDATE,写 daemon)。本地窗口不拆分,整体走 SETTINGS_UPDATE(零回归)。
+    if (window.api.backendProfileId && partial.appearance) {
+      await window.api.invoke(COMMAND_CHANNELS.SETTINGS_UPDATE_APPEARANCE, {
+        partial: partial.appearance,
+      });
+      // 若同一笔同时含非 appearance 字段,继续写 daemon。目前所有调用都是纯
+      // appearance,此分支仅为前瞻性兼底,保证未来混合更新不被吞。
+      const rest: DeepPartial<Settings> = { ...partial };
+      delete rest.appearance;
+      if (Object.keys(rest).length > 0) {
+        await window.api.invoke(COMMAND_CHANNELS.SETTINGS_UPDATE, { partial: rest });
+      }
+      return;
+    }
     await window.api.invoke(COMMAND_CHANNELS.SETTINGS_UPDATE, { partial });
   } catch (err: unknown) {
     setError(err instanceof Error ? err.message : String(err));

@@ -160,6 +160,18 @@ export const COMMAND_CHANNELS = {
   SETTINGS_EXPORT: 'cmd:settings:export',
   SETTINGS_IMPORT: 'cmd:settings:import',
 
+  // ── 外观归属(local-control 域,见 docs/plans/远程窗口外观继承本机.md)──
+  // 远程后端窗口的外观(theme/字体/语言/zoom 等全部 appearance 块)归当前客户端
+  // 机器所有,而非远程 daemon。这两个命令被声明 local-control,远程窗口调用时
+  // 走客户端本地 IPC,读写的是客户端本机 settingsManager —— 与 cmd:settings:get /
+  // update(backend-data,远程窗口走 WS 读写 daemon)刻意解耦。
+  /** 拉本机客户端的 appearance(local-control)。远程窗口用它覆盖 snapshot 里
+   *  来自 daemon 的 appearance;本地窗口用 cmd:settings:get 即可。 */
+  SETTINGS_GET_APPEARANCE: 'cmd:settings:get-appearance',
+  /** 把外观改动写回本机客户端(local-control)。远程窗口设置页改外观走此通道写
+   *  本机 settingsManager,并触发 SETTINGS_LOCAL_APPEARANCE_CHANGED 广播同步同机窗口。 */
+  SETTINGS_UPDATE_APPEARANCE: 'cmd:settings:update-appearance',
+
   // Templates 域 (CP-4 chunk 4 起 CRUD 暴露给 renderer)
   TEMPLATE_ADD: 'cmd:template:add',
   TEMPLATE_UPDATE: 'cmd:template:update',
@@ -407,6 +419,10 @@ const LOCAL_CONTROL_COMMANDS_SET: ReadonlySet<string> = new Set<CommandChannel>(
   COMMAND_CHANNELS.WORKSPACE_UNPIN,
   COMMAND_CHANNELS.WORKSPACE_READ_SNAPSHOT,
   COMMAND_CHANNELS.WORKSPACE_WRITE_SNAPSHOT,
+  // 外观归属客户端机器(同 workspace 理由):远程窗口的外观读写必须发到当前
+  // 客户端本地 main,绝不能发给所连 daemon —— 否则外观会被 daemon 的设置覆盖。
+  COMMAND_CHANNELS.SETTINGS_GET_APPEARANCE,
+  COMMAND_CHANNELS.SETTINGS_UPDATE_APPEARANCE,
 ]);
 
 /** 查询某 channel 的路由域。preload 用这个决定走本地 IPC 还是 WS。 */
@@ -444,6 +460,11 @@ export const EVENT_CHANNELS = {
   SSH_PROFILES_UPDATED: 'evt:ssh-profiles:updated',
   REMOTE_PROFILES_UPDATED: 'evt:remote-profiles:updated',
   SETTINGS_CHANGED: 'evt:settings:changed',
+  /** 本机客户端 appearance 变更广播(local-control 域)。本机 settingsManager 的
+   *  appearance 变化时广播;远程窗口订阅此事件实时同步本机外观(本地窗口已通过
+   *  SETTINGS_CHANGED 更新,忽略本事件避免双重刷新)。设计动机见
+   *  docs/plans/远程窗口外观继承本机.md §问题2(实时同步)。 */
+  SETTINGS_LOCAL_APPEARANCE_CHANGED: 'evt:settings:local-appearance-changed',
   TEMPLATES_UPDATED: 'evt:templates:updated',
 
   /**
@@ -1088,6 +1109,21 @@ export interface GetSettingsResponse {
 
 export interface UpdateSettingsPayload {
   partial: DeepPartial<Settings>;
+}
+
+// ── 外观归属客户端(local-control 域,见 docs/plans/远程窗口外观继承本机.md)──
+// 远程窗口的外观读写走单独通道,与 backend-data 的 settings 命令解耦。
+/** get-appearance 响应:仅返回本机 appearance 块。 */
+export interface GetAppearanceSettingsResponse {
+  appearance: Settings['appearance'];
+}
+/** update-appearance 入参:appearance 块的部分字段(字段都是叶子值,用 Partial 即可)。 */
+export interface UpdateAppearanceSettingsPayload {
+  partial: Partial<Settings['appearance']>;
+}
+/** evt:settings:local-appearance-changed payload:本机 appearance 块整体。 */
+export interface LocalAppearanceChangedPayload {
+  appearance: Settings['appearance'];
 }
 
 // ──────────────────────────────────────────────────────────────────

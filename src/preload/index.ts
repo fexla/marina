@@ -115,6 +115,10 @@ const LOCAL_CONTROL_EVENTS = new Set<string>([
   EVENT_CHANNELS.WINDOW_MAX_STATE_CHANGED,
   EVENT_CHANNELS.REMOTE_PROFILES_UPDATED,
   EVENT_CHANNELS.REMOTE_DAEMON_STATUS_CHANGED,
+  // 外观归属客户端:本机 appearance 变更广播必须留在本地控制面,远程窗口订阅
+  // 它实时同步本机外观。若远程窗口从 WS daemon 订阅,会收到 daemon 机器的外观
+  // 变更,与“外观归本机”相左。见 docs/plans/远程窗口外观继承本机.md。
+  EVENT_CHANNELS.SETTINGS_LOCAL_APPEARANCE_CHANGED,
 ]);
 
 // 浏览器原生 WebSocket 适配成 WSLike(RemoteTransport 期望的接口)。

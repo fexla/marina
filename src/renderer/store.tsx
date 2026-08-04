@@ -44,6 +44,9 @@ import {
   type SessionOwnerChangedPayload,
   type SessionStateChangedPayload,
   type SettingsChangedPayload,
+  // 外观归属客户端(local-control):远程窗口读写本机 appearance 的 payload
+  type GetAppearanceSettingsResponse,
+  type LocalAppearanceChangedPayload,
   type SshProfilesUpdatedPayload,
   type RemoteDaemonStatusPayload,
   type TemplateListUpdatedPayload,
@@ -216,6 +219,10 @@ export type AppAction =
   | { type: 'sessions/destroyed'; sessionId: string }
   | { type: 'windows/list-update'; windows: WindowInfo[] }
   | { type: 'settings/changed'; settings: Settings }
+  // 远程窗口专用:daemon 的设置变更只应用非 appearance 字段(外观归本机)
+  | { type: 'settings/backend-changed'; settings: Settings }
+  // 远程窗口专用:本机 appearance 变更广播,只替换 appearance 块
+  | { type: 'settings/local-appearance-changed'; appearance: Settings['appearance'] }
   | { type: 'templates/update'; templates: Template[]; defaultTemplateId: string }
   | { type: 'view/select-path'; pathId: string | null }
   | { type: 'view/select-session'; sessionId: string | null }
@@ -511,7 +518,11 @@ function reducer(state: AppState, action: AppAction): AppState {
       // renderer 私有 scroll。runs 由 code-block-run-cache 单独导入。
       const scrollMap = new Map<string, FileViewerScrollPosition>();
       for (const [path, pos] of Object.entries(action.scroll)) {
-        scrollMap.set(path, { kind: pos.kind, scrollTop: pos.scrollTop, scrollLeft: pos.scrollLeft });
+        scrollMap.set(path, {
+          kind: pos.kind,
+          scrollTop: pos.scrollTop,
+          scrollLeft: pos.scrollLeft,
+        });
       }
       const fileViewerScroll = new Map(state.fileViewerScroll);
       if (scrollMap.size > 0) fileViewerScroll.set(action.sessionId, scrollMap);
@@ -554,6 +565,15 @@ function reducer(state: AppState, action: AppAction): AppState {
 
     case 'settings/changed':
       return { ...state, settings: action.settings };
+    case 'settings/backend-changed': {
+      // 远程窗口:daemon 的设置变更只保留非 appearance 字段 —— 外观归本机,
+      // 不能被 daemon 的 appearance 覆盖(否则远程窗口会跳回 daemon 主题/字体)。
+      return { ...state, settings: { ...action.settings, appearance: state.settings.appearance } };
+    }
+    case 'settings/local-appearance-changed': {
+      // 远程窗口:本机 appearance 变更广播(local-control),实时同步本机外观。
+      return { ...state, settings: { ...state.settings, appearance: action.appearance } };
+    }
 
     case 'view/select-path': {
       // 选中 path 时自动展开它
@@ -945,7 +965,11 @@ export function useIpcSync(): {
             // getWorkspaceDir=null(workspace 路径需 IPC 查,这里降级:所有路径当
             // external 存绝对路径,restore 时绝对路径直接用,同机器恢复正确)。
             // scroll/runs 变化的写不在热路径触发(低频,缺失时 restore 跳过)。
-            scheduleWorkspaceSnapshotWrite(p.sessionId, () => stateRef.current, () => null);
+            scheduleWorkspaceSnapshotWrite(
+              p.sessionId,
+              () => stateRef.current,
+              () => null,
+            );
           }),
           // v0.3.3 Feature D:workspace 切换完成。main 已重建 PanelState 并发了
           // filePanelUpdated(上面已同步 openedFiles/activePath);这里读新 workspace
@@ -977,8 +1001,27 @@ export function useIpcSync(): {
           window.api.on<WindowListUpdatedPayload>(EVENT_CHANNELS.WINDOW_LIST_UPDATED, (p) =>
             dispatch({ type: 'windows/list-update', windows: p.windows }),
           ),
-          window.api.on<SettingsChangedPayload>(EVENT_CHANNELS.SETTINGS_CHANGED, (p) =>
-            dispatch({ type: 'settings/changed', settings: p.settings }),
+          window.api.on<SettingsChangedPayload>(EVENT_CHANNELS.SETTINGS_CHANGED, (p) => {
+            // 远程窗口:外观归本机。daemon 的设置变更走 backend-changed(保留本机 appearance);
+            // 本地窗口整体替换(零回归)。
+            if (window.api.backendProfileId) {
+              dispatch({ type: 'settings/backend-changed', settings: p.settings });
+            } else {
+              dispatch({ type: 'settings/changed', settings: p.settings });
+            }
+          }),
+          window.api.on<LocalAppearanceChangedPayload>(
+            EVENT_CHANNELS.SETTINGS_LOCAL_APPEARANCE_CHANGED,
+            (p) => {
+              // 本机 appearance 变更广播(local-control)。仅远程窗口响应(实时同步本机外观);
+              // 本地窗口已通过上面的 SETTINGS_CHANGED 更新,忽略避免双重刷新。
+              if (window.api.backendProfileId) {
+                dispatch({
+                  type: 'settings/local-appearance-changed',
+                  appearance: p.appearance,
+                });
+              }
+            },
           ),
           window.api.on<WindowFocusRequestedPayload>(EVENT_CHANNELS.WINDOW_FOCUS_REQUESTED, (p) =>
             dispatch({
@@ -1011,10 +1054,31 @@ export function useIpcSync(): {
           // 通常会更早拦截，此处只做向后兼容兜底，不能让整个 UI 因 profile 列表失败。
         }
 
+        // 外观归属客户端:远程窗口的 appearance 也必须用本机,而非 daemon —— 复刻
+        // 上面 remoteBackendProfiles 的“本地控制面字段覆盖”模式。SETTINGS_GET_APPEARANCE
+        // 是 local-control,远程窗口调用走客户端本地 IPC。本地窗口跳过(直接用 snapshot)。
+        let localAppearance = snapshot.settings.appearance;
+        if (window.api.backendProfileId) {
+          try {
+            const result = await window.api.invoke<undefined, GetAppearanceSettingsResponse>(
+              COMMAND_CHANNELS.SETTINGS_GET_APPEARANCE,
+              undefined,
+            );
+            localAppearance = result.appearance;
+          } catch {
+            // 本地 main 未注册该命令(协议不匹配)时保留 snapshot 的 daemon 外观;
+            // 握手版本检查通常会更早拦截,此处仅向后兼容兜底,不让 UI 起不来。
+          }
+        }
+
         if (cancelled) return;
         dispatch({
           type: 'snapshot/load',
-          snapshot: { ...snapshot, remoteBackendProfiles: localRemoteProfiles },
+          snapshot: {
+            ...snapshot,
+            remoteBackendProfiles: localRemoteProfiles,
+            settings: { ...snapshot.settings, appearance: localAppearance },
+          },
         });
 
         // 自定义 markdown 主题列表:启动拉一次(订阅已覆盖后续增删广播)。

@@ -176,6 +176,10 @@ import {
   type TemplateListUpdatedPayload,
   type TestSshProfilePayload,
   type TestSshProfileResponse,
+  // 外观归属客户端(local-control):远程窗口读写本机 appearance 的 payload
+  type GetAppearanceSettingsResponse,
+  type UpdateAppearanceSettingsPayload,
+  type LocalAppearanceChangedPayload,
   type UpdateSettingsPayload,
   type UpdateSshProfilePayload,
   type UpdateSshProfileResponse,
@@ -1407,6 +1411,31 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     },
   );
 
+  // ── 外观归属客户端(local-control 域,见 docs/plans/远程窗口外观继承本机.md)──
+  // 这两个通道被声明在 LOCAL_CONTROL_COMMANDS_SET,远程窗口调用时走客户端本地
+  // IPC,读写的是【当前客户端机器】的 settingsManager,而非所连 daemon。本地窗口
+  // 一般用上面的 SETTINGS_GET/UPDATE 即可;这两个通道主要服务远程窗口的
+  // “外观跟随本机”需求。handler 本身与本地/远程无关 —— 它始终操作本进程 settingsManager。
+  registerHandle(
+    COMMAND_CHANNELS.SETTINGS_GET_APPEARANCE,
+    (_e, _envelope: CommandEnvelope<undefined>): GetAppearanceSettingsResponse => {
+      return { appearance: settingsManager.get().appearance };
+    },
+  );
+
+  registerHandle(
+    COMMAND_CHANNELS.SETTINGS_UPDATE_APPEARANCE,
+    (_e, envelope: CommandEnvelope<UpdateAppearanceSettingsPayload>): void => {
+      // 合并到现有 appearance 块后整体写入。update 内部会触发 settingsChanged 事件,
+      // 进而广播 SETTINGS_CHANGED(本地窗口)+ SETTINGS_LOCAL_APPEARANCE_CHANGED
+      // (远程窗口,见下方 wireEventBroadcasts)。只合并顶层叶子字段。
+      const current = settingsManager.get().appearance;
+      settingsManager.update({
+        appearance: { ...current, ...envelope.payload.partial },
+      });
+    },
+  );
+
   registerHandle(
     COMMAND_CHANNELS.SETTINGS_LIST_SHELLS,
     async (_e, _envelope: CommandEnvelope<undefined>): Promise<ListShellsResponse> => {
@@ -2373,6 +2402,15 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
       settings: e.settings,
       changedKeys: e.changedKeys,
     });
+    // 外观归属客户端:appearance 变化时额外广播 local-control 事件,让远程窗口
+    // 实时同步本机外观。本地窗口已通过上面的 SETTINGS_CHANGED 更新,会忽略本
+    // 事件(见 store 的 on 分支),避免双重刷新。只在 appearance.* 变更时发。
+    if (e.changedKeys.some((k) => k.startsWith('appearance.'))) {
+      broadcastEvent<LocalAppearanceChangedPayload>(
+        EVENT_CHANNELS.SETTINGS_LOCAL_APPEARANCE_CHANGED,
+        { appearance: e.settings.appearance },
+      );
+    }
   });
 
   // Session 事件
