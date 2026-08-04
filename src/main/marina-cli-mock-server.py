@@ -206,6 +206,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if p == "/close-files":
             self._send(200, close_files_response(parsed))
             return
+        # ADR-027 / Feature G: run a shell command in the command panel. The
+        # real service (file-panel-service.ts) spawns it via CodeBlockRunner and
+        # renders markdown output in the 4th dock panel; the mock just echoes
+        # acceptance so both the PowerShell and the POSIX clients can test that
+        # the right body (terminal / command / title) is posted.
+        if p == "/run":
+            self._send(200, {"ok": True, "command": parsed.get("command", "")})
+            return
         # v0.3.3 ADR-024 / Feature D: workspace POST routes.
         if p == "/workspace/bind":
             # 模拟 upsert:forceNew + name=feat-x → 冲突(让 CLI 测 409 路径)。

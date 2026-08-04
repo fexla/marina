@@ -6,25 +6,52 @@ description: Use Marina's terminal-side file panel to show the user Markdown, te
 # Show files in Marina
 
 Place a result in the active terminal's Marina file panel instead of pasting a
-long document into chat. This skill ships a small Windows CLI that handles env
-vars, HTTP, UTF-8 encoding, and Bearer auth for you. There are three entry
-points, all in the same directory as this SKILL.md:
+long document into chat. This skill ships a small CLI that handles env
+vars, HTTP, UTF-8 encoding, and Bearer auth for you. The same `marina`
+entry point works on **Windows, Linux, and macOS**: it is a bash dispatcher
+that transparently selects the right client for the host. There are four
+files, all in the same directory as this SKILL.md:
 
-- **`marina`** (no extension, a bash script) — use this when your shell is
-  **bash / Git Bash / MSYS** on Windows. It wraps the real logic and avoids a
-  silent-success trap with `cmd /c` (see "Bash / Git Bash" below).
-- **`marina.cmd`** — the launcher for **plain cmd.exe or PowerShell** (no bash
-  involved). It calls `powershell.exe -File marina.ps1` for you.
-- **`marina.ps1`** — the real logic. You normally do not call it directly; the
-  two launchers above do.
+- **`marina`** (no extension, a bash script) — the single entry point on
+  every platform. On **bash / Git Bash / MSYS on Windows** it execs
+  `marina.ps1` via `powershell.exe` (sidestepping a silent-success trap with
+  `cmd /c`, see "Bash / Git Bash" below). On **Linux / macOS** it execs the
+  native `marina.sh`. You usually just call this.
+- **`marina.sh`** — the native POSIX client (bash + curl). The `marina`
+  dispatcher runs this on Linux / macOS. It needs NO extra runtime (no
+  PowerShell, no python, no jq) — only bash + curl, which ship with every
+  mainstream desktop Linux and macOS.
+- **`marina.cmd`** — Windows-only launcher for **plain cmd.exe or PowerShell**
+  (no bash involved). It calls `powershell.exe -File marina.ps1` for you.
+- **`marina.ps1`** — the Windows client (PowerShell). The `marina` dispatcher
+  runs this on Windows. You normally do not call it directly.
 
-All three live **in the same directory as this SKILL.md**. Always invoke them
+All four live **in the same directory as this SKILL.md**. Always invoke them
 by that resolved path — never assume a bare `marina` is on PATH (it is not),
 and never modify PATH or create a launcher elsewhere.
 
 ## How to invoke the CLI (important)
 
-### PowerShell (or plain cmd.exe, no bash)
+### Linux / macOS (bash)
+
+Use the **`marina`** dispatcher in this directory. It auto-detects that no
+`powershell.exe` is present and runs the native `marina.sh` for you:
+
+```bash
+./marina ping
+# or, if the file lacks the executable bit in your environment:
+bash marina ping
+```
+
+The bash examples below use `./marina` for brevity; substitute the resolved
+path when your working directory differs (e.g.
+`bash /abs/path/to/skill/marina ping`). The dispatcher locates `marina.sh`
+via its own location, so it works from any cwd. You can also call
+`bash marina.sh` directly if you prefer. The native client needs only `bash`
+and `curl` (both present on a default Linux/macOS install) — it does not
+require PowerShell, python, node, or jq.
+
+### PowerShell (or plain cmd.exe, no bash) — Windows
 
 From the directory containing this SKILL.md:
 
@@ -67,6 +94,14 @@ its own location, so it works from any cwd.
 `$MARINA_TOKEN` yourself. The CLI is the only supported entry point.
 
 ## Quick check: am I in Marina?
+
+Linux / macOS:
+
+```bash
+./marina ping
+```
+
+Windows (PowerShell / cmd.exe):
 
 ```powershell
 .\marina.cmd ping

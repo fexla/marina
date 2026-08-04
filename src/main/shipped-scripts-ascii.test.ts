@@ -59,13 +59,16 @@ const LOCALE_SENSITIVE_FILES = [
   'scripts/uninstall-context-menu.ps1',
   // show-in-marina skill ships to user projects via skill-installer (cp of
   // src/skills/show-in-marina) and is parsed by powershell.exe / cmd.exe.
-  // The extensionless `marina` is a bash wrapper; it is kept ASCII-only to
+  // The extensionless `marina` is a bash dispatcher; it is kept ASCII-only to
   // match the rest of the skill bundle and to avoid any surprises when the
   // skill-installer / electron-builder copies it across (and so a non-ASCII
   // byte can never sneak into a shebang line on a misconfigured box).
+  // `marina.sh` is the native POSIX client (Linux / macOS); same ASCII rule so
+  // a stray byte can never corrupt its shebang / comments on any box.
   'src/skills/show-in-marina/marina.ps1',
   'src/skills/show-in-marina/marina.cmd',
   'src/skills/show-in-marina/marina',
+  'src/skills/show-in-marina/marina.sh',
 ] as const;
 
 const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
