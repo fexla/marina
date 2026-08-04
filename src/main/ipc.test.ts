@@ -64,7 +64,9 @@ const { handlers, mockApp, mockBrowserWindow, mockClipboard, mockDialog, mockShe
       // 否则 WS fakeEvent.sender=undefined 的远程回归永远测不出来。
       fromWebContents: (webContents: unknown): unknown => {
         if (!webContents) {
-          throw new TypeError("Cannot read properties of undefined (reading 'getOwnerBrowserWindow')");
+          throw new TypeError(
+            "Cannot read properties of undefined (reading 'getOwnerBrowserWindow')",
+          );
         }
         return null;
       },
@@ -213,6 +215,7 @@ function makeStubs() {
 
   const settingsManager = {
     get: vi.fn(() => ({})),
+    update: vi.fn(),
     on: vi.fn(),
   };
 
@@ -358,6 +361,71 @@ afterEach(() => {
 // ──────────────────────────────────────────────────────────────────
 // 测试
 // ──────────────────────────────────────────────────────────────────
+
+describe('IPC SETTINGS_APPEARANCE (外观归属客户端, local-control)', () => {
+  // 见 docs/plans/远程窗口外观继承本机.md。这两个 handler 操作的是【本进程】
+  // settingsManager;在远程窗口里 preload 路由会把命令发到客户端本地 main,
+  // 所以这里测的是"handler 正确读写本机 appearance",路由判定见 protocol.test.ts。
+  const baseAppearance = {
+    theme: 'rose-pine',
+    windowStyle: 'windows',
+    language: 'system',
+    terminalFontFamily: 'Cascadia Code',
+    terminalFallbackFont: '',
+    terminalFontSize: 13,
+    terminalLineHeight: 1.2,
+    uiFontFamily: 'Segoe UI',
+    uiZoom: 1,
+    macOSTrafficLightHoverSymbols: false,
+    hideTopTabBar: false,
+  };
+
+  it('SETTINGS_GET_APPEARANCE 返回本机 settingsManager 的 appearance 块', async () => {
+    const { installIpcLayer } = await freshIpc();
+    const { deps, stubs } = makeStubs();
+    stubs.settingsManager.get = vi.fn(() => ({ appearance: baseAppearance })) as never;
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    const handler = handlers.get(COMMAND_CHANNELS.SETTINGS_GET_APPEARANCE);
+    expect(handler).toBeTruthy();
+    const res = (await handler!(
+      {},
+      {
+        windowId: 'w1',
+        requestId: 'r1',
+        payload: undefined,
+      },
+    )) as { appearance: typeof baseAppearance };
+    expect(res.appearance).toEqual(baseAppearance);
+  });
+
+  it('SETTINGS_UPDATE_APPEARANCE 合并到本机 appearance 后整体写入(只改传入字段)', async () => {
+    const { installIpcLayer } = await freshIpc();
+    const { deps, stubs } = makeStubs();
+    stubs.settingsManager.get = vi.fn(() => ({ appearance: baseAppearance })) as never;
+    stubs.settingsManager.update = vi.fn() as never;
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    const handler = handlers.get(COMMAND_CHANNELS.SETTINGS_UPDATE_APPEARANCE);
+    expect(handler).toBeTruthy();
+    await handler!(
+      {},
+      {
+        windowId: 'w1',
+        requestId: 'r1',
+        payload: { partial: { theme: 'tokyonight', terminalFontSize: 15 } },
+      },
+    );
+
+    // handler 合并 { ...current, ...partial } 后整体写回:传入字段覆盖,其余保留。
+    // update 触发 settingsChanged → 广播 SETTINGS_CHANGED + SETTINGS_LOCAL_APPEARANCE_CHANGED
+    // (广播在 wireEventBroadcasts,由 settingsManager.on 驱动,本测试不触发)。
+    expect(stubs.settingsManager.update).toHaveBeenCalledTimes(1);
+    expect(stubs.settingsManager.update).toHaveBeenCalledWith({
+      appearance: { ...baseAppearance, theme: 'tokyonight', terminalFontSize: 15 },
+    });
+  });
+});
 
 describe('IPC SESSION_CREATE', () => {
   it('takeOwnership=true(默认): 把 envelope.windowId 透传为 ownerWindowId', async () => {

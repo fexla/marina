@@ -98,6 +98,15 @@ describe('command routing (每窗口后端架构边界)', () => {
     expect(getCommandRouting(COMMAND_CHANNELS.APP_QUIT)).toBe('local-control');
   });
 
+  it('外观设置读写路由为 local-control(外观归属客户端本机,不能发给 daemon)', () => {
+    // 见 docs/plans/远程窗口外观继承本机.md:远程窗口的外观(theme/字体/语言等全部
+    // appearance 块)必须读写当前客户端机器,而非所连 daemon。若误路由为 backend-data,
+    // 远程窗口会拉/写 daemon 的外观,“外观归本机”直接失效。注意:原 SETTINGS_GET /
+    // UPDATE 仍是 backend-data(整体设置含 shell/behavior 等业务状态,归后端)。
+    expect(getCommandRouting(COMMAND_CHANNELS.SETTINGS_GET_APPEARANCE)).toBe('local-control');
+    expect(getCommandRouting(COMMAND_CHANNELS.SETTINGS_UPDATE_APPEARANCE)).toBe('local-control');
+  });
+
   it('session/path/template/settings 等业务命令路由为 backend-data', () => {
     expect(getCommandRouting(COMMAND_CHANNELS.SESSION_CREATE)).toBe('backend-data');
     expect(getCommandRouting(COMMAND_CHANNELS.SESSION_GET_SCROLLBACK)).toBe('backend-data');
