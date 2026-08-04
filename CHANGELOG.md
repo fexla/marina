@@ -7,7 +7,28 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+_暂无。_
+
+## [0.3.3-preview.2] — 2026-08-05
+
+> 第二个 0.3.3 预览构建（0.3.3-preview 的后续开发构建）。相对 `0.3.3-preview`(2026-08-04)
+> 新增:侧栏拖拽 v3、收藏分组递归嵌套与重设计、远程 backend 窗口修复,以及
+> `show-in-marina` skill 的 Linux/macOS 原生客户端(修复「装出 Windows 版」缺陷)。
+
 ### 修复
+
+- **`show-in-marina` skill 在 Linux/macOS 上不再装出 Windows 版。**
+  此前内置 skill 只带 Windows 启动器(`marina.ps1` 靠 PowerShell、`marina.cmd`
+  靠 cmd.exe、无扩展名的 `marina` bash 包装器显式搜 `powershell.exe` 找不到就
+  `exit 127`),Linux 上 agent 跟着 `SKILL.md` 走会彻底失效。后端 `file-panel-service`
+  本是平台无关的 HTTP+Bearer 服务,缺的只是一个原生客户端。新增 `marina.sh`
+  (bash+curl,零额外运行时——无 jq/python/node,与 `marina.ps1` 头注释「不引入
+  额外运行时依赖」同款哲学),实现 ping/workspace/show/run/close/list/screenshot
+  全部子命令,退出码与 ps1 严格对齐。无扩展名的 `marina` 改成平台调度器:检测到
+  `powershell.exe` 走 ps1(Windows 行为 100% 不变),否则走 `marina.sh`。同时修了
+  `marina` 的 git 可执行位(此前 `100644`,Linux 上 `./marina` 会 Permission denied)。
+  详见 `docs/方案-skill-Linux支持-20260805.md`(Option D)。10.9.0.1(Ubuntu 26.04)
+  端到端 25/25 通过。
 
 - **侧栏拖拽改为不改变高度的单提示线模型（v3，用户裁决）。**
   此前拖动时会在每个间隙插入等高 placeholder，整列高度随拖动涨缩；且 DragOverlay
