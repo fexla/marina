@@ -8,8 +8,10 @@ import {
   BOOKMARK_UNGROUPED_CONTAINER,
   isDescendantGroupInLayout,
   moveBookmarkGroupInLayout,
+  moveBookmarkGroupToProjection,
   moveBookmarkInLayout,
   parentGroupId,
+  projectBookmarkGroupDrop,
   type BookmarkOrderLayout,
 } from './bookmark-dnd-layout';
 
@@ -160,6 +162,127 @@ describe('moveBookmarkInLayout', () => {
   });
 });
 
+describe('projectBookmarkGroupDrop / moveBookmarkGroupToProjection', () => {
+  const TREE: BookmarkOrderLayout = {
+    ungrouped: [],
+    groups: [
+      { id: 'A', childOrder: [], subgroupOrder: ['B'] },
+      { id: 'B', childOrder: [], subgroupOrder: ['C', 'D'] },
+      { id: 'C', childOrder: ['path-c'], subgroupOrder: [] },
+      { id: 'D', childOrder: [], subgroupOrder: [] },
+      { id: 'X', childOrder: [], subgroupOrder: [] },
+    ],
+  };
+
+  it('拖 C 左移一级：精确成为 A 的子组、与 B 同级', () => {
+    const projection = projectBookmarkGroupDrop(TREE, {
+      activeGroupId: 'C',
+      overGroupId: 'B',
+      requestedDepth: 1,
+      position: 'after',
+    });
+    expect(projection).toEqual({
+      depth: 1,
+      parentGroupId: 'A',
+      destinationIndex: 1,
+      indicatorGroupId: 'B',
+      indicatorPlacement: 'after',
+    });
+
+    const next = moveBookmarkGroupToProjection(TREE, 'C', projection!)!;
+    expect(next.groups.find((group) => group.id === 'A')!.subgroupOrder).toEqual(['B', 'C']);
+    expect(next.groups.find((group) => group.id === 'B')!.subgroupOrder).toEqual(['D']);
+    expect(next.groups.find((group) => group.id === 'C')!.childOrder).toEqual(['path-c']);
+  });
+
+  it('拖 C 左移两级：精确成为根组、与 A 同级', () => {
+    const projection = projectBookmarkGroupDrop(TREE, {
+      activeGroupId: 'C',
+      overGroupId: 'B',
+      requestedDepth: 0,
+      position: 'after',
+    });
+    expect(projection).toEqual({
+      depth: 0,
+      parentGroupId: null,
+      destinationIndex: 1,
+      indicatorGroupId: 'A',
+      indicatorPlacement: 'after',
+    });
+
+    const next = moveBookmarkGroupToProjection(TREE, 'C', projection!)!;
+    expect(
+      next.groups.filter((group) => parentGroupId(next, group.id) === null).map((g) => g.id),
+    ).toEqual(['A', 'C', 'X']);
+    expect(next.groups.find((group) => group.id === 'B')!.subgroupOrder).toEqual(['D']);
+  });
+
+  it('向右拖到命中行下一层：可精确插到子组列表首或尾', () => {
+    const start = projectBookmarkGroupDrop(TREE, {
+      activeGroupId: 'X',
+      overGroupId: 'B',
+      requestedDepth: 2,
+      position: 'before',
+    })!;
+    const end = projectBookmarkGroupDrop(TREE, {
+      activeGroupId: 'X',
+      overGroupId: 'B',
+      requestedDepth: 2,
+      position: 'after',
+    })!;
+    expect(start.indicatorPlacement).toBe('inside-start');
+    expect(end.indicatorPlacement).toBe('inside-end');
+    expect(
+      moveBookmarkGroupToProjection(TREE, 'X', start)?.groups.find((g) => g.id === 'B')
+        ?.subgroupOrder,
+    ).toEqual(['X', 'C', 'D']);
+    expect(
+      moveBookmarkGroupToProjection(TREE, 'X', end)?.groups.find((g) => g.id === 'B')
+        ?.subgroupOrder,
+    ).toEqual(['C', 'D', 'X']);
+  });
+
+  it('深度超出命中行能力时 clamp；自身/后代目标与环 placement 被拒绝', () => {
+    expect(
+      projectBookmarkGroupDrop(TREE, {
+        activeGroupId: 'X',
+        overGroupId: 'B',
+        requestedDepth: 99,
+        position: 'after',
+      })?.depth,
+    ).toBe(2);
+    expect(
+      projectBookmarkGroupDrop(TREE, {
+        activeGroupId: 'A',
+        overGroupId: 'C',
+        requestedDepth: 2,
+        position: 'after',
+      }),
+    ).toBeNull();
+    expect(
+      moveBookmarkGroupToProjection(TREE, 'A', {
+        depth: 3,
+        parentGroupId: 'C',
+        destinationIndex: 0,
+        indicatorGroupId: 'C',
+        indicatorPlacement: 'inside-start',
+      }),
+    ).toBeNull();
+  });
+
+  it('投影回原位置不产生更新，输入布局保持不变', () => {
+    const snapshot = structuredClone(TREE);
+    const projection = projectBookmarkGroupDrop(TREE, {
+      activeGroupId: 'C',
+      overGroupId: 'D',
+      requestedDepth: 2,
+      position: 'before',
+    })!;
+    expect(moveBookmarkGroupToProjection(TREE, 'C', projection)).toBeNull();
+    expect(TREE).toEqual(snapshot);
+  });
+});
+
 describe('moveBookmarkGroupInLayout: sibling 排序', () => {
   it('同父向下拖使用 arrayMove 语义，并保留全部 childOrder', () => {
     const layout: BookmarkOrderLayout = {
@@ -183,9 +306,10 @@ describe('moveBookmarkGroupInLayout: sibling 排序', () => {
   it('根级同级排序：roots 顺序交换，子组节点留在扁平表', () => {
     const next = moveBookmarkGroupInLayout(BASE, 'g1', 'g2', 'sibling')!;
     // 根顺序 = 扁平表中未被任何 subgroupOrder 引用的组。
-    expect(next.groups.filter((g) => parentGroupId(next, g.id) === null).map((g) => g.id)).toEqual(
-      ['g2', 'g1'],
-    );
+    expect(next.groups.filter((g) => parentGroupId(next, g.id) === null).map((g) => g.id)).toEqual([
+      'g2',
+      'g1',
+    ]);
     // 扁平表仍是全量组，g1 的子组 g1-1 原样保留。
     expect(next.groups.map((g) => g.id).sort()).toEqual(['g1', 'g1-1', 'g2']);
     expect(next.groups.find((g) => g.id === 'g1')!.subgroupOrder).toEqual(['g1-1']);
@@ -204,9 +328,11 @@ describe('moveBookmarkGroupInLayout: sibling 排序', () => {
     const next = moveBookmarkGroupInLayout(layout, 'g1-1', 'g2', 'sibling')!;
     expect(parentGroupId(next, 'g1-1')).toBeNull();
     // 根顺序 = [g1, g2, g1-1]（g1-1 落在 g2 之后）。
-    expect(next.groups.filter((g) => parentGroupId(next, g.id) === null).map((g) => g.id)).toEqual(
-      ['g1', 'g2', 'g1-1'],
-    );
+    expect(next.groups.filter((g) => parentGroupId(next, g.id) === null).map((g) => g.id)).toEqual([
+      'g1',
+      'g2',
+      'g1-1',
+    ]);
     // g1 的子组列表不再含 g1-1；节点本体仍存在于扁平表。
     expect(next.groups.find((g) => g.id === 'g1')!.subgroupOrder).toEqual([]);
   });

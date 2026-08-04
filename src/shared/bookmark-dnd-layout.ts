@@ -11,10 +11,11 @@
  * - 源容器从当前布局查找，不相信拖拽事件里的缓存索引，避免树更新后用旧 index
  * - 同容器使用 dnd-kit arrayMove 语义：向下拖到目标项时放在目标项之后
  * - 跨容器落在 path 上时插到该 path 前；落在容器本身时追加到容器末尾
- * - 分组拖动两种动作（由 Sidebar 碰撞检测裁决）：
- *   - 'sibling'：同级排序。同父 = arrayMove；跨父 = 插入到目标父的锚点索引
- *   - 'nest'：成为目标组的子组（追加到目标 subgroupOrder 末尾）
- * - 循环守卫：nest 目标为自身或自身后代时返回 null（防环）
+ * - 分组树的新拖动模型把「命中的组行」「行前/行后」「横向目标深度」先投影为
+ *   精确 placement（目标父组 + 子列表 index），再执行移动。纵向决定顺序、横向
+ *   决定层级，因此三层以上也能明确提升一级或直接提升到根级。
+ * - 旧 sibling / nest API 继续保留给既有调用与回归测试；Sidebar 使用 projection API。
+ * - 循环守卫：目标父级不得是自身或自身后代（防环）
  * - 返回新数组，不修改 renderer 从 store 派生出的 useMemo 数据
  *
  * @对应文档章节: docs/方案-侧栏收藏分组-20260801.md（Feature E.2）、
@@ -28,8 +29,40 @@
 /** 未分组收藏在 renderer DndContext 内的稳定容器 id。 */
 export const BOOKMARK_UNGROUPED_CONTAINER = '__marina_ungrouped__';
 
-/** 分组拖动动作：同级排序 vs 成为目标子组。 */
+/** 分组拖动旧动作：同级排序 vs 成为目标子组。 */
 export type BookmarkGroupDropAction = 'sibling' | 'nest';
+
+/** 指针位于命中组行中心线之前或之后。 */
+export type BookmarkGroupDropPosition = 'before' | 'after';
+
+/**
+ * Sidebar 的树拖动输入。requestedDepth=0 表示根级；1 表示根组的直接子组。
+ * 深度会按命中行可表达的范围自动 clamp，不把像素坐标带进 shared。
+ */
+export interface BookmarkGroupDropRequest {
+  activeGroupId: string;
+  overGroupId: string;
+  requestedDepth: number;
+  position: BookmarkGroupDropPosition;
+}
+
+/** 落点线相对 indicatorGroupId 的位置。 */
+export type BookmarkGroupDropIndicatorPlacement =
+  | 'before'
+  | 'after'
+  | 'inside-start'
+  | 'inside-end';
+
+/**
+ * 已解析、可直接执行的树落点。destinationIndex 基于移除 active 后的目标同级列表。
+ */
+export interface BookmarkGroupDropProjection {
+  depth: number;
+  parentGroupId: string | null;
+  destinationIndex: number;
+  indicatorGroupId: string;
+  indicatorPlacement: BookmarkGroupDropIndicatorPlacement;
+}
 
 export interface BookmarkGroupOrder {
   id: string;
@@ -99,6 +132,141 @@ export function moveBookmarkInLayout(
     target.overContainerId,
     nextTarget,
   );
+}
+
+/**
+ * 把「命中组行 + 行前/行后 + 目标深度」投影成精确树落点。
+ *
+ * 设命中路径为 A(depth 0) → B(depth 1)：
+ * - requestedDepth=0：以 A 为锚，移动到根级；
+ * - requestedDepth=1：以 B 为锚，移动到 A 内与 B 同级；
+ * - requestedDepth=2：移动到 B 内，before/after 分别表示子组列表首/尾。
+ *
+ * 这样拖动 B 的子组 C 时，横向左移一级/两级就能分别得到「与 B 同级」和
+ * 「与 A 同级」，不再依赖目标行上下半区猜 sibling/nest。
+ *
+ * @returns 投影；未知组、拖到自身/后代、损坏的祖先链返回 null。
+ */
+export function projectBookmarkGroupDrop(
+  layout: BookmarkOrderLayout,
+  request: BookmarkGroupDropRequest,
+): BookmarkGroupDropProjection | null {
+  const { activeGroupId, overGroupId, position } = request;
+  if (
+    !Number.isFinite(request.requestedDepth) ||
+    !findGroupOrder(layout, activeGroupId) ||
+    !findGroupOrder(layout, overGroupId) ||
+    activeGroupId === overGroupId ||
+    isDescendantGroupInLayout(layout, activeGroupId, overGroupId)
+  ) {
+    return null;
+  }
+
+  const overPath = groupPathFromRoot(layout, overGroupId);
+  if (!overPath) return null;
+  const overDepth = overPath.length - 1;
+  const depth = Math.max(0, Math.min(Math.round(request.requestedDepth), overDepth + 1));
+
+  // 比命中行深一级 = 放进命中组。上半行对应子组列表首，下半行对应末尾。
+  if (depth === overDepth + 1) {
+    const siblings = directGroupIds(layout, overGroupId).filter((id) => id !== activeGroupId);
+    return {
+      depth,
+      parentGroupId: overGroupId,
+      destinationIndex: position === 'before' ? 0 : siblings.length,
+      indicatorGroupId: overGroupId,
+      indicatorPlacement: position === 'before' ? 'inside-start' : 'inside-end',
+    };
+  }
+
+  // 同深度或向左提升：以命中组在目标深度上的祖先为锚。
+  const anchorGroupId = overPath[depth]!;
+  const parentId = depth === 0 ? null : overPath[depth - 1]!;
+  const siblings = directGroupIds(layout, parentId).filter((id) => id !== activeGroupId);
+  const anchorIndex = siblings.indexOf(anchorGroupId);
+  if (anchorIndex < 0) return null;
+  return {
+    depth,
+    parentGroupId: parentId,
+    destinationIndex: anchorIndex + (position === 'after' ? 1 : 0),
+    indicatorGroupId: anchorGroupId,
+    indicatorPlacement: position,
+  };
+}
+
+/**
+ * 执行 projectBookmarkGroupDrop 产生的精确落点。
+ *
+ * placement 的 index 已在「移除 active 后」的列表空间中计算；这里再次 clamp 并
+ * 校验目标父级，避免 renderer 状态与 main 广播之间短暂不同步时写出环或越界。
+ * 根组没有显式 rootOrder，因此只替换 groups 扁平表中的 root 槽位；非 root 节点
+ * 的相对位置保持不变。
+ *
+ * @returns 新布局；无变化、未知目标、目标为自身/后代时返回 null。
+ */
+export function moveBookmarkGroupToProjection(
+  layout: BookmarkOrderLayout,
+  activeGroupId: string,
+  projection: BookmarkGroupDropProjection,
+): BookmarkOrderLayout | null {
+  if (!findGroupOrder(layout, activeGroupId)) return null;
+  const targetParentId = projection.parentGroupId;
+  if (
+    targetParentId !== null &&
+    (!findGroupOrder(layout, targetParentId) ||
+      targetParentId === activeGroupId ||
+      isDescendantGroupInLayout(layout, activeGroupId, targetParentId))
+  ) {
+    return null;
+  }
+
+  const sourceParentId = parentGroupId(layout, activeGroupId);
+  const sourceSiblings = directGroupIds(layout, sourceParentId);
+  const targetWithoutActive = directGroupIds(layout, targetParentId).filter(
+    (id) => id !== activeGroupId,
+  );
+  const destinationIndex = Math.max(
+    0,
+    Math.min(Math.round(projection.destinationIndex), targetWithoutActive.length),
+  );
+  const nextTargetSiblings = targetWithoutActive.slice();
+  nextTargetSiblings.splice(destinationIndex, 0, activeGroupId);
+
+  // 同父时先比语义列表，避免仅为 root 扁平表规范化而产生伪更新。
+  if (sourceParentId === targetParentId && sameOrder(sourceSiblings, nextTargetSiblings)) {
+    return null;
+  }
+
+  const nextLayout: BookmarkOrderLayout = {
+    ungrouped: layout.ungrouped.slice(),
+    groups: layout.groups.map(cloneGroup),
+  };
+  if (sourceParentId !== null) {
+    const source = findGroupOrder(nextLayout, sourceParentId);
+    if (!source) return null;
+    source.subgroupOrder = source.subgroupOrder.filter((id) => id !== activeGroupId);
+  }
+
+  if (targetParentId !== null) {
+    const target = findGroupOrder(nextLayout, targetParentId);
+    if (!target) return null;
+    // source===target 时上面的移除已发生；统一以投影后的完整列表覆盖。
+    target.subgroupOrder = nextTargetSiblings;
+    return nextLayout;
+  }
+
+  // root 顺序由扁平 groups 中「未被引用节点」的相对顺序表达。只替换新 root
+  // 集合所在的槽位，避免扰动非 root 节点在扁平表中的位置。
+  const rootSet = new Set(nextTargetSiblings);
+  const byId = new Map(nextLayout.groups.map((group) => [group.id, group]));
+  const rootSlots = nextLayout.groups
+    .map((group, index) => (rootSet.has(group.id) ? index : -1))
+    .filter((index) => index >= 0);
+  if (rootSlots.length !== nextTargetSiblings.length) return null;
+  rootSlots.forEach((slot, index) => {
+    nextLayout.groups[slot] = byId.get(nextTargetSiblings[index]!)!;
+  });
+  return nextLayout;
 }
 
 /**
@@ -208,14 +376,38 @@ export function isDescendantGroupInLayout(
 }
 
 /** 返回某组在布局中的直接父组 id；根组返回 null。 */
-export function parentGroupId(
-  layout: BookmarkOrderLayout,
-  groupId: string,
-): string | null {
+export function parentGroupId(layout: BookmarkOrderLayout, groupId: string): string | null {
   for (const group of layout.groups) {
     if (group.subgroupOrder.includes(groupId)) return group.id;
   }
   return null;
+}
+
+/** 返回指定父级的直接子组；parentId=null 表示根组。 */
+function directGroupIds(layout: BookmarkOrderLayout, parentId: string | null): string[] {
+  if (parentId !== null) {
+    return findGroupOrder(layout, parentId)?.subgroupOrder.slice() ?? [];
+  }
+  return layout.groups
+    .filter((group) => parentGroupId(layout, group.id) === null)
+    .map((group) => group.id);
+}
+
+/**
+ * 返回根到目标的 id 路径。seen 防止损坏持久层形成的祖先环让 projection 死循环。
+ */
+function groupPathFromRoot(layout: BookmarkOrderLayout, groupId: string): string[] | null {
+  if (!findGroupOrder(layout, groupId)) return null;
+  const reversed: string[] = [];
+  const seen = new Set<string>();
+  let current: string | null = groupId;
+  while (current !== null) {
+    if (seen.has(current)) return null;
+    seen.add(current);
+    reversed.push(current);
+    current = parentGroupId(layout, current);
+  }
+  return reversed.reverse();
 }
 
 /** 在扁平表中查找某组；不存在返回 undefined。 */

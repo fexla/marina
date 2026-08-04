@@ -1216,8 +1216,7 @@ html[data-maximized='true'] .app-root.with-shell {
    (SSH 路径 = 路径级连接)视觉分开:server 图标 + 显示名 + host。 */
 .sidebar-computers {
   padding: 6px 8px 2px;
-  border-bottom: 1px solid
-    color-mix(in srgb, var(--color-text-muted, #888) 12%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-text-muted, #888) 12%, transparent);
 }
 
 .sidebar-computers-header {
@@ -1468,6 +1467,8 @@ html[data-maximized='true'] .app-root.with-shell {
 .sidebar-group {
   display: flex;
   flex-direction: column;
+  position: relative;
+  min-width: 0;
 }
 /* dnd-kit 的 SortableContext 本身不会注册空容器；保留一条极窄的未分组落点，
    并在命中任一容器时给出明确反馈。 */
@@ -1485,7 +1486,8 @@ html[data-maximized='true'] .app-root.with-shell {
   align-items: center;
   gap: 4px;
   padding: 3px 8px;
-  cursor: pointer;
+  cursor: grab;
+  touch-action: none;
   color: var(--color-text-secondary, inherit);
   font-size: 11px;
   font-weight: 600;
@@ -1528,52 +1530,73 @@ html[data-maximized='true'] .app-root.with-shell {
   color: var(--color-text-primary, #f0f);
 }
 
-/* 组拖拽 drop 视觉:上半 sibling(插入线) / 下半 nest(嵌套高亮)。 */
-.sidebar-group.drop-sibling {
-  background: var(--color-bg-hover, rgba(255, 255, 255, 0.05));
-  box-shadow: 0 2px 0 0 var(--color-accent-special, #f0f);
-  border-radius: 4px;
+/*
+ * 精确树拖拽落点：indicator 是 0 高度，不挤动列表也不改变碰撞 rect；它放在
+ * JSX 的真实插入位置。inside 仅多缩进一级，文字同时声明最终父级，避免只靠线猜。
+ */
+.sidebar-group-drop-indicator {
+  position: relative;
+  z-index: 5;
+  display: block;
+  height: 0;
+  margin: 0 8px;
+  pointer-events: none;
+  color: var(--color-accent-special, #f0f);
 }
 
-.sidebar-group.drop-nest {
-  background: var(--color-bg-hover, rgba(255, 255, 255, 0.05));
-  outline: 1px solid var(--color-accent-special, #f0f);
-  outline-offset: -1px;
-  border-radius: 4px;
+.sidebar-group-drop-indicator.inside {
+  margin-left: 20px;
+}
+
+.sidebar-group-drop-line {
+  position: absolute;
+  top: -1px;
+  right: 0;
+  left: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: currentcolor;
+  box-shadow: 0 0 5px color-mix(in srgb, currentcolor 45%, transparent);
+}
+
+.sidebar-group-drop-line::before {
+  position: absolute;
+  top: -3px;
+  left: -1px;
+  width: 8px;
+  height: 8px;
+  content: '';
+  border: 2px solid currentcolor;
+  border-radius: 50%;
+  background: var(--color-bg-primary, #f0f);
+}
+
+.sidebar-group-drop-label {
+  position: absolute;
+  top: 4px;
+  right: 0;
+  max-width: calc(100% - 8px);
+  padding: 2px 5px;
+  overflow: hidden;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--color-text-primary, #f0f);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--color-bg-elevated, var(--color-bg-primary, #f0f));
+  border: 1px solid color-mix(in srgb, currentcolor 55%, transparent);
+  border-radius: 3px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.32);
 }
 
 .sidebar-group.dragging {
-  position: relative;
   z-index: 2;
   opacity: 0.55;
 }
 
-.sidebar-group-drag-handle {
-  width: 14px;
-  height: 18px;
-  display: inline-flex;
-  flex: 0 0 14px;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  color: var(--color-text-muted, #f0f);
-  background: transparent;
-  border: 0;
-  border-radius: 3px;
-  opacity: 0.55;
-  cursor: grab;
-  touch-action: none;
-}
-
-.sidebar-group-drag-handle:hover,
-.sidebar-group-drag-handle:focus-visible {
-  color: var(--color-text-primary, #f0f);
-  background: var(--color-hover, rgba(255, 255, 255, 0.08));
-  opacity: 1;
-  outline: none;
-}
-
-.sidebar-group-drag-handle:active {
+.sidebar-group.dragging > .sidebar-group-header,
+.sidebar-group-header:active {
   cursor: grabbing;
 }
 
@@ -3191,7 +3214,9 @@ html[data-maximized='true'] .app-root.with-shell {
   line-height: 1.4;
   cursor: pointer;
   user-select: none;
-  transition: background-color 0.12s ease, color 0.12s ease;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
 }
 
 .diff-viewer-toolbar-btn:hover:not(:disabled) {
@@ -6424,7 +6449,9 @@ button:focus-visible,
   align-items: center;
   justify-content: center;
   opacity: 0.7;
-  transition: opacity 0.15s, background 0.15s;
+  transition:
+    opacity 0.15s,
+    background 0.15s;
   z-index: 2;
 }
 .gallery-nav:hover {

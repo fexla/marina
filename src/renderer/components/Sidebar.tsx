@@ -37,7 +37,6 @@ import {
   FolderInput,
   FolderOpen,
   FolderPlus,
-  GripVertical,
   MoreHorizontal,
   Pencil,
   Trash2,
@@ -52,7 +51,7 @@ import {
   closestCenter,
   type CollisionDetection,
   type DragEndEvent,
-  type DragOverEvent,
+  type DragMoveEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
@@ -70,9 +69,11 @@ import { makeSshPathId } from '@shared/remote-path';
 import {
   BOOKMARK_UNGROUPED_CONTAINER,
   isDescendantGroupInLayout,
-  moveBookmarkGroupInLayout,
+  moveBookmarkGroupToProjection,
   moveBookmarkInLayout,
-  type BookmarkGroupDropAction,
+  projectBookmarkGroupDrop,
+  type BookmarkGroupDropPosition,
+  type BookmarkGroupDropProjection,
   type BookmarkGroupOrder,
   type BookmarkOrderLayout,
 } from '@shared/bookmark-dnd-layout';
@@ -338,7 +339,9 @@ export function Sidebar(): JSX.Element {
    */
   const addGroupPrompt = async (parentId?: string): Promise<void> => {
     const name = await modal.prompt({
-      title: parentId ? t('sidebar.group.addSub') || '新建子组' : t('sidebar.group.add') || '新建分组',
+      title: parentId
+        ? t('sidebar.group.addSub') || '新建子组'
+        : t('sidebar.group.add') || '新建分组',
       message: parentId ? '输入子组名称' : '输入分组名称',
       placeholder: parentId ? '子组名' : '分组名',
       confirmLabel: '新建',
@@ -497,7 +500,9 @@ export function Sidebar(): JSX.Element {
    * 临时栏 "+" 按钮：当前电脑段 = native picker（远程 backend 窗口用点击式
    * 选择器）；SSH 段 = 连接 SSH（与收藏 + 同一任务）。选完后共创建 session。
    */
-  const handlePickFolderForTemp = async (e?: React.MouseEvent<HTMLButtonElement>): Promise<void> => {
+  const handlePickFolderForTemp = async (
+    e?: React.MouseEvent<HTMLButtonElement>,
+  ): Promise<void> => {
     if (effectiveSegment === 'remote') {
       openSshConnectionMenu(e, '连接 SSH…');
       return;
@@ -781,9 +786,7 @@ export function Sidebar(): JSX.Element {
       {directoryPickerIntent && (
         <BackendDirectoryPicker
           title={
-            directoryPickerIntent === 'bookmark'
-              ? '收藏远程电脑上的文件夹'
-              : '在远程电脑上打开终端'
+            directoryPickerIntent === 'bookmark' ? '收藏远程电脑上的文件夹' : '在远程电脑上打开终端'
           }
           confirmLabel={directoryPickerIntent === 'bookmark' ? '加入收藏' : '打开终端'}
           {...(directoryPickerInitialPath ? { initialPath: directoryPickerInitialPath } : {})}
@@ -919,6 +922,11 @@ const UNGROUPED_CONTAINER = BOOKMARK_UNGROUPED_CONTAINER;
 const GROUPS_SORTABLE_CONTAINER = '__marina_bookmark_groups__';
 /** 组 draggable id 前缀(避免与 pathId / 容器 id 冲突)。 */
 const GROUP_ID_PREFIX = 'bookmark-group:';
+/** 组标题专用 droppable id；useSortable wrapper 的 rect 含整个子树，不能用于行落点。 */
+const GROUP_DROP_ID_PREFIX = 'bookmark-group-drop:';
+/** 递归 DOM 每层只加一次该缩进；横向拖动每 24px 明确切换一级。 */
+const GROUP_TREE_INDENT_PX = 12;
+const GROUP_DEPTH_DRAG_STEP_PX = 24;
 
 /**
  * 分组头:折叠/展开、组名、⋯ 菜单。
@@ -934,6 +942,7 @@ function GroupHeader({
   onToggleCollapse,
   onRequestAddSubgroup,
   dragHandle,
+  dropTarget,
 }: {
   group: GroupNode;
   collapsed: boolean;
@@ -943,6 +952,7 @@ function GroupHeader({
     ReturnType<typeof useSortable>,
     'setActivatorNodeRef' | 'attributes' | 'listeners'
   >;
+  dropTarget: Pick<ReturnType<typeof useDroppable>, 'setNodeRef'>;
 }): JSX.Element {
   const { t } = useTranslation();
   const toast = useToast();
@@ -1044,27 +1054,24 @@ function GroupHeader({
     }
   };
 
+  const setHeaderRef = (node: HTMLDivElement | null): void => {
+    dragHandle.setActivatorNodeRef(node);
+    dropTarget.setNodeRef(node);
+  };
+
   return (
     <div
+      ref={setHeaderRef}
       className="sidebar-group-header"
       tabIndex={0}
+      {...dragHandle.attributes}
+      {...(dragHandle.listeners ?? {})}
       onClick={onToggleCollapse}
       onContextMenu={handleContextMenu}
       onKeyDown={handleKeyDown}
-      title={collapsed ? `展开${group.name}` : `折叠${group.name}`}
+      title={`${collapsed ? `展开${group.name}` : `折叠${group.name}`}；拖动整行调整位置与层级`}
+      data-bookmark-group-id={group.id}
     >
-      <button
-        ref={dragHandle.setActivatorNodeRef}
-        type="button"
-        className="sidebar-group-drag-handle"
-        {...dragHandle.attributes}
-        {...(dragHandle.listeners ?? {})}
-        onClick={(e) => e.stopPropagation()}
-        title="拖动分组排序/嵌套"
-        aria-label={`拖动分组「${group.name}」`}
-      >
-        <GripVertical size={12} />
-      </button>
       <span className="sidebar-group-chevron" aria-hidden="true">
         {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
       </span>
@@ -1077,6 +1084,7 @@ function GroupHeader({
           onChange={(e) => setName(e.target.value)}
           onBlur={commitRename}
           onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault();
@@ -1096,6 +1104,7 @@ function GroupHeader({
       <button
         type="button"
         className="sidebar-group-more"
+        onPointerDown={(e) => e.stopPropagation()}
         onClick={handleMoreClick}
         title={t('sidebar.group.menu') || '分组菜单 (右键/F2/Delete 也可)'}
         aria-label={`分组「${group.name}」菜单`}
@@ -1122,16 +1131,39 @@ function BookmarkUngroupedDropZone({ children }: { children: ReactNode }): JSX.E
   );
 }
 
-/** 拖拽过程状态（用于组块 drop 视觉）。collision 的 dropAction 从 event.collisions[0].data 读。 */
+/** 拖拽过程状态：组拖动携带精确 projection，path 拖动只需目标组。 */
 interface BookmarkDragState {
   activeType?: string | undefined;
   activeId?: string | undefined;
   overId?: string | undefined;
-  dropAction?: BookmarkGroupDropAction | undefined;
+  overGroupId?: string | undefined;
+  projection?: BookmarkGroupDropProjection | undefined;
+  dropLabel?: string | undefined;
+}
+
+/** 精确树落点线：缩进表示最终深度，文字明确最终父级与相对顺序。 */
+function GroupDropIndicator({
+  label,
+  placement,
+}: {
+  label: string;
+  placement: BookmarkGroupDropProjection['indicatorPlacement'];
+}): JSX.Element {
+  const inside = placement === 'inside-start' || placement === 'inside-end';
+  return (
+    <div
+      className={`sidebar-group-drop-indicator${inside ? ' inside' : ''}`}
+      role="status"
+      aria-live="polite"
+    >
+      <span className="sidebar-group-drop-line" aria-hidden="true" />
+      <span className="sidebar-group-drop-label">{label}</span>
+    </div>
+  );
 }
 
 /**
- * 递归渲染的分组块：自身是父级 SortableContext 的 sortable（拖 grip 排序/嵌套），
+ * 递归渲染的分组块：自身是父级 SortableContext 的 sortable（整条组行是 activator），
  * 同时也是 path 的 droppable 容器（pathContainerId = 组 id）；内部含子组
  * SortableContext + 本组 path SortableContext。深度缩进由 paddingLeft 表达。
  */
@@ -1139,7 +1171,6 @@ function GroupBlock({
   group,
   depth,
   dragState,
-  nestForbiddenSet,
   collapsedSet,
   toggleGroup,
   byGroup,
@@ -1149,8 +1180,6 @@ function GroupBlock({
   group: GroupNode;
   depth: number;
   dragState: BookmarkDragState | null;
-  /** 该组是当前拖动组的后代 → 禁止 nest（循环守卫，视觉上不亮）。 */
-  nestForbiddenSet: Set<string>;
   collapsedSet: Set<string>;
   toggleGroup: (groupId: string) => void;
   byGroup: Map<string, PathNode[]>;
@@ -1163,7 +1192,19 @@ function GroupBlock({
     data: {
       type: 'bookmark-group',
       groupId: group.id,
+      depth,
       // path 拖到空组/折叠组/组头时，handleDragEnd 用它识别目标 path 容器。
+      pathContainerId: group.id,
+    },
+  });
+  // sortable wrapper 的 rect 含完整子树，会导致祖先/后代落点重叠；标题行单独注册
+  // droppable 后，纵向命中只代表用户真正指向的那一行。
+  const dropTarget = useDroppable({
+    id: GROUP_DROP_ID_PREFIX + group.id,
+    data: {
+      type: 'bookmark-group-drop',
+      groupId: group.id,
+      depth,
       pathContainerId: group.id,
     },
   });
@@ -1175,31 +1216,37 @@ function GroupBlock({
   const subgroups = group.subgroups ?? [];
 
   const isGroupDragging = dragState?.activeType === 'bookmark-group';
-  const overThis = dragState?.overId === groupId;
-  const isNestOver =
-    isGroupDragging && overThis && dragState?.dropAction === 'nest' && !nestForbiddenSet.has(group.id);
-  const isSiblingOver = isGroupDragging && overThis && dragState?.dropAction === 'sibling';
-  const isPathOver = dragState?.activeType === 'bookmark-path' && overThis;
+  const isPathOver =
+    dragState?.activeType === 'bookmark-path' && dragState.overGroupId === group.id;
   const className =
     'sidebar-group bookmark-drop-zone' +
     (sortable.isDragging ? ' dragging' : '') +
-    (isNestOver ? ' drop-nest' : '') +
-    (isSiblingOver ? ' drop-sibling' : '') +
-    (isPathOver || (!isGroupDragging && sortable.isOver) ? ' drop-over' : '');
+    (isPathOver || (!isGroupDragging && (sortable.isOver || dropTarget.isOver))
+      ? ' drop-over'
+      : '');
+  const projection = isGroupDragging ? dragState?.projection : undefined;
+  const showIndicator = projection?.indicatorGroupId === group.id;
+  const placement = showIndicator ? projection.indicatorPlacement : undefined;
+  const dropLabel = dragState?.dropLabel ?? '调整分组位置';
 
   return (
     <div
       ref={sortable.setNodeRef}
-      style={{ ...style, paddingLeft: depth > 0 ? depth * 10 : undefined }}
+      style={{ ...style, paddingLeft: depth > 0 ? GROUP_TREE_INDENT_PX : undefined }}
       className={className}
     >
+      {placement === 'before' && <GroupDropIndicator label={dropLabel} placement="before" />}
       <GroupHeader
         group={group}
         collapsed={isCollapsed}
         onToggleCollapse={() => toggleGroup(group.id)}
         onRequestAddSubgroup={() => onRequestAddSubgroup(group.id)}
         dragHandle={sortable}
+        dropTarget={dropTarget}
       />
+      {placement === 'inside-start' && (
+        <GroupDropIndicator label={dropLabel} placement="inside-start" />
+      )}
       {!isCollapsed && (
         <>
           {subgroups.length > 0 && (
@@ -1214,7 +1261,6 @@ function GroupBlock({
                   group={sub}
                   depth={depth + 1}
                   dragState={dragState}
-                  nestForbiddenSet={nestForbiddenSet}
                   collapsedSet={collapsedSet}
                   toggleGroup={toggleGroup}
                   byGroup={byGroup}
@@ -1224,11 +1270,22 @@ function GroupBlock({
               ))}
             </SortableContext>
           )}
-          <SortableContext items={gPaths.map((p) => p.id)} strategy={verticalListSortingStrategy} id={group.id}>
+          {placement === 'inside-end' && (
+            <GroupDropIndicator label={dropLabel} placement="inside-end" />
+          )}
+          <SortableContext
+            items={gPaths.map((p) => p.id)}
+            strategy={verticalListSortingStrategy}
+            id={group.id}
+          >
             <ul className="sidebar-paths sidebar-group-paths">{gPaths.map(renderPath)}</ul>
           </SortableContext>
         </>
       )}
+      {isCollapsed && placement === 'inside-end' && (
+        <GroupDropIndicator label={dropLabel} placement="inside-end" />
+      )}
+      {placement === 'after' && <GroupDropIndicator label={dropLabel} placement="after" />}
     </div>
   );
 }
@@ -1306,7 +1363,7 @@ function BookmarkCategory({
     return m;
   }, [paths, groups]);
 
-  // 全部组（扁平遍历），供循环守卫与菜单扁平列表用。
+  // 全部组（扁平遍历），供落点文案与菜单扁平列表用。
   const allGroupsFlat = useMemo(() => {
     const out: GroupNode[] = [];
     const walk = (nodes: GroupNode[]): void => {
@@ -1318,6 +1375,10 @@ function BookmarkCategory({
     walk(groups);
     return out;
   }, [groups]);
+  const groupNameById = useMemo(
+    () => new Map(allGroupsFlat.map((group) => [group.id, group.name])),
+    [allGroupsFlat],
+  );
 
   // BOOKMARK_REORDER 的后端契约要求 payload 覆盖全部收藏。UI 虽只渲染当前
   // local/SSH segment，拖拽计算必须用全量布局，否则隐藏 segment 的 pathId 会丢失。
@@ -1329,9 +1390,7 @@ function BookmarkCategory({
       groupIds.add(node.id);
       groupsFlat.push({
         id: node.id,
-        childOrder: allPaths
-          .filter((path) => path.groupId === node.id)
-          .map((path) => path.id),
+        childOrder: allPaths.filter((path) => path.groupId === node.id).map((path) => path.id),
         subgroupOrder: (node.subgroups ?? []).map((s) => s.id),
       });
       for (const sub of node.subgroups ?? []) walk(sub);
@@ -1347,119 +1406,150 @@ function BookmarkCategory({
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
-  /**
-   * 树感知碰撞:拖组时只看组行,按指针在行内位置给 dropAction(上半 =
-   * sibling 同级排序,下半 = nest 成为子组);path/未分组不是组落点。
-   * 多级嵌套时指针同时覆盖多个组行 → 取最小面积(最内层)。
-   * 拖 path 时退回 closestCenter(组行仍可作 path 容器)。
-   */
-  const treeCollisionDetection: CollisionDetection = (args) => {
-    const activeData = args.active.data.current as { type?: string } | undefined;
-    if (activeData?.type !== 'bookmark-group') return closestCenter(args);
-    const pointer = args.pointerCoordinates;
-    if (!pointer) return [];
-    type Rect = { left: number; right: number; top: number; bottom: number; width: number; height: number };
-    let best: { id: string; rect: Rect; dropAction: BookmarkGroupDropAction } | null = null;
-    for (const container of args.droppableContainers) {
-      if (container.id === args.active.id) continue;
-      const data = container.data.current as { type?: string } | undefined;
-      if (data?.type !== 'bookmark-group') continue;
-      const rect = container.rect.current as Rect | null;
-      if (!rect) continue;
-      if (pointer.x < rect.left || pointer.x > rect.right || pointer.y < rect.top || pointer.y > rect.bottom) {
-        continue;
-      }
-      if (best && rect.width * rect.height >= best.rect.width * best.rect.height) continue;
-      best = {
-        id: String(container.id),
-        rect,
-        dropAction: pointer.y < rect.top + rect.height / 2 ? 'sibling' : 'nest',
-      };
-    }
-    if (!best) return [];
-    return [{ id: best.id, data: { dropAction: best.dropAction } }];
+  type DndData = {
+    type?: string;
+    groupId?: string;
+    depth?: number;
+    pathContainerId?: string;
+    containerId?: string;
+    sortable?: { containerId?: string };
   };
 
-  // 拖拽过程状态(用于组块 drop 视觉)。只在 over 变化时更新(dnd-kit 行为)。
+  /**
+   * 组拖动只与「组标题行」碰撞，完全忽略横向范围：横向位移专门留给层级投影。
+   * wrapper rect 含完整子树，旧实现必须按最小面积猜最内层；标题独立 droppable 后
+   * 只需选纵向中心最近的合法行。自身与后代在这里直接排除，避免循环落点闪烁。
+   * path 拖动仍使用 closestCenter，组标题数据保留 pathContainerId。
+   */
+  const treeCollisionDetection: CollisionDetection = (args) => {
+    const activeData = args.active.data.current as DndData | undefined;
+    if (activeData?.type !== 'bookmark-group') return closestCenter(args);
+    const pointer = args.pointerCoordinates;
+    const activeGroupId = activeData.groupId;
+    if (!pointer || !activeGroupId) return [];
+    type Rect = { top: number; height: number };
+    let best: {
+      id: string;
+      distance: number;
+      position: BookmarkGroupDropPosition;
+    } | null = null;
+    for (const container of args.droppableContainers) {
+      const data = container.data.current as DndData | undefined;
+      const overGroupId = data?.groupId;
+      if (
+        data?.type !== 'bookmark-group-drop' ||
+        !overGroupId ||
+        overGroupId === activeGroupId ||
+        isDescendantGroupInLayout(fullLayout, activeGroupId, overGroupId)
+      ) {
+        continue;
+      }
+      const rect = container.rect.current as Rect | null;
+      if (!rect) continue;
+      const centerY = rect.top + rect.height / 2;
+      const distance = Math.abs(pointer.y - centerY);
+      if (best && distance >= best.distance) continue;
+      best = {
+        id: String(container.id),
+        distance,
+        position: pointer.y < centerY ? 'before' : 'after',
+      };
+    }
+    return best ? [{ id: best.id, data: { position: best.position } }] : [];
+  };
+
+  const describeGroupProjection = (projection: BookmarkGroupDropProjection): string => {
+    const anchorName = groupNameById.get(projection.indicatorGroupId) ?? '分组';
+    if (projection.indicatorPlacement === 'inside-start') {
+      return `移入「${anchorName}」· 放在最前`;
+    }
+    if (projection.indicatorPlacement === 'inside-end') {
+      return `移入「${anchorName}」· 放在最后`;
+    }
+    const side = projection.indicatorPlacement === 'before' ? '之前' : '之后';
+    if (projection.parentGroupId === null) {
+      return `根级 · 与「${anchorName}」同级（${side}）`;
+    }
+    const parentName = groupNameById.get(projection.parentGroupId) ?? '分组';
+    return `「${parentName}」内 · 与「${anchorName}」同级（${side}）`;
+  };
+
+  /**
+   * 把 dnd-kit 的像素 delta 转成离散层级。每横移 24px 才切一级，避免手抖；最终
+   * 范围由 projectBookmarkGroupDrop 按命中行 clamp。onDragMove 每帧调用，保证
+   * over 不变时继续横移也会实时更新落点线。
+   */
+  const buildGroupProjection = (
+    event: DragMoveEvent | DragEndEvent,
+  ): BookmarkGroupDropProjection | null => {
+    const activeData = event.active.data.current as DndData | undefined;
+    const overData = event.over?.data.current as DndData | undefined;
+    const position = (
+      event.collisions?.[0]?.data as { position?: BookmarkGroupDropPosition } | undefined
+    )?.position;
+    if (
+      activeData?.type !== 'bookmark-group' ||
+      !activeData.groupId ||
+      typeof activeData.depth !== 'number' ||
+      !overData?.groupId ||
+      !position
+    ) {
+      return null;
+    }
+    const depthDelta = Math.round(event.delta.x / GROUP_DEPTH_DRAG_STEP_PX);
+    return projectBookmarkGroupDrop(fullLayout, {
+      activeGroupId: activeData.groupId,
+      overGroupId: overData.groupId,
+      requestedDepth: activeData.depth + depthDelta,
+      position,
+    });
+  };
+
   const [dragState, setDragState] = useState<BookmarkDragState | null>(null);
   const clearDragState = (): void => setDragState(null);
 
   const handleDragStart = (event: DragStartEvent): void => {
-    const data = event.active.data.current as { type?: string } | undefined;
+    const data = event.active.data.current as DndData | undefined;
     setDragState({ activeType: data?.type, activeId: String(event.active.id) });
   };
 
-  const handleDragOver = (event: DragOverEvent): void => {
-    const data = event.active.data.current as { type?: string } | undefined;
-    const dropAction = (
-      event.collisions?.[0]?.data as { dropAction?: BookmarkGroupDropAction } | undefined
-    )?.dropAction;
+  const handleDragMove = (event: DragMoveEvent): void => {
+    const data = event.active.data.current as DndData | undefined;
+    const overData = event.over?.data.current as DndData | undefined;
+    const projection = buildGroupProjection(event) ?? undefined;
     setDragState({
       activeType: data?.type,
       activeId: String(event.active.id),
       overId: event.over ? String(event.over.id) : undefined,
-      dropAction,
+      overGroupId: overData?.groupId,
+      projection,
+      dropLabel: projection ? describeGroupProjection(projection) : undefined,
     });
   };
-
-  // 循环守卫视觉:当前拖动组的后代(含自身)不亮 nest。
-  const nestForbiddenSet = useMemo(() => {
-    const set = new Set<string>();
-    if (dragState?.activeType !== 'bookmark-group' || !dragState.activeId) return set;
-    const activeGroupId = dragState.activeId.startsWith(GROUP_ID_PREFIX)
-      ? dragState.activeId.slice(GROUP_ID_PREFIX.length)
-      : dragState.activeId;
-    for (const group of allGroupsFlat) {
-      if (
-        group.id === activeGroupId ||
-        isDescendantGroupInLayout(fullLayout, activeGroupId, group.id)
-      ) {
-        set.add(group.id);
-      }
-    }
-    return set;
-  }, [dragState, fullLayout, allGroupsFlat]);
 
   /**
    * 拖完按 active.data.type 分流 group / path，再发完整 BOOKMARK_REORDER。
    *
-   * - group:dropAction 决定 sibling(同级排序)/ nest(成为子组);循环由
-   *   moveBookmarkGroupInLayout 守卫(自身/后代 → null)。
-   * - path:over 可是 path、组行(空组/折叠组/任意层级)或未分组容器；计算始终
-   *   基于 fullLayout，不能基于当前 segment 的可见子集。
+   * - group：使用横向深度投影后的 parentGroupId + destinationIndex；
+   * - path：over 可是 path、组标题（空组/折叠组/任意层级）或未分组容器；
+   * 两者始终基于 fullLayout，不能丢掉当前 segment 隐藏的收藏。
    */
   const handleDragEnd = (event: DragEndEvent): void => {
     clearDragState();
     const { active, over } = event;
     if (!over) return;
 
-    type DndData = {
-      type?: string;
-      groupId?: string;
-      pathContainerId?: string;
-      containerId?: string;
-      sortable?: { containerId?: string };
-    };
     const activeData = active.data.current as DndData | undefined;
     const overData = over.data.current as DndData | undefined;
     let nextLayout: BookmarkOrderLayout | null = null;
 
     if (activeData?.type === 'bookmark-group') {
-      const overGroupId = overData?.groupId;
-      if (!activeData.groupId || !overGroupId) return;
-      const dropAction =
-        (event.collisions?.[0]?.data as { dropAction?: BookmarkGroupDropAction } | undefined)
-          ?.dropAction ?? 'sibling';
-      nextLayout = moveBookmarkGroupInLayout(
-        fullLayout,
-        activeData.groupId,
-        overGroupId,
-        dropAction,
-      );
+      const projection = buildGroupProjection(event);
+      if (!activeData.groupId || !projection) return;
+      nextLayout = moveBookmarkGroupToProjection(fullLayout, activeData.groupId, projection);
     } else if (activeData?.type === 'bookmark-path') {
       const overId = String(over.id);
-      // group wrapper 同时是 group sortable 和 path droppable，故 pathContainerId
-      // 优先于外层 group SortableContext 的 sortable.containerId。
+      // 组标题是独立 droppable，pathContainerId 明确指向其组；命中标题即追加组尾。
       const overContainerId =
         overData?.pathContainerId ??
         overData?.sortable?.containerId ??
@@ -1526,7 +1616,7 @@ function BookmarkCategory({
       sensors={sensors}
       collisionDetection={treeCollisionDetection}
       onDragStart={handleDragStart}
-      onDragOver={handleDragOver}
+      onDragMove={handleDragMove}
       onDragEnd={handleDragEnd}
       onDragCancel={clearDragState}
     >
@@ -1601,7 +1691,6 @@ function BookmarkCategory({
                   group={g}
                   depth={0}
                   dragState={dragState}
-                  nestForbiddenSet={nestForbiddenSet}
                   collapsedSet={collapsedSet}
                   toggleGroup={toggleGroup}
                   byGroup={byGroup}
