@@ -38,6 +38,7 @@ import { useTranslation } from '../LanguageProvider';
 import { useToast } from '../Toast';
 import { MarkdownCodeBlock, extractCodeBlockInfo } from './MarkdownCodeBlock';
 import { GalleryViewer } from './GalleryViewer';
+import { markdownSurfaceClass } from './markdown-surface';
 import { useAppState } from '../../store';
 
 interface ViewerProps {
@@ -165,22 +166,8 @@ export function MarkdownViewer({ sessionId, file, search, scrollRef }: ViewerPro
       </div>
     );
   }
-  // 三类 markdown 风格,容器 class 决定走哪套 CSS:
-  // - 'custom:*'(用户 .css 主题)→ markdown-body md-custom,CSS 由顶层
-  //   MdThemeInjector 注入 <style id=md-custom-theme>(约定写 .markdown-body 选择器)
-  // - github-light/dark → markdown-body + github-markdown-css,明暗由 .md-github-*
-  //   class 直接设变量(不靠 @media,Chromium 对第三方 CSS 不可靠)
-  // - auto → file-markdown-viewer(marina 主题变量样式)
-  let wrapClass: string;
-  if (mdStyle.startsWith('custom:')) {
-    wrapClass = 'markdown-body md-custom';
-  } else if (mdStyle === 'github-light' || mdStyle === 'github-dark') {
-    wrapClass = `markdown-body md-github-${mdStyle === 'github-dark' ? 'dark' : 'light'}`;
-  } else {
-    wrapClass = 'file-markdown-viewer';
-  }
   return (
-    <div className={wrapClass} ref={containerRef}>
+    <div className={markdownSurfaceClass(mdStyle)} ref={containerRef}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {normalizedText}
       </ReactMarkdown>

@@ -32,6 +32,7 @@ import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
 import { useToast } from '../Toast';
 import type { ContextMenuItem } from '../ContextMenu';
 import { FileViewer } from './FileViewer';
+import { markdownSurfaceClass } from './markdown-surface';
 
 interface FilePanelProps {
   /** 绑定的终端 session id；父级按 session 切换重新挂载。 */
@@ -49,6 +50,8 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
   const copyToClipboard = useCopyToClipboard();
   const toast = useToast();
   const bodyScrollRef = useRef<HTMLDivElement | null>(null);
+  const backgroundProbeRef = useRef<HTMLDivElement | null>(null);
+  const markdownStyle = state.settings.filePanel?.markdownStyle ?? 'auto';
   const snapshot: FilePanelSnapshot = state.filePanels.get(sessionId) ?? {
     files: [],
     activePath: null,
@@ -81,6 +84,25 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
 
   const activeFile: OpenedFile | null =
     snapshot.files.find((file) => file.path === snapshot.activePath) ?? null;
+  const preloadSurfaceClass =
+    activeFile?.kind === 'markdown' ? markdownSurfaceClass(markdownStyle) : '';
+
+  /**
+   * activePath 更新时 OpenedFile.kind 已知，但 FileViewer 仍要异步读内容。利用与最终
+   * Markdown 容器完全相同的隐藏 probe（含用户 custom CSS）读取背景，并在浏览器绘制
+   * 前写到 body；普通 viewer 的 probe 使用 --color-bg-primary。无依赖数组意味着主题
+   * 切换引发的任意 render 也会重新取色，不把旧主题的 resolved rgb 留在 inline style。
+   */
+  useLayoutEffect(() => {
+    const body = bodyScrollRef.current;
+    const probe = backgroundProbeRef.current;
+    if (!body || !probe) return;
+    const probed = window.getComputedStyle(probe).backgroundColor;
+    body.style.backgroundColor =
+      probed === 'transparent' || probed === 'rgba(0, 0, 0, 0)'
+        ? 'var(--color-bg-primary, #f0f)'
+        : probed;
+  });
 
   // Text/Diff 自己拥有内层双轴 scroller；清掉外层 body 可能由上一个
   // Markdown/Image 留下的 scrollTop，避免出现两个滚动坐标叠加。
@@ -225,6 +247,13 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
         data-viewer-kind={activeFile?.kind ?? 'none'}
         data-viewer-path={activeFile?.path ?? ''}
       >
+        <div
+          ref={backgroundProbeRef}
+          className={`file-panel-background-probe${
+            preloadSurfaceClass ? ` ${preloadSurfaceClass}` : ''
+          }`}
+          aria-hidden="true"
+        />
         {activeFile ? (
           <FileViewer
             sessionId={sessionId}

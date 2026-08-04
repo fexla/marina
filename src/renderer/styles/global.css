@@ -2122,7 +2122,12 @@ html[data-maximized='true'] .app-root.with-shell {
 }
 
 .file-panel-body {
+  position: relative;
   flex: 1 1 0;
+  /* Viewer 内容经 IPC 异步到达；先铺普通内容面的背景，避免 loading 期透出
+     panel-dock 的 elevated 色。Markdown 的精确主题色由下方隐藏 probe 在
+     useLayoutEffect（首帧绘制前）覆盖。 */
+  background-color: var(--color-bg-primary, #f0f);
 
   /* 横向滚动只发生在 pre/table 内部,面板自身宽度不被内容撑大 → 不出现
    * 面板级横向滚动条。纵向正常滚。 */
@@ -2135,6 +2140,22 @@ html[data-maximized='true'] .app-root.with-shell {
    * 复制 markdown / 文本内容(Ctrl+C)。 */
   user-select: text;
   -webkit-user-select: text;
+}
+
+/* 与目标 viewer 共用 class 的不可见取色探针。不能 display:none：自定义 Markdown
+   CSS 可能依赖实际 computed style；absolute + hidden 不参与布局和绘制。 */
+.file-panel-background-probe {
+  position: absolute !important;
+  left: -10000px !important;
+  top: 0 !important;
+  width: 1px !important;
+  height: 1px !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  background-color: var(--color-bg-primary, #f0f);
 }
 
 /* Text/Diff 有自己的双轴 scroller，外层必须彻底不滚，避免两个 scrollTop 叠加。

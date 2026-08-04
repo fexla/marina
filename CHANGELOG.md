@@ -27,6 +27,14 @@
   等页签不显示角标。角标 icon 外层固定 14px，不会重新引入长文件名压扁图标的问题。
   真实 renderer 验证当前 Diff 页签显示 D，三个普通页签无角标，图标保持 14×14px。
 
+- **“已打开”切文件不再先闪 dock 主题色。**
+  旧 `file-panel-body` 完全透明，activePath 已切换但 viewer 等待 IPC 内容的约 100ms
+  内会露出 dock 背景；GitHub Light Markdown 因而先闪深紫/深灰再变白。现在 active
+  file 确定后即用隐藏取色 probe 复用目标 Markdown class（含自定义 CSS），在首帧
+  paint 前给 body 铺最终背景；普通 Text/Diff/Image 则预铺主内容背景。真实 Electron
+  4ms 采样验证：Text 切换始终 `rgb(13,17,23)`，Markdown tab 与 README 内本地链接
+  打开的 100–250ms loading 期始终为白色，均未出现中间色。
+
 - **workspace 切回不再因残缺 `OpenedFile` 白屏。**
   main 已先恢复带 `name/size/mtimeMs` 的完整文件列表，但 renderer 随后的快照恢复又把
   `{path, kind}` 强转为 `OpenedFile[]` 覆盖它，最终 `fileIconFor(undefined)` 抛错、整窗
