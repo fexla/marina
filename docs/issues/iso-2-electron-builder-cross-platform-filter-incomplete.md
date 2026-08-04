@@ -126,7 +126,7 @@ electron-builder 的 file 解析按数组顺序处理 include / exclude。如果
 `0.3.3-preview` 实证：第一次严格校验抓到 2 个 Darwin Mach-O；接入钩子重打后，
 `win-unpacked` 从 8 个 `.node` 降为 3 个 `win32-x64` `.node`，
 `verify-artifacts --strict` 为 **0 错误 / 0 警告**。Portable SHA256：
-`a385a63463bbe846c2c5f0a9e001c85a69dfc28f33ff6520dc553a761d0c8be4`。
+`27c112baa3b98031062aed8451f8aa3d97a389bf799a2740e7f79fce4bea0d27`（包含最终侧栏勘误的重打包）。
 
 ## 历史修复方向（已由 afterPack 方案收敛）
 

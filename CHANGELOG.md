@@ -47,8 +47,9 @@
   路径无终端时不再 `display:none` 掉展开槽，而是保留固定 12px 槽并隐藏箭头；有无
   终端的路径名 x 坐标由约 18px 差异归零。session 按 ADR-019 的一级缩进渲染模板
   icon（内置模板用统一 Lucide，自定义模板保留自定义 icon），内容从 x≈22 开始、名称
-  从 x≈40 开始。active/idle 色条仍独立贴整行 x=0；active 满底时 icon 与名称同步
-  反色，不与层级槽争空间。真实 renderer 几何测量覆盖无/有终端路径与 idle/active。
+  从 x≈40 开始。收藏分组现在只缩进 path/session 内容，不再右移整行盒，因此
+  active/idle/exited 色条在分组内外都紧贴侧栏 x=0；active 满底时 icon 与名称同步
+  反色，不与层级槽争空间。真实 renderer 几何测量覆盖无/有终端路径、分组与 idle/active。
 
 - **workspace 切回不再因残缺 `OpenedFile` 白屏。**
   main 已先恢复带 `name/size/mtimeMs` 的完整文件列表，但 renderer 随后的快照恢复又把

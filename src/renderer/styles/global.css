@@ -1544,10 +1544,20 @@ html[data-maximized='true'] .app-root.with-shell {
   background: var(--color-bg-input, inherit);
   color: inherit;
 }
-/* 分组内 path 多缩进一级,体现层级(附录 G.2 精神;这里用 padding 而非
-   FileListRow,因为侧栏不是文件树)。 */
+
+/* 分组内 path 多缩进一级，但缩进只施加给「内容」，不能给整个 <ul> 加
+   padding-left：后者会连 session 行盒一起右移，导致状态细条无法贴住侧栏 x=0。
+   path 内容加组缩进；session 内容在此基础上再加自己的一级 tree indent。 */
 .sidebar-group-paths {
-  padding-left: 10px;
+  --sidebar-group-indent: 10px;
+}
+
+.sidebar-group-paths .path-item-row {
+  padding-left: calc(8px + var(--sidebar-group-indent, 10px));
+}
+
+.sidebar-group-paths .session-item {
+  padding-left: calc(8px + var(--sidebar-group-indent, 10px) + var(--tree-indent-unit, 14px));
 }
 
 /* 拖拽中的行:半透明 + 不影响布局的轻微缩放提示。 */
