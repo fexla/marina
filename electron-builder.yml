@@ -140,13 +140,16 @@ linux:
 
 deb:
   depends:
-    - libgtk-3-0
+    # Ubuntu 26.04 / Debian trixie 把 GTK/AT-SPI 迁到 64-bit time_t 的 t64 包名；
+    # 旧 Ubuntu 仍只提供 legacy 名称。Debian alternatives 让同一 amd64 .deb
+    # 在新旧发行版都可安装，不能只写任一侧。
+    - 'libgtk-3-0t64 | libgtk-3-0'
     - libnotify4
     - libnss3
     - libxss1
     - libxtst6
     - xdg-utils
-    - libatspi2.0-0
+    - 'libatspi2.0-0t64 | libatspi2.0-0'
     - libdrm2
     - libgbm1
   afterInstall: build/linux/deb-postinst.sh

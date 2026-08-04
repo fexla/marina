@@ -11,6 +11,11 @@
 
 ### 修复
 
+- **Ubuntu 26.04 的 `.deb` 可正确解析 GTK / AT-SPI 依赖。**
+  Ubuntu 26.04 与 Debian 新版已把 `libgtk-3-0`、`libatspi2.0-0` 迁到 t64
+  包名；旧配置会令 apt 报“没有安装候选”。现在 Debian control 使用
+  `t64 | legacy` alternatives，同一 amd64 包兼容新旧 Ubuntu。
+
 - **Windows 包严格剔除非目标 node-pty 二进制。**
   `files` 负 glob 与 `asarUnpack` 合用时仍会把 macOS / ARM64 prebuild 带入 staging
   （ISO-2）。新增 `afterPack` 钩子，只清理本次 `appOutDir`，按目标平台/架构保留
