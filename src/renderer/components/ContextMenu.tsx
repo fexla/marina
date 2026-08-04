@@ -38,6 +38,13 @@ export interface ContextMenuItem {
   danger?: boolean;
   /** 分隔符;若为 true,其他字段忽略 */
   divider?: boolean;
+  /** 不在当前上下文渲染(hover 展开的子菜单里做条件过滤用) */
+  hidden?: boolean;
+  /**
+   * 子菜单(悬停展开)。有 submenu 时点击父项不触发 onSelect。
+   * 用于"移动到分组 / 默认模板 / 复制信息"等二级任务。
+   */
+  submenu?: ContextMenuItem[];
   /** 点击触发,菜单自动关闭 */
   onSelect?: () => void | Promise<void>;
 }
@@ -68,6 +75,8 @@ export function ContextMenuProvider({ children }: { children: ReactNode }): JSX.
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+  // 子菜单当前展开的父项 index(null = 无)。切换父项 hover 时替换。
+  const [submenuIndex, setSubmenuIndex] = useState<number | null>(null);
   // FOC-5:打开菜单前记录当前焦点 element,关闭时归还。
   //
   // 没有这个保护:用户右键终端 → 弹菜单 → 选/不选关闭 → 菜单 button
@@ -81,6 +90,7 @@ export function ContextMenuProvider({ children }: { children: ReactNode }): JSX.
 
   const close = useCallback(() => {
     setMenu(null);
+    setSubmenuIndex(null);
     const prev = previousActiveElementRef.current;
     previousActiveElementRef.current = null;
     if (!prev) return;
@@ -191,35 +201,119 @@ export function ContextMenuProvider({ children }: { children: ReactNode }): JSX.
         >
           {menu.title && <div className="ctx-menu-title">{menu.title}</div>}
           {menu.items.map((it, idx) => {
+            if (it.hidden) return null;
             if (it.divider) {
               return <div key={idx} className="ctx-menu-divider" role="separator" />;
             }
+            const hasSubmenu = !!it.submenu && it.submenu.length > 0;
             return (
-              <button
+              <div
                 key={idx}
-                type="button"
-                className={
-                  'ctx-menu-item' +
-                  (it.checked ? ' checked' : '') +
-                  (it.danger ? ' danger' : '')
-                }
-                disabled={!!it.disabled}
-                title={it.hint}
-                onClick={() => {
-                  if (it.disabled) return;
-                  void it.onSelect?.();
-                  close();
-                }}
+                className={`ctx-menu-item-wrap${submenuIndex === idx ? ' submenu-open' : ''}`}
+                onMouseEnter={() => setSubmenuIndex(hasSubmenu ? idx : null)}
               >
-                <span className="ctx-menu-check">
-                  {it.icon ?? (it.checked ? '✓' : ' ')}
-                </span>
-                <span className="ctx-menu-label">{it.label}</span>
-              </button>
+                <button
+                  type="button"
+                  className={
+                    'ctx-menu-item' +
+                    (it.checked ? ' checked' : '') +
+                    (it.danger ? ' danger' : '') +
+                    (hasSubmenu ? ' has-submenu' : '')
+                  }
+                  disabled={!!it.disabled}
+                  title={it.hint}
+                  onClick={() => {
+                    if (it.disabled || hasSubmenu) return;
+                    void it.onSelect?.();
+                    close();
+                  }}
+                >
+                  <span className="ctx-menu-check">
+                    {it.icon ?? (it.checked ? '✓' : ' ')}
+                  </span>
+                  <span className="ctx-menu-label">{it.label}</span>
+                  {hasSubmenu && <span className="ctx-menu-submenu-arrow">▸</span>}
+                </button>
+                {hasSubmenu && submenuIndex === idx && (
+                  <SubmenuMenu items={it.submenu!} onSelect={close} />
+                )}
+              </div>
             );
           })}
         </div>
       )}
     </Ctx.Provider>
+  );
+}
+
+/**
+ * 子菜单：悬停展开、右对齐翻转（视口右侧不足时向左展开）、Esc/外点由
+ * 父菜单统一关闭。点击项后关闭整棵菜单。
+ */
+function SubmenuMenu({
+  items,
+  onSelect,
+}: {
+  items: ContextMenuItem[];
+  onSelect: () => void;
+}): JSX.Element {
+  const submenuRef = useRef<HTMLDivElement | null>(null);
+  const [flip, setFlip] = useState(false);
+  const [subIndex, setSubIndex] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    const el = submenuRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.right > window.innerWidth - 4) setFlip(true);
+  }, []);
+
+  return (
+    <div
+      ref={submenuRef}
+      className={`ctx-submenu${flip ? ' flip' : ''}`}
+      role="menu"
+    >
+      {items.map((it, idx) => {
+        if (it.hidden) return null;
+        if (it.divider) {
+          return <div key={idx} className="ctx-menu-divider" role="separator" />;
+        }
+        const hasSubmenu = !!it.submenu && it.submenu.length > 0;
+        return (
+          <div
+            key={idx}
+            className="ctx-menu-item-wrap"
+            onMouseEnter={() => setSubIndex(hasSubmenu ? idx : null)}
+          >
+            <button
+              type="button"
+              className={
+                'ctx-menu-item' +
+                (it.checked ? ' checked' : '') +
+                (it.danger ? ' danger' : '') +
+                (hasSubmenu ? ' has-submenu' : '')
+              }
+              disabled={!!it.disabled}
+              title={it.hint}
+              onClick={() => {
+                if (it.disabled || hasSubmenu) return;
+                void it.onSelect?.();
+                onSelect();
+              }}
+            >
+              <span className="ctx-menu-check">
+                {it.icon ?? (it.checked ? '✓' : ' ')}
+              </span>
+              <span className="ctx-menu-label">{it.label}</span>
+              {hasSubmenu && <span className="ctx-menu-submenu-arrow">▸</span>}
+            </button>
+            {hasSubmenu && subIndex === idx && (
+              <SubmenuMenu items={it.submenu!} onSelect={onSelect} />
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
