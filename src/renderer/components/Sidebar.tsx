@@ -896,6 +896,12 @@ const GROUP_LIST_DROP_ID_PREFIX = 'bookmark-group-list:';
 const GROUP_TREE_INDENT_PX = 12;
 /** 提示线错容器留出的右侧内边距（px），避免提示线贴到 scrollbar。 */
 const DROP_INDICATOR_RIGHT_PAD_PX = 14;
+/** 取路径最后一段作为显示名（跨平台、兼容 /与\\）。 */
+function basename(p: string | undefined): string {
+  if (!p) return '';
+  const segs = p.split(/[\\/]/);
+  return segs[segs.length - 1] || p;
+}
 /** 根据层级深度计算提示线左侧缩进（与行缩进对齐）。 */
 function indentForDepth(depth: number): number {
   return 8 + Math.max(0, depth) * GROUP_TREE_INDENT_PX;
@@ -1083,7 +1089,7 @@ function GroupHeader({
         />
       ) : (
         <span className="sidebar-group-name" title={group.name}>
-          <Icon name="folder" size={12} />
+          <Icon name="group" size={12} />
           {group.name}
         </span>
       )}
@@ -1961,7 +1967,7 @@ function BookmarkCategory({
     dragState?.activeType === 'bookmark-group'
       ? groupNameById.get(dragState.activeId ?? '')
       : (paths.find((path) => path.id === dragState?.activeId)?.displayName ??
-        paths.find((path) => path.id === dragState?.activeId)?.path);
+        basename(paths.find((path) => path.id === dragState?.activeId)?.path));
 
   return (
     <DndContext
@@ -2043,7 +2049,7 @@ function BookmarkCategory({
         {dragState && activeOverlayLabel ? (
           <div className={`bookmark-drag-overlay ${dragState.activeType ?? ''}`}>
             <Icon
-              name={dragState.activeType === 'bookmark-group' ? 'folder' : 'bookmark'}
+              name={dragState.activeType === 'bookmark-group' ? 'group' : 'bookmark'}
               size={12}
             />
             <span>{activeOverlayLabel}</span>

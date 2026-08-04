@@ -1569,10 +1569,12 @@ html[data-maximized='true'] .app-root.with-shell {
   font-weight: 600;
   color: var(--color-text-primary, #f0f);
   white-space: nowrap;
-  background: var(--color-bg-elevated, #f0f);
+  /* 半透明：拖动时不遮挡背景提示线/目标行，能透过它看到下方。 */
+  opacity: 0.6;
+  background: color-mix(in srgb, var(--color-bg-elevated, #f0f) 60%, transparent);
   border: 1px solid var(--color-accent-special, #f0f);
   border-radius: 5px;
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.38);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.18);
 }
 
 .bookmark-drag-overlay span {
