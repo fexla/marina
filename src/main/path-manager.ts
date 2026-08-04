@@ -33,6 +33,7 @@ import type {
   PathKind,
   PathNode,
   PathTree,
+  PersistedGroup,
   RecentEntry,
   RecentFile,
 } from '@shared/types';
@@ -42,7 +43,7 @@ import { logger } from './logger';
 
 const RECENT_CAPACITY = 30;
 
-const DEFAULT_BOOKMARKS_FILE: BookmarksFile = { version: 2, groups: [], paths: [] };
+const DEFAULT_BOOKMARKS_FILE: BookmarksFile = { version: 3, groups: [], paths: [] };
 const DEFAULT_RECENT_FILE: RecentFile = { version: 1, paths: [] };
 
 /**
@@ -325,7 +326,8 @@ export class PathManager extends EventEmitter {
   /**
    * v0.3.3 ADR-025 §5:调整收藏顺序 + 分组归属(统一分层 reorder)。
    *
-   * payload {ungrouped, groups[{id, childOrder}]} 的并集必须**恰好等于**
+   * 用户裁决(2026-08-04)后 payload.groups 是**扁平组表**：含全部组(含子组)，
+   * `subgroupOrder` 表达层级，roots = 未被任何组引用的 id。并集必须**恰好等于**
    * 当前 bookmarks 的 pathId 集合(无重复 / 无未知 / 无遗漏)——沿用旧
    * `InvalidOrderList` 错误语义。应用:按 ungrouped + 各 childOrder 拼接
    * 顺序重排 this.bookmarks,并按 payload 给每条赋 groupId(ungrouped 段
@@ -335,15 +337,55 @@ export class PathManager extends EventEmitter {
    * 不新增 movePathToGroup / reorderGroups / reorderWithinGroup —— 全走这份统一布局。
    *
    * @throws PathManagerError InvalidOrderList(数量不符/重复/未知/遗漏)
-   * @throws PathManagerError InvalidGroupId(payload 里出现不存在的组 id)
+   * @throws PathManagerError InvalidGroupId(扁平表重复 id / 不存在 id /
+   *   subgroupOrder 引用未知组 / 引用成环)
    */
   reorderBookmarks(payload: {
     ungrouped: string[];
-    groups: { id: string; childOrder: string[] }[];
+    groups: { id: string; childOrder: string[]; subgroupOrder: string[] }[];
   }): void {
     const seen = new Set<string>();
     const next: Bookmark[] = [];
-    const knownGroupIds = new Set(this.groups.map((g) => g.id));
+    const allExisting = this.allGroupNodes();
+    const knownGroupIds = new Set(allExisting.map((g) => g.id));
+
+    // 组引用校验:扁平表 id 唯一 + 全部存在;subgroupOrder 引用必须在扁平表内
+    // 且无环(沿 subgroupOrder DFS,栈内重复即环)。
+    const payloadGroupIds = new Set<string>();
+    for (const group of payload.groups) {
+      if (payloadGroupIds.has(group.id)) {
+        throw new PathManagerError('InvalidGroupId', `重复的 groupId="${group.id}"`);
+      }
+      payloadGroupIds.add(group.id);
+      if (!knownGroupIds.has(group.id)) {
+        throw new PathManagerError('InvalidGroupId', `groupId="${group.id}" 不存在`);
+      }
+    }
+    const orderById = new Map(payload.groups.map((g) => [g.id, g]));
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+    const assertAcyclic = (groupId: string): void => {
+      if (visited.has(groupId)) return;
+      if (visiting.has(groupId)) {
+        throw new PathManagerError('InvalidGroupId', `分组引用成环:${groupId}`);
+      }
+      visiting.add(groupId);
+      const order = orderById.get(groupId);
+      if (order) {
+        for (const childId of order.subgroupOrder) {
+          if (!payloadGroupIds.has(childId)) {
+            throw new PathManagerError(
+              'InvalidGroupId',
+              `subgroupOrder 引用了未在 payload 中的 groupId="${childId}"`,
+            );
+          }
+          assertAcyclic(childId);
+        }
+      }
+      visiting.delete(groupId);
+      visited.add(groupId);
+    };
+    for (const group of payload.groups) assertAcyclic(group.id);
 
     const takePath = (rawId: string, assignGroupId: string | undefined): void => {
       const id = makePathId(pathRefFromId(rawId));
@@ -368,11 +410,25 @@ export class PathManager extends EventEmitter {
     };
 
     for (const id of payload.ungrouped) takePath(id, undefined);
-    for (const group of payload.groups) {
-      if (!knownGroupIds.has(group.id)) {
-        throw new PathManagerError('InvalidGroupId', `groupId="${group.id}" 不存在`);
+    // 递归遍历组树取所有 childOrder(每个组只处理一次,通过根遍历)。
+    const walkChildOrders = (order: {
+      id: string;
+      childOrder: string[];
+      subgroupOrder: string[];
+    }): void => {
+      for (const id of order.childOrder) takePath(id, order.id);
+      for (const childId of order.subgroupOrder) {
+        const child = orderById.get(childId);
+        if (child) walkChildOrders(child);
       }
-      for (const id of group.childOrder) takePath(id, group.id);
+    };
+    for (const group of payload.groups) {
+      // 只从根级(未被任何 subgroupOrder 引用)开始遍历,子组在 walk 内递归,
+      // 避免同一组被处理两次。
+      const referenced = payload.groups.some((other) =>
+        other.subgroupOrder.includes(group.id),
+      );
+      if (!referenced) walkChildOrders(group);
     }
 
     // 校验并集 == 全量(数量不符覆盖了重复/未知;这里主要防遗漏)。
@@ -384,48 +440,81 @@ export class PathManager extends EventEmitter {
     }
 
     this.bookmarks = next;
-    // v0.3.3 ADR-025 G1:groups 数组位置 = 分组显示顺序。payload.groups 顺序
-    // 即新顺序;不在 payload 里的组(空组等)保留原相对顺序追加在后,不被丢。
-    const payloadGroupIds = new Set(payload.groups.map((g) => g.id));
-    const orderedGroups: GroupNode[] = [];
-    for (const pg of payload.groups) {
-      const g = this.groups.find((x) => x.id === pg.id);
-      if (g) orderedGroups.push(g);
-    }
-    for (const g of this.groups) {
-      if (!payloadGroupIds.has(g.id)) orderedGroups.push(g);
-    }
-    this.groups = orderedGroups;
+    // 按 payload 重建组树:每层级「payload 顺序 + 未提及组保留原相对顺序」;
+    // 组节点本体(名字等)从现有树取,保证重排不丢数据。
+    type Order = { id: string; childOrder: string[]; subgroupOrder: string[] };
+    const rebuildLevel = (orders: Order[], existingChildren: GroupNode[]): GroupNode[] => {
+      const out: GroupNode[] = [];
+      for (const order of orders) {
+        const existing = allExisting.find((g) => g.id === order.id);
+        if (!existing) continue; // 已在上方校验过存在性，防御性跳过
+        const subOrders = order.subgroupOrder
+          .map((childId) => orderById.get(childId))
+          .filter((o): o is Order => !!o);
+        out.push({
+          id: existing.id,
+          name: existing.name,
+          subgroups: rebuildLevel(subOrders, existing.subgroups ?? []),
+        });
+      }
+      // 未提及组 = 不在 payload 任意位置出现的组（含仅作为子组被引用的组，
+      // 它们已在上面递归处理，这里不能重复追加）。
+      for (const child of existingChildren) {
+        if (!payloadGroupIds.has(child.id)) out.push(child);
+      }
+      return out;
+    };
+    const rootOrders = payload.groups.filter(
+      (g) => !payload.groups.some((other) => other.subgroupOrder.includes(g.id)),
+    );
+    this.groups = rebuildLevel(rootOrders, this.groups);
     this.persistBookmarks();
     this.emitChange();
   }
 
   /**
-   * v0.3.3 ADR-025 §6:新建分组(追加到末尾)。组名收藏内唯一、非空、
-   * 禁路径分隔符(防歧义)、≤64 字符。允许空组。返回新 groupId。
+   * v0.3.3 ADR-025 §6(用户裁决 2026-08-04 起支持嵌套):新建分组。
+   * 组名收藏内唯一、非空、禁路径分隔符(防歧义)、≤64 字符。允许空组。
+   *
+   * @param name 组名
+   * @param parentId 父组 id；缺省 = 顶层。父组不存在抛 GroupNotFound。
+   * @returns 新 groupId
    *
    * @throws PathManagerError InvalidName(空/过长/含分隔符)
    * @throws PathManagerError GroupNameConflict(收藏内重名)
+   * @throws PathManagerError GroupNotFound(parentId 不存在)
    */
-  addGroup(name: string): GroupNode {
+  addGroup(name: string, parentId?: string): GroupNode {
     validateGroupName(name);
     this.assertGroupNameUnique(name);
-    const group: GroupNode = { id: randomUUID(), name };
-    this.groups.push(group);
+    const group: GroupNode = { id: randomUUID(), name, subgroups: [] };
+    if (parentId === undefined) {
+      this.groups.push(group);
+    } else {
+      const parent = this.findGroupNode(parentId);
+      if (!parent) {
+        throw new PathManagerError('GroupNotFound', `groupId="${parentId}" 不存在`);
+      }
+      parent.subgroups = parent.subgroups ?? [];
+      parent.subgroups.push(group);
+    }
     this.persistBookmarks();
     this.emitChange();
     return group;
   }
 
   /**
-   * v0.3.3 ADR-025 §6:重命名分组(收藏内唯一)。
+   * v0.3.3 ADR-025 §6:重命名分组(收藏内唯一)。树内任意层级可改。
    *
    * @throws PathManagerError GroupNotFound
    * @throws PathManagerError InvalidName / GroupNameConflict
    */
   renameGroup(id: string, name: string): void {
     validateGroupName(name);
-    const group = this.findGroup(id);
+    const group = this.findGroupNode(id);
+    if (!group) {
+      throw new PathManagerError('GroupNotFound', `groupId="${id}" 不存在`);
+    }
     if (group.name === name) return; // 无变化
     this.assertGroupNameUnique(name, id);
     group.name = name;
@@ -434,20 +523,45 @@ export class PathManager extends EventEmitter {
   }
 
   /**
-   * v0.3.3 ADR-025 §6:删组。其下 path 的 groupId 清空→归未分组(**绝不删 path**)。
+   * v0.3.3 ADR-025 §6(嵌套版):解散分组。**绝不删数据**：
+   * - 直接子 path 的 groupId 改为父组 id（顶层组 → 未分组）；
+   * - 直接子组原样提升到父组的同位置（顶层组 → 顶层）。
    * 组 id 作废(不回收)。
    *
    * @throws PathManagerError GroupNotFound
    */
   removeGroup(id: string): void {
-    const idx = this.groups.findIndex((g) => g.id === id);
-    if (idx < 0) {
-      throw new PathManagerError('GroupNotFound', `groupId="${id}" 不存在`);
+    const parentId = this.findGroupParentId(id);
+    let node: GroupNode | undefined;
+    if (parentId === null) {
+      const idx = this.groups.findIndex((g) => g.id === id);
+      if (idx < 0) {
+        throw new PathManagerError('GroupNotFound', `groupId="${id}" 不存在`);
+      }
+      node = this.groups[idx];
+      this.groups.splice(idx, 1);
+      this.groups.splice(idx, 0, ...(node.subgroups ?? []));
+    } else {
+      const parent = this.findGroupNode(parentId);
+      if (!parent) {
+        throw new PathManagerError('GroupNotFound', `groupId="${id}" 不存在`);
+      }
+      const subs = parent.subgroups ?? [];
+      const idx = subs.findIndex((g) => g.id === id);
+      if (idx < 0) {
+        throw new PathManagerError('GroupNotFound', `groupId="${id}" 不存在`);
+      }
+      node = subs[idx];
+      subs.splice(idx, 1);
+      subs.splice(idx, 0, ...(node.subgroups ?? []));
     }
-    this.groups.splice(idx, 1);
-    // 子 path 归未分组(清 groupId)。
+    // 子 path 提升到父组(顶层 = 未分组)。
+    const promoteTo = parentId ?? undefined;
     for (const b of this.bookmarks) {
-      if (b.groupId === id) delete b.groupId;
+      if (b.groupId === id) {
+        if (promoteTo) b.groupId = promoteTo;
+        else delete b.groupId;
+      }
     }
     this.persistBookmarks();
     this.emitChange();
@@ -652,7 +766,7 @@ export class PathManager extends EventEmitter {
         });
       });
 
-    return { bookmarks, temporary, recent, groups: this.groups.map((g) => ({ ...g })) };
+    return { bookmarks, temporary, recent, groups: cloneGroupForest(this.groups) };
   }
 
   /**
@@ -714,23 +828,48 @@ export class PathManager extends EventEmitter {
   }
 
   /**
-   * v0.3.3 ADR-025:按 id 查分组;不存在报错。
-   * @throws PathManagerError GroupNotFound
+   * v0.3.3 ADR-025(嵌套版):按 id 在组树中查找（任意层级）。
    */
-  private findGroup(id: string): GroupNode {
-    const group = this.groups.find((g) => g.id === id);
-    if (!group) {
-      throw new PathManagerError('GroupNotFound', `groupId="${id}" 不存在`);
+  private findGroupNode(id: string): GroupNode | undefined {
+    const walk = (nodes: GroupNode[]): GroupNode | undefined => {
+      for (const node of nodes) {
+        if (node.id === id) return node;
+        const found = walk(node.subgroups ?? []);
+        if (found) return found;
+      }
+      return undefined;
+    };
+    return walk(this.groups);
+  }
+
+  /** 返回某组的直接父组 id；顶层组返回 null；不存在返回 undefined。 */
+  private findGroupParentId(id: string): string | null | undefined {
+    for (const group of this.allGroupNodes()) {
+      if ((group.subgroups ?? []).some((g) => g.id === id)) return group.id;
     }
-    return group;
+    return this.groups.some((g) => g.id === id) ? null : undefined;
+  }
+
+  /** 组树扁平遍历（含所有层级）。 */
+  private allGroupNodes(): GroupNode[] {
+    const out: GroupNode[] = [];
+    const walk = (nodes: GroupNode[]): void => {
+      for (const node of nodes) {
+        out.push(node);
+        walk(node.subgroups ?? []);
+      }
+    };
+    walk(this.groups);
+    return out;
   }
 
   /**
-   * v0.3.3 ADR-025:组名收藏内唯一校验。exceptId=正在重命名的组(自身不算冲突)。
+   * v0.3.3 ADR-025:组名收藏内唯一校验(树内任意层级重名都不行)。
+   * exceptId=正在重命名的组(自身不算冲突)。
    * @throws PathManagerError GroupNameConflict
    */
   private assertGroupNameUnique(name: string, exceptId?: string): void {
-    if (this.groups.some((g) => g.name === name && g.id !== exceptId)) {
+    if (this.allGroupNodes().some((g) => g.name === name && g.id !== exceptId)) {
       throw new PathManagerError('GroupNameConflict', `组名「${name}」已存在(收藏内组名唯一)`);
     }
   }
@@ -807,10 +946,10 @@ export class PathManager extends EventEmitter {
   }
 
   private persistBookmarks(): void {
-    // v0.3.3 ADR-025 §4:version=2,groups + paths(含 groupId)。
+    // v0.3.3 用户裁决后:version=3,groups 递归嵌套(subgroups 数组)。
     this.bookmarksStore.set({
-      version: 2,
-      groups: this.groups.map((g) => ({ id: g.id, name: g.name })),
+      version: 3,
+      groups: this.groups.map(serializeGroup),
       paths: this.bookmarks.slice(),
     });
   }
@@ -1139,6 +1278,24 @@ function migrateRecentOnLoad(raw: unknown): RecentEntry[] {
 // v0.3.3 ADR-025 / Feature E.1:收藏分组(group)启动期 migrate + 校验
 // ──────────────────────────────────────────────────────────────────
 
+/** 深拷贝组森林(getTree 用，避免 renderer 拿到内部引用后误改)。 */
+function cloneGroupForest(groups: GroupNode[]): GroupNode[] {
+  return groups.map((g) => ({
+    id: g.id,
+    name: g.name,
+    subgroups: cloneGroupForest(g.subgroups ?? []),
+  }));
+}
+
+/** 组树 → 磁盘 v3 形状(递归)。 */
+function serializeGroup(group: GroupNode): PersistedGroup {
+  return {
+    id: group.id,
+    name: group.name,
+    subgroups: (group.subgroups ?? []).map(serializeGroup),
+  };
+}
+
 /** 分组名校名规则(与 addGroup/renameGroup 共用)。 */
 const GROUP_NAME_MAX = 64;
 const PATH_SEPARATORS = /[\\/]/;
@@ -1161,37 +1318,49 @@ function validateGroupName(name: string): void {
 }
 
 /**
- * v0.3.3 ADR-025 §4:启动期 groups coerce。磁盘可能无 groups 字段(v1 文件 /
+ * v0.3.3 ADR-025 §4(嵌套版):启动期 groups coerce。磁盘可能无 groups 字段(v1 文件 /
  * 损坏回退默认)。损坏 entry(非对象 / 缺 id 或 name / 类型错)静默丢弃,与
  * migrateBookmarkOnLoad 容错策略一致。重复 id 只保留首个(防磁盘脏数据)。
+ *
+ * 兼容 v2 平铺(entry 无 subgroups)与 v3 嵌套(entry.subgroups 数组)；
+ * 输出统一为 v3 形状：每组恒带 subgroups 数组(空数组也写)。
  */
 function migrateGroupsOnLoad(raw: unknown): GroupNode[] {
   if (!Array.isArray(raw)) return [];
+  return migrateGroupLevel(raw, new Set<string>());
+}
+
+function migrateGroupLevel(raw: unknown[], seenIds: Set<string>): GroupNode[] {
   const out: GroupNode[] = [];
-  const seenIds = new Set<string>();
   for (const entry of raw) {
     if (typeof entry !== 'object' || entry === null) continue;
     const r = entry as Record<string, unknown>;
     if (typeof r['id'] !== 'string' || typeof r['name'] !== 'string') continue;
     if (r['id'].length === 0 || r['name'].length === 0) continue;
-    if (seenIds.has(r['id'])) continue; // 去重,保留首个
+    if (seenIds.has(r['id'])) continue; // 去重,保留首个(全局去重,防跨层重复)
     seenIds.add(r['id']);
-    out.push({ id: r['id'], name: r['name'] });
+    const subgroups = Array.isArray(r['subgroups'])
+      ? migrateGroupLevel(r['subgroups'], seenIds)
+      : [];
+    out.push({ id: r['id'], name: r['name'], subgroups });
   }
   return out;
 }
 
 /**
- * v0.3.3 ADR-025:导入归档的 groups 严格校验(外部不可信)。
- * 任一条违规(缺 id/name / 重复 id)整体拒绝,抛 PathManagerError。caller
- * (replaceAll)捕获后让 import 失败,内部状态保留。
+ * v0.3.3 ADR-025(嵌套版):导入归档的 groups 严格校验(外部不可信)。
+ * 任一条违规(缺 id/name / 重复 id / 子组类型错)整体拒绝,抛 PathManagerError。
+ * caller (replaceAll)捕获后让 import 失败,内部状态保留。
  */
 function validateGroupsArray(input: unknown): GroupNode[] {
+  return validateGroupLevel(input, new Set<string>());
+}
+
+function validateGroupLevel(input: unknown, seenIds: Set<string>): GroupNode[] {
   if (!Array.isArray(input)) {
     throw new PathManagerError('InvalidName', 'groups 必须是数组');
   }
   const out: GroupNode[] = [];
-  const seenIds = new Set<string>();
   for (let i = 0; i < input.length; i++) {
     const g = input[i];
     if (typeof g !== 'object' || g === null) {
@@ -1209,7 +1378,11 @@ function validateGroupsArray(input: unknown): GroupNode[] {
       throw new PathManagerError('InvalidName', `groups[${i}].id 重复: ${r['id']}`);
     }
     seenIds.add(r['id']);
-    out.push({ id: r['id'], name: r['name'] });
+    const subgroups =
+      r['subgroups'] === undefined
+        ? []
+        : validateGroupLevel(r['subgroups'], seenIds);
+    out.push({ id: r['id'], name: r['name'], subgroups });
   }
   return out;
 }
