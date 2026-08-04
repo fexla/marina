@@ -39,7 +39,7 @@ import {
   Folder,
   FolderTree,
   GitBranch,
-  Hash,
+  Tag,
   History,
   Info,
   Link2,
@@ -120,7 +120,7 @@ export const Icons = {
   fileLock: FileLock,
   folder: Folder,
   folderTree: FolderTree,
-  group: Hash, // 收藏分组：不是文件夹（组内条目才是），用 # 号签表「归类/分组」。
+  group: Tag, // 收藏分组：不是文件夹（组内条目才是），用价签表「归类/分组」。
   list: List,
   close: X,
   plus: Plus,

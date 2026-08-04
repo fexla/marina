@@ -75,6 +75,7 @@ import {
   moveBookmarkGroupToPlacement,
   moveBookmarkInLayout,
   moveBookmarkToPlacement,
+  parentGroupId,
   visibleBookmarkSlotToFullIndex,
   type BookmarkGroupOrder,
   type BookmarkOrderLayout,
@@ -901,6 +902,17 @@ function basename(p: string | undefined): string {
   if (!p) return '';
   const segs = p.split(/[\\/]/);
   return segs[segs.length - 1] || p;
+}
+/** 反解 subgroup 容器 id（__marina_subgroups__:<encodeURIComponent gid>）为 gid；失败返回 null。
+ *  前缀需与 bookmark-dnd-layout.ts 的 BOOKMARK_SUBGROUP_CONTAINER_PREFIX 一致。 */
+function decodeSubgroupId(containerId: string): string | null {
+  const prefix = '__marina_subgroups__:';
+  if (!containerId.startsWith(prefix)) return null;
+  try {
+    return decodeURIComponent(containerId.slice(prefix.length));
+  } catch {
+    return null;
+  }
 }
 /** 根据层级深度计算提示线左侧缩进（与行缩进对齐）。 */
 function indentForDepth(depth: number): number {
@@ -1805,14 +1817,14 @@ function BookmarkCategory({
       };
       return resolveDrop(activeType, data as DndData, pathEl, x, y);
     }
-    // container-tail 兑底：指针没命中任何行时，取命中的最深容器作为末尾。 */
+    // container-tail 兑底：指针没命中任何行（落在容器空白区）。
+    // 取命中的最深（面积最小）容器作为落点上下文。 */
     const tailEls = Array.from(
       root.querySelectorAll<HTMLElement>('[data-container-id],[data-group-container-id]'),
     ).filter((el) => {
       const r = el.getBoundingClientRect();
       return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
     });
-    // 取面积最小的（最嵌套的容器）。
     let tailEl: HTMLElement | undefined;
     let tailArea = Infinity;
     for (const el of tailEls) {
@@ -1821,12 +1833,68 @@ function BookmarkCategory({
       if (a < tailArea) { tailArea = a; tailEl = el; }
     }
     if (tailEl) {
+      const rect = tailEl.getBoundingClientRect();
+      // 关键修复（bug #2）：指针落在某组 G 的子组列表空白区时——
+      // 这块空白在视觉上紧贴 G 标题下方，用户最想表达的是「放到 G 的同级后面」，
+      // 但旧逻辑一律当「嵌入 G 的子组末尾」。现在用 x 区分：x 靠左（未越过子内容
+      // 缩进列）= 同级后置（放在 G 之后、G 的下一个兄弟之前）；x 靠右 = 嵌入 G 末尾。
+      const subgroupContainerId = tailEl.dataset.groupContainerId;
+      if (subgroupContainerId) {
+        // 从容器 id 反解出 G。容器 id 形如 __marina_subgroups__:<encodeURIComponent gid>。
+        const gid = decodeSubgroupId(subgroupContainerId);
+        const gOrder = gid ? fullLayout.groups.find((g) => g.id === gid) : undefined;
+        if (gid && gOrder) {
+          const containerDepth = Number(tailEl.dataset.groupContainerDepth ?? '0');
+          const gDepth = Math.max(0, containerDepth - 1); // G 的视觉深度
+          // x 是否越过「子内容缩进列」= 是否嵌入。与 group-head 的 isNestingByX 一致。
+          const nestLeft = rect.left + GROUP_TREE_INDENT_PX;
+          if (x < nestLeft) {
+            // 同级后置：放在 G 之后。容器 = G 的父级 subgroup 容器；index = G 在父级的序号+1。
+            const parentId = parentGroupId(fullLayout, gid);
+            const parentContainer =
+              parentId === null
+                ? BOOKMARK_ROOT_GROUP_CONTAINER
+                : bookmarkSubgroupContainerId(parentId);
+            const siblings =
+              parentId === null
+                ? fullLayout.groups
+                    .filter((g) => parentGroupId(fullLayout, g.id) === null)
+                    .map((g) => g.id)
+                : (fullLayout.groups.find((g) => g.id === parentId)?.subgroupOrder ?? []);
+            const gIndex = siblings.indexOf(gid);
+            const placement: BookmarkPlacement = {
+              targetContainerId: parentContainer,
+              targetIndex: gIndex < 0 ? siblings.length : gIndex + 1,
+            };
+            return resolveDrop(
+              activeType,
+              { rowKind: 'container-tail', containerId: parentContainer, depth: gDepth, placement },
+              tailEl,
+              x,
+              y,
+            );
+          }
+          // x 靠右：嵌入 G 的子组末尾（保留旧语义）。
+          const childCount = tailEl.querySelectorAll(
+            ':scope > [data-bookmark-group-id]',
+          ).length;
+          const placement: BookmarkPlacement = {
+            targetContainerId: subgroupContainerId,
+            targetIndex: childCount,
+          };
+          return resolveDrop(
+            activeType,
+            { rowKind: 'container-tail', containerId: subgroupContainerId, depth: containerDepth, placement },
+            tailEl,
+            x,
+            y,
+          );
+        }
+      }
+      // 路径容器尾部：追到末尾。 */
       const containerId = tailEl.dataset.containerId ?? tailEl.dataset.groupContainerId ?? '';
       const depth = Number(tailEl.dataset.containerDepth ?? tailEl.dataset.groupContainerDepth ?? '0');
-      // 末尾索引：该容器直接子行数。 */
-      const childCount = tailEl.querySelectorAll(
-        ':scope > [data-path-id], :scope > [data-bookmark-group-id]',
-      ).length;
+      const childCount = tailEl.querySelectorAll(':scope > [data-path-id]').length;
       const placement: BookmarkPlacement = { targetContainerId: containerId, targetIndex: childCount };
       return resolveDrop(activeType, { rowKind: 'container-tail', containerId, depth, placement }, tailEl, x, y);
     }
