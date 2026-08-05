@@ -1454,33 +1454,42 @@ html[data-maximized='true'] .app-root.with-shell {
 }
 
 /* ── v0.3.3 ADR-025 / Feature E.1+E.2:收藏分组 + 拖序 ─────────────── */
+
+/* position:relative 建立定位上下文,给 .dnd-drop-indicator 提示线用
+ * (原独立重复块已合并于此,stylelint no-duplicate-selectors)。 */
 .sidebar-bookmark-groups {
   display: flex;
   flex-direction: column;
   gap: 2px;
   padding: 2px 0;
+  position: relative;
 }
+
 /* 未分组块与分组块都是 <ul class="sidebar-paths">;未分组隐式无头。 */
 .sidebar-ungrouped {
   margin: 0;
 }
+
 .sidebar-group {
   display: flex;
   flex-direction: column;
   position: relative;
   min-width: 0;
 }
+
 /* dnd-kit 的 SortableContext 本身不会注册空容器；保留一条极窄的未分组落点，
    并在命中任一容器时给出明确反馈。 */
 .sidebar-ungrouped.bookmark-drop-zone:empty {
   min-height: 8px;
 }
+
 .bookmark-drop-zone.drop-over {
   background: var(--color-bg-hover, rgba(255, 255, 255, 0.05));
   outline: 1px solid var(--color-accent-special, #f0f);
   outline-offset: -1px;
   border-radius: 4px;
 }
+
 .sidebar-group-header {
   display: flex;
   align-items: center;
@@ -1494,6 +1503,7 @@ html[data-maximized='true'] .app-root.with-shell {
   user-select: none;
   border-radius: 4px;
 }
+
 .sidebar-group-header:hover {
   background: var(--color-hover, rgba(255, 255, 255, 0.05));
 }
@@ -1513,11 +1523,6 @@ html[data-maximized='true'] .app-root.with-shell {
   display: flex;
   flex-direction: column;
   min-width: 0;
-}
-
-/* 提示线错容器：侧栏收藏区，需建立定位上下文。 */
-.sidebar-bookmark-groups {
-  position: relative;
 }
 
 /*
@@ -1569,6 +1574,7 @@ html[data-maximized='true'] .app-root.with-shell {
   font-weight: 600;
   color: var(--color-text-primary, #f0f);
   white-space: nowrap;
+
   /* 半透明：拖动时不遮挡背景提示线/目标行，能透过它看到下方。 */
   opacity: 0.6;
   background: color-mix(in srgb, var(--color-bg-elevated, #f0f) 60%, transparent);
@@ -1597,6 +1603,7 @@ html[data-maximized='true'] .app-root.with-shell {
   align-items: center;
   opacity: 0.7;
 }
+
 .sidebar-group-name {
   display: inline-flex;
   align-items: center;
@@ -1607,13 +1614,16 @@ html[data-maximized='true'] .app-root.with-shell {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
 .sidebar-group-actions {
   display: none;
   gap: 2px;
 }
+
 .sidebar-group-header:hover .sidebar-group-actions {
   display: inline-flex;
 }
+
 .sidebar-group-action {
   display: inline-flex;
   align-items: center;
@@ -1626,10 +1636,12 @@ html[data-maximized='true'] .app-root.with-shell {
   border-radius: 3px;
   opacity: 0.7;
 }
+
 .sidebar-group-action:hover {
   opacity: 1;
   background: var(--color-hover, rgba(255, 255, 255, 0.08));
 }
+
 /* v0.3.3:组动作全部收敛到 ⋯/右键菜单,旧的 hover 铅笔/垃圾桶样式保留为
    死代码不删(方便以后需要时回滚;stylelint 对未使用 class 无意见)。 */
 .sidebar-group-rename-input {
@@ -1823,9 +1835,11 @@ html[data-maximized='true'] .app-root.with-shell {
   bottom: 0;
   width: 3px;
   z-index: 0;
+
   /* 背景恒为 info(主题主色);idle 细条与 active 满底同色,靠 width 区分状态。
      exited 覆写为灰(见下)。 */
   background-color: var(--color-info, #f0f);
+
   /* 变宽走 transition:idle→active 变宽、active→idle 收回,正逆都用同一条曲线。 */
   transition: width 1s cubic-bezier(0.16, 1, 0.3, 1);
   border-radius: 0 2px 2px 0;
@@ -1836,6 +1850,7 @@ html[data-maximized='true'] .app-root.with-shell {
   width: 100%;
   animation: marina-session-bar-pulse 2.6s 1s ease-in-out infinite;
 }
+
 /* exited:灰细条(死亡态去饱和);idle 默认就是 info 细条,无需额外规则。 */
 .session-item.exited .session-state-bar {
   background-color: var(--color-text-muted, #f0f);
@@ -1854,6 +1869,7 @@ html[data-maximized='true'] .app-root.with-shell {
   font-size: 11px;
   line-height: 1;
 }
+
 .session-template-icon > svg {
   flex: 0 0 12px;
 }
@@ -1863,6 +1879,7 @@ html[data-maximized='true'] .app-root.with-shell {
 .session-item.active-session .session-template-icon {
   color: var(--color-bg-primary, #f0f);
 }
+
 .session-name,
 .session-template-icon {
   transition: color 1s cubic-bezier(0.16, 1, 0.3, 1);
@@ -1875,6 +1892,7 @@ html[data-maximized='true'] .app-root.with-shell {
   100% {
     opacity: 1;
   }
+
   50% {
     opacity: 0.6;
   }
@@ -1890,6 +1908,7 @@ html[data-maximized='true'] .app-root.with-shell {
   .session-template-icon {
     transition: none;
   }
+
   .session-state-bar[data-state='active'] {
     animation: none;
   }
@@ -1899,10 +1918,12 @@ html[data-maximized='true'] .app-root.with-shell {
 .session-exit-icon {
   pointer-events: none;
 }
+
 .session-exit-icon.ok {
   color: var(--color-success, #f0f);
   stroke-width: 3;
 }
+
 .session-exit-icon.fail {
   color: var(--color-danger, #f0f);
   stroke-width: 3;
@@ -2262,6 +2283,7 @@ html[data-maximized='true'] .app-root.with-shell {
 .file-panel-body {
   position: relative;
   flex: 1 1 0;
+
   /* Viewer 内容经 IPC 异步到达；先铺普通内容面的背景，避免 loading 期透出
      panel-dock 的 elevated 色。Markdown 的精确主题色由下方隐藏 probe 在
      useLayoutEffect（首帧绘制前）覆盖。 */
@@ -2320,6 +2342,7 @@ html[data-maximized='true'] .app-root.with-shell {
   min-height: 0;
   min-width: 0;
 }
+
 .command-panel-tabs {
   display: flex;
   flex-direction: row;
@@ -2331,6 +2354,7 @@ html[data-maximized='true'] .app-root.with-shell {
   max-height: 120px;
   overflow-y: auto;
 }
+
 .command-tab {
   display: inline-flex;
   align-items: center;
@@ -2342,18 +2366,22 @@ html[data-maximized='true'] .app-root.with-shell {
   cursor: pointer;
   font-size: 11px;
 }
+
 .command-tab:hover {
   background-color: var(--color-bg-hover, #f0f);
 }
+
 .command-tab.command-tab-active {
   background-color: var(--color-bg-active, #f0f);
 }
+
 .command-tab-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 130px;
 }
+
 .command-tab-close {
   border: none;
   background: transparent;
@@ -2363,9 +2391,11 @@ html[data-maximized='true'] .app-root.with-shell {
   font-size: 14px;
   line-height: 1;
 }
+
 .command-tab-close:hover {
   color: var(--color-text-primary, #f0f);
 }
+
 /* 状态点:idle 灰 / running 黄闪 / exited 绿 / error 红 */
 .command-tab-status {
   width: 6px;
@@ -2374,25 +2404,31 @@ html[data-maximized='true'] .app-root.with-shell {
   flex: 0 0 auto;
   background-color: var(--color-text-muted, #999);
 }
+
 .command-status-running {
   background-color: #e8a317;
   animation: command-pulse 1s ease-in-out infinite;
 }
+
 .command-status-exited {
   background-color: #3fb950;
 }
+
 .command-status-error {
   background-color: #f85149;
 }
+
 @keyframes command-pulse {
   0%,
   100% {
     opacity: 1;
   }
+
   50% {
     opacity: 0.4;
   }
 }
+
 .command-panel-toolbar {
   display: flex;
   flex-direction: row;
@@ -2402,6 +2438,7 @@ html[data-maximized='true'] .app-root.with-shell {
   border-bottom: 1px solid var(--color-bg-elevated, #f0f);
   flex: 0 0 auto;
 }
+
 .command-strategy-select {
   font-size: 11px;
   background-color: var(--color-bg-elevated, #f0f);
@@ -2410,6 +2447,7 @@ html[data-maximized='true'] .app-root.with-shell {
   border-radius: 4px;
   padding: 2px 4px;
 }
+
 .command-rerun-btn {
   border: 1px solid var(--color-border, #f0f);
   background-color: var(--color-bg-elevated, #f0f);
@@ -2420,34 +2458,41 @@ html[data-maximized='true'] .app-root.with-shell {
   font-size: 12px;
   line-height: 1.4;
 }
+
 .command-rerun-btn:hover:not(:disabled) {
   background-color: var(--color-bg-hover, #f0f);
 }
+
 .command-rerun-btn:disabled {
   opacity: 0.5;
   cursor: default;
 }
+
 .command-panel-body {
   flex: 1 1 0;
   overflow: auto;
   padding: 8px 10px;
   font-size: 12px;
 }
+
 .command-panel-empty {
   color: var(--color-text-muted, #f0f);
   text-align: center;
   padding: 24px 8px;
 }
+
 .command-panel-hint {
   font-size: 11px;
   opacity: 0.8;
   margin-top: 6px;
   font-family: var(--font-mono, monospace);
 }
+
 .command-output {
   line-height: 1.5;
   word-break: break-word;
 }
+
 .command-output pre {
   background-color: var(--color-bg-elevated, #f0f);
   padding: 6px 8px;
@@ -2456,32 +2501,39 @@ html[data-maximized='true'] .app-root.with-shell {
   font-family: var(--font-mono, monospace);
   font-size: 11px;
 }
+
 .command-output table {
   border-collapse: collapse;
   width: 100%;
   margin: 6px 0;
 }
+
 .command-output th,
 .command-output td {
   border: 1px solid var(--color-border, #f0f);
   padding: 3px 6px;
   text-align: left;
 }
+
 .command-output td a {
   overflow-wrap: anywhere;
 }
+
 .command-output a {
   color: var(--color-accent, #58a6ff);
 }
+
 .command-running-indicator {
   color: #e8a317;
   font-size: 11px;
   margin-bottom: 4px;
 }
+
 .command-output-pending {
   color: var(--color-text-muted, #f0f);
   opacity: 0.6;
 }
+
 .command-output-empty {
   color: var(--color-text-muted, #f0f);
   font-style: italic;
@@ -2637,11 +2689,13 @@ html[data-maximized='true'] .app-root.with-shell {
   width: 14px;
   height: 14px;
 }
+
 .file-list-row-icon-with-badge > svg {
   flex: 0 0 14px;
   width: 14px;
   height: 14px;
 }
+
 .file-list-row-icon-corner-badge {
   position: absolute;
   right: -2px;
@@ -2672,6 +2726,7 @@ html[data-maximized='true'] .app-root.with-shell {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+
   /* basis=0:只占剩余空间；min-width=0 允许文本槽缩到省略号，而不挤 icon。 */
   flex: 1 1 0;
   min-width: 0;
@@ -3056,6 +3111,7 @@ html[data-maximized='true'] .app-root.with-shell {
   grid-template-columns: auto 1fr;
   align-items: baseline;
   min-height: 1.5em;
+
   /* 大文件最多数千行；Chromium 对视口外行跳过 layout/paint，避免一次挂载时
    * 整个 renderer 因不可见行的 grid 计算而冻结。intrinsic size 保持滚动高度稳定。 */
   content-visibility: auto;
@@ -3176,6 +3232,7 @@ html[data-maximized='true'] .app-root.with-shell {
 .diff-viewer {
   margin: 0;
   display: grid;
+
   /* v0.3.3 Feature C:顶部工具栏跨两列全宽,下面 gutter+code 两列。 */
   grid-template-columns: max-content minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
@@ -3278,6 +3335,7 @@ html[data-maximized='true'] .app-root.with-shell {
 .diff-gutter-row,
 .diff-line {
   min-height: 1.5em;
+
   /* 两个 pane 各自最多挂载 500 行；视口外行跳过 layout/paint，避免 diff
    * 首次打开时 gutter + code 两套 DOM 同步计算形成 Long Task。 */
   content-visibility: auto;
@@ -3651,6 +3709,7 @@ html[data-maximized='true'] .app-root.with-shell {
   align-items: center;
   justify-content: space-between;
   padding: 3px 8px;
+
   /* 透明:不额外上色,继承面板背景(避免明暗主题下出现“黑条”)。 */
   background: transparent;
   border-bottom: 1px solid var(--color-border, rgba(128, 128, 128, 0.2));
@@ -3694,7 +3753,7 @@ html[data-maximized='true'] .app-root.with-shell {
    * 主题下渲染成黑块(实测)。currentColor = 按钮自己的颜色(run 是绿色、
    * stop 是红色、复制是正文色),任何主题下都与背景可读 → tint 永不变黑。
    * 用 color-mix 而非 opacity,避免按钮文字本身变半透明。 */
-  background-color: color-mix(in srgb, currentColor 12%, transparent);
+  background-color: color-mix(in srgb, currentcolor 12%, transparent);
 }
 
 .md-code-block-run {
@@ -3749,6 +3808,7 @@ html[data-maximized='true'] .app-root.with-shell {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+
   /* 尺寸/内边距来自 md-code-block-btn,与顶部整块运行按钮保持完全一致。 */
   border-radius: 4px;
   cursor: pointer;
@@ -3768,6 +3828,7 @@ html[data-maximized='true'] .app-root.with-shell {
     opacity: 0;
     transform: translateY(4px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -4195,10 +4256,11 @@ html[data-maximized='true'] .app-root.with-shell {
   text-overflow: ellipsis;
 }
 
-/* ── 子菜单(v0.3.3 用户裁决:路径/分组/session 菜单按任务分层) ── */
-.ctx-menu-item-wrap {
-  position: relative;
-}
+/* ── 子菜单(v0.3.3 用户裁决:路径/分组/session 菜单按任务分层) ──
+ * 子菜单是 createPortal 到 document.body 的 fixed 悬浮层(ContextMenu.tsx
+ * SubmenuMenu 用 JS 计算坐标),不是 absolute 挂在 wrap 上 —— .ctx-menu
+ * 是 overflow 滚动容器(OVR-2),absolute 子代会把子菜单裁剪成父菜单内
+ * 的滚动区域。fixed 脱离滚动容器后才是真正的悬浮 UI。 */
 
 .ctx-menu-item.has-submenu .ctx-menu-submenu-arrow {
   flex: 0 0 auto;
@@ -4212,9 +4274,9 @@ html[data-maximized='true'] .app-root.with-shell {
 }
 
 .ctx-submenu {
-  position: absolute;
-  left: 100%;
-  top: -5px;
+  position: fixed; /* left/top 由 SubmenuMenu 的 JS 坐标驱动 */
+  left: 0;
+  top: 0;
   z-index: 1001;
   min-width: 180px;
   max-width: 320px;
@@ -4228,12 +4290,6 @@ html[data-maximized='true'] .app-root.with-shell {
   padding: 4px;
   font-size: 12px;
   user-select: none;
-}
-
-/* 视口右侧不足时向左展开。 */
-.ctx-submenu.flip {
-  left: auto;
-  right: 100%;
 }
 
 /* ADR-008: tab 状态点已移除,状态指示统一在侧边栏 session 行展示;
@@ -6490,9 +6546,11 @@ button:focus-visible,
   border-radius: 8px;
   background: var(--color-bg-primary, var(--rp-base, #191724));
   overflow: hidden;
+
   /* gallery 容器可获得焦点(键盘 ←/→ 拦截);focus 轮廓仅在键盘导航时显示 */
   outline: none;
 }
+
 .gallery-viewer:focus-visible .gallery-stage {
   box-shadow: inset 0 0 0 2px var(--color-accent-secondary, var(--rp-foam, #9ccfd8));
 }
@@ -6512,10 +6570,12 @@ button:focus-visible,
   align-items: center;
   justify-content: center;
   background: var(--rp-base, #191724);
+
   /* 让深色舞台在亮主题下也呈深色(图片在深底上观感好,与原型一致) */
   cursor: pointer;
   overflow: hidden;
 }
+
 /* 亮主题下舞台仍保持深色(图片观感),用一个略浅的深色避免与外框融成一片 */
 :root[data-theme-mode='light'] .gallery-stage,
 .markdown-body.md-github-light .gallery-stage {
@@ -6525,6 +6585,7 @@ button:focus-visible,
 .gallery-main-img {
   display: block;
   max-width: 100%;
+
   /* max-height 由 inline style 注入(480px);object-fit contain 不裁剪 */
   width: auto;
   height: auto;
@@ -6551,6 +6612,7 @@ button:focus-visible,
   color: var(--color-text-muted, var(--rp-muted, #6e6a86));
   font-size: 12px;
 }
+
 .gallery-retry {
   background: var(--color-bg-active, var(--rp-highlight-med, #403d52));
   color: var(--color-text-primary, var(--rp-text, #e0def4));
@@ -6560,6 +6622,7 @@ button:focus-visible,
   cursor: pointer;
   font-size: 12px;
 }
+
 .gallery-retry:hover {
   background: var(--color-success, var(--rp-pine, #31748f));
 }
@@ -6587,17 +6650,21 @@ button:focus-visible,
     background 0.15s;
   z-index: 2;
 }
+
 .gallery-nav:hover {
   opacity: 1;
   background: var(--color-success, var(--rp-pine, #31748f));
 }
+
 .gallery-nav:disabled {
   opacity: 0.25;
   cursor: default;
 }
+
 .gallery-prev {
   left: 8px;
 }
+
 .gallery-next {
   right: 8px;
 }
@@ -6624,6 +6691,7 @@ button:focus-visible,
   overflow-x: auto;
   background: var(--color-bg-secondary, var(--rp-highlight-low, #21202e));
 }
+
 .gallery-thumb {
   position: relative;
   flex: 0 0 auto;
@@ -6637,15 +6705,18 @@ button:focus-visible,
   background: var(--color-bg-elevated, var(--rp-overlay, #26233a));
   color: var(--color-text-muted, var(--rp-muted, #6e6a86));
 }
+
 .gallery-thumb img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
 }
+
 .gallery-thumb.active {
   border-color: var(--color-accent-secondary, var(--rp-foam, #9ccfd8));
 }
+
 .gallery-thumb.err {
   display: flex;
   align-items: center;
@@ -6653,10 +6724,12 @@ button:focus-visible,
   font-size: 11px;
   color: var(--color-danger, var(--rp-love, #eb6f92));
 }
+
 .gallery-thumb-idx {
   font-size: 10px;
   color: var(--color-text-muted, var(--rp-muted, #6e6a86));
 }
+
 .gallery-thumb-net {
   position: absolute;
   right: 1px;
@@ -6673,6 +6746,7 @@ button:focus-visible,
   from {
     opacity: 0.35;
   }
+
   to {
     opacity: 0.8;
   }
