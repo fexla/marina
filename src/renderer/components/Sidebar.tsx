@@ -198,7 +198,12 @@ export function Sidebar(): JSX.Element {
     }
   };
   const [collapsedCategoryIds, setCollapsedCategoryIds] = useState<Set<string>>(() => new Set());
-  const [segment, setSegmentState] = useState<SidebarSegment>(() => readSegmentFromStorage());
+  const [segment, setSegmentState] = useState<SidebarSegment>(() =>
+    // 远程窗口(连 daemon)默认选中「当前电脑」段,而非沿用 localStorage 的 segment ——
+    // 远程窗口的主用途是操作所连 daemon 的路径/终端,默认跳到 SSH 段不符合预期。
+    // 用户仍可手动切到 SSH 段(切后照常落盘 localStorage)。
+    window.api.backendProfileId ? 'local' : readSegmentFromStorage(),
+  );
   const setSegment = (next: SidebarSegment): void => {
     setSegmentState(next);
     try {
@@ -633,7 +638,7 @@ export function Sidebar(): JSX.Element {
         <div
           className="sidebar-segmented"
           role="tablist"
-          aria-label={t('sidebar.segment.label') || '当前电脑 / SSH'}
+          aria-label={t('sidebar.segment.label') || '当前电脑 / 远程'}
           data-testid="sidebar-segmented"
         >
           <button
@@ -654,7 +659,7 @@ export function Sidebar(): JSX.Element {
             onClick={() => setSegment('remote')}
             data-testid="sidebar-segment-remote"
           >
-            {t('sidebar.segment.remote') ?? 'SSH'}
+            {t('sidebar.segment.remote') ?? '远程'}
           </button>
         </div>
       )}
