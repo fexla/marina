@@ -27,6 +27,7 @@ import type { FilePanelService } from './file-panel-service';
 import type { FileTreeService } from './file-tree-service';
 import { listDirectoryPickerEntries } from './directory-picker-service';
 import type { GitService } from './git-service';
+import type { FileTreePollingService } from './file-tree-polling-service';
 import type { PerformanceDiagnostics } from './performance-diagnostics';
 import type { SkillInstaller } from './skill-installer';
 import type { MarkdownThemeManager } from './markdown-theme-manager';
@@ -88,6 +89,9 @@ import {
   type GetGitStatusPayload,
   type GetGitStatusResponse,
   type SetGitPollingDemandPayload,
+  type SetFileTreePollingDemandPayload,
+  type SetFileTreeWatchedDirsPayload,
+  type FileTreeChangedPayload,
   type GitStatusUpdatedPayload,
   type OpenGitDiffPayload,
   type OpenGitFilePayload,
@@ -252,6 +256,11 @@ export interface IpcLayerDeps {
    * git-service.test.ts(本层仅转发)。
    */
   gitService: GitService;
+  /**
+   * 文件树目录列表的 demand-aware 后台轮询(ADR-021,与 Git 同构):前台文件
+   * 面板的展开目录由它每 3s 重验,变化时经 evt:file-tree:changed 广播。
+   */
+  fileTreePollingService: FileTreePollingService;
   /** 0.3.2 常驻性能飞行记录器 + 用户显式 V8 CPU profile。 */
   performanceDiagnostics: PerformanceDiagnostics;
   /** 内置 show-in-marina skill 的项目级安装服务。 */
@@ -2062,7 +2071,7 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
 // 改成无 owner 的普通 fs API。
 // ──────────────────────────────────────────────────────────────────
 function registerFileTreeHandlers(deps: IpcLayerDeps): void {
-  const { fileTreeService } = deps;
+  const { fileTreeService, fileTreePollingService } = deps;
 
   registerHandle(
     COMMAND_CHANNELS.FILE_TREE_GET_ROOTS,
@@ -2137,6 +2146,32 @@ function registerFileTreeHandlers(deps: IpcLayerDeps): void {
         envelope.payload.sessionId,
         envelope.windowId,
         envelope.payload.rootId,
+      );
+    },
+  );
+
+  // ADR-021:文件树轮询 demand(HOT/NONE,与 git:set-polling-demand 同构)。
+  // consumerId 只能取可信 envelope.windowId;绝不接受 renderer 自报 clientId。
+  registerHandle(
+    COMMAND_CHANNELS.FILE_TREE_SET_POLLING_DEMAND,
+    (_e, envelope: CommandEnvelope<SetFileTreePollingDemandPayload>): void => {
+      fileTreePollingService.setPollingDemand(
+        envelope.payload.sessionId,
+        envelope.windowId,
+        envelope.payload.level,
+      );
+    },
+  );
+
+  // 面板上报当前展开目录集合(main 端轮询目标)。同样以 envelope.windowId
+  // 为 consumerId;空数组 = 卸载清理,幂等。
+  registerHandle(
+    COMMAND_CHANNELS.FILE_TREE_SET_WATCHED_DIRS,
+    (_e, envelope: CommandEnvelope<SetFileTreeWatchedDirsPayload>): void => {
+      fileTreePollingService.setWatchedDirs(
+        envelope.payload.sessionId,
+        envelope.windowId,
+        envelope.payload.dirs,
       );
     },
   );
@@ -2367,6 +2402,7 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     templatesManager,
     filePanelService,
     gitService,
+    fileTreePollingService,
     markdownThemeManager,
     codeBlockRunner,
   } = deps;
@@ -2423,6 +2459,7 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     // owner 切换时旧 renderer 可能保持 PanelStack mount；先清旧 demand，新的 owner
     // 收到事件后按绝对 UI 状态重新上报 HOT/WARM。
     gitService.onSessionOwnerChanged(e.sessionId);
+    fileTreePollingService.onSessionOwnerChanged(e.sessionId);
     broadcastEvent<SessionOwnerChangedPayload>(EVENT_CHANNELS.SESSION_OWNER_CHANGED, e);
   });
 
@@ -2439,6 +2476,8 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     // 显式停 watcher,否则用户在 shell 内 exit 后即使关掉所有窗口,main 进程仍会
     // 永久 spawn git.exe,造成低平均 CPU 但明显 frametime / I/O 尖峰。
     gitService.onSessionExited(e.sessionId);
+    // 文件树同理:exited 快照保留,但停止后台目录轮询。
+    fileTreePollingService.onSessionExited(e.sessionId);
     broadcastEvent<SessionExitedPayload>(EVENT_CHANNELS.SESSION_EXITED, e);
   });
 
@@ -2460,6 +2499,8 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     filePanelService.onSessionDestroyed(e.sessionId);
     // v0.3.0:Git 面板同理清掋 watcher + 防抖 timer。
     gitService.onSessionDestroyed(e.sessionId);
+    // 文件树轮询:session 销毁,注销 task/demand/基线。
+    fileTreePollingService.onSessionDestroyed(e.sessionId);
     // v0.3.3:命令面板同理清状态 + 停 run + 注销后台 task。
     deps.commandPanelService.onSessionDestroyed(e.sessionId);
     broadcastEvent<SessionDestroyedPayload>(EVENT_CHANNELS.SESSION_DESTROYED, e);
@@ -2532,6 +2573,13 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     broadcastEvent<GitStatusUpdatedPayload>(EVENT_CHANNELS.GIT_STATUS_UPDATED, p);
   });
 
+  // 文件树目录列表变化:FileTreePollingService(demand-aware task)轮询并 diff 后
+  // 广播。renderer 收到带完整快照,零额外 IPC 直填目录缓存(与 gitStatusUpdated
+  // 同策略:小元数据广播给所有窗口无副作用,各窗口按 sessionId 过滤)。
+  fileTreePollingService.on('fileTreeChanged', (p: FileTreeChangedPayload) => {
+    broadcastEvent<FileTreeChangedPayload>(EVENT_CHANNELS.FILE_TREE_CHANGED, p);
+  });
+
   // 自定义 markdown 主题列表变化(用户往 markdown-themes/ 增删 .css)→ 广播给
   // 所有窗口,renderer 更新设置页下拉。每次 emit 已做去抖 + 内容比对。
   markdownThemeManager.on('listUpdated', (themes: MdTheme[]) => {
@@ -2575,6 +2623,7 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   windowManager.onWindowClosed((windowId) => {
     // 先撤销该 consumer 的全部 demand，再 release owner；两条路径都幂等。
     gitService.removePollingConsumer(windowId);
+    fileTreePollingService.removePollingConsumer(windowId);
     sessionManager.handleWindowClosed(windowId);
     broadcastEvent<WindowListUpdatedPayload>(EVENT_CHANNELS.WINDOW_LIST_UPDATED, {
       windows: windowManager.list(),

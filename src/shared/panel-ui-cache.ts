@@ -16,6 +16,11 @@
  * - 与 git-status-cache.ts 分工:那个缓存的是 **数据 snapshot**(Git status,
  *   由 main 端事件失效,swr 模式);本模块缓存的是 **纯 UI 态**(无外部失效源,
  *   只随 session 销毁清理)。语义不同,各自独立,不合并。
+ * - **教训(v0.3.4 修复)**:file-tree 曾把**目录列表数据快照**当"纯 UI 态"塞进
+ *   L1,结果列表无失效源 —— 远程文件系统上删除的文件几小时不消失。现在失效源
+ *   是 main 端 FileTreePollingService(ADR-021 demand 轮询 + evt:file-tree:changed
+ *   事件推送)。凡往 L1 放数据快照的面板,必须自带失效机制(watcher / 事件 / 轮询),
+ *   不得假设"无外部失效源"。
  * - key 维度:`sessionId → panelId → state`。同一 session 的不同面板互不干扰;
  *   切 session 时 LayoutHost 按 sessionId 重挂面板,新 session 读自己的缓存。
  *

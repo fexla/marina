@@ -8,6 +8,11 @@
  * - 目录按需展开，一次 IPC 只取直接子项，避免递归扫描 node_modules 等大目录。
  * - 点击文件走 cmd:file-tree:open-file；main 再次做 owner + realpath 根包含校验，
  *   成功后交给既有 FilePanelService，因此预览、大小限制和 fs.watch 逻辑不重复。
+ * - 目录列表快照的失效源 = main 端 demand-aware 轮询(ADR-021,与 Git 同构):
+ *   LayoutHost 报 HOT/NONE(仅前台终端的文件面板 = HOT),本面板报展开目录
+ *   集合,FileTreePollingService 每 3s 重验 + diff,变化经 evt:file-tree:changed
+ *   广播,组件订阅后静默替换快照。此前列表缓存无任何失效源,删除的文件会
+ *   一直停留在面板上(远程文件系统 inotify 不可靠,轮询是唯一可靠失效源)。
  *
  * @对应文档章节:软件定义书.md §14.6 受限文件导航例外、ADR-016。
  *
@@ -15,9 +20,12 @@
  * - 不做文件编辑、创建、删除、重命名、上传或下载。
  * - 不显示任意目录、SSH/SFTP 远端目录或 Project/Workspace 容器。
  */
-import { startTransition, useCallback, useEffect, useMemo, useState } from 'react';
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   COMMAND_CHANNELS,
+  EVENT_CHANNELS,
+  type FileTreeChangedPayload,
+  type FileTreePollingDir,
   type FileTreeRootInfo,
   type GetFileTreeRootsResponse,
   type ListFileTreeDirectoryResponse,
@@ -153,6 +161,80 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
     [sessionId, setDirectories],
   );
 
+  // ── 目录列表快照的失效源:main 端 demand 轮询 + 事件推送 ────────────
+  // 背景:列表快照存在 L1 组件外缓存(panel-ui-cache),此前**没有任何失效源**
+  // —— 无 watcher、无轮询、收起再展开也不重拉,远程文件系统
+  // (inotify 不可靠)上删除的文件几小时不消失。
+  // 机制(ADR-021,与 Git 面板同构):LayoutHost 的 useFileTreePollingDemand
+  // 报 HOT/NONE(仅前台终端的文件面板 = HOT);本面板把展开目录集合
+  // 报给 main(FILE_TREE_SET_WATCHED_DIRS);main 端 FileTreePollingService 每 3s
+  // 重验并 diff,变化时经 evt:file-tree:changed 广播,本组件订阅后直填快照。
+  /** 上次上报的展开集合(JSON 序列化比较,内容没变不发 IPC,与
+   *  useGitPollingDemand 的 lastSent 同策略,避免每次展开/收起都重发。 */
+  const lastDirsSentRef = useRef<string | null>(null);
+
+  // 展开集合变化 → 上报轮询目标。不关心可见性:demand(HOT/NONE)由
+  // LayoutHost 的 hook 管,这里只报告"要盯哪些目录"。
+  useEffect(() => {
+    const dirs: FileTreePollingDir[] = [];
+    for (const [key, state] of Object.entries(directories)) {
+      if (!state?.expanded) continue;
+      const sep = key.indexOf(':');
+      dirs.push({
+        rootId: key.slice(0, sep) as FileTreeRootId,
+        relativePath: key.slice(sep + 1),
+      });
+    }
+    const serialized = JSON.stringify(dirs);
+    if (lastDirsSentRef.current === serialized) return;
+    lastDirsSentRef.current = serialized;
+    window.api
+      .invoke(COMMAND_CHANNELS.FILE_TREE_SET_WATCHED_DIRS, { sessionId, dirs })
+      .catch((err: unknown) => {
+        // 失败清 lastSent 让下一次变化可重试(同 useGitPollingDemand 策略)。
+        if (lastDirsSentRef.current === serialized) lastDirsSentRef.current = null;
+        console.warn('[FileTreePanel] set watched dirs failed', err);
+      });
+  }, [directories, sessionId]);
+
+  // 面板卸载:撤销本窗口的轮询目标(level 的 NONE 由 LayoutHost hook 的
+  // cleanup 发,双路都幂等)。
+  useEffect(() => {
+    return () => {
+      lastDirsSentRef.current = null;
+      window.api
+        .invoke(COMMAND_CHANNELS.FILE_TREE_SET_WATCHED_DIRS, { sessionId, dirs: [] })
+        .catch((err: unknown) => console.warn('[FileTreePanel] clear watched dirs failed', err));
+    };
+  }, [sessionId]);
+
+  // main 端轮询 diff 出变化 → 广播 → 本窗口按 sessionId 过滤,直填快照。
+  // 只更新本面板已存在的目录 key(没展开的目录 renderer 无数据可更新);
+  // 内容相同(JSON 相等)不写 state,避免无谓重渲染。main 已按基线
+  // diff,这里再做一次相等保护,防与用户手动展开的响应竞态覆盖。
+  useEffect(() => {
+    const off = window.api.on<FileTreeChangedPayload>(
+      EVENT_CHANNELS.FILE_TREE_CHANGED,
+      (payload) => {
+        if (payload.sessionId !== sessionId || payload.changes.length === 0) return;
+        startTransition(() => {
+          setDirectories((current) => {
+            let next = current;
+            for (const change of payload.changes) {
+              const key = directoryKey(change.rootId, change.relativePath);
+              const prev = current[key];
+              if (!prev) continue;
+              if (JSON.stringify(prev.snapshot) === JSON.stringify(change.snapshot)) continue;
+              next = { ...next, [key]: { ...prev, loading: false, snapshot: change.snapshot } };
+            }
+            return next === current ? current : next;
+          });
+        });
+      },
+    );
+    return off;
+  }, [sessionId, setDirectories]);
+
   useEffect(() => {
     let cancelled = false;
     setRoots(null);
@@ -246,6 +328,8 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
         }));
       // 展开缓存的大目录仍会同步创建最多 500 行；与首次 load 成功同样必须允许
       // concurrent renderer 分片。收起只卸载节点，保持同步以获得即时反馈。
+      // 展开已缓存目录 = 纯翻转:先显示缓存(秒开),新列表由 main 端 3s 轮询
+      // 的 evt:file-tree:changed 事件送达后静默替换。
       if (state.expanded) toggleCached();
       else startTransition(toggleCached);
       return;

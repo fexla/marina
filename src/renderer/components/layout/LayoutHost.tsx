@@ -29,6 +29,7 @@ import { useTranslation } from '../LanguageProvider';
 import { SearchBar } from '../common/SearchBar';
 import { usePanelSearchShortcut } from '../../hooks/usePanelSearchShortcut';
 import { useGitPollingDemand } from '../../hooks/useGitPollingDemand';
+import { useFileTreePollingDemand } from '../../hooks/useFileTreePollingDemand';
 import { isRegisteredPanelId, PANEL_REGISTRY, type RegisteredPanelId } from './panel-registry';
 
 const RIGHT_DOCK_MIN_WIDTH = 280;
@@ -65,9 +66,7 @@ export function LayoutHost({ session, terminal, panelsEnabled }: LayoutHostProps
        * filePanel enabled 都不能改变它的父链,否则 TerminalDeck 会整体 unmount。 */}
       <div className="layout-split layout-split-horizontal">
         <div className="layout-terminal-leaf">{terminal}</div>
-        {stack && session && (
-          <PanelStack key={session.id} node={stack} session={session} />
-        )}
+        {stack && session && <PanelStack key={session.id} node={stack} session={session} />}
       </div>
     </div>
   );
@@ -121,6 +120,14 @@ function PanelStack({
     sessionId: session.id,
     gitAvailable: panelIds.includes('git'),
     gitVisible: activePanelId === 'git' && !persisted.collapsed,
+    isOwner: session.ownerWindowId === appState.myWindowId,
+  });
+
+  // 文件树同机制,但只有 HOT/NONE:仅前台终端的文件面板需要刷新(需求),无 WARM
+  // 保温档。展开目录集合由 FileTreePanel 经 FILE_TREE_SET_WATCHED_DIRS 另报。
+  useFileTreePollingDemand({
+    sessionId: session.id,
+    fileTreeVisible: activePanelId === 'file-tree' && !persisted.collapsed,
     isOwner: session.ownerWindowId === appState.myWindowId,
   });
 

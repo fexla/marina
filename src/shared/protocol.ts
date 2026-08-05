@@ -286,6 +286,12 @@ export const COMMAND_CHANNELS = {
   FILE_TREE_REVEAL_PATH: 'cmd:file-tree:reveal-path',
   /** v0.3.2:用系统默认应用打开 file-tree 节点(对称 reveal-path,保持 rootId 抽象)。 */
   FILE_TREE_OPEN_PATH: 'cmd:file-tree:open-path',
+  /** ADR-021:renderer 上报文件树面板轮询需求(HOT/NONE,仿 git:set-polling-demand)。
+   *  只有前台窗口可见的文件面板报 HOT,其余一律 NONE。consumerId 取 envelope.windowId。 */
+  FILE_TREE_SET_POLLING_DEMAND: 'cmd:file-tree:set-polling-demand',
+  /** FileTreePanel 上报当前已展开目录集合(即 main 端轮询目标)。与 demand 分开由面板
+   *  单独上报:展开集合是面板私有态,LayoutHost(可见性真值源)不感知。 */
+  FILE_TREE_SET_WATCHED_DIRS: 'cmd:file-tree:set-watched-dirs',
 
   // Git 域 —— active owner session 的只读变更浏览与 diff 预览(v0.3.0,ADR-017)。
   // 与 file-tree 同构的安全模式:owner 校验 + SSH 拒绝 + repoRoot 包含校验。
@@ -507,6 +513,12 @@ export const EVENT_CHANNELS = {
    * snapshot 广播，renderer 直接更新组件外缓存，不需再拉一次 get-status。
    */
   GIT_STATUS_UPDATED: 'evt:git:status-updated',
+
+  /**
+   * 文件树目录列表变化。main 端 FileTreePollingService(demand-aware task)轮询
+   * 已展开目录并 diff 后广播,renderer 收到直接更新对应目录快照,不二次拉取。
+   */
+  FILE_TREE_CHANGED: 'evt:file-tree:changed',
 
   /**
    * 自定义 markdown 主题列表变化(用户往 markdown-themes/ 增删 .css,fs.watch
@@ -1878,6 +1890,35 @@ export interface ListFileTreeDirectoryResponse {
   entries: FileTreeEntry[];
   /** true 表示为避免大目录撑爆 IPC，本次仅返回前 500 个可访问直接子项。 */
   truncated: boolean;
+}
+
+/** cmd:file-tree:set-polling-demand payload。consumerId 只能取 envelope.windowId。 */
+export interface SetFileTreePollingDemandPayload {
+  sessionId: string;
+  level: BackgroundDemandLevel;
+}
+
+/** FileTreePanel 上报的一个轮询目标目录(逻辑根 + 相对路径,不含绝对路径)。 */
+export interface FileTreePollingDir {
+  rootId: FileTreeRootId;
+  /** 相对 root 的目录路径;根目录用空字符串。 */
+  relativePath: string;
+}
+
+/** cmd:file-tree:set-watched-dirs payload(展开集合变化时上报;面板卸载时发空数组)。 */
+export interface SetFileTreeWatchedDirsPayload {
+  sessionId: string;
+  dirs: FileTreePollingDir[];
+}
+
+/** evt:file-tree:changed payload:一次轮询中内容发生变化的目录(携带完整新快照)。 */
+export interface FileTreeChangedPayload {
+  sessionId: string;
+  changes: Array<{
+    rootId: FileTreeRootId;
+    relativePath: string;
+    snapshot: ListFileTreeDirectoryResponse;
+  }>;
 }
 
 /** v0.3.2:递归列出 root 全量 entries(扁平)。payload 只需 rootId,返回所有后代。 */

@@ -28,6 +28,7 @@ import type { SessionInfo } from '@shared/types';
 import type * as IpcModule from './ipc';
 import { FilePanelService } from './file-panel-service';
 import { GitService } from './git-service';
+import { FileTreePollingService } from './file-tree-polling-service';
 import { MarkdownThemeManager } from './markdown-theme-manager';
 import { CodeBlockRunner } from './code-block-runner';
 import { CommandPanelService } from './command-panel-service';
@@ -310,6 +311,13 @@ function makeStubs() {
         { get: () => null, list: () => [] },
         { getPathForSession: () => null },
         new FilePanelService(),
+      ),
+      // 真实 FileTreePollingService(不注册 task):ipc 层 wireEventBroadcasts 只用
+      // on('fileTreeChanged'),生命周期钩子无副作用;demand/目录集 handler 在
+      // 测试中不会被调用(file-tree-polling-service 自身有完整单测)。
+      fileTreePollingService: new FileTreePollingService(
+        { get: () => null },
+        fileTreeService as unknown,
       ),
       performanceDiagnostics: performanceDiagnostics as unknown,
       skillInstaller: {

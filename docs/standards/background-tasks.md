@@ -54,4 +54,20 @@
 - `removePollingConsumer(windowId)` 枚举该窗口持有的 session 逐个撤 demand（demand
   consumerId 是 sessionId，不是 windowId）；detach 后 repo 无 session 时注销 task。
 
+### I.6 文件树轮询按 session（v0.3.4 修复：目录列表缓存无失效源）
+
+- File tree polling task 按 **session** 注册（`file-tree:${sessionId}`），consumer 是
+  窗口（`consumerId=windowId`）：展开目录集合是每个窗口文件面板的私有态。
+- **只有 HOT/NONE 两档，没有 WARM**：需求是"只有处于前台的终端的文件面板需要
+  刷新" —— LayoutHost 的 `useFileTreePollingDemand` 在面板可见 + 窗口聚焦时报
+  HOT（3s），其余一律 NONE（Git 面板的 WARM 保温档不适用于文件树）。
+- 轮询目标 = 各 consumer 上报的展开目录并集（`cmd:file-tree:set-watched-dirs`，
+  面板展开集合变化时上报、卸载时发空数组）；每次 poll 走 FileTreeService.
+  listDirectory（以 consumer 窗口为 requester，owner 校验逐请求重验）。
+- 与 lastSnapshots 基线做 JSON diff，内容没变不广播 `evt:file-tree:changed`；
+  首次 poll（基线缺失）视为变化，用于面板挂载时填缓存。
+- exited session 拒绝新 demand 且任务被清（ADR-008 快照保留但不后台扫描）；
+  owner 切换 / 窗口关闭 / 远程断线分别走 `onSessionOwnerChanged` /
+  `removePollingConsumer`，与 Git 同构。
+
 ---

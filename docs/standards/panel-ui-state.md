@@ -23,6 +23,12 @@
 - L2 `usePanelPreference`(`src/shared/panel-preferences.ts`):localStorage,跨重启。key 自动走 `marina.panel.<panelId>.<key>` 规范。
 - **不许**:工作态存裸 `useState`(切面板即丢);偏好直接 `localStorage.setItem` 裸 key(绕过统一规范与老 key 迁移)。
 
+> **教训(v0.3.4 修复)**:L1 只能放**纯 UI 工作态**。file-tree 曾把目录列表**数据快照**
+> 也塞进 L1 且无失效源,远程文件系统上删除的文件几小时不消失;现失效源是 main 端
+> FileTreePollingService(ADR-021 demand 轮询 + `evt:file-tree:changed` 事件推送,
+> 见 `file-tree-polling-service.ts`)。任何面板若要把数据快照放进 L1,必须自带失效
+> 机制(watcher / 事件 / 轮询),不得假设"无外部失效源"。
+
 ### G.2 树形缩进:单一真相源(必选)
 
 - 所有树形层级缩进**只能**用 `<FileListRow depth={n}>`(唯一渲染入口),内部 `calc(var(--tree-indent-unit, 14px) * depth)`。

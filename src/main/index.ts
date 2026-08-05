@@ -43,6 +43,7 @@ import {
 } from './daemon-credentials';
 import { FilePanelService } from './file-panel-service';
 import { FileTreeService } from './file-tree-service';
+import { FileTreePollingService } from './file-tree-polling-service';
 import { GitService } from './git-service';
 import { BackgroundWorkScheduler } from './background-work-scheduler';
 import { SessionWorkspaceManager } from './session-workspace-manager';
@@ -272,6 +273,13 @@ function bootstrap(): void {
     enableGitPanel: settingsManager.get().advanced.enableGitPanel,
     gitBinaryPath: settingsManager.get().advanced.gitBinaryPath,
   });
+  // 文件树轮询(ADR-021,与 Git 同构):前台文件面板的展开目录由它每 3s 重验,
+  // 变化时经 evt:file-tree:changed 广播。共享 backgroundWorkScheduler 的全局并发预算(默认 1)。
+  const fileTreePollingService = new FileTreePollingService(
+    sessionManager,
+    fileTreeService,
+    backgroundWorkScheduler,
+  );
   const trayManager = new TrayManager(windowManager, sessionManager, settingsManager);
   // v0.3.3:Markdown 代码块一键执行(ADR-023)。直接 spawn 系统命令,不经 PTY;
   // cwd 取自 session 服务端 currentCwd。sessionLookup 每请求回查,与 git/file-tree
@@ -405,6 +413,7 @@ function bootstrap(): void {
     quitFinalizationState = 'flushing';
     sessionManager.shutdown();
     gitService.shutdownPolling();
+    fileTreePollingService.shutdown();
     backgroundWorkScheduler.shutdown();
     void (async () => {
       logger.info('main', 'before-quit: shutting down session manager + flushing stores');
@@ -586,7 +595,13 @@ function bootstrap(): void {
         list: (sid) => sessionManager.listWorkspaces(sid),
         newWorkspace: (sid) => sessionManager.switchToNewWorkspace(sid),
         unpin: (sid, name) => sessionManager.unpinWorkspace(sid, name),
-        readSnapshotForSession: (sid) => sessionManager.readWorkspaceSnapshot(sid) as Promise<{ openedFiles: Array<{ path: string; kind: string; external: boolean }>; activeFilePath: string | null; scroll: Record<string, { scrollTop: number; scrollLeft: number }>; runs: unknown } | null>,
+        readSnapshotForSession: (sid) =>
+          sessionManager.readWorkspaceSnapshot(sid) as Promise<{
+            openedFiles: Array<{ path: string; kind: string; external: boolean }>;
+            activeFilePath: string | null;
+            scroll: Record<string, { scrollTop: number; scrollLeft: number }>;
+            runs: unknown;
+          } | null>,
       });
       // v0.3.3 ADR-027:命令面板接线。sessionLookup 破循环依赖(同 file-panel);
       // runner 复用 codeBlockRunner(执行 + output/exited 事件订阅);scheduler 复用
@@ -659,6 +674,7 @@ function bootstrap(): void {
         // 仍由 RemoteDaemon 原有 10 秒宽限期管理，两套生命周期互不混淆。
         onClientGone: (clientId) => {
           gitService.removePollingConsumer(clientId);
+          fileTreePollingService.removePollingConsumer(clientId);
           terminalViewRegistry.removeClient(clientId);
         },
       });
@@ -677,6 +693,7 @@ function bootstrap(): void {
         filePanelService,
         fileTreeService,
         gitService,
+        fileTreePollingService,
         performanceDiagnostics,
         skillInstaller,
         markdownThemeManager,
