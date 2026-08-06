@@ -48,7 +48,10 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { randomUUID } from 'node:crypto';
 import type { CodeBlockLanguage } from '@shared/protocol';
-import type { SessionInfo, ShellInfo } from '@shared/types';
+import type { SessionInfo } from '@shared/types';
+// ShellInfo 定义在 platform 适配器层(src/main/platform/index.ts),不属于 shared ——
+// shared 是纯协议层,不应依赖 main 侧的平台探测类型。
+import type { ShellInfo } from './platform';
 import { logger } from './logger';
 
 const MODULE = 'CodeBlockRunner';
@@ -212,7 +215,9 @@ export class CodeBlockRunner extends EventEmitter {
   private readonly sessionLookup: (id: string) => SessionInfo | null;
   private readonly spawnFn: SpawnFn;
   /** 可选:应用自身 detectShells 结果(绝对路径),解决 PATH 里没有 pwsh/bash 的问题。 */
-  private readonly getShells?: () => Promise<ShellInfo[]>;
+  // 显式 | undefined(exactOptionalPropertyTypes 下,构造参数 getShells?: 的类型是
+  // T | undefined,不能赋给 `field?: T` 这种"缺省即未定义"的可选属性)。
+  private readonly getShells: (() => Promise<ShellInfo[]>) | undefined;
   /** runId → 运行记录。有界,溢出 FIFO 强杀最旧。 */
   private readonly runs = new Map<string, RunRecord>();
   /** 维护插入顺序用于 FIFO 淘汰(Map 迭代按插入序)。 */

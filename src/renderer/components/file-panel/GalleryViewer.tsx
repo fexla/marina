@@ -212,7 +212,7 @@ export function GalleryViewer({
     });
   };
 
-  const currentItem = items[safeCurrent];
+  const currentItem = items[safeCurrent]!; // 上面 items.length === 0 已提前返回,safeCurrent 必在 [0, items.length-1]
   const currentResolved = resolved.get(safeCurrent);
   const currentLoading = loading.has(safeCurrent);
 
@@ -224,7 +224,11 @@ export function GalleryViewer({
       onMouseLeave={() => (hoveredRef.current = false)}
       tabIndex={0}
     >
-      <div className="gallery-stage" onClick={openCurrent} title={tx('点击用系统图片查看器打开', 'Click to open in system image viewer')}>
+      <div
+        className="gallery-stage"
+        onClick={openCurrent}
+        title={tx('点击用系统图片查看器打开', 'Click to open in system image viewer')}
+      >
         <button
           className="gallery-nav gallery-prev"
           onClick={(e) => {
@@ -304,7 +308,11 @@ export function GalleryViewer({
               ) : (
                 <span className="gallery-thumb-idx">{i + 1}</span>
               )}
-              {item.kind === 'network' ? <span className="gallery-thumb-net" title={tx('网络图', 'network')}>⇅</span> : null}
+              {item.kind === 'network' ? (
+                <span className="gallery-thumb-net" title={tx('网络图', 'network')}>
+                  ⇅
+                </span>
+              ) : null}
             </button>
           );
         })}

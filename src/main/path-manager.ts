@@ -550,11 +550,14 @@ export class PathManager extends EventEmitter {
       if (idx < 0) {
         throw new PathManagerError('GroupNotFound', `groupId="${id}" 不存在`);
       }
-      node = this.groups[idx];
+      // noUncheckedIndexedAccess 下 groups[idx] 是 GroupNode | undefined;
+      // 上面的 findIndex 守卫已保证 idx 有效。
+      node = this.groups[idx]!;
       this.groups.splice(idx, 1);
       this.groups.splice(idx, 0, ...(node.subgroups ?? []));
     } else {
-      const parent = this.findGroupNode(parentId);
+      // parentId 为 string(嵌套组)或 undefined(组不存在——下面 !parent 抛 GroupNotFound)。
+      const parent = this.findGroupNode(parentId!);
       if (!parent) {
         throw new PathManagerError('GroupNotFound', `groupId="${id}" 不存在`);
       }
@@ -563,7 +566,8 @@ export class PathManager extends EventEmitter {
       if (idx < 0) {
         throw new PathManagerError('GroupNotFound', `groupId="${id}" 不存在`);
       }
-      node = subs[idx];
+      // 同上:findIndex 守卫已保证 idx 有效。
+      node = subs[idx]!;
       subs.splice(idx, 1);
       subs.splice(idx, 0, ...(node.subgroups ?? []));
     }

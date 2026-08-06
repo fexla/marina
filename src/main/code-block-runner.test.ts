@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import type { ChildProcess } from 'node:child_process';
 import {
   CodeBlockRunner,
   CodeBlockError,
@@ -20,7 +21,18 @@ import {
   type CodeBlockOutputEvent,
   type CodeBlockExitedEvent,
 } from './code-block-runner';
-import type { SessionInfo, ShellInfo } from '@shared/types';
+import type { SessionInfo } from '@shared/types';
+// ShellInfo 定义在 platform 适配器层,不在 shared(见 code-block-runner.ts 同款 import)。
+import type { ShellInfo } from './platform';
+
+/**
+ * vi.fn 的泛型是"参数元组"而不是函数签名(vitest 1.x:fn<TArgs extends any[]>)。
+ * SpawnFn 是函数类型,直接 vi.fn<SpawnFn>(...) 会破坏约束(T extends any[]),
+ * 这里统一用 Parameters 元组 + 显式返回值。
+ */
+function makeSpawnFnMock(impl: (...args: Parameters<SpawnFn>) => ChildProcess) {
+  return vi.fn<Parameters<SpawnFn>, ChildProcess>(impl);
+}
 
 /** 造一个 fake ChildProcess:满足 pipeOutput 用到的 on('data'/'close'/'error')。 */
 function makeFakeChild(): {
@@ -68,6 +80,7 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
     displayName: 'Shell',
     ownerWindowId: 'w1',
     state: 'active',
+    createdAt: 1000,
     ...overrides,
   };
 }
@@ -153,7 +166,7 @@ describe('buildSpawnArgs', () => {
 describe('CodeBlockRunner', () => {
   it('直接 spawn 对应 shell,cwd 取自 session.currentCwd', async () => {
     const fake = makeFakeChild();
-    const spawnFn = vi.fn<SpawnFn>(() => fake.child);
+    const spawnFn = makeSpawnFnMock(() => fake.child);
     let captured: any;
     const runner = new CodeBlockRunner(
       (id) => (id === 's1' ? makeSession({ currentCwd: 'D:\\repo' }) : null),
@@ -182,7 +195,7 @@ describe('CodeBlockRunner', () => {
 
   it('getShells 注入时用绝对路径 spawn(修复 PATH 缺失 pwsh/bash 的 ENOENT)', async () => {
     const fake = makeFakeChild();
-    const spawnFn = vi.fn<SpawnFn>(() => fake.child);
+    const spawnFn = makeSpawnFnMock(() => fake.child);
     const runner = new CodeBlockRunner(
       (_id) => makeSession(),
       spawnFn,
@@ -208,7 +221,7 @@ describe('CodeBlockRunner', () => {
 
   it('getShells 抛错时回退 PATH 名,不阻塞执行', async () => {
     const fake = makeFakeChild();
-    const spawnFn = vi.fn<SpawnFn>(() => fake.child);
+    const spawnFn = makeSpawnFnMock(() => fake.child);
     const runner = new CodeBlockRunner(
       (_id) => makeSession(),
       spawnFn,

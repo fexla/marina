@@ -203,6 +203,7 @@ import {
   type WorkspaceSummary,
   type WorkspaceBindResult,
   type CommandPanelSnapshot,
+  type CommandPanelUpdatedPayload,
   type RunCommandPayload,
   type CloseCommandPayload,
   type ShowCommandPayload,
@@ -2544,11 +2545,12 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   // 期间的更新不能丢),各自存进 per-session map。流式 output 复用上面的
   // code-block-output(命令面板的 run 就是 codeBlockRunner 跑的,runId 一致)。
   deps.commandPanelService.on('commandPanelUpdated', (p: CommandPanelUpdateEvent) => {
-    broadcastEvent<CommandPanelSnapshot>(EVENT_CHANNELS.COMMAND_PANEL_UPDATED, {
+    // requestActivation 让 renderer 自动切到该指令 tab(与 file-panel 的
+    // FilePanelUpdatedPayload.requestActivation 同构)。
+    broadcastEvent<CommandPanelUpdatedPayload>(EVENT_CHANNELS.COMMAND_PANEL_UPDATED, {
       sessionId: p.sessionId,
       ...p.snapshot,
       requestActivation: p.requestActivation,
-      commandKey: p.commandKey,
     });
   });
 

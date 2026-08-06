@@ -1677,6 +1677,15 @@ export interface CommandPanelSnapshot {
   activeKey: string | null;
 }
 
+/** 命令面板更新广播 payload(requestActivation 让 renderer 自动切到 command tab)。 */
+export interface CommandPanelUpdatedPayload {
+  sessionId: string;
+  commands: CommandEntry[];
+  activeKey: string | null;
+  /** 仅推送新指令时 true,请求 renderer 激活命令面板。 */
+  requestActivation?: boolean;
+}
+
 /** cmd:command-panel:get-state payload/返回。 */
 export interface GetCommandPanelStatePayload {
   sessionId: string;

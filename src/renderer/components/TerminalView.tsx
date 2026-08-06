@@ -789,19 +789,17 @@ export function TerminalView({
   // 解析 + 打开 + 自动切面板)。失败 → toast(IPC reject 丢 error.code 只留 message)。
   // 行号跳转走 pending-line-jump 缓存:先用相对 path 临时存,invoke 成功后用
   // snapshot.activePath(绝对路径)重写 key,TextViewer 消费时命中。
-  const openPathFromTerminalRef = useRef<
-    ((path: string, line?: number) => void) | null
-  >(null);
+  const openPathFromTerminalRef = useRef<((path: string, line?: number) => void) | null>(null);
   const openPathFromTerminal = useCallback(
     (path: string, line?: number) => {
       const trimmed = path.trim();
       if (!trimmed) return;
       if (line !== undefined) setPendingLineJump(trimmed, line);
       window.api
-        .invoke<{ files: unknown[]; activePath: string | null }>(
-          COMMAND_CHANNELS.FILE_PANEL_OPEN,
-          { sessionId: session.id, path: trimmed },
-        )
+        .invoke<
+          { sessionId: string; path: string },
+          { files: unknown[]; activePath: string | null }
+        >(COMMAND_CHANNELS.FILE_PANEL_OPEN, { sessionId: session.id, path: trimmed })
         .then((snap) => {
           if (line !== undefined && snap.activePath) {
             movePendingLineJump(trimmed, snap.activePath);
@@ -1057,10 +1055,10 @@ export function TerminalView({
     const firstAttach = firstAttachRef.current;
     firstAttachRef.current = false;
     void window.api
-      .invoke<unknown, AttachTerminalViewResponse>(
-        COMMAND_CHANNELS.SESSION_ATTACH_TERMINAL_VIEW,
-        { sessionId: session.id, viewId: viewIdRef.current },
-      )
+      .invoke<unknown, AttachTerminalViewResponse>(COMMAND_CHANNELS.SESSION_ATTACH_TERMINAL_VIEW, {
+        sessionId: session.id,
+        viewId: viewIdRef.current,
+      })
       .then((result) => {
         if (unmountedRef.current) {
           // cleanup 可能早于远程 attach response；补发 detach,避免幽灵 lease。
@@ -1180,9 +1178,7 @@ export function TerminalView({
     const webLinksAddon = new WebLinksAddon((_event, url) => {
       window.api
         .invoke(COMMAND_CHANNELS.SYSTEM_OPEN_EXTERNAL, { url })
-        .catch((err) =>
-          console.warn('[terminal] WebLinksAddon link open failed:', err),
-        );
+        .catch((err) => console.warn('[terminal] WebLinksAddon link open failed:', err));
     });
     const searchAddon = new SearchAddon();
     term.loadAddon(fitAddon);
@@ -2212,7 +2208,15 @@ export function TerminalView({
       ];
       ctxApi.open({ x: e.clientX, y: e.clientY, title: '终端', items });
     },
-    [rightClickMode, handlePaste, handleCopy, handleClear, handleOpenSearch, ctxApi, session.pathId],
+    [
+      rightClickMode,
+      handlePaste,
+      handleCopy,
+      handleClear,
+      handleOpenSearch,
+      ctxApi,
+      session.pathId,
+    ],
   );
 
   // Windows Terminal 风格:拖文件进终端 → 把(必要时引号包裹的)路径作为

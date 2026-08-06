@@ -6766,6 +6766,7 @@ button:focus-visible,
  */
 .marina-autoscroll-indicator {
   position: fixed;
+
   /* 锚点坐标由 hook 写入 left/top(视口坐标)。用 translate(-50%,-50%) 把
      图标几何中心对齐到锚点,符合「圆圈中心 = 按下点」的直觉。 */
   transform: translate(-50%, -50%);
@@ -6774,6 +6775,7 @@ button:focus-visible,
   z-index: 2147483647; /* 永远在最上层,不被面板/弹层遮挡 */
   pointer-events: none; /* 图标本身不参与命中,避免它吞掉退出用的 mousedown */
   color: var(--color-text-primary, #333);
+
   /* 半透明背板:浅色描边在深背景上靠这层托底保证可见,反之亦然。 */
   background: var(--color-bg-primary, #fff);
   border-radius: 50%;

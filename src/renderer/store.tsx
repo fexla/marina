@@ -34,6 +34,7 @@ import {
   type FilePanelSnapshot,
   type FilePanelUpdatedPayload,
   type CommandPanelSnapshot,
+  type CommandPanelUpdatedPayload,
   type ListMdThemesResponse,
   type MdThemeListUpdatedPayload,
   type GetSnapshotResponse,
@@ -987,16 +988,14 @@ export function useIpcSync(): {
           window.api.on<{ sessionId: string }>(EVENT_CHANNELS.WORKSPACE_CHANGED, (p) => {
             void restoreWorkspaceSnapshot(dispatch, p.sessionId);
           }),
-          window.api.on<CommandPanelSnapshot & { sessionId: string; requestActivation?: boolean }>(
-            EVENT_CHANNELS.COMMAND_PANEL_UPDATED,
-            (p) =>
-              dispatch({
-                type: 'command-panel/updated',
-                sessionId: p.sessionId,
-                commands: p.commands,
-                activeKey: p.activeKey,
-                requestActivation: p.requestActivation === true,
-              }),
+          window.api.on<CommandPanelUpdatedPayload>(EVENT_CHANNELS.COMMAND_PANEL_UPDATED, (p) =>
+            dispatch({
+              type: 'command-panel/updated',
+              sessionId: p.sessionId,
+              commands: p.commands,
+              activeKey: p.activeKey,
+              requestActivation: p.requestActivation === true,
+            }),
           ),
           window.api.on<MdThemeListUpdatedPayload>(EVENT_CHANNELS.MD_THEME_LIST_UPDATED, (p) =>
             dispatch({ type: 'md-themes/update', themes: p.themes }),

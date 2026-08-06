@@ -30,17 +30,19 @@ function makeFakeRunner() {
   const runs = new Map<string, { sessionId: string; command: string; stopped: boolean }>();
   const runner = {
     on: (event: string, cb: (...a: unknown[]) => void) => bus.on(event, cb),
-    run: vi.fn(async (input: { sourceSessionId: string; code: string; requestingClientId: string }) => {
-      // SSH 模拟:命令含 'ssh:' 视为 SSH session(真实 CodeBlockRunner 按 pathId 判)
-      runCounter++;
-      const runId = `run-${runCounter}`;
-      runs.set(runId, {
-        sessionId: input.sourceSessionId,
-        command: input.code,
-        stopped: false,
-      });
-      return { runId };
-    }),
+    run: vi.fn(
+      async (input: { sourceSessionId: string; code: string; requestingClientId: string }) => {
+        // SSH 模拟:命令含 'ssh:' 视为 SSH session(真实 CodeBlockRunner 按 pathId 判)
+        runCounter++;
+        const runId = `run-${runCounter}`;
+        runs.set(runId, {
+          sessionId: input.sourceSessionId,
+          command: input.code,
+          stopped: false,
+        });
+        return { runId };
+      },
+    ),
     stop: vi.fn((runId: string) => {
       const r = runs.get(runId);
       if (r) r.stopped = true;
@@ -67,7 +69,10 @@ function makeLookup(
   };
 }
 
-function makeFakeScheduler(): CommandScheduler & { tasks: Map<string, unknown>; demands: Map<string, string> } {
+function makeFakeScheduler(): CommandScheduler & {
+  tasks: Map<string, unknown>;
+  demands: Map<string, string>;
+} {
   const tasks = new Map<string, unknown>();
   const demands = new Map<string, string>();
   return {
@@ -79,7 +84,7 @@ function makeFakeScheduler(): CommandScheduler & { tasks: Map<string, unknown>; 
     unregisterTask: vi.fn((key) => {
       tasks.delete(key);
     }),
-    setDemand: vi.fn((key, consumerId, level) => {
+    setDemand: vi.fn((key, _consumerId, level) => {
       demands.set(key, level);
     }),
     clearTaskDemands: vi.fn((key) => {
@@ -141,9 +146,7 @@ describe('CommandPanelService', () => {
     });
 
     it('SSH 拒绝:透传 CodeBlockError(SshUnsupported)→ 状态 error', async () => {
-      runner.run.mockRejectedValueOnce(
-        new CodeBlockError('SshUnsupported', 'ssh not supported'),
-      );
+      runner.run.mockRejectedValueOnce(new CodeBlockError('SshUnsupported', 'ssh not supported'));
       const events: unknown[] = [];
       svc.on('commandPanelUpdated', (e) => events.push(e));
       await svc.runCommand('s1', 'echo ssh', null, 'w1');

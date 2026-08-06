@@ -21,8 +21,8 @@
  * - 不缓存指令列表到 localStorage(状态由 main 真值源推;切面板 <16ms 靠 store
  *   快照本身,LayoutHost 卸载组件但 store 不丢)。
  */
-import { useEffect, useMemo, useRef } from 'react';
-import ReactMarkdown from 'react-markdown';
+import { useEffect, useMemo, useRef, type AnchorHTMLAttributes } from 'react';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   COMMAND_CHANNELS,
@@ -126,7 +126,9 @@ export function CommandPanel({ sessionId }: CommandPanelProps): JSX.Element {
           requestActivation: false,
         }),
       )
-      .catch((err: unknown) => toast.show(err instanceof Error ? err.message : String(err)));
+      .catch((err: unknown) =>
+        toast.push({ kind: 'error', message: err instanceof Error ? err.message : String(err) }),
+      );
   };
 
   const closeCommand = (key: string): void => {
@@ -144,7 +146,9 @@ export function CommandPanel({ sessionId }: CommandPanelProps): JSX.Element {
           requestActivation: false,
         }),
       )
-      .catch((err: unknown) => toast.show(err instanceof Error ? err.message : String(err)));
+      .catch((err: unknown) =>
+        toast.push({ kind: 'error', message: err instanceof Error ? err.message : String(err) }),
+      );
   };
 
   const setStrategy = (key: string, strategy: CommandRefreshStrategy): void => {
@@ -163,7 +167,9 @@ export function CommandPanel({ sessionId }: CommandPanelProps): JSX.Element {
           requestActivation: false,
         }),
       )
-      .catch((err: unknown) => toast.show(err instanceof Error ? err.message : String(err)));
+      .catch((err: unknown) =>
+        toast.push({ kind: 'error', message: err instanceof Error ? err.message : String(err) }),
+      );
   };
 
   const rerun = (entry: CommandEntry): void => {
@@ -174,7 +180,9 @@ export function CommandPanel({ sessionId }: CommandPanelProps): JSX.Element {
         command: entry.command,
         title: entry.title,
       })
-      .catch((err: unknown) => toast.show(err instanceof Error ? err.message : String(err)));
+      .catch((err: unknown) =>
+        toast.push({ kind: 'error', message: err instanceof Error ? err.message : String(err) }),
+      );
   };
 
   return (
@@ -191,12 +199,7 @@ export function CommandPanel({ sessionId }: CommandPanelProps): JSX.Element {
               onClick={() => showCommand(entry.key)}
               title={entry.command}
             >
-              <span
-                className={
-                  'command-tab-status command-status-' + entry.status
-                }
-                aria-hidden
-              />
+              <span className={'command-tab-status command-status-' + entry.status} aria-hidden />
               <span className="command-tab-label">{entry.title ?? entry.command.slice(0, 30)}</span>
               <button
                 className="command-tab-close"
@@ -219,9 +222,7 @@ export function CommandPanel({ sessionId }: CommandPanelProps): JSX.Element {
           <select
             className="command-strategy-select"
             value={activeEntry.strategy}
-            onChange={(e) =>
-              setStrategy(activeEntry.key, e.target.value as CommandRefreshStrategy)
-            }
+            onChange={(e) => setStrategy(activeEntry.key, e.target.value as CommandRefreshStrategy)}
             title={tx('刷新策略', 'Refresh strategy')}
           >
             {STRATEGY_OPTIONS.map((opt) => (
@@ -261,9 +262,11 @@ export function CommandPanel({ sessionId }: CommandPanelProps): JSX.Element {
 function CommandOutput({ entry }: { entry: CommandEntry }): JSX.Element {
   // markdown components:外链 → open-external;其余默认。命令输出无 mdPath 概念,
   // 本地路径链接不支持(那是 T14 Feature F 的范畴,命令面板不承担)。
-  const components = useMemo(
+  const components = useMemo<Components>(
     () => ({
-      a: ({ href, children }: { href?: string; children?: React.ReactNode }) => {
+      // 参数类型必须兼容 react-markdown 的 Components['a'](ClassAttributes &
+      // AnchorHTMLAttributes & ExtraProps)—— 不能用收窄的自定义字面量类型。
+      a: ({ href, children }: AnchorHTMLAttributes<HTMLAnchorElement>) => {
         const handle = (e: React.MouseEvent): void => {
           if (!href || href.startsWith('#')) return;
           e.preventDefault();
@@ -285,9 +288,7 @@ function CommandOutput({ entry }: { entry: CommandEntry }): JSX.Element {
 
   return (
     <div className="command-output">
-      {entry.status === 'running' && (
-        <div className="command-running-indicator">running…</div>
-      )}
+      {entry.status === 'running' && <div className="command-running-indicator">running…</div>}
       {entry.output ? (
         <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
           {entry.output}

@@ -110,7 +110,7 @@ describe('PathManager — 初始化', () => {
   it('从持久化恢复 bookmarks', async () => {
     const { mgr } = makeManager({
       initialBookmarks: {
-        version: 2,
+        version: 3,
         groups: [],
         paths: [
           { id: 'b1', path: TEST_PATH_A, addedAt: 1 },
@@ -619,7 +619,8 @@ describe('PathManager — 收藏分组 (ADR-025 / Feature E.1)', () => {
         version: 2,
         groups: [{ id: 'g1', name: '工作' }],
         paths: [{ id: 'b1', path: TEST_PATH_A, groupId: 'g1', addedAt: 1 }],
-      },
+        // v2 是历史 schema,类型上已升到 v3 —— 迁移测试故意喂旧版本,转义类型检查。
+      } as unknown as BookmarksFile,
     });
     await mgr.initialize();
     const tree = mgr.getTree();

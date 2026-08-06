@@ -35,7 +35,8 @@ describe('resolveLanguage', () => {
     expect(resolveLanguage('language-')).toBeNull();
     expect(resolveLanguage(undefined)).toBeNull();
     expect(resolveLanguage(undefined, '')).toBeNull();
-    expect(resolveLanguage(null)).toBeNull();
+    // 注意:API 契约是 string | undefined,null 不在契约内(renderer 类型已保证),
+    // 这里不测 null 以免把非契约行为固化进测试。
   });
 
   it('裸语言标签可经 fallbackRaw 传入', () => {

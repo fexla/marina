@@ -79,11 +79,11 @@ describe('global.css 样式契约', () => {
   });
 
   it('.md-code-block-btn:hover 反馈色必须由 currentColor 派生', () => {
-    const hover = rules.find((r) =>
-      r.selector.includes('.md-code-block-btn:hover'),
-    );
+    const hover = rules.find((r) => r.selector.includes('.md-code-block-btn:hover'));
     expect(hover, '未找到 .md-code-block-btn:hover 规则').toBeDefined();
-    expect(hover!.body).toMatch(/color-mix\(\s*in srgb,\s*currentColor/);
+    // CSS 关键字 currentColor 大小写不敏感,源码写的是小写 currentcolor
+    // (CSS 层合法);测试用 i 标志匹配,避免把 CSS 层行为固化成大小写敏感。
+    expect(hover!.body).toMatch(/color-mix\(\s*in srgb,\s*currentcolor/i);
     expect(hover!.body).not.toMatch(/var\(\s*--color-bg-/);
   });
 });

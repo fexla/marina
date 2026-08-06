@@ -88,7 +88,9 @@ function defaultTitleFor(command: string): string {
 
 /** 终端 session 查询接口(破除与 SessionManager 的循环依赖,与 FilePanelService 同款)。 */
 export interface CommandPanelSessionLookup {
-  get(sessionId: string): { currentCwd: string; pathId: string; ownerWindowId: string | null } | null;
+  get(
+    sessionId: string,
+  ): { currentCwd: string; pathId: string; ownerWindowId: string | null } | null;
 }
 
 /** 后台调度器抽象(只用到命令面板需要的子集,便于测试 mock)。 */
@@ -107,15 +109,9 @@ export interface CommandScheduler {
   clearTaskDemands(key: string): void;
 }
 
-/** 持久化委托(workspaceOps 子集;未注入则纯内存,持久化由上层在适当时机驱动)。 */
-export interface CommandPanelWorkspaceOps {
-  /** 读 command-panel 快照(bind 恢复 / 首次拉取用)。 */
-  readCommandSnapshot(workspaceId: string): Promise<CommandPanelSnapshotData | null>;
-  /** 写 command-panel 快照(debounce 由上层管)。 */
-  writeCommandSnapshot(workspaceId: string, data: CommandPanelSnapshotData): Promise<void>;
-}
-
-/** command-panel.json 的磁盘 schema(仿 file-panel.json,见 ADR-024 §4)。 */
+/** 命令面板快照的磁盘 schema(仿 file-panel.json,见 ADR-024 §4)。
+ * 持久化委托(attachWorkspaceOps)尚未接线上层,但 restore/export 已实现,
+ * 上层接线时直接调即可。 */
 export interface CommandPanelSnapshotData {
   version: 1;
   commands: CommandEntry[];
@@ -159,7 +155,6 @@ export class CommandPanelService extends EventEmitter {
   private lookup: CommandPanelSessionLookup | null = null;
   private runner: CodeBlockRunner | null = null;
   private scheduler: CommandScheduler | null = null;
-  private workspaceOps: CommandPanelWorkspaceOps | null = null;
 
   /** 注入 session 查询(破循环依赖)。index.ts 组装后调。 */
   attachSessionLookup(lookup: CommandPanelSessionLookup): void {
@@ -177,24 +172,16 @@ export class CommandPanelService extends EventEmitter {
       if (!route) return; // 不是命令面板的 run
       this.handleOutput(route, e.stream, e.data);
     });
-    runner.on(
-      'exited',
-      (e: { runId: string; exitCode: number | null; signal: string | null }) => {
-        const route = this.runRoutes.get(e.runId);
-        if (!route) return;
-        this.handleExited(e.runId, route, e.exitCode, e.signal);
-      },
-    );
+    runner.on('exited', (e: { runId: string; exitCode: number | null; signal: string | null }) => {
+      const route = this.runRoutes.get(e.runId);
+      if (!route) return;
+      this.handleExited(e.runId, route, e.exitCode, e.signal);
+    });
   }
 
   /** 注入后台调度器(BackgroundWorkScheduler)。未注入则后台轮询策略降级为不自动跑。 */
   attachScheduler(scheduler: CommandScheduler): void {
     this.scheduler = scheduler;
-  }
-
-  /** 注入持久化委托(workspaceOps 子集,ADR-024)。 */
-  attachWorkspaceOps(ops: CommandPanelWorkspaceOps): void {
-    this.workspaceOps = ops;
   }
 
   // ──────────────────────────────────────────────────────────────────
@@ -246,7 +233,11 @@ export class CommandPanelService extends EventEmitter {
     // upsert entry
     const entry: CommandEntry =
       existingIdx >= 0
-        ? { ...state.commands[existingIdx]!, command: cmd, title: title ?? state.commands[existingIdx]!.title }
+        ? {
+            ...state.commands[existingIdx]!,
+            command: cmd,
+            title: title ?? state.commands[existingIdx]!.title,
+          }
         : {
             key,
             command: cmd,
@@ -276,7 +267,7 @@ export class CommandPanelService extends EventEmitter {
     this.syncSchedulerTask(sessionId, entry);
 
     // 立即跑一次(无论策略 —— 推送即跑,策略只管后续自动重跑)
-    await this.spawnRun(sessionId, entry, session, requestingClientId);
+    await this.spawnRun(sessionId, entry, requestingClientId);
 
     // 推送新指令时请求 renderer 激活命令面板(切到 command tab)。spawnRun 已 emit
     // 过 running 态(requestActivation=false),这里再 emit 一次带 requestActivation=isNew,
@@ -414,9 +405,10 @@ export class CommandPanelService extends EventEmitter {
       status: 'idle' as CommandRunStatus,
       lastRunId: null,
     }));
-    state.activeKey = data.activeKey && state.commands.some((c) => c.key === data.activeKey)
-      ? data.activeKey
-      : (state.commands[0]?.key ?? null);
+    state.activeKey =
+      data.activeKey && state.commands.some((c) => c.key === data.activeKey)
+        ? data.activeKey
+        : (state.commands[0]?.key ?? null);
     logger.info(MODULE, `restoreSnapshot: sid=${sessionId} commands=${state.commands.length}`);
   }
 
@@ -448,7 +440,6 @@ export class CommandPanelService extends EventEmitter {
   private async spawnRun(
     sessionId: string,
     entry: CommandEntry,
-    session: { currentCwd: string; pathId: string },
     requestingClientId: string | null,
   ): Promise<void> {
     if (!this.runner) {
@@ -550,10 +541,7 @@ export class CommandPanelService extends EventEmitter {
   }
 
   /** 按策略注册/刷新/注销后台 task。foreground/manual/off 不注册(或注销已有)。 */
-  private syncSchedulerTask(
-    sessionId: string,
-    entry: CommandEntry,
-  ): void {
+  private syncSchedulerTask(sessionId: string, entry: CommandEntry): void {
     if (!this.scheduler) return;
     const taskKey = this.schedulerTaskKey(sessionId, entry.key);
     const hot = strategyToHotInterval(entry.strategy);
@@ -565,14 +553,15 @@ export class CommandPanelService extends EventEmitter {
     const interval = BACKGROUND_INTERVAL_MS[entry.strategy];
     // foreground warmIntervalMs 用同一个大值(面板不可见=demand NONE 时本来就不跑,
     // warm 只在 HOT→WARM 切换时用,foreground 不进 WARM,这里给个大值避免校验失败)。
-    const warmMs = entry.strategy === 'foreground' ? FOREGROUND_HOT_INTERVAL_MS : (interval ?? 30_000);
+    const warmMs =
+      entry.strategy === 'foreground' ? FOREGROUND_HOT_INTERVAL_MS : (interval ?? 30_000);
     this.scheduler.registerTask(taskKey, {
       hotIntervalMs: hot,
       warmIntervalMs: warmMs,
       run: async () => {
         const session = this.lookup?.get(sessionId);
         if (!session) return;
-        await this.spawnRun(sessionId, entry, session, session.ownerWindowId ?? sessionId);
+        await this.spawnRun(sessionId, entry, session.ownerWindowId ?? sessionId);
       },
       onError: (e) => logger.warn(MODULE, `scheduler task error: ${taskKey}`, e),
     });

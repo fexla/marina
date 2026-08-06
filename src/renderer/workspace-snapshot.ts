@@ -18,12 +18,12 @@
  * - 不在 PTY 逐字节热路径上报。
  */
 import type { AppAction, AppState } from './store';
-import type {
-  COMMAND_CHANNELS,
-  WorkspaceFilePanelSnapshot,
-} from '@shared/protocol';
+import { COMMAND_CHANNELS, type WorkspaceFilePanelSnapshot } from '@shared/protocol';
 import type { FileKind } from '@shared/types';
-import { restoreCodeBlockRuns, exportCodeBlockRuns } from './components/file-panel/code-block-run-cache';
+import {
+  restoreCodeBlockRuns,
+  exportCodeBlockRuns,
+} from './components/file-panel/code-block-run-cache';
 
 type Dispatch = (action: AppAction) => void;
 type GetState = () => AppState;
@@ -49,9 +49,9 @@ export async function restoreWorkspaceSnapshot(
       { sessionId: string },
       { snapshot: WorkspaceFilePanelSnapshot | null }
     >(
-      // COMMAND_CHANNELS 通过值 import 拿不到(JS const),这里用字面量通道名(与
-      // protocol.ts WORKSPACE_READ_SNAPSHOT 一致;reducer 不需要这个常量)。
-      'cmd:workspace:read-snapshot' as unknown as typeof COMMAND_CHANNELS,
+      // 通道名用常量(COMMAND_CHANNELS 是值,不是类型;旧代码 type-import 导致
+      // 只能字面量 + 错误 cast,这里恢复值 import 用真实常量)。
+      COMMAND_CHANNELS.WORKSPACE_READ_SNAPSHOT,
       { sessionId },
     );
     if (!snapshot) return;
@@ -61,8 +61,10 @@ export async function restoreWorkspaceSnapshot(
     for (const f of snapshot.openedFiles) {
       kindByPath.set(f.path, f.kind as FileKind);
     }
-    const scrollWithKind: Record<string, { scrollTop: number; scrollLeft: number; kind: FileKind }> =
-      {};
+    const scrollWithKind: Record<
+      string,
+      { scrollTop: number; scrollLeft: number; kind: FileKind }
+    > = {};
     for (const [path, pos] of Object.entries(snapshot.scroll)) {
       const kind = kindByPath.get(path);
       if (!kind) continue; // scroll 对应的文件已不在 openedFiles,跳过(防复活)
@@ -139,7 +141,7 @@ async function doWriteSnapshot(
   const openedFiles = (panel?.files ?? []).map((f) => {
     const external = !wsDir || isAbsoluteOutside(f.path, wsDir);
     // workspace 内文件存相对路径(让 main 拼根;换机器/换根仍有效);外存绝对。
-    const path = !external && wsDir ? toRelative(f.path, wsDir) ?? f.path : f.path;
+    const path = !external && wsDir ? (toRelative(f.path, wsDir) ?? f.path) : f.path;
     return { path, kind: String(f.kind), external };
   });
   const scrollRaw = state.fileViewerScroll.get(sessionId);
@@ -147,7 +149,7 @@ async function doWriteSnapshot(
   if (scrollRaw) {
     for (const [path, pos] of scrollRaw) {
       const external = !wsDir || isAbsoluteOutside(path, wsDir);
-      const storedPath = !external && wsDir ? toRelative(path, wsDir) ?? path : path;
+      const storedPath = !external && wsDir ? (toRelative(path, wsDir) ?? path) : path;
       scroll[storedPath] = { scrollTop: pos.scrollTop, scrollLeft: pos.scrollLeft };
     }
   }
@@ -162,7 +164,7 @@ async function doWriteSnapshot(
   };
   try {
     await window.api.invoke<{ sessionId: string; snapshot: WorkspaceFilePanelSnapshot }, void>(
-      'cmd:workspace:write-snapshot' as unknown as typeof COMMAND_CHANNELS,
+      COMMAND_CHANNELS.WORKSPACE_WRITE_SNAPSHOT,
       { sessionId, snapshot },
     );
   } catch (err) {

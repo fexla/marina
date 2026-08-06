@@ -28,6 +28,7 @@ import type { SessionInfo } from '@shared/types';
 import type * as IpcModule from './ipc';
 import { FilePanelService } from './file-panel-service';
 import { GitService } from './git-service';
+import type { FileTreeService } from './file-tree-service';
 import { FileTreePollingService } from './file-tree-polling-service';
 import { MarkdownThemeManager } from './markdown-theme-manager';
 import { CodeBlockRunner } from './code-block-runner';
@@ -317,7 +318,7 @@ function makeStubs() {
       // 测试中不会被调用(file-tree-polling-service 自身有完整单测)。
       fileTreePollingService: new FileTreePollingService(
         { get: () => null },
-        fileTreeService as unknown,
+        fileTreeService as unknown as FileTreeService,
       ),
       performanceDiagnostics: performanceDiagnostics as unknown,
       skillInstaller: {
