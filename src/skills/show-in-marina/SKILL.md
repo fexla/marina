@@ -1,6 +1,6 @@
 ---
 name: show-in-marina
-description: Use Marina's terminal-side file panel to show the user Markdown, text, code, or image results. Use after producing a report, plan, review, research result, or other artifact worth reading outside chat. Markdown files shown this way can include fenced code blocks (bash/powershell/cmd) that the user runs with one click — write actionable docs (setup guides, "try these" command menus, fix-verification steps). Requires Marina (the CLI checks; never read service/token vars yourself; use the workspace command for scratch paths).
+description: Use Marina's terminal-side file panel to show the user Markdown, text, code, or image results; or push a shell command whose output renders in the command panel via `marina run`. Use after producing a report, plan, review, research result, or other artifact worth reading outside chat. Markdown files shown this way can include fenced code blocks (bash/powershell/cmd) that the user runs with one click — write actionable docs (setup guides, "try these" command menus, fix-verification steps). Requires Marina (the CLI checks; never read service/token vars yourself; use the workspace command for scratch paths).
 ---
 
 # Show files in Marina
@@ -243,6 +243,56 @@ full current state without re-pasting. Concretely:
 Resolve the workspace once per terminal and reuse that concrete path for every
 overwrite (the path is stable for the session; you do not need to re-resolve it
 each turn).
+
+## Run a command in the command panel
+
+`show` is for a **finished document you wrote**. `run` is the other channel:
+hand Marina a **shell command** and it executes that command, then renders the
+**output** in a separate panel — the **command panel** (the 4th dock panel,
+beside Open / Git / File-tree). Use it when the user wants to *watch a
+command's output* without reclaiming the terminal (which you are usually
+occupying): `gh issue list`, `git log`, a build status, a wayfinder map. The
+command runs via **bash in the current session's cwd**, not through the
+terminal PTY, so it never disturbs your shell session.
+
+```bash
+./marina run "gh issue list --limit 5"      # render that command's output
+./marina run --title issues "gh issue list" # give the tab a custom title
+./marina run git status --short             # quotes optional for a single arg
+./marina run -q "make test"                 # -q / --quiet suppresses the line
+```
+
+(PowerShell / cmd.exe: `.\marina.cmd run ...` with the same args.)
+
+Everything after `run` is joined into one command string, so quote it the way
+your own shell expects (bash needs quotes around anything with spaces).
+Marina does not parse the command — it passes the whole string to bash.
+
+**`run` vs `show` — decide by what changes:**
+
+- A **document you authored** that is done → `show` a file (Open panel).
+- A **command's current output** that may differ on rerun → `run` the command
+  (Command panel).
+
+**Tabs and refresh are panel-side, not CLI options:**
+
+- Each distinct command opens its own tab. Pushing the **same** command again
+  does **not** add a tab — it re-runs the existing one (dedup).
+- Refresh policy is per-tab and is chosen by the **user in the panel toolbar**,
+  not by the CLI. Default is **foreground-only** (runs while the user views
+  that tab; stops when they switch away, to save resources). The user may
+  switch a tab to **background polling** (e.g. every 30s / 5s), **manual**, or
+  **off**. Your `run` pushes the command and fires one immediate run; the
+  policy is the user's call.
+- Output renders as Markdown (plain text is valid Markdown, so raw output
+  still looks right). URLs are clickable; fenced code blocks get a Run button,
+  just like `show`.
+
+Prereqs match `show`: needs `MARINA_SERVICE` / `MARINA_TOKEN` / `TERMINAL_ID`
+(see `ping`). **SSH sessions are unsupported** — the command panel does not
+appear (the session cwd is remote; the local daemon cannot spawn there),
+symmetric with the Git panel. Exit codes are the same as `show` (0 ok, 1
+offline, 2 usage, 3 rejected).
 
 ## Runnable code blocks in Markdown you show
 

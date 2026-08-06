@@ -200,23 +200,109 @@ function Invoke-CmdPing {
 }
 
 function Invoke-CmdWorkspace {
-  # Print the concrete absolute workspace path. This command intentionally
-  # does not require MARINA_SERVICE/TOKEN: the directory is a local env
-  # capability created before the PTY starts. Non-shell write tools must use
-  # this concrete path because they never expand shell variable syntax.
+  # v0.3.3 ADR-024 / Feature D: workspace subcommands.
+  # workspaceId is decoupled from sessionId, so $env:MARINA_WORKSPACE is the
+  # stale spawn-time value (degrades to the initial value after a switch) and
+  # is NOT reliable. The CLI always queries the local desktop daemon (main is
+  # the source of truth):
+  #   workspace         - print this session's bound workspace absolute path
+  #   workspace list    - list named workspaces under the current path scope
+  #   workspace bind --name X [--new] - upsert (new -> name+pin; exists -> switch)
+  #   workspace new     - switch to a fresh empty temp workspace (named stays pinned)
+  #   workspace unpin [--name X] - strip name+pinned; becomes reclaimable
+  # main unreachable (ping/HTTP fails) -> exit 1 (no $env fallback, ADR 2.7).
   param($Config, [string[]]$CmdArgs)
-  if ($CmdArgs.Count -gt 0) {
-    Die $script:EXIT_USAGE 'workspace: does not accept arguments'
+  $sub = if ($CmdArgs.Count -gt 0) { [string]$CmdArgs[0] } else { '' }
+  $subArgs = if ($CmdArgs.Count -gt 1) { $CmdArgs[1..($CmdArgs.Count - 1)] } else { @() }
+
+  # All subcommands query main (SERVICE + TOKEN + TERMINAL_ID). workspace no
+  # longer reads $env.
+  if (-not $Config.Service) { Die $script:EXIT_OFFLINE 'MARINA_SERVICE is unset (not in a Marina terminal, or file panel is disabled)' }
+  if (-not $Config.Token) { Die $script:EXIT_OFFLINE 'MARINA_TOKEN is unset' }
+  if (-not $Config.Terminal) { Die $script:EXIT_OFFLINE 'TERMINAL_ID is unset' }
+
+  switch ($sub) {
+    '' {
+      # workspace (no subcommand): print the bound workspace absolute path.
+      $resp = Send-MarinaRequest -Config $Config -Method 'GET' -Path "/workspace?terminal=$($Config.Terminal)"
+      if (-not $resp.path) { Die $script:EXIT_REJECTED 'session has no bound workspace' }
+      [Console]::Out.WriteLine([string]$resp.path)
+      return $script:EXIT_OK
+    }
+    'list' {
+      Assert-NoUnknownOptions -CmdArgs $subArgs -Allowed @('--json') -CmdName 'workspace list'
+      $resp = Send-MarinaRequest -Config $Config -Method 'GET' -Path "/workspace/list?terminal=$($Config.Terminal)"
+      # PS deserializes a 1-element JSON array into a single object (not an array),
+      # so force it into an array for uniform Count/iteration.
+      $items = @($resp.items)
+      $json = $subArgs -contains '--json'
+      if ($json) {
+        [Console]::Out.WriteLine(($items | ConvertTo-Json -Compress -Depth 10))
+      } else {
+        if ($items.Count -eq 0) { [Console]::Out.WriteLine('(no named workspaces under the current path scope)') }
+        else {
+          foreach ($it in $items) {
+            $name = if ($it.name) { [string]$it.name } else { '(unnamed)' }
+            $pinnedTag = if ($it.pinned) { ' [pinned]' } else { '' }
+            # createdAt is epoch ms; format to local time. Guard against null/missing.
+            $dtStr = ''
+            if ($it.createdAt) {
+              try { $dtStr = [datetimeoffset]::FromUnixTimeMilliseconds([long]$it.createdAt).LocalTime.ToString('yyyy-MM-dd HH:mm') } catch { $dtStr = '' }
+            }
+            [Console]::Out.WriteLine($name + '  ' + [string]$it.fileCount + ' files  ' + $dtStr + $pinnedTag)
+          }
+        }
+      }
+      return $script:EXIT_OK
+    }
+    'bind' {
+      Assert-NoUnknownOptions -CmdArgs $subArgs -Allowed @('--name', '--new') -CmdName 'workspace bind'
+      $name = $null; $forceNew = $false
+      $i = 0
+      while ($i -lt $subArgs.Count) {
+        $a = [string]$subArgs[$i]
+        if ($a -eq '--name') { $i++; if ($i -ge $subArgs.Count) { Die $script:EXIT_USAGE 'workspace bind: --name requires a value' }; $name = [string]$subArgs[$i] }
+        elseif ($a -eq '--new') { $forceNew = $true }
+        $i++
+      }
+      if (-not $name) { Die $script:EXIT_USAGE 'workspace bind: --name X is required' }
+      $resp = Send-MarinaRequest -Config $Config -Method 'POST' -Path '/workspace/bind' -Body @{ terminal = $Config.Terminal; name = $name; new = $forceNew }
+      if ($resp.kind -eq 'created') {
+        [Console]::Out.WriteLine("Named current workspace '$name' (pinned)")
+      } else {
+        # switched: hint this is a switch to an existing workspace (ADR 2.2 A2)
+        $dtStr = ''
+        if ($resp.createdAt) {
+          try { $dtStr = [datetimeoffset]::FromUnixTimeMilliseconds([long]$resp.createdAt).LocalTime.ToString('yyyy-MM-dd HH:mm') } catch { $dtStr = '' }
+        }
+        [Console]::Out.WriteLine("Switched to existing workspace '$name' (created $dtStr, $([string]$resp.fileCount) files)")
+      }
+      return $script:EXIT_OK
+    }
+    'new' {
+      Assert-NoUnknownOptions -CmdArgs $subArgs -Allowed @() -CmdName 'workspace new'
+      if ($subArgs.Count -gt 0) { Die $script:EXIT_USAGE 'workspace new: takes no arguments' }
+      $resp = Send-MarinaRequest -Config $Config -Method 'POST' -Path '/workspace/new' -Body @{ terminal = $Config.Terminal }
+      [Console]::Out.WriteLine("Switched to a fresh empty workspace: $([string]$resp.dir)")
+      return $script:EXIT_OK
+    }
+    'unpin' {
+      Assert-NoUnknownOptions -CmdArgs $subArgs -Allowed @('--name') -CmdName 'workspace unpin'
+      $name = $null
+      $i = 0
+      while ($i -lt $subArgs.Count) {
+        $a = [string]$subArgs[$i]
+        if ($a -eq '--name') { $i++; if ($i -ge $subArgs.Count) { Die $script:EXIT_USAGE 'workspace unpin: --name requires a value' }; $name = [string]$subArgs[$i] }
+        $i++
+      }
+      $body = @{ terminal = $Config.Terminal }
+      if ($name) { $body['name'] = $name }
+      $resp = Send-MarinaRequest -Config $Config -Method 'POST' -Path '/workspace/unpin' -Body $body | Out-Null
+      [Console]::Out.WriteLine('Unpinned (stripped name+pinned; now reclaimable)')
+      return $script:EXIT_OK
+    }
+    default { Die $script:EXIT_USAGE "workspace: unknown subcommand: $sub. Available: list / bind / new / unpin" }
   }
-  if (-not $Config.Workspace) {
-    Die $script:EXIT_OFFLINE 'MARINA_WORKSPACE is unset (not in a Marina terminal, or this session predates managed workspaces)'
-  }
-  $p = Resolve-AbsPath -P $Config.Workspace
-  if (-not (Test-Path -LiteralPath $p -PathType Container)) {
-    Die $script:EXIT_REJECTED "MARINA_WORKSPACE is not an existing directory: $p"
-  }
-  [Console]::Out.WriteLine($p)
-  return $script:EXIT_OK
 }
 
 # Reject any unrecognized --foo / -x token instead of silently swallowing it.
@@ -257,6 +343,46 @@ function Invoke-CmdShow {
   if (-not $Config.Terminal) { Die $script:EXIT_OFFLINE 'TERMINAL_ID is unset' }
   Send-MarinaRequest -Config $Config -Method 'POST' -Path '/open-file' -Body @{ terminal = $Config.Terminal; path = $p } | Out-Null
   if (-not $quiet) { [Console]::Out.WriteLine("shown: $p") }
+  return $script:EXIT_OK
+}
+
+function Invoke-CmdRun {
+  <#
+    Run an arbitrary shell command string in Marina's command panel
+    (ADR-027 / Feature G). The command is run via CodeBlockRunner (bash,
+    in session.currentCwd) and its markdown output renders in the 4th dock
+    panel. All remaining args after `run` are joined into one command string
+    (so quoting is handled by the caller's shell). Optional --title sets the
+    tab display title; --quiet suppresses the success line.
+
+    Examples:
+      marina run "gh issue list --limit 5"
+      marina run --title issues "gh issue list"
+      marina run git status --short
+  #>
+  param($Config, [string[]]$CmdArgs)
+  Assert-NoUnknownOptions -CmdArgs $CmdArgs -Allowed @('--quiet', '-q', '--title') -CmdName 'run'
+  $quiet = $false; $title = $null; $commandParts = @()
+  $i = 0
+  while ($i -lt $CmdArgs.Count) {
+    $a = [string]$CmdArgs[$i]
+    if ($a -eq '--quiet' -or $a -eq '-q') { $quiet = $true; $i++ }
+    elseif ($a -eq '--title') {
+      $i++
+      if ($i -ge $CmdArgs.Count) { Die $script:EXIT_USAGE 'run: --title requires a value' }
+      $title = [string]$CmdArgs[$i]; $i++
+    }
+    else { $commandParts += $a; $i++ }
+  }
+  $command = ($commandParts -join ' ').Trim()
+  if (-not $command) {
+    Die $script:EXIT_USAGE 'run: requires a COMMAND (e.g. `marina run "gh issue list"`)'
+  }
+  if (-not $Config.Terminal) { Die $script:EXIT_OFFLINE 'TERMINAL_ID is unset' }
+  $body = @{ terminal = $Config.Terminal; command = $command }
+  if ($title) { $body['title'] = $title }
+  Send-MarinaRequest -Config $Config -Method 'POST' -Path '/run' -Body $body | Out-Null
+  if (-not $quiet) { [Console]::Out.WriteLine("ran: $command") }
   return $script:EXIT_OK
 }
 
@@ -395,18 +521,80 @@ function Invoke-CmdList {
   return $script:EXIT_OK
 }
 
+function Invoke-CmdScreenshot {
+  # v0.3.3 T12(testability enabler): capture this terminal's owner window as a PNG.
+  # Used by agents to self-verify UI without a human screenshot. Unlike other commands
+  # this returns BINARY (image/png), so it uses Invoke-WebRequest -OutFile directly
+  # rather than the JSON Send-MarinaRequest. Default output path = a timestamped
+  # file under the managed workspace (so agents can `read` it); explicit PATH overrides.
+  param($Config, [string[]]$CmdArgs)
+  Assert-NoUnknownOptions -CmdArgs $CmdArgs -Allowed @() -CmdName 'screenshot'
+  if (-not $Config.Service) {
+    Die $script:EXIT_OFFLINE 'MARINA_SERVICE is unset (not in a Marina terminal, or file panel is disabled in settings)'
+  }
+  if (-not $Config.Token) { Die $script:EXIT_OFFLINE 'MARINA_TOKEN is unset' }
+  if (-not $Config.Terminal) { Die $script:EXIT_OFFLINE 'MARINA_TERMINAL is unset (cannot identify owner window)' }
+
+  # Resolve output path: explicit arg > workspace/<timestamp>.png > temp fallback.
+  $outPath = if ($CmdArgs.Count -ge 1 -and $CmdArgs[0]) { Resolve-AbsPath -P ([string]$CmdArgs[0]) } else { $null }
+  if (-not $outPath) {
+    $ws = if ($Config.Workspace) { Resolve-AbsPath -P $Config.Workspace } else { $null }
+    $dir = if ($ws -and (Test-Path -LiteralPath $ws -PathType Container)) { $ws } else { [System.IO.Path]::GetTempPath() }
+    $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss')
+    $outPath = Join-Path $dir "marina-screenshot-$stamp.png"
+  }
+
+  $url = $Config.Service.TrimEnd('/') + '/screenshot?terminal=' + [uri]::EscapeDataString($Config.Terminal)
+  try {
+    # Binary download: Invoke-WebRequest writes the response body straight to disk.
+    Invoke-WebRequest -Uri $url -Method GET -TimeoutSec 10 -Headers @{ Authorization = "Bearer $($Config.Token)" } `
+      -OutFile $outPath -ErrorAction Stop | Out-Null
+  } catch {
+    $resp = $_.Exception.Response
+        if ($null -eq $resp) { Die $script:EXIT_OFFLINE "cannot reach $($url): $($_.Exception.Message)" }
+    $code = [int]$resp.StatusCode
+    $bodyText = ''
+    try {
+      $stream = $resp.GetResponseStream(); $reader = New-Object System.IO.StreamReader($stream)
+      $bodyText = $reader.ReadToEnd()
+      $parsed = $bodyText | ConvertFrom-Json -ErrorAction SilentlyContinue
+      if ($parsed -and $parsed.error) { $bodyText = [string]$parsed.error }
+    } catch {}
+    Die $script:EXIT_REJECTED "Marina rejected screenshot (HTTP $code): $bodyText"
+  }
+  [Console]::Out.WriteLine($outPath)
+  return $script:EXIT_OK
+}
+
 function Print-Usage {
   [Console]::Out.WriteLine(@'
-usage: marina [-h] {ping,workspace,show,close,list} ...
+usage: marina [-h] {ping,workspace,show,run,close,list,screenshot} ...
 
 Drive Marina's side file panel from inside a Marina terminal. Env vars are
 read automatically; do not pass them as CLI options.
 
 commands:
   ping              check whether Marina is reachable (exit 0/1)
-  workspace         print this session's managed scratch directory
+  workspace         print this session's bound workspace path (queries main;
+                    $env:MARINA_WORKSPACE is stale after a switch, always query)
+  workspace list    list named workspaces under the current path scope
+                    --json      raw JSON output
+  workspace bind --name X [--new]
+                    upsert: new name -> name+pin current; existing -> switch
+                    --new + existing name -> error (must be a fresh create)
+  workspace new     switch this session to a fresh empty temp workspace
+                    (previously named workspace stays pinned)
+  workspace unpin [--name X]
+                    strip name+pinned; the workspace becomes reclaimable
+                    (no `remove` command -- unpin is the safe exit)
   show <PATH>       open an existing file in the panel
                     -q, --quiet suppress success output
+  run <COMMAND>     run an arbitrary shell command (bash) and render its
+                    markdown output in the command panel (ADR-027)
+                    all args after `run` are joined into one command string
+                    --title "X"  set the tab display title
+                    -q, --quiet  suppress success output
+                    e.g. marina run "gh issue list --limit 5"
   close <PATH>      close one file (exact path, or just the file name)
   close --all       close every file in this terminal's panel
   close --stale     close only tabs whose file no longer exists on disk
@@ -416,6 +604,9 @@ commands:
   list              list files open in this terminal's panel
                     deleted files are marked with ! and (deleted)
                     --json      raw JSON output (includes `missing`)
+  screenshot [PATH] capture this terminal's owner window as a PNG
+                    default: <workspace>/marina-screenshot-<timestamp>.png
+                    prints the saved path; agents can `read` it to self-test UI
 
 There is no stdin mode. Run `marina workspace` to get the concrete scratch
 path, write the artifact there with your file-writing tool (UTF-8), then run
@@ -437,7 +628,9 @@ switch ($Command) {
   'ping' { exit (Invoke-CmdPing -Config $cfg) }
   'workspace' { exit (Invoke-CmdWorkspace -Config $cfg -CmdArgs $Rest) }
   'show' { exit (Invoke-CmdShow -Config $cfg -CmdArgs $Rest) }
+  'run' { exit (Invoke-CmdRun -Config $cfg -CmdArgs $Rest) }
   'close' { exit (Invoke-CmdClose -Config $cfg -CmdArgs $Rest) }
   'list' { exit (Invoke-CmdList -Config $cfg -CmdArgs $Rest) }
+  'screenshot' { exit (Invoke-CmdScreenshot -Config $cfg -CmdArgs $Rest) }
   default { Die $script:EXIT_USAGE "unknown command: $Command" }
 }

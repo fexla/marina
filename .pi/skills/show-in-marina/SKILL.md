@@ -1,30 +1,57 @@
 ---
 name: show-in-marina
-description: Use Marina's terminal-side file panel to show the user Markdown, text, code, or image results. Use after producing a report, plan, review, research result, or other artifact worth reading outside chat. Markdown files shown this way can include fenced code blocks (bash/powershell/cmd) that the user runs with one click — write actionable docs (setup guides, "try these" command menus, fix-verification steps). Requires Marina (the CLI checks; never read service/token vars yourself; use the workspace command for scratch paths).
+description: Use Marina's terminal-side file panel to show the user Markdown, text, code, or image results; or push a shell command whose output renders in the command panel via `marina run`. Use after producing a report, plan, review, research result, or other artifact worth reading outside chat. Markdown files shown this way can include fenced code blocks (bash/powershell/cmd) that the user runs with one click — write actionable docs (setup guides, "try these" command menus, fix-verification steps). Requires Marina (the CLI checks; never read service/token vars yourself; use the workspace command for scratch paths).
 ---
 
 # Show files in Marina
 
 Place a result in the active terminal's Marina file panel instead of pasting a
-long document into chat. This skill ships a small Windows CLI that handles env
-vars, HTTP, UTF-8 encoding, and Bearer auth for you. There are three entry
-points, all in the same directory as this SKILL.md:
+long document into chat. This skill ships a small CLI that handles env
+vars, HTTP, UTF-8 encoding, and Bearer auth for you. The same `marina`
+entry point works on **Windows, Linux, and macOS**: it is a bash dispatcher
+that transparently selects the right client for the host. There are four
+files, all in the same directory as this SKILL.md:
 
-- **`marina`** (no extension, a bash script) — use this when your shell is
-  **bash / Git Bash / MSYS** on Windows. It wraps the real logic and avoids a
-  silent-success trap with `cmd /c` (see "Bash / Git Bash" below).
-- **`marina.cmd`** — the launcher for **plain cmd.exe or PowerShell** (no bash
-  involved). It calls `powershell.exe -File marina.ps1` for you.
-- **`marina.ps1`** — the real logic. You normally do not call it directly; the
-  two launchers above do.
+- **`marina`** (no extension, a bash script) — the single entry point on
+  every platform. On **bash / Git Bash / MSYS on Windows** it execs
+  `marina.ps1` via `powershell.exe` (sidestepping a silent-success trap with
+  `cmd /c`, see "Bash / Git Bash" below). On **Linux / macOS** it execs the
+  native `marina.sh`. You usually just call this.
+- **`marina.sh`** — the native POSIX client (bash + curl). The `marina`
+  dispatcher runs this on Linux / macOS. It needs NO extra runtime (no
+  PowerShell, no python, no jq) — only bash + curl, which ship with every
+  mainstream desktop Linux and macOS.
+- **`marina.cmd`** — Windows-only launcher for **plain cmd.exe or PowerShell**
+  (no bash involved). It calls `powershell.exe -File marina.ps1` for you.
+- **`marina.ps1`** — the Windows client (PowerShell). The `marina` dispatcher
+  runs this on Windows. You normally do not call it directly.
 
-All three live **in the same directory as this SKILL.md**. Always invoke them
+All four live **in the same directory as this SKILL.md**. Always invoke them
 by that resolved path — never assume a bare `marina` is on PATH (it is not),
 and never modify PATH or create a launcher elsewhere.
 
 ## How to invoke the CLI (important)
 
-### PowerShell (or plain cmd.exe, no bash)
+### Linux / macOS (bash)
+
+Use the **`marina`** dispatcher in this directory. It auto-detects that no
+`powershell.exe` is present and runs the native `marina.sh` for you:
+
+```bash
+./marina ping
+# or, if the file lacks the executable bit in your environment:
+bash marina ping
+```
+
+The bash examples below use `./marina` for brevity; substitute the resolved
+path when your working directory differs (e.g.
+`bash /abs/path/to/skill/marina ping`). The dispatcher locates `marina.sh`
+via its own location, so it works from any cwd. You can also call
+`bash marina.sh` directly if you prefer. The native client needs only `bash`
+and `curl` (both present on a default Linux/macOS install) — it does not
+require PowerShell, python, node, or jq.
+
+### PowerShell (or plain cmd.exe, no bash) — Windows
 
 From the directory containing this SKILL.md:
 
@@ -68,6 +95,14 @@ its own location, so it works from any cwd.
 
 ## Quick check: am I in Marina?
 
+Linux / macOS:
+
+```bash
+./marina ping
+```
+
+Windows (PowerShell / cmd.exe):
+
 ```powershell
 .\marina.cmd ping
 ```
@@ -92,11 +127,19 @@ Instead:
 
 ### Where to write the artifact: resolve the managed workspace first
 
-Marina injects a per-terminal scratch directory as `MARINA_WORKSPACE`.
-Throwaway display-only artifacts belong there; source-controlled deliverables
-still belong in the project's `docs/`. The managed directory is isolated per
+Marina maintains a per-terminal managed scratch directory. Throwaway
+display-only artifacts belong there; source-controlled deliverables still
+belong in the project's `docs/`. The managed directory is isolated per
 terminal and automatically reclaimed after the session closes (default
 retention 7 days, configurable; `0` deletes immediately).
+
+> **v0.3.3 contract change:** the directory used to be fixed at PTY spawn and
+> readable from `$env:MARINA_WORKSPACE`. It is now **decoupled from the session
+> and can switch at runtime** (bind a name, switch to a named workspace, start
+> a fresh one). So `$env:MARINA_WORKSPACE` is the **stale spawn-time value** —
+> after a `workspace bind`/`workspace new` switch it no longer points at the
+> active directory. **Always resolve the current path via the CLI**, which
+> queries Marina's main process (the source of truth).
 
 **Critical path rule:** shell variable syntax is expanded only by that shell.
 A file-writing API/tool (`write`, `edit`, Python `open`, Node `fs`, etc.) does
@@ -124,6 +167,34 @@ artifact="${workspace}/architecture-review.md"
 printf '# Architecture review\n\n...' > "$artifact"
 ./marina show "$artifact"
 ```
+
+#### Workspace lifecycle subcommands (v0.3.3)
+
+These let you name and reuse a scratch directory across the session, or hand
+work off between tasks. They all query main (require the Marina env vars);
+there is **no `remove`** command — to stop preserving a named workspace use
+`unpin` and it becomes reclaimable after the retention window.
+
+- `marina workspace` — print this session's **current** bound workspace path
+  (always query this; `$env:MARINA_WORKSPACE` is stale after a switch).
+- `marina workspace list [--json]` — list named workspaces under the current
+  path scope (name / created / file count / pinned).
+- `marina workspace bind --name X [--new]` — **upsert**. If `X` is new, the
+  current scratch dir is **named** `X` and pinned (preserved across restarts).
+  If `X` already exists in this path scope, this session **switches** to that
+  existing directory (the prior unnamed scratch is released; the command
+  prints a hint so you notice it was a switch, not a create). `--new` forces a
+  fresh create and **errors** if `X` already exists.
+- `marina workspace new` — switch this session to a fresh empty unnamed
+  scratch directory (a previously named workspace stays pinned).
+- `marina workspace unpin [--name X]` — strip the name + pinned flag so the
+  workspace returns to ordinary retention (reclaimed after the window). With
+  no `--name`, unpins the session's current workspace.
+
+Typical agent flow: do work in the default scratch; once you want to preserve
+a deliverable for later reuse, `marina workspace bind --name <task>` early
+(before accumulating throwaway output), then `marina workspace bind --name
+<task>` again later to return to it.
 
 When using a non-shell file-writing tool, follow this exact sequence:
 
@@ -172,6 +243,56 @@ full current state without re-pasting. Concretely:
 Resolve the workspace once per terminal and reuse that concrete path for every
 overwrite (the path is stable for the session; you do not need to re-resolve it
 each turn).
+
+## Run a command in the command panel
+
+`show` is for a **finished document you wrote**. `run` is the other channel:
+hand Marina a **shell command** and it executes that command, then renders the
+**output** in a separate panel — the **command panel** (the 4th dock panel,
+beside Open / Git / File-tree). Use it when the user wants to *watch a
+command's output* without reclaiming the terminal (which you are usually
+occupying): `gh issue list`, `git log`, a build status, a wayfinder map. The
+command runs via **bash in the current session's cwd**, not through the
+terminal PTY, so it never disturbs your shell session.
+
+```bash
+./marina run "gh issue list --limit 5"      # render that command's output
+./marina run --title issues "gh issue list" # give the tab a custom title
+./marina run git status --short             # quotes optional for a single arg
+./marina run -q "make test"                 # -q / --quiet suppresses the line
+```
+
+(PowerShell / cmd.exe: `.\marina.cmd run ...` with the same args.)
+
+Everything after `run` is joined into one command string, so quote it the way
+your own shell expects (bash needs quotes around anything with spaces).
+Marina does not parse the command — it passes the whole string to bash.
+
+**`run` vs `show` — decide by what changes:**
+
+- A **document you authored** that is done → `show` a file (Open panel).
+- A **command's current output** that may differ on rerun → `run` the command
+  (Command panel).
+
+**Tabs and refresh are panel-side, not CLI options:**
+
+- Each distinct command opens its own tab. Pushing the **same** command again
+  does **not** add a tab — it re-runs the existing one (dedup).
+- Refresh policy is per-tab and is chosen by the **user in the panel toolbar**,
+  not by the CLI. Default is **foreground-only** (runs while the user views
+  that tab; stops when they switch away, to save resources). The user may
+  switch a tab to **background polling** (e.g. every 30s / 5s), **manual**, or
+  **off**. Your `run` pushes the command and fires one immediate run; the
+  policy is the user's call.
+- Output renders as Markdown (plain text is valid Markdown, so raw output
+  still looks right). URLs are clickable; fenced code blocks get a Run button,
+  just like `show`.
+
+Prereqs match `show`: needs `MARINA_SERVICE` / `MARINA_TOKEN` / `TERMINAL_ID`
+(see `ping`). **SSH sessions are unsupported** — the command panel does not
+appear (the session cwd is remote; the local daemon cannot spawn there),
+symmetric with the Git panel. Exit codes are the same as `show` (0 ok, 1
+offline, 2 usage, 3 rejected).
 
 ## Runnable code blocks in Markdown you show
 
@@ -233,12 +354,48 @@ When you build a task-dashboard document (see above), consider making the
 verification / next-step commands runnable blocks so the user can act on the
 doc directly instead of switching to chat or a terminal.
 
+## Links to local files and web pages in Markdown
+
+Links (`[text](target)`) in any Markdown you `show` are split by Marina by
+their **scheme** — use the right form so the click does what you intend:
+
+- **Local file** (default): write the path **as-is**, relative to the Markdown
+  file's directory (or absolute). A click opens that file **read-only in the
+  panel** as a new tab — point at another doc, a source file, a log, an image,
+  etc. Relative paths resolve against the Markdown file's location, the same
+  rule Markdown images use.
+  ```markdown
+  See [the design notes](./design-notes.md) and [main.ts](../src/main.ts).
+  ```
+- **Web page**: write the **full** URL starting with `http://` or `https://`
+  (or `mailto:`). A click opens it in the system browser — Marina's panel is
+  not a browser.
+  ```markdown
+  Docs: <https://react.dev/learn> · contact [me](mailto:me@example.com)
+  ```
+- **In-page anchor**: `#section-id` scrolls within the current document
+  (React-markdown renders heading ids).
+
+Rules of thumb:
+- **Anything that is not a full `http(s)://` / `mailto:` URL and not a `#`
+  anchor is treated as a local file.** So a bare `example.com/x` (no scheme)
+  or a `data:`/`tel:`/`file:` target is read as a local path and opened in the
+  panel — usually failing with a toast if it doesn't resolve. Always write the
+  full scheme for web links.
+- **Pointing at a missing/non-file path** shows a toast error; the panel is
+  unchanged. Paths are resolved and checked on the Marina side (the Markdown's
+  own directory is the base), so relative links keep working after the file is
+  moved as long as the relative layout is preserved.
+- Local links open **read-only**; Marina's panel is a viewer, not an editor.
+
 ## Other commands
 
 ```bash
 ./marina workspace              # print this terminal's managed scratch path
 ./marina list                   # files open in this terminal's panel
 ./marina list --json            # machine-readable output (includes `missing`)
+./marina screenshot             # capture this window as a PNG, print its path (T12)
+./marina screenshot /abs/x.png  # ...to an explicit path
 ./marina close "$artifact"      # close one file
 ./marina close report.md        # ...or just the file name (basename match)
 ./marina close --all            # close every file in this terminal's panel
@@ -246,6 +403,14 @@ doc directly instead of switching to chat or a terminal.
 ./marina close --glob '*.md'    # close files whose name matches a glob
 ./marina close '*.md'           # a path containing * or ? is auto-treated as --glob
 ```
+
+**`screenshot` (self-test enabler).** Captures this terminal's owner window as a
+PNG so you can visually verify UI you changed without a human in the loop. It
+prints the saved path; read that PNG back to inspect it. Default output is a
+timestamped file under the managed workspace; pass an explicit path to choose.
+Requires `MARINA_SERVICE` / `MARINA_TOKEN` / `TERMINAL_ID` (same as `show`).
+Fails with exit 1 if those are unset, exit 3 if Marina refuses (no owner
+window, window closed, etc.).
 
 **`list` marks zombie tabs.** A tab whose file has been deleted from disk is
 shown with a leading `!` and `(deleted)`, plus a `close --stale` hint at the
