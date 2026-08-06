@@ -159,6 +159,29 @@ export interface CommandRunOps {
   ): Promise<{ commands: unknown[]; activeKey: string | null }>;
 }
 
+/**
+ * v0.3.3 ADR-028：pi package 事件处理回调(注入式，与 WorkspaceOps 同款)。由 index.ts
+ * 闭合到 SessionManager.applyPiSessionEvent。未注入时 /pi-session-event 返 503。
+ * FilePanelService 不持 SessionManager(保持可测)，只拿这个 op 供 HTTP 路由用。
+ */
+export interface PiEventOps {
+  /** 处理 pi package 转发的事件。sessionId=terminal(Marina session)。fire-and-forget。 */
+  applyPiSessionEvent(
+    sessionId: string,
+    payload: {
+      piSessionId: string;
+      event:
+        | 'session_start'
+        | 'session_shutdown'
+        | 'agent_working'
+        | 'agent_settled'
+        | 'name_changed';
+      reason?: string;
+      name?: string | null;
+    },
+  ): Promise<void>;
+}
+
 interface PanelState {
   files: OpenedFile[];
   activePath: string | null;
@@ -217,6 +240,8 @@ export class FilePanelService extends EventEmitter {
   private workspaceOps: WorkspaceOps | null = null;
   /** v0.3.3 ADR-027:命令面板 /run 路由回调(转发给 CommandPanelService)。 */
   private commandRunOps: CommandRunOps | null = null;
+  /** v0.3.3 ADR-028：pi package /pi-session-event 路由回调(转发给 SessionManager)。 */
+  private piEventOps: PiEventOps | null = null;
   private server: Server | null = null;
   private baseUrl: string | null = null;
   private token: string | null = null;
@@ -254,6 +279,11 @@ export class FilePanelService extends EventEmitter {
   /** v0.3.3 ADR-027:注入命令面板 run 回调(HTTP /run 路由用)。 */
   attachCommandRunOps(ops: CommandRunOps): void {
     this.commandRunOps = ops;
+  }
+
+  /** v0.3.3 ADR-028：注入 pi 事件处理回调(HTTP /pi-session-event 路由用)。 */
+  attachPiEventOps(ops: PiEventOps): void {
+    this.piEventOps = ops;
   }
 
   /** 注入终端 env 用:返回服务地址 + token;未启动 / 被禁用时返回 null。 */
@@ -1224,6 +1254,15 @@ export class FilePanelService extends EventEmitter {
       return;
     }
 
+    // v0.3.3 ADR-028:POST /pi-session-event body {terminal, piSessionId, event, reason?, name?}
+    // —— pi package(@earendil-works/pi-coding-agent)订阅 pi 生命周期事件后转发到这里。
+    // Marina 作为决策者按 settings.piIntegration 决定做不做。鉴权同其他路由(Bearer)。
+    // fire-and-forget:响应与 pi 业务结果无关,Marina 处理失败不阻塞 pi。
+    if (method === 'POST' && u.pathname === '/pi-session-event') {
+      void this.handlePiSessionEvent(req, res);
+      return;
+    }
+
     this.send(res, 404, { error: `not found: ${method} ${u.pathname}` });
   }
 
@@ -1353,6 +1392,58 @@ export class FilePanelService extends EventEmitter {
         null,
       );
       this.send(res, 200, snapshot);
+    } catch (err) {
+      this.sendError(res, err);
+    }
+  }
+
+  /**
+   * v0.3.3 ADR-028:POST /pi-session-event。body {terminal, piSessionId, event, reason?, name?}。
+   * 解析 + 校验后转发给注入的 piEventOps(SessionManager.applyPiSessionEvent)。
+   * fire-and-forget 语义：响应只表“已接收”，不保证 pi 业务结果(那由后续 evt 推送)。
+   * 处理失败返 500 + error，但 pi 不会因此卡住(它不等业务结果)。
+   */
+  private async handlePiSessionEvent(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.piEventOps) {
+      this.send(res, 503, { error: 'pi-event 未启用(piEventOps 未注入)' });
+      return;
+    }
+    let body: {
+      terminal?: string;
+      piSessionId?: string;
+      event?: string;
+      reason?: string;
+      name?: string | null;
+    };
+    try {
+      body = JSON.parse(await this.readBody(req)) as typeof body;
+    } catch {
+      return this.send(res, 400, { error: 'invalid JSON body' });
+    }
+    const { terminal, piSessionId, event, reason, name } = body;
+    if (!terminal) return this.send(res, 400, { error: 'body 需要 { terminal }' });
+    if (!piSessionId) return this.send(res, 400, { error: 'body 需要 { piSessionId }' });
+    const VALID_EVENTS = [
+      'session_start',
+      'session_shutdown',
+      'agent_working',
+      'agent_settled',
+      'name_changed',
+    ] as const;
+    if (!event || !(VALID_EVENTS as readonly string[]).includes(event)) {
+      return this.send(res, 400, { error: `body.event 必须是 ${VALID_EVENTS.join('|')} 之一` });
+    }
+    try {
+      const payload: {
+        piSessionId: string;
+        event: (typeof VALID_EVENTS)[number];
+        reason?: string;
+        name?: string | null;
+      } = { piSessionId, event: event as (typeof VALID_EVENTS)[number] };
+      if (reason !== undefined) payload.reason = reason;
+      if (name !== undefined && name !== null) payload.name = name;
+      await this.piEventOps.applyPiSessionEvent(terminal, payload);
+      this.send(res, 200, { ok: true });
     } catch (err) {
       this.sendError(res, err);
     }

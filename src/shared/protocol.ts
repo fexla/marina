@@ -101,6 +101,11 @@ export const COMMAND_CHANNELS = {
    */
   SESSION_UPDATE_UI_LAYOUT: 'cmd:session:update-ui-layout',
   /**
+   * v0.3.3 ADR-028:renderer 选中某 session 时上报“已查看”，清除其 hasUnviewedWork
+   * 标记(侧栏指示灯警告色转正常)。per-session：任一窗口查看即清。幂等。
+   */
+  SESSION_MARK_VIEWED: 'cmd:session:mark-viewed',
+  /**
    * 右键 Tab → “在新窗口中打开”。
    * - 本地 backend:main 原子 release → 创建窗口 → claim 给新 windowId。
    * - 远程 backend:preload 拆成 daemon release + 客户端本地 WINDOW_CREATE;

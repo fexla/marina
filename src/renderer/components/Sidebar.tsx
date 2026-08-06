@@ -2947,6 +2947,7 @@ function SessionItemImpl({
       <span
         className="session-state-bar"
         data-state={session.state}
+        data-unviewed={session.hasUnviewedWork && session.state === 'idle' ? 'true' : undefined}
         aria-label={`状态: ${session.state}`}
       />
       <span className="session-template-icon" aria-hidden="true">

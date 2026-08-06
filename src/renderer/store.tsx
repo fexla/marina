@@ -815,6 +815,16 @@ export function AppStateProvider({
   // (我们用 React 18 严格模式 mount 时会赋两次,值仍正确)。
   const stateRef = useRef(state);
   stateRef.current = state;
+  // v0.3.3 ADR-028:选中某 session 时上报“已查看” → 清其 hasUnviewedWork
+  // (侧栏指示灯警告色转正常)。per-session，任一窗口查看即清。选中=null 不发。
+  // 放这里而非 reducer:发 IPC 是副作用，reducer 须纯。
+  useEffect(() => {
+    if (state.selectedSessionId) {
+      void window.api.invoke(COMMAND_CHANNELS.SESSION_MARK_VIEWED, {
+        sessionId: state.selectedSessionId,
+      });
+    }
+  }, [state.selectedSessionId]);
   return (
     <AppStateRefContext.Provider value={stateRef}>
       <AppContext.Provider value={value}>{children}</AppContext.Provider>

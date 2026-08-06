@@ -1856,6 +1856,13 @@ html[data-maximized='true'] .app-root.with-shell {
   background-color: var(--color-text-muted, #f0f);
 }
 
+/* v0.3.3 ADR-028:pi 工作完成但用户未查看(hasUnviewedWork && idle) → 竖线改警告色。
+   仅 idle 形态(3px 细条)生效:active 时 data-unviewed 为 undefined,exited 同理。
+   复用现成 --color-warning 语义槽(每主题都有值)，不动宽度/动画。 */
+.session-state-bar[data-unviewed='true'] {
+  background-color: var(--color-warning, #f0f);
+}
+
 /* 模板 icon 是层级内容，不是状态点：它随 session 内容缩进，状态色条独立贴左。
    active 满底时 icon 与名称一起反色，避免 info 背景吞掉细线图标。 */
 .session-template-icon {

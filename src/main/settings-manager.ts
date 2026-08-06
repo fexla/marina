@@ -127,6 +127,13 @@ export const DEFAULT_SETTINGS: Settings = {
     // 重绘残影。老用户升级后字段缺失也会因为 SettingsManager.merge 走 default。
     statusRecheckSource: 'headless',
   },
+  // v0.3.3 ADR-028：pi 集成。装了 pi package 的用户意图明确就是要联动，默认全开；
+  // 不想要的用户 enabled=false 一键关(或卸载 package)。Marina 是决策者，package 只转发。
+  piIntegration: {
+    enabled: true,
+    newConversationCreatesWorkspace: true,
+    resumeSwitchesWorkspace: true,
+  },
 };
 
 const VALID_THEMES: ThemeId[] = [
@@ -533,6 +540,25 @@ export function validateSettings(s: Settings): void {
       'InvalidSettings',
       `filePanel.markdownStyle 必须是非空字符串,实际: ${JSON.stringify(s.filePanel.markdownStyle)}`,
     );
+  }
+
+  // v0.3.3 ADR-028：piIntegration 三项必须是布尔。缺字段(老 settings 升级)走 merge 补默认。
+  const pi = s.piIntegration;
+  if (!pi || typeof pi !== 'object') {
+    throw new SettingsError('InvalidSettings', 'piIntegration 必须是对象');
+  }
+  const piBools: Array<[string, unknown]> = [
+    ['piIntegration.enabled', pi.enabled],
+    ['piIntegration.newConversationCreatesWorkspace', pi.newConversationCreatesWorkspace],
+    ['piIntegration.resumeSwitchesWorkspace', pi.resumeSwitchesWorkspace],
+  ];
+  for (const [field, value] of piBools) {
+    if (typeof value !== 'boolean') {
+      throw new SettingsError(
+        'InvalidSettings',
+        `${field} 必须是 boolean,实际: ${JSON.stringify(value)}`,
+      );
+    }
   }
 }
 

@@ -613,6 +613,11 @@ function bootstrap(): void {
         runCommand: (sid, command, title, clientId) =>
           commandPanelService.runCommand(sid, command, title, clientId),
       });
+      // v0.3.3 ADR-028：闭合 pi 事件处理(pi package POST /pi-session-event →
+      // SessionManager.applyPiSessionEvent)。pi package 是哑转发器，决策在 SessionManager。
+      filePanelService.attachPiEventOps({
+        applyPiSessionEvent: (sid, payload) => sessionManager.applyPiSessionEvent(sid, payload),
+      });
       // v0.3.0:注入 Git 可用性判定回调。GitService.evaluateAvailability 是纯函数
       // (只接受 cwd + pathKind,不持 session 引用),避免循环依赖。注入后,
       // 已存在 + 后续新 session 都会异步评估 → Git tab 出现/消失。

@@ -995,6 +995,74 @@ function AppearancePanel({ setError }: { setError: (msg: string | null) => void 
         />
       </SettingRow>
 
+      {/* v0.3.3 ADR-028：pi 集成。pi 跑在终端里时自动绑定 workspace + 指示灯精准化。 */}
+      <SettingRow
+        label={tx('pi 集成', 'pi integration')}
+        hint={tx(
+          '通过 Marina 打开 pi(@earendil-works/pi-coding-agent)时，每个对话绑定独立临时 workspace；切对话即切 workspace。pi 工作完成但未查看时，侧栏指示灯转警告色。需安装 pi package(packages/pi-marina-bridge)。',
+          'When you run pi (@earendil-works/pi-coding-agent) inside a Marina terminal, each conversation binds its own temporary workspace; switching conversations switches workspace. When pi finishes work you have not viewed, the sidebar indicator turns a warning color. Requires the pi package (packages/pi-marina-bridge).',
+        )}
+      >
+        <label className="settings-checkbox">
+          <input
+            type="checkbox"
+            checked={state.settings.piIntegration?.enabled ?? true}
+            onChange={(e) =>
+              void updateSettings({ piIntegration: { enabled: e.target.checked } }, setError)
+            }
+          />
+          <span>{tx('启用', 'Enable')}</span>
+        </label>
+      </SettingRow>
+
+      {(state.settings.piIntegration?.enabled ?? true) && (
+        <>
+          <SettingRow
+            label={tx('新建对话时创建新 workspace', 'New conversation creates workspace')}
+            hint={tx(
+              'pi 里 /new、/fork 切到新对话时，给该对话创建一个新的临时 workspace。',
+              'When you start a new conversation in pi (/new, /fork), create a fresh temporary workspace for it.',
+            )}
+          >
+            <label className="settings-checkbox">
+              <input
+                type="checkbox"
+                checked={state.settings.piIntegration?.newConversationCreatesWorkspace ?? true}
+                onChange={(e) =>
+                  void updateSettings(
+                    { piIntegration: { newConversationCreatesWorkspace: e.target.checked } },
+                    setError,
+                  )
+                }
+              />
+              <span>{tx('启用', 'Enable')}</span>
+            </label>
+          </SettingRow>
+
+          <SettingRow
+            label={tx('resume 对话时切回 workspace', 'Resume switches to workspace')}
+            hint={tx(
+              'pi 里 /resume 或冷启动接续某对话时，切回该对话绑定的 workspace(已被回收则新建)。',
+              'When you resume a conversation in pi (/resume or cold start), switch back to its bound workspace (or create a new one if it was reclaimed).',
+            )}
+          >
+            <label className="settings-checkbox">
+              <input
+                type="checkbox"
+                checked={state.settings.piIntegration?.resumeSwitchesWorkspace ?? true}
+                onChange={(e) =>
+                  void updateSettings(
+                    { piIntegration: { resumeSwitchesWorkspace: e.target.checked } },
+                    setError,
+                  )
+                }
+              />
+              <span>{tx('启用', 'Enable')}</span>
+            </label>
+          </SettingRow>
+        </>
+      )}
+
       <SettingRow
         label={tx('主题目录', 'Themes folder')}
         hint={tx(

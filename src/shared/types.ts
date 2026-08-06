@@ -270,6 +270,18 @@ export interface SessionInfo {
   createdAt: number;
   /** 会话专属且不跨应用重启持久化的 UI 布局。 */
   uiLayout?: SessionUiLayout;
+  /**
+   * 运行时标记(ADR-028)：该终端当前是否在跑 pi(@earendil-works/pi-coding-agent)。
+   * 由 pi package 经 /pi-session-event 声明、session 销毁清除。**内存态，不持久化**。
+   * 仅驱动 workspace 对话绑定逻辑；不驱动指示灯(指示灯看 hasUnviewedWork)。
+   */
+  isPiAgent?: boolean;
+  /**
+   * 运行时标记(ADR-028)：“有未查看的完成活动”。v1 由 pi agent_settled 触发，
+   * v2 补非 pi 普遍逻辑。用户查看(cmd:session:mark-viewed)或 pi 重开工作(agent_working)清除。
+   * **内存态，不持久化**。侧栏指示灯在 hasUnviewedWork && state==='idle' 时用警告色竖线。
+   */
+  hasUnviewedWork?: boolean;
 }
 
 /**
@@ -621,6 +633,19 @@ export interface Settings {
     port: number;
     /** true = Marina 启动时自动起服务端(等价于启动后点“启动”按钮)。默认 false(显式启动)。 */
     autoStart: boolean;
+  };
+  /**
+   * v0.3.3 ADR-028：pi 集成。pi 跑在终端里时，Marina 收到 pi package 转发的对话/工作
+   * 事件，按这里的三项开关决定做不做。pi package 本身是哑转发器(只 POST 事件)，
+   * 决策全在 Marina 侧——所以非 Marina 环境或此项 enabled=false 时，事件一律忽略。
+   */
+  piIntegration: {
+    /** 总开关。false → Marina 收到 pi 事件一律忽略(extensions 仍转发，无害)。默认 true。 */
+    enabled: boolean;
+    /** 新建 pi 对话(/new、/fork)时创建新 workspace。默认 true。 */
+    newConversationCreatesWorkspace: boolean;
+    /** resume pi 对话(/resume、冷启动 startup)时切到对应 workspace。默认 true。 */
+    resumeSwitchesWorkspace: boolean;
   };
 }
 

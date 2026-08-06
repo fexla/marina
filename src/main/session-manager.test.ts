@@ -205,6 +205,11 @@ function makeStubSettingsManager(overrides: Partial<Settings['advanced']> = {}):
     systemIntegration: { explorerOpenIn: 'new-window' },
     filePanel: { enabled: true, port: 0, markdownStyle: 'auto', workspaceRetentionDays: 7 },
     remoteDaemon: { port: 32780, autoStart: false },
+    piIntegration: {
+      enabled: true,
+      newConversationCreatesWorkspace: true,
+      resumeSwitchesWorkspace: true,
+    },
     advanced: {
       logLevel: 'INFO',
       activeIdleThresholdSeconds: 2,
@@ -2632,5 +2637,220 @@ describe('SessionManager — dynamic Git LayoutNode (v0.3.0)', () => {
       const tree = mgr.get(info.id)?.uiLayout?.tree;
       expect(tree).toBeTruthy();
     });
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────
+// v0.3.3 ADR-028: pi 集成 (applyPiSessionEvent / markViewed)
+
+// ──────────────────────────────────────────────────────────────────
+// v0.3.3 ADR-028: pi 集成 (applyPiSessionEvent / markViewed)
+// 注意：createSession 本身就会建一个初始 workspace(session 生命周期需要)，
+// 所以 created 数组的第 0 项是 session 初始 workspace，pi 触发的在其后。
+// 测试用 base = createSession 后的 created.length 作基线，断言 pi 操作的增量。
+// ──────────────────────────────────────────────────────────────────
+describe('SessionManager — pi 集成 (ADR-028)', () => {
+  function makePiManager(
+    opts: {
+      enabled?: boolean;
+      newCreates?: boolean;
+      resumeSwitch?: boolean;
+      getRecord?: (wsId: string) => unknown;
+    } = {},
+  ): { mgr: SessionManager; created: string[] } {
+    const created: string[] = [];
+    let counter = 0;
+    const settings = makeStubSettingsManager();
+    const pi = (settings.get() as Settings).piIntegration;
+    pi.enabled = opts.enabled ?? true;
+    pi.newConversationCreatesWorkspace = opts.newCreates ?? true;
+    pi.resumeSwitchesWorkspace = opts.resumeSwitch ?? true;
+    const { mgr } = makeManager({
+      settings,
+      workspaceManager: {
+        create: async () => {
+          counter += 1;
+          const wsId = `ws-${counter}`;
+          created.push(wsId);
+          return { workspaceId: wsId, dir: `C:\fake\${wsId}` };
+        },
+        discard: async () => {},
+        release: () => {},
+        getPathForWorkspace: () => null,
+        getRecord: (wsId: string) => (opts.getRecord ? opts.getRecord(wsId) : { name: null }),
+      },
+    });
+    return { mgr, created };
+  }
+
+  async function makeSession(mgr: SessionManager): Promise<{ sid: string; base: number }> {
+    const info = await mgr.createSession({
+      pathId: 'C:\\proj',
+      templateId: 'shell',
+      ownerWindowId: 'w1',
+      cols: 80,
+      rows: 24,
+    });
+    return { sid: info.id, base: 0 }; // base 在调用方按 created.length 设
+  }
+
+  it('session_start(new) 声明 isPiAgent + 创建新 workspace + 记映射', async () => {
+    const { mgr, created } = makePiManager();
+    const { sid } = await makeSession(mgr);
+    const base = created.length; // session 初始 workspace 已计
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'new',
+    });
+    expect(mgr.get(sid)?.isPiAgent).toBe(true);
+    expect(created.length).toBe(base + 1); // pi new 多建一个
+  });
+
+  it('resume 切回仍活着的 workspace（不新建）', async () => {
+    const { mgr, created } = makePiManager();
+    const { sid } = await makeSession(mgr);
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'new',
+    });
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-2',
+      event: 'session_start',
+      reason: 'new',
+    });
+    const beforeResume = created.length;
+    // resume pi-1：映射活(ws-对应 getRecord truthy) → 切回，不新建
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'resume',
+    });
+    expect(created.length).toBe(beforeResume); // 没新建
+  });
+
+  it('resume 时目标 workspace 已被回收 → 新建并更新映射', async () => {
+    const { mgr, created } = makePiManager({ getRecord: () => undefined });
+    const { sid } = await makeSession(mgr);
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'new',
+    });
+    const beforeResume = created.length;
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'resume',
+    });
+    expect(created.length).toBe(beforeResume + 1); // 回收 → 重建
+  });
+
+  it('agent_settled 设 hasUnviewedWork=true；agent_working 清除', async () => {
+    const { mgr } = makePiManager();
+    const { sid } = await makeSession(mgr);
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'startup',
+    });
+    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_settled' });
+    expect(mgr.get(sid)?.hasUnviewedWork).toBe(true);
+    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_working' });
+    expect(mgr.get(sid)?.hasUnviewedWork).toBe(false);
+  });
+
+  it('markViewed 清除 hasUnviewedWork；未标记时幂等 no-op', async () => {
+    const { mgr } = makePiManager();
+    const { sid } = await makeSession(mgr);
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'startup',
+    });
+    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_settled' });
+    expect(mgr.get(sid)?.hasUnviewedWork).toBe(true);
+    mgr.markViewed(sid);
+    expect(mgr.get(sid)?.hasUnviewedWork).toBe(false);
+    expect(() => mgr.markViewed(sid)).not.toThrow();
+  });
+
+  it('name_changed 在未手动改名时更新 displayName', async () => {
+    const { mgr } = makePiManager();
+    const { sid } = await makeSession(mgr);
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'startup',
+    });
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'name_changed',
+      name: '重构认证模块',
+    });
+    expect(mgr.get(sid)?.displayName).toBe('重构认证模块');
+  });
+
+  it('name_changed 在 manuallyRenamed 时不动 displayName', async () => {
+    const { mgr } = makePiManager();
+    const { sid } = await makeSession(mgr);
+    mgr.renameSession(sid, '我的终端');
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'startup',
+    });
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'name_changed',
+      name: '不应生效',
+    });
+    expect(mgr.get(sid)?.displayName).toBe('我的终端');
+  });
+
+  it('session_shutdown(reason:quit) 清 isPiAgent + 删 piSession 映射', async () => {
+    const { mgr, created } = makePiManager();
+    const { sid } = await makeSession(mgr);
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'new',
+    });
+    expect(mgr.get(sid)?.isPiAgent).toBe(true);
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'session_shutdown',
+      reason: 'quit',
+    });
+    expect(mgr.get(sid)?.isPiAgent).toBe(false);
+    const beforeResume = created.length;
+    // 映射已删 → resume 会重建
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'resume',
+    });
+    expect(created.length).toBe(beforeResume + 1);
+  });
+
+  it('settings.enabled=false 时 pi 不建 workspace，但 isPiAgent 仍准确', async () => {
+    const { mgr, created } = makePiManager({ enabled: false });
+    const { sid } = await makeSession(mgr);
+    const base = created.length;
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'new',
+    });
+    expect(mgr.get(sid)?.isPiAgent).toBe(true);
+    expect(created.length).toBe(base); // 开关关 → pi 没建
+  });
+
+  it('applyPiSessionEvent 对不存在的 session 静默 no-op（不抛）', async () => {
+    const { mgr } = makePiManager();
+    await expect(
+      mgr.applyPiSessionEvent('no-such-sid', { piSessionId: 'pi-1', event: 'agent_settled' }),
+    ).resolves.toBeUndefined();
   });
 });
