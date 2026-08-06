@@ -1,0 +1,18 @@
+{
+  "name": "@marina/pi-marina-bridge",
+  "version": "0.3.3",
+  "description": "pi extension that bridges pi conversation/work lifecycle events to Marina (workspace binding + sidebar indicator). No-op outside a Marina terminal.",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}
