@@ -15,6 +15,7 @@ import { MarkdownViewer } from './MarkdownViewer';
 import { ImageViewer } from './ImageViewer';
 import { DiffViewer } from './DiffViewer';
 import { useFileViewerScroll } from '../../hooks/useFileViewerScroll';
+import { useAutoscroll } from '../../hooks/useAutoscroll';
 
 interface FileViewerProps {
   sessionId: string;
@@ -75,6 +76,9 @@ function UnknownView({
     ready: true,
     restoreVersion: file.mtimeMs,
   });
+  // 中键自动滚动(v0.3.3):不支持的文件类型也可能很长(如纯文本 fallback),
+  //  补齐与其它 viewer 一致的中键交互。
+  useAutoscroll(scrollRef);
   return (
     <div className="file-unknown-viewer" ref={layoutRef}>
       <p>{tx('该文件类型暂不支持预览', 'Preview not supported for this file type')}</p>

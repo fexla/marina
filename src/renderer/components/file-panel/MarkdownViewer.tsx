@@ -29,7 +29,7 @@ import remarkGfm from 'remark-gfm';
 import type { OpenedFile } from '@shared/types';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { useDomTextHighlight } from '../../hooks/useDomTextHighlight';
-import { useMiddleClickPan } from '../../hooks/useMiddleClickPan';
+import { useAutoscroll } from '../../hooks/useAutoscroll';
 import { useFileViewerScroll } from '../../hooks/useFileViewerScroll';
 import { COMMAND_CHANNELS, type ReadImagePayload, type ReadImageResponse, type OpenPathFromMarkdownPayload } from '@shared/protocol';
 import { isRemoteUrl } from '@shared/url-scheme';
@@ -151,8 +151,8 @@ export function MarkdownViewer({ sessionId, file, search, scrollRef }: ViewerPro
     searchActive: search.visible && search.query.length > 0,
   });
 
-  // Markdown 根本身不滚动；文档级中键平移必须作用于外层 file-panel-body。
-  useMiddleClickPan(scrollRef);
+  // Markdown 根本身不滚动；文档级中键自动滚动作用于外层 file-panel-body。
+  useAutoscroll(scrollRef);
 
   if (!content) {
     return <div className="file-viewer-loading">{tx('加载中…', 'Loading…')}</div>;
