@@ -133,9 +133,10 @@ import { SshConnectionDialog } from './SshConnectionDialog';
 /**
  * SSH 方案 v2.1 §II.3:Sidebar 顶部 segmented control。
  * 'local' = 本机 + 所有 WSL 发行版,'remote' = 所有 SSH profile。
- * 持久化到 localStorage,跨重启保留;但 segmented control 本身只在用户已
- * 加 SSH profile 或勾了 advanced.enableRemote 时才渲染 — 否则 UI 与
- * beta.9 完全一致(本地视野不变式)。
+ * 不持久化:Marina 窗口平等(AGENTS 附录 C),一个窗口里切到「远程」不应
+ * 污染后续所有新窗口的默认值。segment 是单窗口内的临时视图选择,每个新窗口
+ * 独立从「当前电脑」起步。segmented control 本身只在用户已加 SSH profile 或
+ * 勾了 advanced.enableRemote 时才渲染 — 否则 UI 与 beta.9 完全一致。
  */
 type SidebarSegment = 'local' | 'remote';
 
@@ -162,14 +163,6 @@ interface BackendDirectoryPickerIntent {
   /** bookmark 从分组菜单发起时，选择结果原子地直接进入该组。 */
   groupId?: string;
 }
-const SIDEBAR_SEGMENT_LS_KEY = 'marina.sidebar.segment';
-
-function readSegmentFromStorage(): SidebarSegment {
-  if (typeof window === 'undefined' || !window.localStorage) return 'local';
-  const v = window.localStorage.getItem(SIDEBAR_SEGMENT_LS_KEY);
-  return v === 'remote' ? 'remote' : 'local';
-}
-
 /**
  * Sidebar 宽度持久化(localStorage)。右侧 resize handle 拖动调整,松开时落盘。
  *
@@ -225,20 +218,11 @@ export function Sidebar(): JSX.Element {
     }
   };
   const [collapsedCategoryIds, setCollapsedCategoryIds] = useState<Set<string>>(() => new Set());
-  const [segment, setSegmentState] = useState<SidebarSegment>(() =>
-    // 远程窗口(连 daemon)默认选中「当前电脑」段,而非沿用 localStorage 的 segment ——
-    // 远程窗口的主用途是操作所连 daemon 的路径/终端,默认跳到 SSH 段不符合预期。
-    // 用户仍可手动切到 SSH 段(切后照常落盘 localStorage)。
-    window.api.backendProfileId ? 'local' : readSegmentFromStorage(),
-  );
-  const setSegment = (next: SidebarSegment): void => {
-    setSegmentState(next);
-    try {
-      window.localStorage?.setItem(SIDEBAR_SEGMENT_LS_KEY, next);
-    } catch {
-      // localStorage 在 incognito / 严格模式下可能抛 SecurityError,忽略即可
-    }
-  };
+  // 每个新窗口独立起步、默认选中「当前电脑」段。本地窗口与远程窗口(连 daemon)
+  // 都从 local 起步 —— 远程窗口的主用途是操作所连 daemon 的路径/终端,默认跳到
+  // SSH 段不符合预期。用户仍可在窗口内手动切到「远程」段(仅影响当前窗口)。
+  const [segment, setSegmentState] = useState<SidebarSegment>('local');
+  const setSegment = setSegmentState;
 
   // ── Sidebar 宽度可拖动 + 持久化 ──
   // 拖动期间只 setWidth 不写 localStorage(快速移动会大量触发 setItem),松开
