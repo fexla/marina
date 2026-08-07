@@ -674,6 +674,92 @@ describe('IPC SESSION_FOCUS_OWNER', () => {
   });
 });
 
+describe('IPC command-panel event routing', () => {
+  it('commandPanelUpdated 只发给 session owner，不广播给其他 client', async () => {
+    const { installIpcLayer } = await freshIpc();
+    const { deps, stubs } = makeStubs();
+    const ownerId = 'command-owner';
+    stubs.sessionManager.get.mockReturnValue({
+      id: 'session-1',
+      pathId: 'path-1',
+      templateId: 'shell',
+      originalCwd: '/tmp',
+      currentCwd: '/tmp',
+      cols: 80,
+      rows: 24,
+      pid: 123,
+      displayName: 'shell',
+      ownerWindowId: ownerId,
+      state: 'active',
+      createdAt: Date.now(),
+    } satisfies SessionInfo);
+    const ownerSend = vi.fn();
+    const otherSend = vi.fn();
+    deps.clientRegistry.add({ clientId: ownerId, send: ownerSend });
+    deps.clientRegistry.add({ clientId: 'other-client', send: otherSend });
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    deps.commandPanelService.emit('commandPanelUpdated', {
+      sessionId: 'session-1',
+      snapshot: { commands: [], activeKey: null },
+      requestActivation: true,
+      commandKey: 'cmd-key',
+    });
+
+    expect(ownerSend).toHaveBeenCalledWith(
+      EVENT_CHANNELS.COMMAND_PANEL_UPDATED,
+      expect.objectContaining({
+        payload: expect.objectContaining({ sessionId: 'session-1', requestActivation: true }),
+      }),
+    );
+    expect(otherSend).not.toHaveBeenCalled();
+  });
+
+  it('命令面板 run 不沿 CodeBlockRunner 原 clientId 外发流式 output/exited', async () => {
+    const { installIpcLayer } = await freshIpc();
+    const { deps } = makeStubs();
+    const originSend = vi.fn();
+    deps.clientRegistry.add({ clientId: 'old-owner-a', send: originSend });
+    vi.spyOn(deps.commandPanelService, 'isCommandPanelRun').mockReturnValue(true);
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    deps.codeBlockRunner.emit('output', {
+      runId: 'command-run-1',
+      clientId: 'old-owner-a',
+      stream: 'stdout',
+      data: 'secret',
+    });
+    deps.codeBlockRunner.emit('exited', {
+      runId: 'command-run-1',
+      clientId: 'old-owner-a',
+      exitCode: 0,
+      signal: null,
+    });
+
+    expect(originSend).not.toHaveBeenCalled();
+  });
+
+  it('set-demand 只用可信 envelope.windowId 作为 consumerId', async () => {
+    const { installIpcLayer } = await freshIpc();
+    const { deps } = makeStubs();
+    const setDemand = vi.spyOn(deps.commandPanelService, 'setDemand');
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+    const handler = handlers.get(COMMAND_CHANNELS.COMMAND_PANEL_SET_DEMAND);
+    expect(handler).toBeTruthy();
+
+    await handler!(
+      {},
+      {
+        windowId: 'trusted-client-id',
+        requestId: 'command-demand-1',
+        payload: { sessionId: 'session-1', level: 'hot', consumerId: 'spoofed' },
+      },
+    );
+
+    expect(setDemand).toHaveBeenCalledWith('session-1', 'trusted-client-id', 'hot');
+  });
+});
+
 describe('IPC GIT demand lifecycle wiring', () => {
   it('owner change 与本地窗口关闭分别清 task demand / consumer', async () => {
     const { installIpcLayer } = await freshIpc();

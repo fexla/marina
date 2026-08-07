@@ -24,7 +24,7 @@ import {
 
 describe('protocol constants', () => {
   it('PROTOCOL_VERSION is a positive integer', () => {
-    expect(PROTOCOL_VERSION).toBe(2);
+    expect(PROTOCOL_VERSION).toBe(3);
     expect(Number.isInteger(PROTOCOL_VERSION)).toBe(true);
     expect(PROTOCOL_VERSION).toBeGreaterThan(0);
   });

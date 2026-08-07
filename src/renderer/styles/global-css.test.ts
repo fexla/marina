@@ -86,4 +86,17 @@ describe('global.css 样式契约', () => {
     expect(hover!.body).toMatch(/color-mix\(\s*in srgb,\s*currentcolor/i);
     expect(hover!.body).not.toMatch(/var\(\s*--color-bg-/);
   });
+
+  it('命令面板不得引用未声明的 --color-* token', () => {
+    // 2026-08-07 回归：CommandPanel 写了 var(--color-border, #f0f)，但三层
+    // token API 从未定义 --color-border，导致下拉框和 Markdown 表格全变亮粉。
+    // #f0f fallback 是故障探针，不是可发布颜色；本测试在该模块的样式 seam 拦住它。
+    const declared = new Set([...css.matchAll(/(--color-[\w-]+)\s*:/g)].map((match) => match[1]!));
+    const referenced = rules
+      .filter((rule) => rule.selector.includes('.command-'))
+      .flatMap((rule) => [...rule.body.matchAll(/var\(\s*(--color-[\w-]+)\s*,/g)])
+      .map((match) => match[1]!);
+    const missing = [...new Set(referenced.filter((token) => !declared.has(token)))];
+    expect(missing).toEqual([]);
+  });
 });

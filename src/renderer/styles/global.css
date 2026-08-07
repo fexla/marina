@@ -2446,26 +2446,38 @@ html[data-maximized='true'] .app-root.with-shell {
   flex: 0 0 auto;
 }
 
-.command-strategy-select {
-  font-size: 11px;
+.command-scope-btn,
+.command-interval-select,
+.command-rerun-btn {
   background-color: var(--color-bg-elevated, #f0f);
   color: var(--color-text-primary, #f0f);
-  border: 1px solid var(--color-border, #f0f);
+  border: 1px solid color-mix(in srgb, var(--color-text-primary, #f0f) 18%, transparent);
   border-radius: 4px;
+  font-size: 11px;
+}
+
+.command-scope-btn {
+  cursor: pointer;
+  padding: 2px 7px;
+}
+
+.command-scope-btn.is-background {
+  background-color: var(--color-bg-active, #f0f);
+  color: var(--color-info, #f0f);
+}
+
+.command-interval-select {
   padding: 2px 4px;
 }
 
 .command-rerun-btn {
-  border: 1px solid var(--color-border, #f0f);
-  background-color: var(--color-bg-elevated, #f0f);
-  color: var(--color-text-primary, #f0f);
-  border-radius: 4px;
   cursor: pointer;
   padding: 1px 6px;
   font-size: 12px;
   line-height: 1.4;
 }
 
+.command-scope-btn:hover,
 .command-rerun-btn:hover:not(:disabled) {
   background-color: var(--color-bg-hover, #f0f);
 }
@@ -2517,7 +2529,7 @@ html[data-maximized='true'] .app-root.with-shell {
 
 .command-output th,
 .command-output td {
-  border: 1px solid var(--color-border, #f0f);
+  border: 1px solid color-mix(in srgb, var(--color-text-primary, #f0f) 18%, transparent);
   padding: 3px 6px;
   text-align: left;
 }
@@ -2527,7 +2539,7 @@ html[data-maximized='true'] .app-root.with-shell {
 }
 
 .command-output a {
-  color: var(--color-accent, #58a6ff);
+  color: var(--color-info, #f0f);
 }
 
 .command-running-indicator {

@@ -41,9 +41,9 @@ export type {
  * 协议版本号。Main 与 Renderer 不匹配时拒绝 handshake。
  * Bump 规则:破坏性变更 +1;新增 channel 或扩展 payload 不需要 bump。
  */
-// v2 引入每窗口远程后端、WS clientId owner 语义和控制面/数据面路由，
-// 与只理解本地 WindowInfo owner 的 v1 不兼容，必须在握手阶段明确拒绝混用。
-export const PROTOCOL_VERSION = 2 as const;
+// v3 把命令面板的混合 strategy 拆成 refreshPolicy(scope + interval)，并新增
+// 独立 update channel。新 renderer 会读取 refreshPolicy，不能与旧 v2 daemon 混用。
+export const PROTOCOL_VERSION = 3 as const;
 
 /** host-only 连接发现协议固定扫描的 daemon 端口范围(含首尾)。 */
 export const REMOTE_DAEMON_PORT_MIN = 32780 as const;
@@ -274,8 +274,8 @@ export const COMMAND_CHANNELS = {
   COMMAND_PANEL_CLOSE: 'cmd:command-panel:close',
   /** 仅切 active(点 tab),不改指令列表 */
   COMMAND_PANEL_SHOW: 'cmd:command-panel:show',
-  /** 改某条指令的刷新策略(per-指令,D4) */
-  COMMAND_PANEL_SET_STRATEGY: 'cmd:command-panel:set-strategy',
+  /** 独立更新运行范围(前台/后台)或刷新间隔(手动/5s/30s)。 */
+  COMMAND_PANEL_UPDATE_REFRESH_POLICY: 'cmd:command-panel:update-refresh-policy',
   /** renderer 上报面板 demand(可见性/聚焦 → HOT/WARM/NONE,仿 git:set-polling-demand) */
   COMMAND_PANEL_SET_DEMAND: 'cmd:command-panel:set-demand',
 
@@ -1650,19 +1650,22 @@ export interface GetOpenFilesPayload {
 // Command panel(命令面板,ADR-028 / Feature G)
 // ──────────────────────────────────────────────────────────────────
 
+/** 指令自动刷新是否只服务当前可见 tab。它与刷新间隔是两个独立维度。 */
+export type CommandRefreshScope = 'foreground' | 'background';
+
+/** 指令自动刷新间隔。manual 只在用户点「立即刷新」或程序重新 push 时执行。 */
+export type CommandRefreshInterval = 'manual' | '5s' | '30s';
+
 /**
- * 单条命令的刷新策略(per-指令,D4)。
- * - foreground:仅当用户切到该 tab 且面板可见时才跑(默认,大多数指令,省资源)。
- * - background-30s / background-5s:即便没在看也按固定频率后台跑(少数监控类)。
- * - manual:从不自动跑,只有用户点「立即刷新」才跑。
- * - off:暂停(不跑也不计入轮询);保留 tab 与历史输出。
+ * 单条命令的独立刷新策略：
+ * - scope=foreground：只有当前命令 tab 可见时自动刷新；
+ * - scope=background：tab 隐藏时仍按 interval 低优先级刷新；
+ * - interval=manual：无自动刷新，scope 仅作为下次开启自动刷新时保留的偏好。
  */
-export type CommandRefreshStrategy =
-  | 'foreground'
-  | 'background-30s'
-  | 'background-5s'
-  | 'manual'
-  | 'off';
+export interface CommandRefreshPolicy {
+  scope: CommandRefreshScope;
+  interval: CommandRefreshInterval;
+}
 
 /** 单条命令的运行状态机(D4)。 */
 export type CommandRunStatus = 'idle' | 'running' | 'exited' | 'error';
@@ -1684,8 +1687,8 @@ export interface CommandEntry {
   command: string;
   /** 可选标题(展示用);缺省取 command 截断。 */
   title: string | null;
-  /** per-指令 刷新策略。 */
-  strategy: CommandRefreshStrategy;
+  /** 前后台范围与刷新间隔的独立真值源。 */
+  refreshPolicy: CommandRefreshPolicy;
   /** 最近一次 runId(用于匹配流式 output/exited 事件)。 */
   lastRunId: string | null;
   /** 最近一次退出码(null=仍在跑或被信号杀)。 */
@@ -1741,11 +1744,14 @@ export interface ShowCommandPayload {
   commandKey: string;
 }
 
-/** cmd:command-panel:set-strategy payload。 */
-export interface SetCommandStrategyPayload {
+/**
+ * cmd:command-panel:update-refresh-policy payload。控件只提交自己负责的字段，main 在
+ * 当前真值上合并，避免连续点击两个控件时后一个请求用旧快照覆盖前一个字段。
+ */
+export interface UpdateCommandRefreshPolicyPayload {
   sessionId: string;
   commandKey: string;
-  strategy: CommandRefreshStrategy;
+  patch: Partial<CommandRefreshPolicy>;
 }
 
 /** cmd:command-panel:set-demand payload(面板可见性/聚焦变化上报)。 */

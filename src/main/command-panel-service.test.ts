@@ -2,7 +2,7 @@
  * @file command-panel-service.test.ts
  * @purpose 守护 CommandPanelService 的核心契约(AGENTS.md §5 状态机 + 核心管理器):
  *   - runCommand:同 command 去重 upsert + 新指令切 active + 立即跑
- *   - closeCommand/showCommand/setStrategy:tab 管理与策略
+ *   - closeCommand/showCommand/updateRefreshPolicy:tab 管理与两维刷新策略
  *   - 'commandPanelUpdated' 事件 emit(结构/状态变化)
  *   - output/exited 事件按 runId 路由回 entry(只处理自己的 runId)
  *   - SSH 拒绝(透传 CodeBlockError('SshUnsupported'))
@@ -16,9 +16,11 @@ import {
   CommandPanelService,
   commandKeyFor,
   type CommandPanelSessionLookup,
+  type CommandPanelSnapshotData,
   type CommandScheduler,
 } from './command-panel-service';
 import { CodeBlockError } from './code-block-runner';
+import { BackgroundWorkScheduler } from './background-work-scheduler';
 
 /**
  * Fake CodeBlockRunner:满足 CommandPanelService.attachRunner 用到的
@@ -27,6 +29,7 @@ import { CodeBlockError } from './code-block-runner';
 function makeFakeRunner() {
   const bus = new EventEmitter();
   let runCounter = 0;
+  let nextRunGate: Promise<void> | null = null;
   const runs = new Map<string, { sessionId: string; command: string; stopped: boolean }>();
   const runner = {
     on: (event: string, cb: (...a: unknown[]) => void) => bus.on(event, cb),
@@ -40,6 +43,9 @@ function makeFakeRunner() {
           command: input.code,
           stopped: false,
         });
+        const gate = nextRunGate;
+        nextRunGate = null;
+        if (gate) await gate;
         return { runId };
       },
     ),
@@ -54,6 +60,13 @@ function makeFakeRunner() {
       bus.emit('output', { runId, clientId: 'c1', stream, data }),
     emitExited: (runId: string, exitCode: number | null, signal: string | null) =>
       bus.emit('exited', { runId, clientId: 'c1', exitCode, signal }),
+    deferNextRun: () => {
+      let release!: () => void;
+      nextRunGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return release;
+    },
     _runs: runs,
   };
   return runner;
@@ -69,11 +82,13 @@ function makeLookup(
   };
 }
 
+type FakeTaskDefinition = Parameters<CommandScheduler['registerTask']>[1];
+
 function makeFakeScheduler(): CommandScheduler & {
-  tasks: Map<string, unknown>;
+  tasks: Map<string, FakeTaskDefinition>;
   demands: Map<string, string>;
 } {
-  const tasks = new Map<string, unknown>();
+  const tasks = new Map<string, FakeTaskDefinition>();
   const demands = new Map<string, string>();
   return {
     tasks,
@@ -83,13 +98,17 @@ function makeFakeScheduler(): CommandScheduler & {
     }),
     unregisterTask: vi.fn((key) => {
       tasks.delete(key);
+      demands.delete(key);
     }),
     setDemand: vi.fn((key, _consumerId, level) => {
       demands.set(key, level);
     }),
     clearTaskDemands: vi.fn((key) => {
-      // clear all demands for this task key (simplified)
       demands.delete(key);
+    }),
+    // fake 不保存 per-consumer map；窗口关闭时清空即可覆盖本测试需要的语义。
+    removeConsumer: vi.fn(() => {
+      demands.clear();
     }),
   };
 }
@@ -97,13 +116,15 @@ function makeFakeScheduler(): CommandScheduler & {
 describe('CommandPanelService', () => {
   let svc: CommandPanelService;
   let runner: ReturnType<typeof makeFakeRunner>;
+  let scheduler: ReturnType<typeof makeFakeScheduler>;
 
   beforeEach(() => {
     svc = new CommandPanelService();
     runner = makeFakeRunner();
+    scheduler = makeFakeScheduler();
     svc.attachSessionLookup(makeLookup());
     svc.attachRunner(runner as unknown as Parameters<CommandPanelService['attachRunner']>[0]);
-    svc.attachScheduler(makeFakeScheduler());
+    svc.attachScheduler(scheduler);
   });
 
   describe('runCommand', () => {
@@ -115,6 +136,10 @@ describe('CommandPanelService', () => {
 
       expect(snap.commands).toHaveLength(1);
       expect(snap.commands[0]!.command).toBe('echo hello');
+      expect(snap.commands[0]!.refreshPolicy).toEqual({
+        scope: 'foreground',
+        interval: '30s',
+      });
       expect(snap.activeKey).toBe(snap.commands[0]!.key);
       expect(snap.commands[0]!.status).toBe('running');
       expect(runner.run).toHaveBeenCalledWith({
@@ -135,6 +160,43 @@ describe('CommandPanelService', () => {
       const snap = svc.getSnapshot('s1');
       expect(snap.commands).toHaveLength(1);
       expect(runner.run).toHaveBeenCalledTimes(2); // 但跑了两次(重跑)
+    });
+
+    it('pending spawn 被并发重跑取代后不得回写或混入输出', async () => {
+      const releaseFirst = runner.deferNextRun();
+      const firstRun = svc.runCommand('s1', 'echo hello', null, 'w1');
+      expect(runner.run).toHaveBeenCalledTimes(1);
+
+      await svc.runCommand('s1', 'echo hello', null, 'w1');
+      expect(svc.getSnapshot('s1').commands[0]!.lastRunId).toBe('run-2');
+
+      releaseFirst();
+      await firstRun;
+      expect(runner.stop).toHaveBeenCalledWith('run-1');
+
+      runner.emitOutput('run-1', 'stdout', 'stale\n');
+      runner.emitOutput('run-2', 'stdout', 'latest\n');
+      runner.emitExited('run-2', 0, null);
+      expect(svc.getSnapshot('s1').commands[0]!.output).toBe('latest\n');
+    });
+
+    it('同步启动失败后建立 HOT demand 不得立即重复尝试', async () => {
+      svc.setDemand('s1', 'w1', 'hot');
+      runner.run.mockRejectedValueOnce(new CodeBlockError('SpawnFailed', 'boom'));
+      await svc.runCommand('s1', 'broken', null, 'w1');
+      const key = commandKeyFor('broken');
+      await scheduler.tasks.get(`command-panel:s1:${key}`)!.run();
+      expect(runner.run).toHaveBeenCalledTimes(1);
+    });
+
+    it('超过 32 条时 FIFO 淘汰同步停止 run 并注销 scheduler task', async () => {
+      for (let i = 0; i < 33; i++) await svc.runCommand('s1', `cmd-${i}`, null, 'w1');
+      const snap = svc.getSnapshot('s1');
+      const firstKey = commandKeyFor('cmd-0');
+      expect(snap.commands).toHaveLength(32);
+      expect(snap.commands.some((entry) => entry.key === firstKey)).toBe(false);
+      expect(scheduler.tasks.has(`command-panel:s1:${firstKey}`)).toBe(false);
+      expect(runner.stop).toHaveBeenCalledWith('run-1');
     });
 
     it('空 command 抛 CommandEmpty', async () => {
@@ -167,6 +229,22 @@ describe('CommandPanelService', () => {
       expect(snap2.commands[0]!.status).toBe('exited');
       expect(snap2.commands[0]!.lastExitCode).toBe(0);
       expect(snap2.commands[0]!.lastRunId).toBeNull(); // exited 后清 runId
+      expect(svc.isCommandPanelRun(runId)).toBe(true); // 同事件链后续 IPC listener 仍能识别
+      expect(svc.isCommandPanelRun('markdown-run')).toBe(false);
+    });
+
+    it('同一指令重跑时用新输出替换上一次结果', async () => {
+      const first = await svc.runCommand('s1', 'echo hello', null, 'w1');
+      const firstRunId = first.commands[0]!.lastRunId!;
+      runner.emitOutput(firstRunId, 'stdout', 'old result\n');
+      runner.emitExited(firstRunId, 0, null);
+
+      const second = await svc.runCommand('s1', 'echo hello', null, 'w1');
+      const secondRunId = second.commands[0]!.lastRunId!;
+      runner.emitOutput(secondRunId, 'stdout', 'new result\n');
+      runner.emitExited(secondRunId, 0, null);
+
+      expect(svc.getSnapshot('s1').commands[0]!.output).toBe('new result\n');
     });
 
     it('非零退出码 → 状态 error', async () => {
@@ -205,19 +283,166 @@ describe('CommandPanelService', () => {
       expect(snap.commands).toHaveLength(2);
     });
 
-    it('setStrategy:改策略', async () => {
+    it('前后台范围与刷新间隔 patch 可独立修改', async () => {
       await svc.runCommand('s1', 'cmd-a', null, 'w1');
       const key = commandKeyFor('cmd-a');
-      const snap = svc.setStrategy('s1', key, 'background-30s');
-      expect(snap.commands[0]!.strategy).toBe('background-30s');
+
+      let snap = svc.updateRefreshPolicy('s1', key, { scope: 'background' });
+      expect(snap.commands[0]!.refreshPolicy).toEqual({
+        scope: 'background',
+        interval: '30s',
+      });
+      expect(scheduler.tasks.get(`command-panel:s1:${key}`)).toMatchObject({
+        hotIntervalMs: 30_000,
+        warmIntervalMs: 30_000,
+      });
+
+      snap = svc.updateRefreshPolicy('s1', key, { interval: '5s' });
+      expect(snap.commands[0]!.refreshPolicy).toEqual({
+        scope: 'background',
+        interval: '5s',
+      });
+      expect(scheduler.tasks.get(`command-panel:s1:${key}`)).toMatchObject({
+        hotIntervalMs: 5_000,
+        warmIntervalMs: 5_000,
+      });
+
+      svc.updateRefreshPolicy('s1', key, { interval: 'manual' });
+      expect(scheduler.tasks.has(`command-panel:s1:${key}`)).toBe(false);
+    });
+
+    it('真实 scheduler 建立首次 HOT 时不重复 run，到 interval 后才刷新', async () => {
+      vi.useFakeTimers();
+      const realScheduler = new BackgroundWorkScheduler({ maxConcurrent: 1 });
+      const realSvc = new CommandPanelService();
+      const realRunner = makeFakeRunner();
+      try {
+        realSvc.attachSessionLookup(makeLookup());
+        realSvc.attachRunner(
+          realRunner as unknown as Parameters<CommandPanelService['attachRunner']>[0],
+        );
+        realSvc.attachScheduler(realScheduler);
+        const initial = await realSvc.runCommand('s1', 'cmd-a', null, 'w1');
+        realRunner.emitExited(initial.commands[0]!.lastRunId!, 0, null);
+
+        realSvc.setDemand('s1', 'w1', 'hot');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(realRunner.run).toHaveBeenCalledTimes(1);
+
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(realRunner.run).toHaveBeenCalledTimes(2);
+      } finally {
+        realScheduler.shutdown();
+        vi.useRealTimers();
+      }
+    });
+
+    it('WARM 等待接近 interval 时切 HOT 会立即刷新，不重置整段 interval', async () => {
+      vi.useFakeTimers();
+      const realScheduler = new BackgroundWorkScheduler({ maxConcurrent: 1 });
+      const realSvc = new CommandPanelService();
+      const realRunner = makeFakeRunner();
+      try {
+        realSvc.attachSessionLookup(makeLookup());
+        realSvc.attachRunner(
+          realRunner as unknown as Parameters<CommandPanelService['attachRunner']>[0],
+        );
+        realSvc.attachScheduler(realScheduler);
+        const initial = await realSvc.runCommand('s1', 'cmd-a', null, 'w1');
+        realRunner.emitExited(initial.commands[0]!.lastRunId!, 0, null);
+        realSvc.updateRefreshPolicy('s1', commandKeyFor('cmd-a'), { scope: 'background' });
+
+        await vi.advanceTimersByTimeAsync(29_000);
+        realSvc.setDemand('s1', 'w1', 'hot');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(realRunner.run).toHaveBeenCalledTimes(2);
+      } finally {
+        realScheduler.shutdown();
+        vi.useRealTimers();
+      }
+    });
+
+    it('foreground 只刷新当前可见 tab，background 在隐藏时保持 WARM', async () => {
+      await svc.runCommand('s1', 'cmd-a', null, 'w1');
+      await svc.runCommand('s1', 'cmd-b', null, 'w1');
+      const keyA = commandKeyFor('cmd-a');
+      const keyB = commandKeyFor('cmd-b');
+      svc.updateRefreshPolicy('s1', keyB, { scope: 'background' });
+
+      svc.showCommand('s1', keyA);
+      svc.setDemand('s1', 'w1', 'hot');
+      expect(scheduler.demands.get(`command-panel:s1:${keyA}`)).toBe('hot');
+      expect(scheduler.demands.get(`command-panel:s1:${keyB}`)).toBe('warm');
+
+      svc.showCommand('s1', keyB);
+      expect(scheduler.demands.get(`command-panel:s1:${keyA}`)).toBe('none');
+      expect(scheduler.demands.get(`command-panel:s1:${keyB}`)).toBe('hot');
+
+      svc.setDemand('s1', 'w1', 'none');
+      expect(scheduler.demands.get(`command-panel:s1:${keyA}`)).toBe('none');
+      expect(scheduler.demands.get(`command-panel:s1:${keyB}`)).toBe('warm');
     });
   });
 
-  describe('onSessionDestroyed / onWindowClosed', () => {
+  describe('onSessionDestroyed / owner / client lifecycle', () => {
     it('onSessionDestroyed:清空该 session 状态', async () => {
       await svc.runCommand('s1', 'cmd-a', null, 'w1');
       svc.onSessionDestroyed('s1');
       expect(svc.getSnapshot('s1').commands).toHaveLength(0);
+    });
+
+    it('旧 owner 的 cleanup 不得覆盖新 owner 的 HOT demand', async () => {
+      const sessions = {
+        s1: { currentCwd: '/tmp', pathId: 'local-1', ownerWindowId: 'w1' as string | null },
+      };
+      const localSvc = new CommandPanelService();
+      const localScheduler = makeFakeScheduler();
+      localSvc.attachSessionLookup(makeLookup(sessions));
+      localSvc.attachRunner(
+        runner as unknown as Parameters<CommandPanelService['attachRunner']>[0],
+      );
+      localSvc.attachScheduler(localScheduler);
+      await localSvc.runCommand('s1', 'cmd-a', null, 'w1');
+      const taskKey = `command-panel:s1:${commandKeyFor('cmd-a')}`;
+      localSvc.setDemand('s1', 'w1', 'hot');
+
+      sessions.s1.ownerWindowId = 'w2';
+      localSvc.onSessionOwnerChanged('s1');
+      localSvc.setDemand('s1', 'w2', 'hot');
+      localSvc.setDemand('s1', 'w1', 'none');
+
+      expect(localScheduler.demands.get(taskKey)).toBe('hot');
+    });
+
+    it('run 由 A 发起、owner 转给 B 后关闭 A，B 看到 idle 且迟到 exited 不翻 error', async () => {
+      const sessions = {
+        s1: { currentCwd: '/tmp', pathId: 'local-1', ownerWindowId: 'w1' as string | null },
+      };
+      const localSvc = new CommandPanelService();
+      const localRunner = makeFakeRunner();
+      localSvc.attachSessionLookup(makeLookup(sessions));
+      localSvc.attachRunner(
+        localRunner as unknown as Parameters<CommandPanelService['attachRunner']>[0],
+      );
+      localSvc.attachScheduler(makeFakeScheduler());
+      const running = await localSvc.runCommand('s1', 'cmd-a', null, 'w1');
+      const runId = running.commands[0]!.lastRunId!;
+
+      sessions.s1.ownerWindowId = 'w2';
+      localSvc.onSessionOwnerChanged('s1');
+      localSvc.onWindowClosed('w1');
+      expect(localSvc.getSnapshot('s1').commands[0]!.status).toBe('idle');
+      expect(localRunner.stop).toHaveBeenCalledWith(runId);
+
+      localRunner.emitExited(runId, 1, null);
+      expect(localSvc.getSnapshot('s1').commands[0]!.status).toBe('idle');
+    });
+
+    it('窗口/client 消失会从 scheduler 移除 consumer', async () => {
+      await svc.runCommand('s1', 'cmd-a', null, 'w1');
+      svc.setDemand('s1', 'w1', 'hot');
+      svc.removeDemandConsumer('w1');
+      expect(scheduler.removeConsumer).toHaveBeenCalledWith('w1');
     });
   });
 
@@ -236,6 +461,33 @@ describe('CommandPanelService', () => {
       expect(snap.commands[0]!.command).toBe('cmd-a');
       expect(snap.commands[0]!.status).toBe('idle'); // 恢复后重置
       expect(snap.commands[0]!.lastRunId).toBeNull();
+    });
+
+    it('旧快照的混合 strategy 会迁移成独立 refreshPolicy', () => {
+      const key = commandKeyFor('cmd-a');
+      const legacy = {
+        version: 1,
+        commands: [
+          {
+            key,
+            command: 'cmd-a',
+            title: 'cmd-a',
+            strategy: 'background-5s',
+            lastRunId: null,
+            lastExitCode: 0,
+            status: 'exited',
+            output: 'old',
+            lastRunAt: 1,
+          },
+        ],
+        activeKey: key,
+      } as unknown as CommandPanelSnapshotData;
+
+      svc.restoreSnapshot('s1', legacy);
+      expect(svc.getSnapshot('s1').commands[0]!.refreshPolicy).toEqual({
+        scope: 'background',
+        interval: '5s',
+      });
     });
 
     it('restoreSnapshot(null) 清空', async () => {

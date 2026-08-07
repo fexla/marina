@@ -70,4 +70,18 @@
   owner 切换 / 窗口关闭 / 远程断线分别走 `onSessionOwnerChanged` /
   `removePollingConsumer`，与 Git 同构。
 
+### I.7 命令面板按指令刷新（v0.3.3，2026-08-07 勘误）
+
+- 每条指令的刷新策略必须拆成两个独立维度：`scope=foreground|background` 与
+  `interval=manual|5s|30s`。UI 和 main 数据模型都不得再把“后台 30s”混成一个选项。
+- `foreground`：仅 active command tab 且面板可见时为 HOT；其他状态为 NONE。
+- `background`：active+可见时为 HOT；tab/面板隐藏但 session 仍有 owner 时为 WARM；
+  owner 释放、窗口关闭、session 销毁时清 demand/task。
+- HOT/WARM 的 interval 都取该指令同一个用户选择；两级只表达优先级/可见性，不暗改频率。
+- program-push 和“立即刷新”直接执行一次；紧随其后的首次 HOT 建 demand 在 1 秒内只去重
+  一次，避免同一命令肉眼可见地连跑两遍。普通 WARM→HOT 仍必须立即刷新，不能因去重逻辑
+  把已等待的时间清零后再推迟完整 interval。
+- 每个周期结果是**最新快照**：新 run 开始先清上一轮 output，本轮内才按 stdout/stderr
+  到达顺序拼接。命令面板不是历史日志，不得跨 run append。
+
 ---

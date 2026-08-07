@@ -704,6 +704,7 @@ function bootstrap(): void {
         onClientGone: (clientId) => {
           gitService.removePollingConsumer(clientId);
           fileTreePollingService.removePollingConsumer(clientId);
+          commandPanelService.removeDemandConsumer(clientId);
           terminalViewRegistry.removeClient(clientId);
         },
       });

@@ -211,7 +211,7 @@ import {
   type RunCommandPayload,
   type CloseCommandPayload,
   type ShowCommandPayload,
-  type SetCommandStrategyPayload,
+  type UpdateCommandRefreshPolicyPayload,
   type SetCommandDemandPayload,
   type GetCommandPanelStatePayload,
 } from '@shared/protocol';
@@ -1013,6 +1013,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     (_e, envelope: CommandEnvelope<AddBookmarkGroupPayload>): AddBookmarkGroupResponse => {
       const group = pathManager.addGroup(
         envelope.payload.name,
+        envelope.payload.kind,
         envelope.payload.parentId ?? undefined,
       );
       return { id: group.id };
@@ -2321,7 +2322,7 @@ function registerCodeBlockHandlers(deps: IpcLayerDeps): void {
 // 命令面板域 (v0.3.3,ADR-028 / Feature G)
 // - AI 经 marina run / HTTP /run / IPC 推送任意命令字符串
 // - 复用 codeBlockRunner 执行(bash),输出渲染 markdown 进第 4 面板
-// - 多 tab + per-指令 刷新策略(foreground 默认 / background-* 后台轮询)
+// - 多 tab + per-指令独立刷新策略(scope=前台/后台，interval=手动/5s/30s)
 // 本层仅转发;执行/状态机测在 command-panel-service。
 // ──────────────────────────────────────────────────────────────────
 function registerCommandPanelHandlers(deps: IpcLayerDeps): void {
@@ -2359,12 +2360,12 @@ function registerCommandPanelHandlers(deps: IpcLayerDeps): void {
   );
 
   registerHandle(
-    COMMAND_CHANNELS.COMMAND_PANEL_SET_STRATEGY,
-    (_e, envelope: CommandEnvelope<SetCommandStrategyPayload>): CommandPanelSnapshot =>
-      commandPanelService.setStrategy(
+    COMMAND_CHANNELS.COMMAND_PANEL_UPDATE_REFRESH_POLICY,
+    (_e, envelope: CommandEnvelope<UpdateCommandRefreshPolicyPayload>): CommandPanelSnapshot =>
+      commandPanelService.updateRefreshPolicy(
         envelope.payload.sessionId,
         envelope.payload.commandKey,
-        envelope.payload.strategy,
+        envelope.payload.patch,
       ),
   );
 
@@ -2373,7 +2374,11 @@ function registerCommandPanelHandlers(deps: IpcLayerDeps): void {
   registerHandle(
     COMMAND_CHANNELS.COMMAND_PANEL_SET_DEMAND,
     (_e, envelope: CommandEnvelope<SetCommandDemandPayload>): void => {
-      commandPanelService.setDemand(envelope.payload.sessionId, envelope.payload.level);
+      commandPanelService.setDemand(
+        envelope.payload.sessionId,
+        envelope.windowId,
+        envelope.payload.level,
+      );
     },
   );
 }
@@ -2450,6 +2455,7 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     fileTreePollingService,
     markdownThemeManager,
     codeBlockRunner,
+    commandPanelService,
   } = deps;
 
   // Path 树变化 → 广播 evt:path:tree-updated
@@ -2505,6 +2511,7 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     // 收到事件后按绝对 UI 状态重新上报 HOT/WARM。
     gitService.onSessionOwnerChanged(e.sessionId);
     fileTreePollingService.onSessionOwnerChanged(e.sessionId);
+    commandPanelService.onSessionOwnerChanged(e.sessionId);
     broadcastEvent<SessionOwnerChangedPayload>(EVENT_CHANNELS.SESSION_OWNER_CHANGED, e);
   });
 
@@ -2575,25 +2582,25 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     broadcastEvent<{ sessionId: string }>(EVENT_CHANNELS.WORKSPACE_CHANGED, p);
   });
 
-  // v0.3.3 命令面板(ADR-028):状态变化(指令增删/active/策略/状态机翻转/输出落定)
-  // 广播给所有窗口。与 file-panel 同策略:per-session 小元数据广播无副作用(orphan
-  // 期间的更新不能丢),各自存进 per-session map。流式 output 复用上面的
-  // code-block-output(命令面板的 run 就是 codeBlockRunner 跑的,runId 一致)。
+  // v0.3.3 命令面板包含任意 shell 命令与输出，只能发给当前 session owner。
+  // orphan 期间不推事件也不丢真值：CommandPanelService 持有完整状态，下一 owner
+  // 挂载时 cmd:command-panel:get-state 会补拉。requestActivation 也绝不能广播，
+  // 否则无关窗口会被一条别人的 program-push 抢走当前面板。
   deps.commandPanelService.on('commandPanelUpdated', (p: CommandPanelUpdateEvent) => {
-    // requestActivation 让 renderer 自动切到该指令 tab(与 file-panel 的
-    // FilePanelUpdatedPayload.requestActivation 同构)。
-    broadcastEvent<CommandPanelUpdatedPayload>(EVENT_CHANNELS.COMMAND_PANEL_UPDATED, {
+    const ownerClientId = sessionManager.get(p.sessionId)?.ownerWindowId;
+    if (!ownerClientId) return;
+    sendEventTo<CommandPanelUpdatedPayload>(ownerClientId, EVENT_CHANNELS.COMMAND_PANEL_UPDATED, {
       sessionId: p.sessionId,
       ...p.snapshot,
       requestActivation: p.requestActivation,
     });
   });
 
-  // v0.3.3:Markdown 代码块执行的 stdout/stderr 与退出。按 runId 对应的
-  // clientId 定向发送(发起窗口),不广播 —— 输出体量可能大且只该窗口关心。
-  // clientId 由 run() 从 envelope.windowId 带入(本地窗口 = windowId,
-  // 远程 = WS clientId),与 session output 的定向策略一致。
+  // v0.3.3:Markdown 代码块执行的 stdout/stderr 与退出按发起 client 定向发送。
+  // CommandPanel 也复用同一 runner，但它的命令/输出属于 session owner：服务层累积后
+  // 只发 owner-only snapshot，绝不能再沿原 clientId 把流式内容泄漏给已转移的旧 owner。
   codeBlockRunner.on('output', (e: CodeBlockOutputPayload & { clientId: string }) => {
+    if (commandPanelService.isCommandPanelRun(e.runId)) return;
     sendEventTo(e.clientId, EVENT_CHANNELS.CODE_BLOCK_OUTPUT, {
       runId: e.runId,
       stream: e.stream,
@@ -2601,6 +2608,7 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
     } satisfies CodeBlockOutputPayload);
   });
   codeBlockRunner.on('exited', (e: CodeBlockExitedPayload & { clientId: string }) => {
+    if (commandPanelService.isCommandPanelRun(e.runId)) return;
     sendEventTo(e.clientId, EVENT_CHANNELS.CODE_BLOCK_EXITED, {
       runId: e.runId,
       exitCode: e.exitCode,

@@ -9,11 +9,11 @@
  *   SSH 自动拒绝、shell 路径解析、UTF-8/GBK 解码、生命周期清理全在 CodeBlockRunner。
  * - 多 tab:每 session 一份 {commands[], activeKey}。同 command 字符串去重 upsert
  *   (按 command 派生 key),避免重复 tab。
- * - per-指令 刷新策略(D4):foreground(默认,仅前台跑)/ background-30s / background-5s
- *   (后台轮询走 BackgroundWorkScheduler)/ manual / off。
+ * - per-指令刷新由两个独立维度组成:refreshPolicy.scope 决定仅前台还是允许后台，
+ *   refreshPolicy.interval 决定手动/5s/30s；后台轮询统一走 BackgroundWorkScheduler。
  * - output 实时流复用 CodeBlockRunner 的 'output' 事件 → ipc 转 evt:system:code-block-output
- *   (runId 空间一致,renderer 按 runId 订阅)。本服务只在 exited 时把最终输出拼进 entry.output
- *   + 翻状态机,emit 'commandPanelUpdated'(结构/状态变化,不逐 chunk 广播整个 snapshot)。
+ *   (runId 空间一致,renderer 按 runId 订阅)。每次 run 开始先清空上一轮 output，本服务只
+ *   累积当前 run 的 stdout/stderr；exited 时翻状态机并广播最终快照。
  * - 持久化(D6,套用 ADR-024):command-panel.json,本服务只持内存态,读写委托
  *   workspaceOps(与 FilePanelService 同款注入)。持久化触发由 renderer/上层驱动。
  *
@@ -33,7 +33,8 @@ import type {
   CommandEntry,
   CommandExitedPayload,
   CommandPanelSnapshot,
-  CommandRefreshStrategy,
+  CommandRefreshInterval,
+  CommandRefreshPolicy,
   CommandRunStatus,
 } from '@shared/protocol';
 import type { CodeBlockError, CodeBlockRunner } from './code-block-runner';
@@ -45,33 +46,53 @@ const MODULE = 'CommandPanelService';
 const OUTPUT_MAX_BYTES = 2 * 1024 * 1024;
 /** 每 session 指令条数硬上限(溢出 FIFO 丢最旧,防失控累积)。 */
 const MAX_COMMANDS_PER_SESSION = 32;
+/** 已结束/取消 runId 的短期识别缓存：让同 EventEmitter 链后面的 IPC listener 仍能抑制泄漏。 */
+const RECENT_COMMAND_RUN_IDS_MAX = 256;
+const RECENT_COMMAND_RUN_ID_TTL_MS = 60_000;
 
-/** 后台轮询策略 → 间隔(ms)。foreground/manual/off 不在此表(不注册后台 task)。 */
-const BACKGROUND_INTERVAL_MS: Readonly<Record<string, number>> = {
-  'background-30s': 30_000,
-  'background-5s': 5_000,
+/** 自动刷新间隔 → 毫秒。manual 不注册 scheduler task。 */
+const REFRESH_INTERVAL_MS: Readonly<Record<Exclude<CommandRefreshInterval, 'manual'>, number>> = {
+  '30s': 30_000,
+  '5s': 5_000,
 };
 
-/**
- * foreground 策略的 hotIntervalMs。
- *
- * BackgroundWorkScheduler 的 setDemand('hot') 会立即 enqueue 跑一次,但 run 完后
- * 按 hotIntervalMs 续排轮询。foreground 语义是"面板可见时跑一次、不主动续排"
- * (只靠 demand 变化重跑),与 scheduler 轮询模型不完全契合。
- *
- * 这里用一个大有限值(24h)让 HOT 跑完后续排间隔实际等同不续(一天内不会自动再跑),
- * 既绕过 scheduler ">= 10ms 且有限"的校验(0 / Infinity 都会被拒),又符合 foreground
- * "可见跑一次"的行为。
- */
-const FOREGROUND_HOT_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** program-push 后面板挂载会立刻报 HOT；1 秒内只吞这一次调度器重复触发。 */
+const DIRECT_RUN_DEDUPE_MS = 1_000;
 
-/** foreground 策略在用户可见时也算 HOT(立即跑一次);后台策略按各自间隔。 */
-function strategyToHotInterval(strategy: CommandRefreshStrategy): number | null {
-  if (strategy === 'foreground') return FOREGROUND_HOT_INTERVAL_MS; // HOT 立即跑,跑完 24h 内不续
-  if (strategy in BACKGROUND_INTERVAL_MS) {
-    return BACKGROUND_INTERVAL_MS[strategy as keyof typeof BACKGROUND_INTERVAL_MS]!;
+/** 新指令默认：只在前台刷新，每 30 秒；push 本身仍会立即执行一次。 */
+const DEFAULT_REFRESH_POLICY: Readonly<CommandRefreshPolicy> = {
+  scope: 'foreground',
+  interval: '30s',
+};
+
+type LegacyCommandRefreshStrategy =
+  | 'foreground'
+  | 'background-30s'
+  | 'background-5s'
+  | 'manual'
+  | 'off';
+
+/** v0.3.3 早期混合枚举 → 新的两个独立维度。只用于旧落盘快照迁移。 */
+function legacyStrategyToPolicy(strategy: LegacyCommandRefreshStrategy): CommandRefreshPolicy {
+  if (strategy === 'background-5s') return { scope: 'background', interval: '5s' };
+  if (strategy === 'background-30s') return { scope: 'background', interval: '30s' };
+  if (strategy === 'manual' || strategy === 'off') {
+    return { scope: 'foreground', interval: 'manual' };
   }
-  return null; // manual / off → 不自动跑
+  return { ...DEFAULT_REFRESH_POLICY };
+}
+
+/** 兼容缺少 refreshPolicy 的 v1 落盘快照，并拒绝损坏枚举污染 scheduler。 */
+function normalizeRefreshPolicy(entry: {
+  refreshPolicy?: CommandRefreshPolicy;
+  strategy?: LegacyCommandRefreshStrategy;
+}): CommandRefreshPolicy {
+  const policy = entry.refreshPolicy;
+  const validScope = policy?.scope === 'foreground' || policy?.scope === 'background';
+  const validInterval =
+    policy?.interval === 'manual' || policy?.interval === '5s' || policy?.interval === '30s';
+  if (policy && validScope && validInterval) return { ...policy };
+  return legacyStrategyToPolicy(entry.strategy ?? 'foreground');
 }
 
 /** 由 command 字符串派生稳定 key(同 command 去重 upsert)。sha1 截断,非安全用途。 */
@@ -107,13 +128,14 @@ export interface CommandScheduler {
   unregisterTask(key: string): void;
   setDemand(key: string, consumerId: string, level: 'none' | 'warm' | 'hot'): void;
   clearTaskDemands(key: string): void;
+  removeConsumer(consumerId: string): void;
 }
 
 /** 命令面板快照的磁盘 schema(仿 file-panel.json,见 ADR-024 §4)。
  * 持久化委托(attachWorkspaceOps)尚未接线上层,但 restore/export 已实现,
  * 上层接线时直接调即可。 */
 export interface CommandPanelSnapshotData {
-  version: 1;
+  version: 2;
   commands: CommandEntry[];
   activeKey: string | null;
 }
@@ -137,6 +159,12 @@ export interface CommandPanelUpdateEvent {
 interface RunRoute {
   sessionId: string;
   key: string;
+  generation: number;
+}
+
+/** pending/active run 的发起 client；owner 转移后关闭旧窗口仍必须取消它发起的进程。 */
+interface RunOrigin extends RunRoute {
+  clientId: string;
 }
 
 /**
@@ -152,6 +180,19 @@ export class CommandPanelService extends EventEmitter {
   private readonly panels = new Map<string, CommandPanelState>();
   /** runId → 路由(谁发起的、哪条指令)。run 结束(close)后清理。 */
   private readonly runRoutes = new Map<string, RunRoute>();
+  /** Renderer 按 client 上报可见性；stale 旧 owner 的 NONE 不得覆盖新 owner。 */
+  private readonly panelDemandLevels = new Map<string, Map<string, 'warm' | 'hot'>>();
+  /** 每个 session 当前应用到 scheduler 的 owner，owner 变化时清旧 task demand。 */
+  private readonly demandConsumers = new Map<string, string>();
+  /** pending runner.run 尚未返回 runId 时也可由新 run/close 通过 generation 使其失效。 */
+  private readonly runGenerations = new Map<string, number>();
+  /** 最近一次 program-push/立即刷新开始时间；只用于吞掉紧随其后的首次 HOT 重复 run。 */
+  private readonly lastDirectRunAt = new Map<string, number>();
+  /** runKey → 发起 client；在 runner.run 返回 runId 前也存在。 */
+  private readonly runOrigins = new Map<string, RunOrigin>();
+  /** 已退出/取消的命令 runId 短期 tombstone；IPC exited listener 同步识别后不外发。 */
+  private readonly recentCommandRunIds = new Map<string, number>();
+  private nextRunGeneration = 0;
   private lookup: CommandPanelSessionLookup | null = null;
   private runner: CodeBlockRunner | null = null;
   private scheduler: CommandScheduler | null = null;
@@ -179,9 +220,13 @@ export class CommandPanelService extends EventEmitter {
     });
   }
 
-  /** 注入后台调度器(BackgroundWorkScheduler)。未注入则后台轮询策略降级为不自动跑。 */
+  /** 注入后台调度器(BackgroundWorkScheduler)。已有恢复态也在这里补注册。 */
   attachScheduler(scheduler: CommandScheduler): void {
     this.scheduler = scheduler;
+    for (const [sessionId, state] of this.panels) {
+      for (const entry of state.commands) this.syncSchedulerTask(sessionId, entry);
+      this.applySchedulerDemand(sessionId);
+    }
   }
 
   // ──────────────────────────────────────────────────────────────────
@@ -192,7 +237,13 @@ export class CommandPanelService extends EventEmitter {
   getSnapshot(sessionId: string): CommandPanelSnapshot {
     const state = this.panels.get(sessionId);
     if (!state) return { commands: [], activeKey: null };
-    return { commands: state.commands.map((c) => ({ ...c })), activeKey: state.activeKey };
+    return {
+      commands: state.commands.map((c) => ({
+        ...c,
+        refreshPolicy: { ...normalizeRefreshPolicy(c) },
+      })),
+      activeKey: state.activeKey,
+    };
   }
 
   // ──────────────────────────────────────────────────────────────────
@@ -237,12 +288,13 @@ export class CommandPanelService extends EventEmitter {
             ...state.commands[existingIdx]!,
             command: cmd,
             title: title ?? state.commands[existingIdx]!.title,
+            refreshPolicy: normalizeRefreshPolicy(state.commands[existingIdx]!),
           }
         : {
             key,
             command: cmd,
             title: title ?? defaultTitleFor(cmd),
-            strategy: 'foreground',
+            refreshPolicy: { ...DEFAULT_REFRESH_POLICY },
             lastRunId: null,
             lastExitCode: null,
             status: 'idle',
@@ -252,8 +304,11 @@ export class CommandPanelService extends EventEmitter {
     if (existingIdx >= 0) state.commands[existingIdx] = entry;
     else {
       state.commands.push(entry);
-      // 溢出 FIFO 丢最旧
-      while (state.commands.length > MAX_COMMANDS_PER_SESSION) state.commands.shift();
+      // 溢出 FIFO 丢最旧时必须同步停 run + 注销 task；只 shift 会留下永久后台任务。
+      while (state.commands.length > MAX_COMMANDS_PER_SESSION) {
+        const evicted = state.commands.shift();
+        if (evicted) this.disposeCommand(sessionId, evicted);
+      }
     }
     // 推新指令时自动切 active 到它
     if (isNew) state.activeKey = key;
@@ -263,11 +318,16 @@ export class CommandPanelService extends EventEmitter {
       `runCommand: sid=${sessionId} key=${key} new=${isNew} status=${entry.status}`,
     );
 
-    // 同步注册/刷新后台 task(策略非 foreground/manual/off 时)
+    // 先注册 task、再直接跑一次。直接 run 写入 lastRunAt 后才应用 demand，
+    // scheduler 的首次 HOT 即使立即触发也会因“距上次不足一个 interval”而跳过，
+    // 避免新命令被 program-push 与面板激活各跑一遍。
     this.syncSchedulerTask(sessionId, entry);
-
-    // 立即跑一次(无论策略 —— 推送即跑,策略只管后续自动重跑)
     await this.spawnRun(sessionId, entry, requestingClientId);
+    // await 期间可能被同 command 新 run 替换或被用户关闭；旧调用不得再发激活事件。
+    const currentEntry = this.panels.get(sessionId)?.commands.find((item) => item.key === key);
+    if (currentEntry !== entry) return this.getSnapshot(sessionId);
+    this.lastDirectRunAt.set(this.commandRunKey(sessionId, key), entry.lastRunAt ?? Date.now());
+    this.applySchedulerDemand(sessionId);
 
     // 推送新指令时请求 renderer 激活命令面板(切到 command tab)。spawnRun 已 emit
     // 过 running 态(requestActivation=false),这里再 emit 一次带 requestActivation=isNew,
@@ -285,21 +345,12 @@ export class CommandPanelService extends EventEmitter {
     if (idx < 0) return this.getSnapshot(sessionId);
 
     const removed = state.commands[idx]!;
-    // 停进行中的 run
-    if (removed.lastRunId) {
-      const route = this.runRoutes.get(removed.lastRunId);
-      if (route) {
-        this.runner?.stop(removed.lastRunId);
-        this.runRoutes.delete(removed.lastRunId);
-      }
-    }
-    // 注销后台 task
-    this.unregisterSchedulerTask(sessionId, commandKey);
-
+    this.disposeCommand(sessionId, removed);
     state.commands.splice(idx, 1);
     if (state.activeKey === commandKey) {
       state.activeKey = state.commands[0]?.key ?? null;
     }
+    this.applySchedulerDemand(sessionId);
     logger.info(MODULE, `closeCommand: sid=${sessionId} key=${commandKey}`);
     this.emitUpdated(sessionId, { requestActivation: false, commandKey });
     return this.getSnapshot(sessionId);
@@ -311,81 +362,138 @@ export class CommandPanelService extends EventEmitter {
     if (!state) return this.getSnapshot(sessionId);
     if (!state.commands.some((c) => c.key === commandKey)) return this.getSnapshot(sessionId);
     state.activeKey = commandKey;
+    // scope=foreground 只允许当前 active tab 拿 HOT；切 tab 必须同步改 demand。
+    this.applySchedulerDemand(sessionId);
     this.emitUpdated(sessionId, { requestActivation: false, commandKey });
     return this.getSnapshot(sessionId);
   }
 
-  /** 改某条指令的刷新策略(per-指令,D4)。同步注册/注销后台 task。 */
-  setStrategy(
+  /**
+   * 独立更新运行范围或刷新间隔。patch 在 main 当前真值上合并，两个快速连续的控件请求
+   * 不会用 renderer 的旧快照互相覆盖。
+   */
+  updateRefreshPolicy(
     sessionId: string,
     commandKey: string,
-    strategy: CommandRefreshStrategy,
+    patch: Partial<CommandRefreshPolicy>,
   ): CommandPanelSnapshot {
     const state = this.panels.get(sessionId);
     if (!state) return this.getSnapshot(sessionId);
     const entry = state.commands.find((c) => c.key === commandKey);
-    if (!entry || entry.strategy === strategy) return this.getSnapshot(sessionId);
-    entry.strategy = strategy;
+    if (!entry) return this.getSnapshot(sessionId);
+    if (
+      (patch.scope !== undefined && patch.scope !== 'foreground' && patch.scope !== 'background') ||
+      (patch.interval !== undefined &&
+        patch.interval !== 'manual' &&
+        patch.interval !== '5s' &&
+        patch.interval !== '30s')
+    ) {
+      throw new CommandPanelError(
+        'InvalidRefreshPolicy',
+        `刷新策略不合法: scope=${String(patch.scope)} interval=${String(patch.interval)}。` +
+          'scope 必须是 foreground/background；interval 必须是 manual/5s/30s。',
+      );
+    }
+    const current = normalizeRefreshPolicy(entry);
+    const next = { ...current, ...patch };
+    if (current.scope === next.scope && current.interval === next.interval) {
+      return this.getSnapshot(sessionId);
+    }
+    entry.refreshPolicy = next;
     this.syncSchedulerTask(sessionId, entry);
-    logger.info(MODULE, `setStrategy: sid=${sessionId} key=${commandKey} strategy=${strategy}`);
+    this.applySchedulerDemand(sessionId);
+    logger.info(
+      MODULE,
+      `updateRefreshPolicy: sid=${sessionId} key=${commandKey} scope=${next.scope} interval=${next.interval}`,
+    );
     this.emitUpdated(sessionId, { requestActivation: false, commandKey });
     return this.getSnapshot(sessionId);
   }
 
   // ──────────────────────────────────────────────────────────────────
-  // 后台轮询(demand 由 renderer 上报:面板可见+聚焦=HOT,切走=NONE)
+  // 后台轮询(renderer 只报告可见性；scope 决定隐藏时 NONE 还是 WARM)
   // ──────────────────────────────────────────────────────────────────
 
   /**
-   * renderer 上报 demand(面板可见性/聚焦变化)。per-指令 task 各自的 demand。
-   * consumerId = ownerWindowId(窗口关闭时 removeConsumer 兜底)。
+   * 保存某 client 的面板绝对可见性。非 owner 只能发 NONE 做幂等清理，旧 owner 的
+   * cleanup 不会覆盖新 owner 已上报的 HOT。
    */
-  setDemand(sessionId: string, level: 'none' | 'warm' | 'hot'): void {
-    if (!this.scheduler) return;
-    const state = this.panels.get(sessionId);
-    if (!state) return;
-    const session = this.lookup?.get(sessionId);
-    const consumerId = session?.ownerWindowId ?? sessionId;
-    for (const entry of state.commands) {
-      const taskKey = this.schedulerTaskKey(sessionId, entry.key);
-      if (!entry.strategy || entry.strategy === 'manual' || entry.strategy === 'off') continue;
-      // foreground 策略:只有 HOT(可见)才跑;后台策略:HOT 立即/WARM 按间隔。
-      if (entry.strategy === 'foreground') {
-        this.scheduler.setDemand(taskKey, consumerId, level === 'hot' ? 'hot' : 'none');
-      } else {
-        this.scheduler.setDemand(taskKey, consumerId, level);
+  setDemand(sessionId: string, consumerId: string, level: 'none' | 'warm' | 'hot'): void {
+    const ownerWindowId = this.lookup?.get(sessionId)?.ownerWindowId ?? null;
+    if (level !== 'none' && ownerWindowId !== consumerId) return;
+    let demands = this.panelDemandLevels.get(sessionId);
+    if (level === 'none') {
+      demands?.delete(consumerId);
+      if (demands?.size === 0) this.panelDemandLevels.delete(sessionId);
+    } else {
+      if (!demands) {
+        demands = new Map();
+        this.panelDemandLevels.set(sessionId, demands);
       }
+      demands.set(consumerId, level);
     }
+    this.applySchedulerDemand(sessionId);
   }
 
   // ──────────────────────────────────────────────────────────────────
   // 生命周期清理
   // ──────────────────────────────────────────────────────────────────
 
-  /** session 真正销毁(SessionManager 调):清状态 + 停 run + 注销 task。 */
+  /** session 真正销毁(SessionManager 调):清状态 + 停 run/pending spawn + 注销 task。 */
   onSessionDestroyed(sessionId: string): void {
     const state = this.panels.get(sessionId);
-    if (!state) return;
-    for (const entry of state.commands) {
-      if (entry.lastRunId && this.runRoutes.has(entry.lastRunId)) {
-        this.runner?.stop(entry.lastRunId);
-        this.runRoutes.delete(entry.lastRunId);
-      }
-      this.unregisterSchedulerTask(sessionId, entry.key);
+    if (state) {
+      for (const entry of state.commands) this.disposeCommand(sessionId, entry);
+      this.panels.delete(sessionId);
     }
-    this.panels.delete(sessionId);
+    this.panelDemandLevels.delete(sessionId);
+    this.demandConsumers.delete(sessionId);
     logger.info(MODULE, `onSessionDestroyed: sid=${sessionId} cleared`);
   }
 
-  /** 发起窗口关闭:杀掉它发起的、仍属于命令面板的 run(防向已销毁 webContents 推事件)。 */
-  onWindowClosed(windowId: string): void {
-    for (const [runId, route] of this.runRoutes) {
-      const session = this.lookup?.get(route.sessionId);
-      if (session?.ownerWindowId === windowId) {
-        this.runner?.stop(runId);
-        this.runRoutes.delete(runId);
+  /** owner 改变时清该 session 的全部旧 demand；新 owner 挂载后会按绝对状态重报。 */
+  onSessionOwnerChanged(sessionId: string): void {
+    const state = this.panels.get(sessionId);
+    if (state) {
+      for (const entry of state.commands) {
+        this.scheduler?.clearTaskDemands(this.schedulerTaskKey(sessionId, entry.key));
       }
     }
+    this.panelDemandLevels.delete(sessionId);
+    this.demandConsumers.delete(sessionId);
+  }
+
+  /** 本地窗口/远程 client 消失：只撤 demand，不让 stale cleanup 影响其他 client。 */
+  removeDemandConsumer(consumerId: string): void {
+    this.scheduler?.removeConsumer(consumerId);
+    for (const [sessionId, demands] of this.panelDemandLevels) {
+      demands.delete(consumerId);
+      if (demands.size === 0) this.panelDemandLevels.delete(sessionId);
+    }
+    for (const [sessionId, appliedConsumer] of this.demandConsumers) {
+      if (appliedConsumer === consumerId) this.demandConsumers.delete(sessionId);
+    }
+  }
+
+  /**
+   * 发起窗口关闭：按 run 的 origin 而非 session 当前 owner 取消。owner 可能已转移给 B，
+   * 但 CodeBlockRunner.removeClient(A) 仍会杀 A 启动的进程；这里必须同步把 B 看到的
+   * entry 从 running 复位为 idle，且删除 route，避免迟到 exited 又翻成 error。
+   */
+  onWindowClosed(windowId: string): void {
+    for (const origin of [...this.runOrigins.values()]) {
+      if (origin.clientId !== windowId) continue;
+      const entry = this.panels
+        .get(origin.sessionId)
+        ?.commands.find((item) => item.key === origin.key);
+      if (!entry) continue;
+      this.cancelCommandRun(origin.sessionId, entry);
+      this.emitUpdated(origin.sessionId, {
+        requestActivation: false,
+        commandKey: origin.key,
+      });
+    }
+    this.removeDemandConsumer(windowId);
   }
 
   // ──────────────────────────────────────────────────────────────────
@@ -394,21 +502,34 @@ export class CommandPanelService extends EventEmitter {
 
   /** 用快照数据恢复某 session 的命令面板(bind 切换/首次拉取,上层调)。 */
   restoreSnapshot(sessionId: string, data: CommandPanelSnapshotData | null): void {
+    const previous = this.panels.get(sessionId);
+    if (previous) {
+      for (const entry of previous.commands) this.disposeCommand(sessionId, entry);
+    }
     if (!data || !Array.isArray(data.commands)) {
       this.panels.delete(sessionId);
       return;
     }
     const state = this.ensureState(sessionId);
-    state.commands = data.commands.slice(0, MAX_COMMANDS_PER_SESSION).map((c) => ({
-      ...c,
-      // 恢复后所有指令重置为 idle/无进行中 run(runId 已失效)
-      status: 'idle' as CommandRunStatus,
-      lastRunId: null,
-    }));
+    state.commands = data.commands.slice(0, MAX_COMMANDS_PER_SESSION).map((c) => {
+      const refreshPolicy = normalizeRefreshPolicy(c);
+      // v1 快照可能带 legacy strategy；迁移后从内存真值中删除，避免两个字段再漂移。
+      const restored = { ...c } as CommandEntry & { strategy?: LegacyCommandRefreshStrategy };
+      delete restored.strategy;
+      return {
+        ...restored,
+        refreshPolicy,
+        // 恢复后所有指令重置为 idle/无进行中 run(runId 已失效)
+        status: 'idle' as CommandRunStatus,
+        lastRunId: null,
+      };
+    });
     state.activeKey =
       data.activeKey && state.commands.some((c) => c.key === data.activeKey)
         ? data.activeKey
         : (state.commands[0]?.key ?? null);
+    for (const entry of state.commands) this.syncSchedulerTask(sessionId, entry);
+    this.applySchedulerDemand(sessionId);
     logger.info(MODULE, `restoreSnapshot: sid=${sessionId} commands=${state.commands.length}`);
   }
 
@@ -417,8 +538,11 @@ export class CommandPanelService extends EventEmitter {
     const state = this.panels.get(sessionId);
     if (!state) return null;
     return {
-      version: 1,
-      commands: state.commands.map((c) => ({ ...c })),
+      version: 2,
+      commands: state.commands.map((c) => ({
+        ...c,
+        refreshPolicy: { ...normalizeRefreshPolicy(c) },
+      })),
       activeKey: state.activeKey,
     };
   }
@@ -446,11 +570,24 @@ export class CommandPanelService extends EventEmitter {
       logger.warn(MODULE, 'spawnRun: runner 未注入,跳过执行');
       return;
     }
-    // 清旧 runId 路由(若有进行中的)
-    if (entry.lastRunId) {
-      this.runRoutes.delete(entry.lastRunId);
-      entry.lastRunId = null;
-    }
+    // 同一指令被再次 push 时，新 run 取代旧 run：停已知旧进程；generation 还能覆盖
+    // runner.run 尚未返回 runId 的 pending 窗口，旧 Promise 最终返回时会立即 stop。
+    this.cancelCommandRun(sessionId, entry);
+    const runKey = this.commandRunKey(sessionId, entry.key);
+    const generation = ++this.nextRunGeneration;
+    const originClientId = requestingClientId ?? sessionId;
+    this.runGenerations.set(runKey, generation);
+    this.runOrigins.set(runKey, {
+      sessionId,
+      key: entry.key,
+      generation,
+      clientId: originClientId,
+    });
+
+    // output 是“最近一次结果”而非历史日志。本轮内 stdout/stderr 才继续 append。
+    entry.output = '';
+    entry.lastExitCode = null;
+    entry.lastRunAt = Date.now();
     entry.status = 'running';
     this.emitUpdated(sessionId, { requestActivation: false, commandKey: entry.key });
 
@@ -459,12 +596,20 @@ export class CommandPanelService extends EventEmitter {
         sourceSessionId: sessionId,
         language: 'bash',
         code: entry.command,
-        requestingClientId: requestingClientId ?? sessionId,
+        requestingClientId: originClientId,
       });
+      if (this.runGenerations.get(runKey) !== generation) {
+        this.rememberCommandRunId(runId);
+        this.runner.stop(runId);
+        return;
+      }
       entry.lastRunId = runId;
-      entry.lastRunAt = Date.now();
-      this.runRoutes.set(runId, { sessionId, key: entry.key });
+      this.runRoutes.set(runId, { sessionId, key: entry.key, generation });
     } catch (err) {
+      // 已被新 run/close/session destroy 取代的 pending spawn 不得回写旧错误态。
+      if (this.runGenerations.get(runKey) !== generation) return;
+      this.runGenerations.delete(runKey);
+      this.runOrigins.delete(runKey);
       // SSH/Shell/Spawn/CodeTooLarge —— 透传 CodeBlockError 的 code 到状态机
       entry.status = 'error';
       const code = (err as CodeBlockError)?.code ?? 'SpawnFailed';
@@ -477,12 +622,14 @@ export class CommandPanelService extends EventEmitter {
 
   /** 处理 CodeBlockRunner 的 output 事件(属于命令面板的 run)。 */
   private handleOutput(route: RunRoute, _stream: 'stdout' | 'stderr', data: string): void {
+    const runKey = this.commandRunKey(route.sessionId, route.key);
+    if (this.runGenerations.get(runKey) !== route.generation) return;
     const state = this.panels.get(route.sessionId);
     if (!state) return;
     const entry = state.commands.find((c) => c.key === route.key);
     if (!entry) return;
-    // 拼接最终输出(实时流靠 renderer 订阅 code-block-output,这里只累积最终值)。
-    // 累积而非替换:stdout/stderr 交错按到达顺序拼。
+    // spawnRun 已在每轮开始清空旧结果；这里仅拼接当前 run 内的 stdout/stderr，
+    // 保留两条 stream 的到达顺序。
     entry.output = appendTruncated(entry.output, data, OUTPUT_MAX_BYTES);
     // output chunk 不 emit updated(避免逐 chunk 广播整个 snapshot);exited 时统一发。
   }
@@ -494,14 +641,24 @@ export class CommandPanelService extends EventEmitter {
     exitCode: number | null,
     signal: string | null,
   ): void {
+    // CommandPanelService 的 listener 比 ipc.ts 先注册；先落 tombstone，后续共享
+    // code-block exited listener 同一事件循环内即可识别并抑制。
+    this.rememberCommandRunId(runId);
+    const runKey = this.commandRunKey(route.sessionId, route.key);
+    if (this.runGenerations.get(runKey) !== route.generation) {
+      this.runRoutes.delete(runId);
+      return;
+    }
     const state = this.panels.get(route.sessionId);
     if (!state) {
       this.runRoutes.delete(runId);
+      this.runGenerations.delete(runKey);
       return;
     }
     const entry = state.commands.find((c) => c.key === route.key);
     if (!entry) {
       this.runRoutes.delete(runId);
+      this.runGenerations.delete(runKey);
       return;
     }
     entry.lastExitCode = exitCode;
@@ -512,12 +669,27 @@ export class CommandPanelService extends EventEmitter {
     // 清 runId 路由(exited 后 runId 失效)。entry.lastRunId 可能已被新 run 覆盖,
     // 只在仍指向本次 runId 时清(避免误清新 run 的路由)。
     this.runRoutes.delete(runId);
+    this.runGenerations.delete(runKey);
+    this.runOrigins.delete(runKey);
     if (entry.lastRunId === runId) entry.lastRunId = null;
     this.emitUpdated(route.sessionId, { requestActivation: false, commandKey: route.key });
     logger.info(
       MODULE,
       `exited: sid=${route.sessionId} key=${route.key} exit=${exitCode ?? 'null'} status=${entry.status}`,
     );
+  }
+
+  /**
+   * IPC 的共享 CodeBlockRunner listener 用：命令面板输出只经 owner-only snapshot 发送，
+   * 不能再按 runner 原始 clientId 把流式内容泄漏给旧 owner。
+   */
+  isCommandPanelRun(runId: string): boolean {
+    if (this.runRoutes.has(runId)) return true;
+    const rememberedAt = this.recentCommandRunIds.get(runId);
+    if (rememberedAt === undefined) return false;
+    if (Date.now() - rememberedAt <= RECENT_COMMAND_RUN_ID_TTL_MS) return true;
+    this.recentCommandRunIds.delete(runId);
+    return false;
   }
 
   private emitUpdated(
@@ -540,31 +712,121 @@ export class CommandPanelService extends EventEmitter {
     return `command-panel:${sessionId}:${commandKey}`;
   }
 
-  /** 按策略注册/刷新/注销后台 task。foreground/manual/off 不注册(或注销已有)。 */
+  /**
+   * 把面板可见性 + 每条独立 policy 映射到 scheduler：
+   * - foreground：仅 active tab 且面板 HOT 时为 HOT，其余 NONE；
+   * - background：active+可见为 HOT，其余只要仍有 owner 就为 WARM；
+   * - manual：task 已注销，不产生 demand。
+   */
+  private applySchedulerDemand(sessionId: string): void {
+    if (!this.scheduler) return;
+    const state = this.panels.get(sessionId);
+    if (!state) return;
+    const consumerId = this.lookup?.get(sessionId)?.ownerWindowId ?? null;
+    const previousConsumer = this.demandConsumers.get(sessionId);
+    if (!consumerId) {
+      for (const entry of state.commands) {
+        this.scheduler.clearTaskDemands(this.schedulerTaskKey(sessionId, entry.key));
+      }
+      this.demandConsumers.delete(sessionId);
+      return;
+    }
+    if (previousConsumer && previousConsumer !== consumerId) {
+      for (const entry of state.commands) {
+        this.scheduler.clearTaskDemands(this.schedulerTaskKey(sessionId, entry.key));
+      }
+    }
+    this.demandConsumers.set(sessionId, consumerId);
+
+    const panelLevel = this.panelDemandLevels.get(sessionId)?.get(consumerId) ?? 'none';
+    for (const entry of state.commands) {
+      const policy = normalizeRefreshPolicy(entry);
+      entry.refreshPolicy = policy;
+      const taskKey = this.schedulerTaskKey(sessionId, entry.key);
+      if (policy.interval === 'manual') {
+        this.scheduler.setDemand(taskKey, consumerId, 'none');
+        continue;
+      }
+      const activeAndVisible = state.activeKey === entry.key && panelLevel === 'hot';
+      const level =
+        policy.scope === 'foreground'
+          ? activeAndVisible
+            ? 'hot'
+            : 'none'
+          : activeAndVisible
+            ? 'hot'
+            : 'warm';
+      this.scheduler.setDemand(taskKey, consumerId, level);
+    }
+  }
+
+  /** 按 interval 注册/刷新 task；scope 只在 applySchedulerDemand 决定 demand。 */
   private syncSchedulerTask(sessionId: string, entry: CommandEntry): void {
     if (!this.scheduler) return;
     const taskKey = this.schedulerTaskKey(sessionId, entry.key);
-    const hot = strategyToHotInterval(entry.strategy);
-    if (hot === null) {
-      // manual/off:注销已有 task(foreground 也算 hot=0,不进这)
+    const policy = normalizeRefreshPolicy(entry);
+    entry.refreshPolicy = policy;
+    if (policy.interval === 'manual') {
       this.scheduler.unregisterTask(taskKey);
       return;
     }
-    const interval = BACKGROUND_INTERVAL_MS[entry.strategy];
-    // foreground warmIntervalMs 用同一个大值(面板不可见=demand NONE 时本来就不跑,
-    // warm 只在 HOT→WARM 切换时用,foreground 不进 WARM,这里给个大值避免校验失败)。
-    const warmMs =
-      entry.strategy === 'foreground' ? FOREGROUND_HOT_INTERVAL_MS : (interval ?? 30_000);
+    const intervalMs = REFRESH_INTERVAL_MS[policy.interval];
     this.scheduler.registerTask(taskKey, {
-      hotIntervalMs: hot,
-      warmIntervalMs: warmMs,
+      hotIntervalMs: intervalMs,
+      warmIntervalMs: intervalMs,
       run: async () => {
         const session = this.lookup?.get(sessionId);
         if (!session) return;
+        const runKey = this.commandRunKey(sessionId, entry.key);
+        const directRunAt = this.lastDirectRunAt.get(runKey);
+        if (directRunAt !== undefined) {
+          this.lastDirectRunAt.delete(runKey);
+          // 只吞 program-push 后紧随的面板 HOT 建 demand；过期后 HOT 仍应立即刷新，
+          // 不能把已等待 29s 的 30s WARM timer 再推迟完整 30s。
+          if (Date.now() - directRunAt <= DIRECT_RUN_DEDUPE_MS) return;
+        }
+        if (entry.status === 'running') return;
         await this.spawnRun(sessionId, entry, session.ownerWindowId ?? sessionId);
       },
       onError: (e) => logger.warn(MODULE, `scheduler task error: ${taskKey}`, e),
     });
+  }
+
+  /** run generation 的内部 key；不进入日志/指标。 */
+  private commandRunKey(sessionId: string, commandKey: string): string {
+    return `${sessionId}:${commandKey}`;
+  }
+
+  /** 停已知 run，并让尚未返回 runId 的 Promise 失去写回资格。task 本身保留。 */
+  private cancelCommandRun(sessionId: string, entry: CommandEntry): void {
+    const runKey = this.commandRunKey(sessionId, entry.key);
+    this.runGenerations.delete(runKey);
+    this.runOrigins.delete(runKey);
+    this.lastDirectRunAt.delete(runKey);
+    if (entry.status === 'running') entry.status = 'idle';
+    if (!entry.lastRunId) return;
+    this.rememberCommandRunId(entry.lastRunId);
+    this.runner?.stop(entry.lastRunId);
+    this.runRoutes.delete(entry.lastRunId);
+    entry.lastRunId = null;
+  }
+
+  /** 记录已结束/取消的 command runId，并按插入顺序保持硬上限。 */
+  private rememberCommandRunId(runId: string): void {
+    this.recentCommandRunIds.delete(runId);
+    this.recentCommandRunIds.set(runId, Date.now());
+    while (this.recentCommandRunIds.size > RECENT_COMMAND_RUN_IDS_MAX) {
+      const oldest = this.recentCommandRunIds.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.recentCommandRunIds.delete(oldest);
+    }
+  }
+
+  /** 指令被关闭/FIFO 淘汰/session 销毁时的完整资源回收。 */
+  private disposeCommand(sessionId: string, entry: CommandEntry): void {
+    this.cancelCommandRun(sessionId, entry);
+    this.lastDirectRunAt.delete(this.commandRunKey(sessionId, entry.key));
+    this.unregisterSchedulerTask(sessionId, entry.key);
   }
 
   private unregisterSchedulerTask(sessionId: string, commandKey: string): void {
@@ -587,7 +849,7 @@ function appendTruncated(existing: string, chunk: string, maxBytes: number): str
 /** 命令面板域错误(与 CodeBlockError 对称,供 ipc 映射 HTTP/IPC 错误码)。 */
 export class CommandPanelError extends Error {
   constructor(
-    public readonly code: 'SessionMissing' | 'CommandEmpty',
+    public readonly code: 'SessionMissing' | 'CommandEmpty' | 'InvalidRefreshPolicy',
     message: string,
   ) {
     super(message);

@@ -6,7 +6,14 @@
 > 这份文档定义所有消息的 schema、语义、错误码、时序约束。
 > 实现代码必须严格遵循,不允许"自由发挥"。
 
-文档版本:2.5 · 最后更新:2026-07-22
+文档版本:3.0 · 最后更新:2026-08-07
+
+> **v3.0 变更**(命令面板刷新策略勘误):
+> - `CommandEntry.strategy` 拆为必填 `refreshPolicy: { scope, interval }`；前后台范围与刷新间隔不再混为一个枚举。
+> - 新增 `cmd:command-panel:update-refresh-policy`，payload 只提交当前控件字段的 `patch`，main 在最新真值上合并。
+> - `cmd:command-panel:set-demand` 的 consumer 只取命令信封 clientId；owner 切换、窗口关闭、远程断线必须清旧 demand。
+> - 因删除字段、增加 renderer 必需字段与替换 channel，`PROTOCOL_VERSION` 由 2 升为 3；v2/v3 握手拒绝混用。
+>
 
 > **v2.5 变更**(ADR-021 需求感知后台任务):
 > - 新增 backend-data `cmd:git:set-polling-demand`，renderer 只上报固定枚举 HOT/WARM/NONE；consumerId 必须取 envelope.windowId。
@@ -289,6 +296,12 @@ v2.0 引入 `clientId` 后,两个字段名容易混淆,明确边界:
 | `cmd:session:get-scrollback` | 获取 session 的完整终端状态重建流(首次 mount/断流恢复) |
 | `cmd:session:attach-terminal-view` | 注册唯一只读终端视图租约(不授予 input/resize owner 权限) |
 | `cmd:session:detach-terminal-view` | 释放匹配 viewId 的终端视图租约 |
+| `cmd:command-panel:get-state` | 拉取某 session 的命令列表、active key 与刷新 policy |
+| `cmd:command-panel:run` | program-push / 立即刷新一条命令；同 command key 替换最近结果 |
+| `cmd:command-panel:close` | 关闭命令 tab 并清 run/task |
+| `cmd:command-panel:show` | 切换 active 命令 tab |
+| `cmd:command-panel:update-refresh-policy` | 独立 patch scope 或 interval |
+| `cmd:command-panel:set-demand` | 上报当前 client 的命令面板 HOT/WARM/NONE |
 | `cmd:bookmark:add` | 添加收藏路径 |
 | `cmd:bookmark:remove` | 移除收藏 |
 | `cmd:bookmark:rename` | 重命名收藏的显示名 |
@@ -336,6 +349,7 @@ v2.0 引入 `clientId` 后,两个字段名容易混淆,明确边界:
 | `evt:session:exited` | 全部 |
 | `evt:session:owner-changed` | 全部 |
 | `evt:session:destroyed` | 全部 |
+| `evt:command-panel:updated` | 仅 session owner；完整命令快照 + 可选激活请求 |
 | `evt:path:tree-updated` | 全部 |
 | `evt:bookmarks:updated` | 全部 |
 | `evt:templates:updated` | 全部 |
@@ -359,7 +373,7 @@ Renderer 启动
   ↓
 2. invoke('cmd:app:get-protocol-version', {})
   ↓
-3. 收到 { protocolVersion: 2 }
+3. 收到 { protocolVersion: 3 }
   ↓
 4. 比较与 Renderer 编译时的 PROTOCOL_VERSION,不匹配 → 抛错并显示升级提示
   ↓
@@ -2064,10 +2078,13 @@ try {
 
 ### 10.1 当前版本
 
-`PROTOCOL_VERSION = 2`(在 `src/shared/protocol.ts` 中定义为常量)。
+`PROTOCOL_VERSION = 3`(在 `src/shared/protocol.ts` 中定义为常量)。
+
+> v3.0(2026-08-07):major bump。触发原因 = 命令面板删除混合 `strategy` 字段，改为 renderer
+> 必需的 `refreshPolicy`，并用 `update-refresh-policy` 替换旧 channel。详见顶部 v3.0 changelog。
 
 > v2.0(2026-07-05):major bump。触发原因 = 命令信封 `windowId` → `clientId`(字段重命名,
-> 见 §10.2"必须 bump major")。详见顶部 v2.0 changelog。
+> 见 §10.2"必须 bump major")。
 
 ### 10.2 兼容策略
 
@@ -2119,7 +2136,7 @@ export interface Settings { ... }
 export interface ShellInfo { id: string; name: string; path: string; }
 
 // src/shared/protocol.ts
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 export const Channels = {
   // Commands

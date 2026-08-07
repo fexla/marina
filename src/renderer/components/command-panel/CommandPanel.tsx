@@ -8,8 +8,8 @@
  * - 与 FilePanel 同构(多 tab + program-push),区别:tab 是「指令」而非「文件」。
  * - 状态来自 store.commandPanels(main 经 evt:command-panel:updated 推 snapshot)。
  *   output 在 entry.output 里(main 端聚合),第一版不做流式实时(命令通常秒级完成)。
- * - per-指令 刷新策略(D4):toolbar 下拉改 strategy;面板可见性上报 demand
- *   (COMMAND_PANEL_SET_DEMAND,驱动 BackgroundWorkScheduler 的 per-指令 task)。
+ * - per-指令刷新拆成两个正交控件：前台/后台 toggle 只决定隐藏时是否继续，
+ *   刷新间隔 select 只决定手动/5s/30s；面板可见性另行上报 demand。
  * - 渲染用轻量 markdown(ReactMarkdown + remarkGfm + 外链 open-external),
  *   不复用 MarkdownViewer(它耦合 OpenedFile 磁盘路径;命令输出是内存字符串,
  *   抽取它改动面大,违反已封箱代码最小改动原则。后续如需图片/代码块执行再抽取)。
@@ -28,7 +28,8 @@ import {
   COMMAND_CHANNELS,
   type CommandEntry,
   type CommandPanelSnapshot,
-  type CommandRefreshStrategy,
+  type CommandRefreshInterval,
+  type CommandRefreshPolicy,
 } from '@shared/protocol';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { useAppDispatch, useAppState } from '../../store';
@@ -42,13 +43,15 @@ interface CommandPanelProps {
   search: PanelSearchProps;
 }
 
-/** 刷新策略选项(toolbar 下拉)。 */
-const STRATEGY_OPTIONS: ReadonlyArray<{ value: CommandRefreshStrategy; label: string }> = [
-  { value: 'foreground', label: '仅前台' },
-  { value: 'background-30s', label: '后台 30s' },
-  { value: 'background-5s', label: '后台 5s' },
-  { value: 'manual', label: '手动' },
-  { value: 'off', label: '暂停' },
+/** 刷新间隔独立于前台/后台范围；manual 仍可点右侧 ↻ 立即刷新。 */
+const INTERVAL_OPTIONS: ReadonlyArray<{
+  value: CommandRefreshInterval;
+  zh: string;
+  en: string;
+}> = [
+  { value: 'manual', zh: '手动', en: 'Manual' },
+  { value: '30s', zh: '每 30 秒', en: 'Every 30s' },
+  { value: '5s', zh: '每 5 秒', en: 'Every 5s' },
 ];
 
 /** 判断字符串是否为外链(http(s)/mailto),命令输出里的链接点开走系统浏览器。 */
@@ -95,10 +98,9 @@ export function CommandPanel({ sessionId }: CommandPanelProps): JSX.Element {
     };
   }, [sessionId, dispatch]);
 
-  // demand 上报:面板可见(session 绑定本窗口)= HOT。卸载/切走 → NONE。
-  // 与 useGitPollingDemand 同策略,驱动 per-指令 后台 task(BackgroundWorkScheduler)。
-  // 第一版简化:挂载即 HOT,卸载即 NONE(不做 document.visibilityState/hasFocus 细分,
-  // 后续如需更精细可仿 useGitPollingDemand 增强)。
+  // demand 上报只描述面板本身是否可见：挂载=HOT，卸载=NONE。后端再结合每条
+  // refreshPolicy.scope 映射：foreground 的 NONE 真停，background 的 NONE 转 WARM。
+  // 因而 renderer 不需要把产品策略混进可见性信号。
   useEffect(() => {
     window.api
       .invoke(COMMAND_CHANNELS.COMMAND_PANEL_SET_DEMAND, { sessionId, level: 'hot' })
@@ -110,7 +112,7 @@ export function CommandPanel({ sessionId }: CommandPanelProps): JSX.Element {
     };
   }, [sessionId]);
 
-  // 操作:切 tab / 关 tab / 改策略 / 立即刷新(重跑)
+  // 操作:切 tab / 关 tab / 独立改前后台范围与间隔 / 立即刷新(重跑)
   const showCommand = (key: string): void => {
     window.api
       .invoke<unknown, CommandPanelSnapshot>(COMMAND_CHANNELS.COMMAND_PANEL_SHOW, {
@@ -151,22 +153,15 @@ export function CommandPanel({ sessionId }: CommandPanelProps): JSX.Element {
       );
   };
 
-  const setStrategy = (key: string, strategy: CommandRefreshStrategy): void => {
+  const updateRefreshPolicy = (key: string, patch: Partial<CommandRefreshPolicy>): void => {
+    // 只提交当前控件负责的字段，main 在最新真值上 merge。成功态由有序的
+    // commandPanelUpdated 事件统一进 store，避免两个并发响应倒序覆盖。
     window.api
-      .invoke<unknown, CommandPanelSnapshot>(COMMAND_CHANNELS.COMMAND_PANEL_SET_STRATEGY, {
+      .invoke(COMMAND_CHANNELS.COMMAND_PANEL_UPDATE_REFRESH_POLICY, {
         sessionId,
         commandKey: key,
-        strategy,
+        patch,
       })
-      .then((snap) =>
-        dispatch({
-          type: 'command-panel/updated',
-          sessionId,
-          commands: snap.commands,
-          activeKey: snap.activeKey,
-          requestActivation: false,
-        }),
-      )
       .catch((err: unknown) =>
         toast.push({ kind: 'error', message: err instanceof Error ? err.message : String(err) }),
       );
@@ -216,18 +211,40 @@ export function CommandPanel({ sessionId }: CommandPanelProps): JSX.Element {
         </div>
       )}
 
-      {/* toolbar:刷新策略 + 立即刷新(per-指令) */}
+      {/* toolbar:前后台范围 / 刷新间隔 / 立即刷新——三个职责不混合。 */}
       {activeEntry && (
         <div className="command-panel-toolbar">
-          <select
-            className="command-strategy-select"
-            value={activeEntry.strategy}
-            onChange={(e) => setStrategy(activeEntry.key, e.target.value as CommandRefreshStrategy)}
-            title={tx('刷新策略', 'Refresh strategy')}
+          <button
+            className={
+              'command-scope-btn' +
+              (activeEntry.refreshPolicy.scope === 'background' ? ' is-background' : '')
+            }
+            onClick={() =>
+              updateRefreshPolicy(activeEntry.key, {
+                scope:
+                  activeEntry.refreshPolicy.scope === 'foreground' ? 'background' : 'foreground',
+              })
+            }
+            title={tx('切换仅前台/后台刷新', 'Toggle foreground/background refresh')}
+            aria-pressed={activeEntry.refreshPolicy.scope === 'background'}
           >
-            {STRATEGY_OPTIONS.map((opt) => (
+            {activeEntry.refreshPolicy.scope === 'foreground'
+              ? tx('仅前台', 'Foreground')
+              : tx('后台', 'Background')}
+          </button>
+          <select
+            className="command-interval-select"
+            value={activeEntry.refreshPolicy.interval}
+            onChange={(e) =>
+              updateRefreshPolicy(activeEntry.key, {
+                interval: e.target.value as CommandRefreshInterval,
+              })
+            }
+            title={tx('自动刷新间隔', 'Auto-refresh interval')}
+          >
+            {INTERVAL_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
-                {opt.label}
+                {tx(opt.zh, opt.en)}
               </option>
             ))}
           </select>
@@ -235,6 +252,7 @@ export function CommandPanel({ sessionId }: CommandPanelProps): JSX.Element {
             className="command-rerun-btn"
             onClick={() => rerun(activeEntry)}
             disabled={activeEntry.status === 'running'}
+            title={tx('立即刷新', 'Refresh now')}
           >
             {activeEntry.status === 'running' ? '…' : '↻'}
           </button>
