@@ -267,6 +267,11 @@ function bootstrap(): void {
       workspaceManager: sessionWorkspaceManager,
     },
   );
+  // v0.3.3 ADR-028「查看语义精准化」:窗口重新获焦/从最小化恢复 → 用户回来了,
+  // 清该窗口当前选中 session 的 hasUnviewedWork(红灯转正常)。窗口关闭 → 清映射
+  // (防泄漏 + 防误判已销毁窗口为“在看”)。接线放在 SessionManager 创建后。
+  windowManager.onWindowAttention((windowId) => sessionManager.onWindowRegainedAttention(windowId));
+  windowManager.onWindowClosed((windowId) => sessionManager.onWindowClosed(windowId));
   // ADR-016:文件树仅把 live owner session 的 currentCwd 与受管 workspace
   // 暴露为两条只读根。服务不持有路径缓存，每个请求都回查 SessionManager /
   // SessionWorkspaceManager，避免 cwd 变化、接管或 session 销毁后的陈旧授权。

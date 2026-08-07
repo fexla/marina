@@ -109,6 +109,11 @@ export class WindowManager implements IWindowManager {
    */
   private onCreatedHandlers: Array<(info: WindowInfo, win: BrowserWindow) => void> = [];
   private onClosedHandlers: Array<(windowId: string) => void> = [];
+  /**
+   * v0.3.3 ADR-028:窗口重新获得用户注意(focus / 从最小化恢复 / 从隐藏显示)
+   * 时触发。SessionManager 据此清该窗口选中 session 的 hasUnviewedWork(用户回来了)。
+   */
+  private onAttentionHandlers: Array<(windowId: string) => void> = [];
 
   /**
    * BETA-003b · ADR-013:close 事件拦截器。在窗口 close 事件触发时,询问拦截器
@@ -218,7 +223,29 @@ export class WindowManager implements IWindowManager {
 
     win.on('focus', () => {
       managed.lastFocusedAt = Date.now();
+      // v0.3.3 ADR-028:窗口获焦 → 用户回来了,通知 SessionManager 清未看标记。
+      for (const handler of this.onAttentionHandlers) {
+        try {
+          handler(windowId);
+        } catch (err) {
+          logger.warn('main', `[WindowManager] attention handler(focus) error`, err);
+        }
+      }
     });
+    // v0.3.3 ADR-028:从最小化/隐藏恢复也算“用户回来了”。focus 事件在已聚焦窗口
+    // 不会重复发,restore/show 覆盖“窗口可见但未聚焦 → 点回桌面前台”的场景。
+    const fireAttention = (): void => {
+      if (win.isDestroyed()) return;
+      for (const handler of this.onAttentionHandlers) {
+        try {
+          handler(windowId);
+        } catch (err) {
+          logger.warn('main', `[WindowManager] attention handler error`, err);
+        }
+      }
+    };
+    win.on('restore', fireAttention);
+    win.on('show', fireAttention);
 
     // renderer console 转发到 main 日志:renderer 的 Uncaught / 运行时 throw 不会
     // 进 main.log,白屏类问题在 main 日志里完全无线索(开发时只能肉眼盯 DevTools)。
@@ -226,8 +253,7 @@ export class WindowManager implements IWindowManager {
     // 不过滤级别:renderer 的 console.log 量小,全转发利大于弊(INFO 级)。
     // electron console-message level:0 verbose / 1 info / 2 warning / 3 error。
     win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
-      const lvl: 'info' | 'warn' | 'error' =
-        level >= 3 ? 'error' : level >= 2 ? 'warn' : 'info';
+      const lvl: 'info' | 'warn' | 'error' = level >= 3 ? 'error' : level >= 2 ? 'warn' : 'info';
       logger[lvl]('main', `[renderer] ${message} (${sourceId}:${line})`);
     });
     win.webContents.on('render-process-gone', (_e, details) => {
@@ -307,8 +333,7 @@ export class WindowManager implements IWindowManager {
     // 这是诊断 packed 模式蓝屏 / renderer 错误的唯一通道。
     win.webContents.on('before-input-event', (event, input) => {
       const isToggle =
-        input.key === 'F12' ||
-        (input.control && input.shift && input.key.toLowerCase() === 'i');
+        input.key === 'F12' || (input.control && input.shift && input.key.toLowerCase() === 'i');
       if (isToggle && input.type === 'keyDown') {
         win.webContents.toggleDevTools();
         event.preventDefault();
@@ -347,8 +372,7 @@ export class WindowManager implements IWindowManager {
     const devtoolsMode = process.env['EASYTERM_DEVTOOLS'];
     const isFirstWindow = windowNumber === 1;
     const shouldOpenDevTools =
-      devtoolsMode === 'always' ||
-      (devtoolsMode === 'first' && isFirstWindow);
+      devtoolsMode === 'always' || (devtoolsMode === 'first' && isFirstWindow);
     if (shouldOpenDevTools) {
       win.webContents.openDevTools({ mode: 'detach' });
     }
@@ -373,11 +397,7 @@ export class WindowManager implements IWindowManager {
       try {
         win.webContents.reload();
       } catch (err) {
-        logger.error(
-          'WindowManager',
-          `reload after crash failed (window ${windowNumber})`,
-          err,
-        );
+        logger.error('WindowManager', `reload after crash failed (window ${windowNumber})`, err);
       }
     });
     win.webContents.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL) => {
@@ -523,6 +543,14 @@ export class WindowManager implements IWindowManager {
   }
 
   /**
+   * v0.3.3 ADR-028:注册回调——窗口重新获得用户注意(focus/restore/show)时触发。
+   * SessionManager 用它清该窗口选中 session 的 hasUnviewedWork(用户回来看了)。
+   */
+  onWindowAttention(handler: (windowId: string) => void): void {
+    this.onAttentionHandlers.push(handler);
+  }
+
+  /**
    * M1-A:供 IPC 调用的窗口控制 — 最小化 / 切换最大化。
    * 失败静默(窗口已销毁 / 不存在);返回是否真触发了动作。
    */
@@ -553,9 +581,13 @@ export class WindowManager implements IWindowManager {
  * 输入超出所有显示器并集 → 同上回退。
  * 输入合法但只在副屏 → 保留(副屏存在的话)。
  */
-function resolveInitialBounds(
-  input: CreateWindowOptions['initialBounds'],
-): { width: number; height: number; x?: number; y?: number; maximized: boolean } {
+function resolveInitialBounds(input: CreateWindowOptions['initialBounds']): {
+  width: number;
+  height: number;
+  x?: number;
+  y?: number;
+  maximized: boolean;
+} {
   const DEFAULT_W = 1200;
   const DEFAULT_H = 800;
 

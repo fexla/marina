@@ -743,11 +743,12 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
   );
 
   // v0.3.3 ADR-028:renderer 选中 session 时上报“已查看” → 清 hasUnviewedWork
-  // (侧栏指示灯警告色转正常)。per-session，任一窗口查看即清。幂等。
+  // (侧栏指示灯警告色转正常)。同时带 windowId 记入主进程的
+  // activeSessionByWindow 映射(isSessionCurrentlyViewed 判定“正在看”用)。
   registerHandle(
     COMMAND_CHANNELS.SESSION_MARK_VIEWED,
     (_e, envelope: CommandEnvelope<{ sessionId: string }>): void => {
-      sessionManager.markViewed(envelope.payload.sessionId);
+      sessionManager.markViewed(envelope.payload.sessionId, envelope.windowId);
     },
   );
 

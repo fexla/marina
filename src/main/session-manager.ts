@@ -457,6 +457,17 @@ interface ManagedSession {
    */
   manuallyRenamed: boolean;
   /**
+   * v0.3.3 ADR-028「终端状态精准化」:pi 正在工作(agent_working 已收到、
+   * agent_settled 未到)时为 true。true 期间抑制字节流 idle 检测——保持
+   * state=active,不起 idleTimer、不转 idle、不烧 BETA-006 LLM 复核。
+   *
+   * 动机:pi 思考/读文件期间终端无字节流,旧逻辑会把 session 误判 idle
+   * (黄灯闪烁),且触发 BETA-006 烧 LLM 去判断一件“pi 已经告诉我们 working”
+   * 的事。pi 事件是比字节流更权威的“agent 在不在工作”信号,working 期
+   * state 听 pi 的。settled 后清零,交还字节流检测。
+   */
+  piWorking: boolean;
+  /**
    * PER-2 / F1:IPC 聚合缓冲 — 8ms 窗口内积累的 sessionOutput,timer 到点
    * 一次性 emit。降低高速 PTY 输出场景下 IPC 消息数,缓解 renderer 反压。
    *
@@ -707,6 +718,14 @@ export class SessionManager extends EventEmitter {
    * pi 退出时清理 piSessionToWorkspace。与 piSessionToWorkspace 互为反查(当前活跃那条)。
    */
   private readonly sessionToPiSession = new Map<string, string>();
+  /**
+   * v0.3.3 ADR-028「查看语义精准化」:windowId → 该窗口当前选中的 session id。
+   * renderer 选中 session 时通过 cmd:session:mark-viewed 上报(windowId 来自
+   * envelope),主进程记在这里。用于判定「用户此刻是否正在看某 session」
+   * (isSessionCurrentlyViewed):agent_settled 时若用户正盯着该终端,不标
+   * hasUnviewedWork(实时目睹完成的人不该被打红灯)。
+   */
+  private readonly activeSessionByWindow = new Map<string, string>();
   /**
    * v0.3.0:Git tab 可用性判定回调,由 GitService 注入(见 attachGitAvailabilityProvider)。
    * null = 未注入(测试 / Git 面板禁用)→ 永不生成 git leaf,行为与 v0.2.x 一致。
@@ -1088,6 +1107,7 @@ export class SessionManager extends EventEmitter {
       ownerWindowId: input.ownerWindowId || null,
       state: 'idle',
       createdAt: Date.now(),
+      hasUnviewedWork: false,
       uiLayout: createDefaultSessionUiLayout(!isSsh),
     };
 
@@ -1110,6 +1130,7 @@ export class SessionManager extends EventEmitter {
       lastInputAt: 0,
       recentKeys: [],
       manuallyRenamed: false,
+      piWorking: false,
       pendingEmit: null,
       pendingEmitTimer: null,
       // BETA-006 v2 + CURSOR-1:headless 镜像,scrollback 行数对齐 renderer
@@ -1791,6 +1812,8 @@ export class SessionManager extends EventEmitter {
           managed.info.isPiAgent = false;
           this.emitStateChanged(managed, { isPiAgent: false });
         }
+        // 解锁 piWorking(若处于 working 中途退出):让字节流 idle 检测接管终态。
+        managed.piWorking = false;
         this.sessionToPiSession.delete(sessionId);
         // reason=quit 时 pi 对话彻底结束，其 workspace 映射随之失效。
         if (payload.reason === 'quit') {
@@ -1798,22 +1821,41 @@ export class SessionManager extends EventEmitter {
         }
         break;
 
-      case 'agent_working':
-        // pi 重新开始工作 → 清除未查看标记(新一轮覆盖旧完成)。
+      case 'agent_working': {
+        // v0.3.3 ADR-028「终端状态精准化」:pi 重新开始工作 → 接管 state。
+        //   1) 锁 piWorking=true:scheduleIdleCheck 短路,字节流 idle 检测抑
+        //      制(不起计时器、不转 idle、不烧 BETA-006 LLM)。pi 思考/读文件
+        //      期终端无字节流,旧逻辑会误判 idle 闪黄灯。
+        //   2) 清现有 idleTimer(若有),markActive 让 state 立即回 active(绿)。
+        //   3) 清 hasUnviewedWork(新一轮工作覆盖旧的未看成果)。
+        managed.piWorking = true;
+        if (managed.idleTimer) {
+          clearTimeout(managed.idleTimer);
+          managed.idleTimer = null;
+        }
+        this.markActive(managed);
         if (managed.info.hasUnviewedWork) {
           managed.info.hasUnviewedWork = false;
           this.emitStateChanged(managed, { hasUnviewedWork: false });
         }
         break;
+      }
 
-      case 'agent_settled':
-        // pi 这轮工作完成 → 标记“有未查看成果”(侧栏指示灯警告色)。
-        // 用户查看(markViewed)或 pi 重开工作(agent_working)时清除。
-        if (!managed.info.hasUnviewedWork) {
+      case 'agent_settled': {
+        // v0.3.3 ADR-028:pi 这轮完成 → 解锁 state(交还字节流检测)+ 标记未看成果。
+        //   - piWorking=false 后,scheduleIdleCheck 恢复正常:若 pi 刚输出完字节流
+        //     state 暂时 active,阈值后自然回 idle(“活干完了”);若已无输出立即 idle。
+        //   - markActive 重新起一个 idle 计时器作为解锁后的检测起点。
+        //   - hasUnviewedWork:仅当用户此刻「没在看」该 session 才标记(正盯着终端
+        //     实时目睹完成的人不该被打红灯)。isSessionCurrentlyViewed 见 Part B。
+        managed.piWorking = false;
+        this.markActive(managed);
+        if (!this.isSessionCurrentlyViewed(sessionId) && !managed.info.hasUnviewedWork) {
           managed.info.hasUnviewedWork = true;
           this.emitStateChanged(managed, { hasUnviewedWork: true });
         }
         break;
+      }
 
       case 'name_changed': {
         // pi 对话名 → 终端显示名。受 manuallyRenamed 保护(用户手改终端名则不覆盖)。
@@ -1903,14 +1945,63 @@ export class SessionManager extends EventEmitter {
 
   /**
    * 用户查看某 session(renderer select 时发 cmd:session:mark-viewed)。
-   * 清除“有未查看成果”标记(侧栏指示灯恢复正常色)。
-   * 幂等：未标记时 no-op。不存在/已退出 session 静默 no-op。
+   *
+   * v0.3.3 ADR-028:同时记 windowId→sessionId 映射(isSessionCurrentlyViewed 用)。
+   * 清除“有未查看成果”标记(侧栏指示灯恢复正常色)。幂等:未标记时仅更新映射。
+   * 不存在/已退出 session 静默(仅更新映射,映射本身与 session 存在与否无关)。
    */
-  markViewed(sessionId: string): void {
+  markViewed(sessionId: string, windowId?: string): void {
+    if (windowId) this.activeSessionByWindow.set(windowId, sessionId);
     const managed = this.sessions.get(sessionId);
     if (!managed || !managed.info.hasUnviewedWork) return;
     managed.info.hasUnviewedWork = false;
     this.emitStateChanged(managed, { hasUnviewedWork: false });
+  }
+
+  /**
+   * v0.3.3 ADR-028「查看语义精准化」:该 session 是否正被用户「看着」。
+   *
+   * 判定(严口径,Q1 方案 ii):session 的 owner 窗口可见(未隐藏/未最小化)
+   * 且该窗口当前选中的 session 正是这个 session。窗口被最小化/隐藏、或
+   * 用户切到了别的 session/别的窗口 → 不算在看 → settled 该标红。
+   * Q3:只认 owner 窗口的选中态(view 租约只读不算,用户可能在别处操作)。
+   *
+   * 无 owner 窗口(远程 client 未登记 / 窗口已销毁)→ false(无法判定可见性,
+   * 保守视为没在看)。
+   */
+  isSessionCurrentlyViewed(sessionId: string): boolean {
+    const managed = this.sessions.get(sessionId);
+    if (!managed) return false;
+    const ownerWindowId = managed.info.ownerWindowId;
+    if (!ownerWindowId) return false; // 无 owner:无法判定窗口可见性
+    if (this.activeSessionByWindow.get(ownerWindowId) !== sessionId) return false;
+    const win = this._windowManager.getById(ownerWindowId);
+    if (!win || win.isDestroyed()) return false;
+    // isVisible:未被 hide;isMinimized:最小化任务栏。两者任一为否都不算在看。
+    return win.isVisible() && !win.isMinimized();
+  }
+
+  /**
+   * v0.3.3 ADR-028「查看语义精准化」:窗口重新获得用户注意(focus/从最小化恢复)
+   * 时,清该窗口当前选中 session 的 hasUnviewedWork(用户回来了)。
+   *
+   * 由 index.ts 在 windowManager 的 focus/restore/show 事件上调用。幂等。
+   * 未见过的 windowId(未上报过选中态)静默 no-op。
+   */
+  onWindowRegainedAttention(windowId: string): void {
+    const sessionId = this.activeSessionByWindow.get(windowId);
+    if (!sessionId) return;
+    const managed = this.sessions.get(sessionId);
+    if (!managed || !managed.info.hasUnviewedWork) return;
+    managed.info.hasUnviewedWork = false;
+    this.emitStateChanged(managed, { hasUnviewedWork: false });
+  }
+
+  /**
+   * v0.3.3 ADR-028:窗口关闭时清映射(防泄漏 + 防误判已销毁窗口为“在看”)。
+   */
+  onWindowClosed(windowId: string): void {
+    this.activeSessionByWindow.delete(windowId);
   }
 
   /**
@@ -2342,6 +2433,17 @@ export class SessionManager extends EventEmitter {
   }
 
   private scheduleIdleCheck(managed: ManagedSession): void {
+    // v0.3.3 ADR-028:pi 正在工作时 state 听 pi 的,不起字节流 idle 计时器。
+    // 否则 pi 思考/读文件期(终端无字节流)到点会转 idle(黄灯闪)且烧 BETA-006
+    // LLM 去判断一件“pi 已经告诉我们 working”的事。settled 后 piWorking 清零,
+    // 字节流 idle 检测自然接管。
+    if (managed.piWorking) {
+      if (managed.idleTimer) {
+        clearTimeout(managed.idleTimer);
+        managed.idleTimer = null;
+      }
+      return;
+    }
     if (managed.idleTimer) clearTimeout(managed.idleTimer);
     const thresholdSec = this.settingsManager.get().advanced.activeIdleThresholdSeconds;
     const ms = Math.max(100, thresholdSec * 1000);

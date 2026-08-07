@@ -2856,4 +2856,187 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
       mgr.applyPiSessionEvent('no-such-sid', { piSessionId: 'pi-1', event: 'agent_settled' }),
     ).resolves.toBeUndefined();
   });
+
+  // ── Part A：piWorking 接管 state（抑 idle）──────────────────────
+
+  it('agent_working 锁 piWorking：无字节流也不转 idle（state 稳定 active）', async () => {
+    // 用 fake timer 推进 idle 阈值，验证 piWorking 期间 scheduleIdleCheck 短路。
+    const settings = makeStubSettingsManager();
+    (settings.get() as Settings).advanced.activeIdleThresholdSeconds = 1;
+    const created: string[] = [];
+    const { mgr } = makeManager({
+      settings,
+      workspaceManager: {
+        create: async () => {
+          const wsId = `ws-${created.length + 1}`;
+          created.push(wsId);
+          return { workspaceId: wsId, dir: `C:\\fake\\${wsId}` };
+        },
+        discard: async () => {},
+        release: () => {},
+        getPathForWorkspace: () => null,
+        getRecord: () => ({ name: null }),
+      },
+    });
+    const { sid } = await makeSession(mgr);
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'startup',
+    });
+
+    vi.useFakeTimers();
+    try {
+      await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_working' });
+      expect(mgr.get(sid)?.state).toBe('active');
+      // 推进远超 idle 阈值（1s）→ 旧逻辑会转 idle，piWorking 抑制后应仍是 active。
+      vi.advanceTimersByTime(5000);
+      expect(mgr.get(sid)?.state).toBe('active');
+      // agent_settled 解锁 → 交还字节流检测，阈值后自然回 idle。
+      await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_settled' });
+      vi.advanceTimersByTime(5000);
+      expect(mgr.get(sid)?.state).toBe('idle');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // ── Part B：查看语义精准化（正在看则不标红 / 窗口获焦清除）────────
+
+  /** 构造一个 getById 返回 mock BrowserWindow 的 pi manager（窗口可见性可控）。 */
+  function makePiManagerWithView(opts: {
+    visible?: boolean;
+    minimized?: boolean;
+    destroyed?: boolean;
+  }): { mgr: SessionManager } {
+    const visible = opts.visible ?? true;
+    const minimized = opts.minimized ?? false;
+    const destroyed = opts.destroyed ?? false;
+    const fakeWin = {
+      isVisible: () => visible,
+      isMinimized: () => minimized,
+      isDestroyed: () => destroyed,
+    };
+    const win = {
+      ...makeStubWindowManager(),
+      getById: () => (destroyed ? null : (fakeWin as never)),
+    } as unknown as WindowManager;
+    const created: string[] = [];
+    const settings = makeStubSettingsManager();
+    (settings.get() as Settings).piIntegration.enabled = true;
+    const mgr = new SessionManager(
+      win,
+      makeStubPathManager(),
+      makeStubTemplatesManager([]),
+      settings,
+      {
+        spawnFn: fakeSpawn,
+        platformAdapter: makeFakeAdapter(),
+        hookFileResolver: () => 'C:\\fake\\hook.ps1',
+        resizeQuietMs: 0,
+        startupGraceMs: 0,
+        inputQuietMs: 0,
+        emitBatchMs: 0,
+        skipCwdValidation: true,
+        workspaceManager: {
+          create: async () => {
+            const wsId = `ws-${created.length + 1}`;
+            created.push(wsId);
+            return { workspaceId: wsId, dir: `C:\\fake\\${wsId}` };
+          },
+          discard: async () => {},
+          release: () => {},
+          getPathForWorkspace: () => null,
+          getRecord: () => ({
+            name: null,
+            createdAt: 0,
+            closedAt: null,
+            pinned: false,
+            pathScope: null,
+          }),
+        } as unknown as NonNullable<
+          ConstructorParameters<typeof SessionManager>[4]
+        >['workspaceManager'],
+      } as unknown as ConstructorParameters<typeof SessionManager>[4],
+    );
+    return { mgr };
+  }
+
+  it('isSessionCurrentlyViewed：owner 窗口可见+选中=true；最小化/未选中/无 owner=false', async () => {
+    const { mgr } = makePiManagerWithView({ visible: true, minimized: false });
+    const { sid } = await makeSession(mgr); // ownerWindowId='w1'
+    // 未上报选中态 → false
+    expect(mgr.isSessionCurrentlyViewed(sid)).toBe(false);
+    // 上报选中（markViewed 带 windowId）+ 窗口可见 → true
+    mgr.markViewed(sid, 'w1');
+    expect(mgr.isSessionCurrentlyViewed(sid)).toBe(true);
+  });
+
+  it('isSessionCurrentlyViewed：窗口最小化 → false', async () => {
+    const { mgr } = makePiManagerWithView({ visible: true, minimized: true });
+    const { sid } = await makeSession(mgr);
+    mgr.markViewed(sid, 'w1');
+    expect(mgr.isSessionCurrentlyViewed(sid)).toBe(false);
+  });
+
+  it('agent_settled 时正被看 → 不标 hasUnviewedWork（实时目睹完成的人不打红灯）', async () => {
+    const { mgr } = makePiManagerWithView({ visible: true, minimized: false });
+    const { sid } = await makeSession(mgr);
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'startup',
+    });
+    mgr.markViewed(sid, 'w1'); // 用户正看着这个终端
+    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_settled' });
+    expect(mgr.get(sid)?.hasUnviewedWork).toBe(false); // 正被看 → 不标红
+  });
+
+  it('agent_settled 时未在看（窗口最小化）→ 标 hasUnviewedWork', async () => {
+    const { mgr } = makePiManagerWithView({ visible: true, minimized: true });
+    const { sid } = await makeSession(mgr);
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'startup',
+    });
+    mgr.markViewed(sid, 'w1'); // 选中了但窗口最小化 → 不算在看
+    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_settled' });
+    expect(mgr.get(sid)?.hasUnviewedWork).toBe(true);
+  });
+
+  it('onWindowRegainedAttention：窗口获焦 → 清该窗口选中 session 的未看标记', async () => {
+    const { mgr } = makePiManagerWithView({ visible: true, minimized: false });
+    const { sid } = await makeSession(mgr);
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'startup',
+    });
+    // 先造一个未看标记（settled 时窗口最小化）
+    const { mgr: mgr2 } = makePiManagerWithView({ visible: true, minimized: true });
+    const { sid: sid2 } = await makeSession(mgr2);
+    await mgr2.applyPiSessionEvent(sid2, {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'startup',
+    });
+    mgr2.markViewed(sid2, 'w1');
+    await mgr2.applyPiSessionEvent(sid2, { piSessionId: 'pi-1', event: 'agent_settled' });
+    expect(mgr2.get(sid2)?.hasUnviewedWork).toBe(true);
+    // 窗口获焦 → 清除
+    mgr2.onWindowRegainedAttention('w1');
+    expect(mgr2.get(sid2)?.hasUnviewedWork).toBe(false);
+    // sid 那条没用上，避免 unused 警告
+    expect(mgr.get(sid)).toBeDefined();
+  });
+
+  it('onWindowClosed 清映射（窗口销毁后不再误判为在看）', async () => {
+    const { mgr } = makePiManagerWithView({ visible: true, minimized: false });
+    const { sid } = await makeSession(mgr);
+    mgr.markViewed(sid, 'w1');
+    expect(mgr.isSessionCurrentlyViewed(sid)).toBe(true);
+    mgr.onWindowClosed('w1');
+    expect(mgr.isSessionCurrentlyViewed(sid)).toBe(false);
+  });
 });
