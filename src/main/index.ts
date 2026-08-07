@@ -62,6 +62,7 @@ import {
 import { getBuildType } from './build-type';
 import { logger } from './logger';
 import { PerformanceDiagnostics } from './performance-diagnostics';
+import { getIsQuitting, setQuitting } from './app-lifecycle';
 import type {
   BookmarksFile,
   RecentFile,
@@ -71,21 +72,6 @@ import type {
   TemplatesFile,
 } from '@shared/types';
 
-let isQuitting = false;
-
-export function setQuitting(): void {
-  isQuitting = true;
-}
-
-export function getIsQuitting(): boolean {
-  return isQuitting;
-}
-
-/**
- * BETA-043:并行 statSync 一遍所有路径,把不存在 / 非目录 / 无权限的路径喂给
- * PathManager.setInvalidPaths。仅在 bootstrap 末尾调一次,不做后台周期扫
- * (避免无谓 IO,且用户修了路径后随时可以手动重启刷新)。
- */
 async function scanInvalidPathsAsync(pathManager: PathManager): Promise<void> {
   const tree = pathManager.getTree();
   const allPaths = [...tree.bookmarks, ...tree.temporary, ...tree.recent];
@@ -419,21 +405,21 @@ function bootstrap(): void {
 
   app.on('window-all-closed', () => {
     // isQuitting=true 时 (主动 quit) 让默认行为执行,继续走 before-quit / will-quit
-    if (isQuitting) return;
+    if (getIsQuitting()) return;
     // BETA-003b · ADR-013:Linux 上 lifecycleModel='no-persistence',关掉最后
     // 一个窗口 = 应用退出。alive session 的二次确认已在 windowManager 的
     // closeInterceptor 里处理过,走到这里说明 modal 用户已确认 / 本就无 alive session,
     // 安全 quit。
     // Windows ('tray-resident') / macOS ('dock-resident') 保持"app 不死于窗口"。
     if (process.platform === 'linux') {
-      isQuitting = true;
+      setQuitting();
       app.quit();
     }
   });
 
   let quitFinalizationState: 'idle' | 'flushing' | 'ready' = 'idle';
   app.on('before-quit', (event) => {
-    isQuitting = true;
+    setQuitting();
     if (quitFinalizationState === 'ready') return;
     // Electron 不等待 async event listener。第一次退出必须 preventDefault，显式等
     // report/store 的 1 秒预算后再 app.quit；否则 finalized=true 只写在内存里。
@@ -829,7 +815,7 @@ function bootstrap(): void {
       if (platformAdapter) {
         const adapter = platformAdapter;
         windowManager.setCloseInterceptor((win) => {
-          if (isQuitting) return false; // 已经在退出流程,放行
+          if (getIsQuitting()) return false; // 已经在退出流程,放行
           if (adapter.lifecycleModel !== 'no-persistence') return false;
           // 检查是否为最后一个窗口
           const others = windowManager
@@ -975,7 +961,7 @@ function bootstrap(): void {
 
   // 异步 flush 已由 before-quit 显式阻塞完成；will-quit 只能做同步收尾。
   app.on('will-quit', () => {
-    if (!isQuitting) return;
+    if (!getIsQuitting()) return;
     trayManager.destroy();
   });
 

@@ -233,7 +233,7 @@ import { parseSshConfig } from './ssh-config-parser';
 import { detectSshAgent } from './ssh-agent';
 import { logger } from './logger';
 import { performanceMetrics } from './performance-metrics';
-import { setQuitting } from './index';
+import { setQuitting } from './app-lifecycle';
 
 export interface IpcLayerDeps {
   windowManager: WindowManager;

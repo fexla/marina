@@ -10,7 +10,6 @@
  *
  * 关键设计:
  * - vi.hoisted + vi.mock 替换 electron 的 ipcMain,捕获 (channel, handler) 对
- * - vi.mock('./index') 打断 ipc.ts → index.ts 的循环 import(测试期不需要 setQuitting)
  * - vi.mock('./explorer-integration') 屏蔽 PowerShell / native 调用
  * - Manager 用最小桩(只实现 SESSION_CREATE 路径用到的方法),不拉真 PTY
  * - 每个 test 用 beforeEach 重置 handler registry + installed 标志
@@ -105,11 +104,6 @@ vi.mock('electron', () => ({
   clipboard: mockClipboard,
   dialog: mockDialog,
   shell: mockShell,
-}));
-
-// 打断 ipc.ts → index.ts 的循环 import(测试期不需要真实 setQuitting)
-vi.mock('./index', () => ({
-  setQuitting: vi.fn(),
 }));
 
 // explorer-integration 走 native 命令,测试期不应触发

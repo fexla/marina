@@ -40,7 +40,7 @@ import type { RemoteDaemonProfile, SessionInfo } from '@shared/types';
 import type { SessionManager } from './session-manager';
 import type { SettingsManager } from './settings-manager';
 import { logger } from './logger';
-import { setQuitting } from './index';
+import { setQuitting } from './app-lifecycle';
 
 /**
  * 程序化生成 16×16 RGBA 托盘占位图标。
