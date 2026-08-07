@@ -18,6 +18,7 @@ import {
 } from '@shared/protocol';
 import { LocalAppearanceProvider, useLocalAppearance } from './components/LocalAppearanceProvider';
 import { clearCachedStatus, setCachedStatus } from '@shared/git-status-cache';
+import { clearPanelUiState } from '@shared/panel-ui-cache';
 import { claimSession } from './hooks/claim-gate';
 import { AppStateProvider, useAppDispatch, useAppState, useIpcSync } from './store';
 import { Sidebar } from './components/Sidebar';
@@ -229,7 +230,13 @@ function ConnectedShell({
     );
     const offDestroyed = window.api.on<SessionDestroyedPayload>(
       EVENT_CHANNELS.SESSION_DESTROYED,
-      ({ sessionId }) => clearCachedStatus(sessionId),
+      ({ sessionId }) => {
+        clearCachedStatus(sessionId);
+        // L2:session 销毁时回收该 session 的 L1 UI 缓存(展开目录/选中态/滚动位置),
+        // 与 git-status-cache 对称。panel-ui-cache.ts 的 clearPanelUiState 语义要求
+        // 不传 panelId 即清该 session 全部面板,防陈旧 UI 态滞留内存。
+        clearPanelUiState(sessionId);
+      },
     );
     return () => {
       offStatus();
