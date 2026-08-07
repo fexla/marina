@@ -340,9 +340,10 @@ export const COMMAND_CHANNELS = {
   REMOTE_DAEMON_SET_PORT: 'cmd:remote-daemon:set-port',
   REMOTE_DAEMON_SET_PASSWORD: 'cmd:remote-daemon:set-password',
 
-  // Workspace 域(v0.3.3 ADR-024 / Feature D)—— 绑定/复用/状态持久化。
-  // workspaceId 与 sessionId 解耦;操作当前客户端机器的本地 daemon 状态
-  // (session→workspaceId 绑定 + 本地受管目录),故入 LOCAL_CONTROL_COMMANDS_SET。
+  // Workspace 域(v0.3.3 ADR-024 / Feature D;routing 归属 ADR-029)—— 绑定/复用/状态持久化。
+  // workspaceId 与 sessionId 解耦。workspace 目录与绑定映射属于当前 backend
+  // (本地 main 或远程 daemon,随 session 归属),故 routing 为 backend-data。
+  // 见 ADR-029(替代 ADR-024 的 local-control 声明)。
   /** 查当前 session 绑定的 workspace 绝对路径(CLI `workspace` 用)。 */
   WORKSPACE_GET_CURRENT: 'cmd:workspace:get-current',
   /** 列当前 pathScope 下的命名 workspace。 */
@@ -426,24 +427,44 @@ const LOCAL_CONTROL_COMMANDS_SET: ReadonlySet<string> = new Set<CommandChannel>(
   COMMAND_CHANNELS.PERFORMANCE_CAPTURE_CPU_PROFILE,
   // 用户点击链接时应在当前桌面打开浏览器，不能在 headless daemon 主机打开。
   COMMAND_CHANNELS.SYSTEM_OPEN_EXTERNAL,
-  // v0.3.3 ADR-024:workspace 操作改的是当前客户端机器的本地 daemon 状态
-  // (session→workspaceId 绑定 + 本地受管目录),远程窗口里必须发到当前桌面 daemon。
-  COMMAND_CHANNELS.WORKSPACE_GET_CURRENT,
-  COMMAND_CHANNELS.WORKSPACE_LIST,
-  COMMAND_CHANNELS.WORKSPACE_BIND,
-  COMMAND_CHANNELS.WORKSPACE_NEW,
-  COMMAND_CHANNELS.WORKSPACE_UNPIN,
-  COMMAND_CHANNELS.WORKSPACE_READ_SNAPSHOT,
-  COMMAND_CHANNELS.WORKSPACE_WRITE_SNAPSHOT,
-  // 外观归属客户端机器(同 workspace 理由):远程窗口的外观读写必须发到当前
+  // v0.3.3 ADR-029:workspace 命令(routing)归 backend-data。workspace 目录与
+  // session→workspaceId 绑定映射存在当前 backend(本地 main 或所连远程 daemon),
+  // 随 session 归属,不是客户端本地资源。远程窗口必须发到所连 daemon,不能发到
+  // 客户端本地 main —— 否则远程窗口的 workspace 读写会静默脱节(读 null/写 no-op)。
+  // 依据:软件定义书.md 14.9.6「数据归属:归 daemon(B)」;外观是唯一客户端例外。
+  // 本声明作废 ADR-024 中「workspace 操作改当前客户端机器本地 daemon 状态」的
+  // local-control 归属(ADR-024 的 session↔workspaceId 解耦/绑定/持久化机制不变)。
+  // 外观归属客户端机器(仍是唯一例外):远程窗口的外观读写必须发到当前
   // 客户端本地 main,绝不能发给所连 daemon —— 否则外观会被 daemon 的设置覆盖。
   COMMAND_CHANNELS.SETTINGS_GET_APPEARANCE,
   COMMAND_CHANNELS.SETTINGS_UPDATE_APPEARANCE,
 ]);
 
+/**
+ * 全部命令通道值的集合,用于 routing 穷尽校验。
+ *
+ * @关键设计:routing 必须是穷尽的 —— 每个命令通道要么显式在
+ * LOCAL_CONTROL_COMMANDS_SET(本地控制面),要么属于其余 backend-data。
+ * 靠「未列出默认 backend」的 fail-open 会让新命令漏分类时静默走远程,
+ * 这正是 ADR-029 修掉的 WORKSPACE_* 误归 local-control 的反向风险。
+ * 因此 getCommandRouting 对不在本集合的未知 channel 直接抛错。
+ */
+const COMMAND_CHANNEL_VALUES: ReadonlySet<string> = new Set<CommandChannel>(
+  Object.values(COMMAND_CHANNELS)
+);
+
 /** 查询某 channel 的路由域。preload 用这个决定走本地 IPC 还是 WS。 */
 export function getCommandRouting(channel: string): CommandRoutingDomain {
-  return LOCAL_CONTROL_COMMANDS_SET.has(channel as CommandChannel)
+  if (!COMMAND_CHANNEL_VALUES.has(channel)) {
+    throw new Error(
+      `[protocol] getCommandRouting: unknown command channel "${channel}". ` +
+        `Known channels are defined in COMMAND_CHANNELS (${COMMAND_CHANNEL_VALUES.size} total). ` +
+        `Possible causes: (1) channel 名拼错/传入了事件通道(evt:*)或自由字符串, ` +
+        `(2) 新增命令通道后未同步更新 COMMAND_CHANNELS, ` +
+        `(3) 新旧协议版本 channel 不匹配。`
+    );
+  }
+  return LOCAL_CONTROL_COMMANDS_SET.has(channel)
     ? 'local-control'
     : 'backend-data';
 }

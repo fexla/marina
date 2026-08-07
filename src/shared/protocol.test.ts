@@ -139,6 +139,45 @@ describe('command routing (每窗口后端架构边界)', () => {
     expect(getCommandRouting(COMMAND_CHANNELS.GALLERY_RESOLVE_IMAGE)).toBe('backend-data');
     expect(getCommandRouting(COMMAND_CHANNELS.GALLERY_OPEN_IMAGE)).toBe('backend-data');
   });
+
+  it('workspace 命令路由为 backend-data(ADR-029,workspace 属当前 backend/daemon)', () => {
+    // ADR-029 修订:workspace 目录与绑定映射随 session 归 backend(本地 main 或所连
+    // 远程 daemon),不是客户端本地资源。远程窗口必须发到所连 daemon,否则读 null/写 no-op。
+    // 依据 软件定义书.md 14.9.6:数据归 daemon,appearance 是唯一客户端例外。
+    expect(getCommandRouting(COMMAND_CHANNELS.WORKSPACE_GET_CURRENT)).toBe('backend-data');
+    expect(getCommandRouting(COMMAND_CHANNELS.WORKSPACE_LIST)).toBe('backend-data');
+    expect(getCommandRouting(COMMAND_CHANNELS.WORKSPACE_BIND)).toBe('backend-data');
+    expect(getCommandRouting(COMMAND_CHANNELS.WORKSPACE_NEW)).toBe('backend-data');
+    expect(getCommandRouting(COMMAND_CHANNELS.WORKSPACE_UNPIN)).toBe('backend-data');
+    expect(getCommandRouting(COMMAND_CHANNELS.WORKSPACE_READ_SNAPSHOT)).toBe('backend-data');
+    expect(getCommandRouting(COMMAND_CHANNELS.WORKSPACE_WRITE_SNAPSHOT)).toBe('backend-data');
+  });
+
+  it('外观设置读写仍为 local-control(ADR-029 保留的唯一客户端例外)', () => {
+    // 外观归客户端机器,不能因 workspace 修正而连带改变。
+    expect(getCommandRouting(COMMAND_CHANNELS.SETTINGS_GET_APPEARANCE)).toBe('local-control');
+    expect(getCommandRouting(COMMAND_CHANNELS.SETTINGS_UPDATE_APPEARANCE)).toBe('local-control');
+  });
+
+  it('routing 是穷尽的:每个 COMMAND_CHANNELS 都能被明确分类,无 fail-open 遗漏', () => {
+    // ADR-029/H3:routing 必须穷尽。所有命令通道要么 local-control 要么 backend-data,
+    // 且 getCommandRouting 对未知 channel 抛错(不静默当 backend)。
+    const results = Object.values(COMMAND_CHANNELS).map((channel) =>
+      getCommandRouting(channel)
+    );
+    for (const r of results) {
+      expect(['local-control', 'backend-data']).toContain(r);
+    }
+  });
+
+  it('未知 command channel 抛错,而非 fail-open 默认 backend-data', () => {
+    // H3 边界:漏注册/拼错的新命令必须立即暴露,不能静默走远程。
+    expect(() => getCommandRouting('cmd:nonexistent:channel')).toThrow(/unknown command channel/);
+    // 事件通道不是命令通道,也应拒绝。
+    expect(() => getCommandRouting(EVENT_CHANNELS.SESSION_CREATED)).toThrow(
+      /unknown command channel/
+    );
+  });
 });
 
 describe('envelope shapes (compile-time)', () => {
