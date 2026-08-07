@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PROTOTYPE — Gallery UX 参数定夺 (v0.3.3 Feature A)</title>
+<!--
+  PROTOTYPE (T05, HITL) — 可丢弃,不进生产。定完参数后删除。
+  问题:gallery 的 UX 参数——主图尺寸策略(不撑爆面板)、缩略图条尺寸/溢出、
+        网络图下载超时/失败/清理、懒加载窗口(当前张 ±1)。
+  三个结构不同的变体,用底部浮动条切换(variant=A|B|C)。
+  配色贴近 Marina Rose Pine 暗色主题。
+-->
+<style>
+  :root {
+    --rp-base: #191724;
+    --rp-surface: #1f1d2e;
+    --rp-overlay: #26233a;
+    --rp-highlight-low: #21202e;
+    --rp-highlight-med: #403d52;
+    --rp-text: #e0def4;
+    --rp-subtle: #908caa;
+    --rp-muted: #6e6a86;
+    --rp-love: #eb6f92;
+    --rp-gold: #f6c177;
+    --rp-pine: #31748f;
+    --rp-foam: #9ccfd8;
+    --rp-iris: #c4a7e7;
+    --rp-rose: #ebbcba;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--rp-base);
+    color: var(--rp-text);
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 12px 80px;
+  }
+  .page-title {
+    font-size: 15px;
+    color: var(--rp-subtle);
+    margin-bottom: 2px;
+    letter-spacing: 0.5px;
+  }
+  .page-sub {
+    font-size: 12px;
+    color: var(--rp-muted);
+    margin-bottom: 18px;
+  }
+
+  /* 模拟 Marina「已打开」面板容器 */
+  .panel {
+    width: 100%;
+    max-width: 720px;
+    background: var(--rp-surface);
+    border: 1px solid var(--rp-highlight-med);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+  }
+  .panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: var(--rp-highlight-low);
+    font-size: 12px;
+    color: var(--rp-subtle);
+    border-bottom: 1px solid var(--rp-highlight-med);
+  }
+  .panel-head .doc-path { color: var(--rp-muted); }
+
+  /* gallery 代码块外观(和 MarkdownViewer 的 pre 一致) */
+  .gallery-block {
+    margin: 12px;
+    border: 1px solid var(--rp-highlight-med);
+    border-radius: 8px;
+    background: var(--rp-base);
+    overflow: hidden;
+  }
+  .gallery-lang-tag {
+    padding: 4px 10px;
+    font-size: 11px;
+    color: var(--rp-iris);
+    background: var(--rp-highlight-low);
+    border-bottom: 1px solid var(--rp-highlight-med);
+    font-family: "Cascadia Code", Consolas, monospace;
+  }
+
+  /* ── Variant A:固定舞台 ─────────────────────────────── */
+  .gvA-stage {
+    position: relative;
+    height: 320px;
+    background: #12101d;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  .gvA-stage img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    border-radius: 2px;
+  }
+  .gvA-skeleton {
+    width: 100%; height: 100%;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--rp-muted); font-size: 12px;
+    animation: pulse 1.2s infinite alternate;
+  }
+  .gvA-err {
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    color: var(--rp-muted); font-size: 12px;
+  }
+  .gvA-err .retry {
+    background: var(--rp-highlight-med); color: var(--rp-text);
+    border: none; border-radius: 4px; padding: 4px 12px; cursor: pointer; font-size: 12px;
+  }
+  .gvA-err .retry:hover { background: var(--rp-pine); }
+  .gvA-nav {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    background: rgba(0,0,0,0.55); color: #fff; border: none;
+    width: 32px; height: 32px; border-radius: 50%;
+    cursor: pointer; font-size: 16px; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .gvA-nav:hover { background: var(--rp-pine); }
+  .gvA-prev { left: 8px; }
+  .gvA-next { right: 8px; }
+  .gvA-indicator {
+    position: absolute; top: 8px; right: 10px;
+    font-size: 11px; color: var(--rp-subtle);
+    background: rgba(0,0,0,0.55); padding: 2px 8px; border-radius: 10px;
+  }
+  /* 缩略图条:固定尺寸 单行横滚 */
+  .gvA-thumbs {
+    display: flex; gap: 6px; padding: 8px 10px;
+    overflow-x: auto; background: var(--rp-highlight-low);
+  }
+  .gvA-thumb {
+    flex: 0 0 auto; width: 56px; height: 56px;
+    border: 2px solid transparent; border-radius: 4px;
+    cursor: pointer; padding: 0; overflow: hidden;
+    background: var(--rp-overlay);
+  }
+  .gvA-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .gvA-thumb.active { border-color: var(--rp-foam); }
+  .gvA-thumb.err { display: flex; align-items: center; justify-content: center; color: var(--rp-muted); font-size: 10px; }
+
+  /* ── Variant B:自适应流式 ────────────────────────────── */
+  .gvB-stage {
+    display: flex; flex-direction: column; align-items: center;
+    background: #12101d; padding: 16px; gap: 10px;
+  }
+  .gvB-imgwrap {
+    max-width: 100%;
+    display: flex; justify-content: center;
+  }
+  .gvB-imgwrap img {
+    max-width: 100%;
+    max-height: 480px;   /* 上限,超出按比例缩小 */
+    width: auto; height: auto;
+    object-fit: contain; border-radius: 3px;
+  }
+  .gvB-skeleton {
+    height: 200px; width: 100%;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--rp-muted); font-size: 12px;
+    animation: pulse 1.2s infinite alternate;
+  }
+  .gvB-caption {
+    font-size: 11px; color: var(--rp-muted); max-width: 100%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* 缩略图条:自适应宽度 一行内放得下就放,放不下滚动 */
+  .gvB-thumbs {
+    display: flex; gap: 8px; padding: 10px;
+    overflow-x: auto; background: var(--rp-highlight-low);
+  }
+  .gvB-thumb {
+    flex: 0 0 auto; width: 64px; height: 48px;
+    border: 1px solid var(--rp-highlight-med); border-radius: 4px;
+    cursor: pointer; padding: 0; overflow: hidden; background: var(--rp-overlay);
+    position: relative;
+  }
+  .gvB-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .gvB-thumb.active { border-color: var(--rp-gold); box-shadow: 0 0 0 1px var(--rp-gold); }
+  .gvB-thumb .badge {
+    position: absolute; right: 2px; bottom: 2px;
+    font-size: 9px; color: var(--rp-love); background: rgba(0,0,0,0.7);
+    border-radius: 3px; padding: 0 3px;
+  }
+  /* 失败图折叠成小卡片(不在主图区占位) */
+  .gvB-err-card {
+    width: 100%;
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; border: 1px dashed var(--rp-highlight-med);
+    border-radius: 6px; color: var(--rp-muted); font-size: 12px;
+  }
+  .gvB-err-card .retry {
+    margin-left: auto; background: var(--rp-highlight-med); color: var(--rp-text);
+    border: none; border-radius: 4px; padding: 2px 10px; cursor: pointer; font-size: 11px;
+  }
+
+  /* ── Variant C:极简覆盖 ─────────────────────────────── */
+  .gvC-stage {
+    position: relative;
+    height: 380px;
+    background: #0d0b16;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .gvC-stage img {
+    max-width: 100%; max-height: 100%; object-fit: contain;
+  }
+  .gvC-skeleton {
+    width: 100%; height: 100%;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--rp-muted); font-size: 12px;
+    animation: pulse 1.2s infinite alternate;
+  }
+  .gvC-err {
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    color: var(--rp-muted); font-size: 12px;
+  }
+  .gvC-nav {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    background: none; border: 1px solid var(--rp-highlight-med);
+    color: var(--rp-subtle); width: 36px; height: 36px; border-radius: 50%;
+    cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center;
+  }
+  .gvC-nav:hover { border-color: var(--rp-foam); color: var(--rp-text); }
+  .gvC-prev { left: 10px; }
+  .gvC-next { right: 10px; }
+  .gvC-counter {
+    position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+    font-size: 12px; color: var(--rp-subtle);
+    background: rgba(0,0,0,0.6); padding: 2px 10px; border-radius: 12px;
+  }
+  .gvC-fail-badge {
+    position: absolute; top: 10px; left: 10px;
+    font-size: 11px; color: var(--rp-gold);
+    background: rgba(0,0,0,0.6); padding: 2px 8px; border-radius: 10px;
+  }
+
+  @keyframes pulse { from { opacity: 0.35; } to { opacity: 0.8; } }
+
+  /* ── 浮动切换条 ─────────────────────────────────────── */
+  .switcher {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 10px;
+    background: var(--rp-overlay);
+    border: 1px solid var(--rp-highlight-med);
+    border-radius: 24px;
+    padding: 6px 14px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.6);
+    z-index: 100;
+  }
+  .switcher button {
+    background: none; border: none; color: var(--rp-text);
+    font-size: 18px; cursor: pointer; width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 50%;
+  }
+  .switcher button:hover { background: var(--rp-highlight-med); }
+  .switcher .label {
+    font-size: 12px; color: var(--rp-subtle);
+    min-width: 170px; text-align: center;
+  }
+  .switcher .label b { color: var(--rp-foam); }
+
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+  <div class="page-title">PROTOTYPE · Gallery UX 参数定夺</div>
+  <div class="page-sub">v0.3.3 Feature A · T05 HITL · 按 ←/→ 或底部浮动条切换变体 · 本文件不进生产</div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <span>📄 demo.md — 已打开</span>
+      <span class="doc-path">C:\proj\demo.md</span>
+    </div>
+    <div class="gallery-block">
+      <div class="gallery-lang-tag">```gallery</div>
+      <div id="variant-root"></div>
+    </div>
+  </div>
+
+  <div class="switcher">
+    <button id="sw-prev" title="上一个变体 (←)">‹</button>
+    <div class="label" id="sw-label">A — 固定舞台</div>
+    <button id="sw-next" title="下一个变体 (→)">›</button>
+  </div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════
+// 模拟数据:8 张图,其中 2 张是「网络图」(模拟下载延迟,1 张随机失败)
+// 懒加载窗口:只加载 current ± 1,其余显示骨架
+// ═══════════════════════════════════════════════════════════════════
+
+const SVG = (w, h, c1, c2, label) => {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
+    <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="${c1}"/><stop offset="100%" stop-color="${c2}"/>
+    </linearGradient></defs>
+    <rect width="${w}" height="${h}" fill="url(#g)"/>
+    <text x="50%" y="50%" fill="rgba(255,255,255,0.75)" font-size="24" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif">${label}</text>
+  </svg>`;
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+};
+
+// 8 张图:本地(立即) + 网络(延迟)。第 6 张模拟下载失败。
+const IMAGES = [
+  { src: SVG(600, 340, '#31748f', '#9ccfd8', '01 · 本地'), kind: 'local' },
+  { src: SVG(340, 600, '#c4a7e7', '#ebbcba', '02 · 本地竖'), kind: 'local' },
+  { src: SVG(800, 400, '#eb6f92', '#f6c177', '03 · 本地宽'), kind: 'local' },
+  { src: SVG(400, 400, '#908caa', '#403d52', '04 · 本地方'), kind: 'local' },
+  { src: SVG(600, 340, '#f6c177', '#eb6f92', '05 · 网络'), kind: 'net' },
+  { src: null, kind: 'net-fail', label: '06 · 网络(下载失败)' },
+  { src: SVG(500, 500, '#9ccfd8', '#31748f', '07 · 网络'), kind: 'net' },
+  { src: SVG(600, 300, '#6e6a86', '#191724', '08 · 本地'), kind: 'local' },
+];
+
+// 模拟懒加载:net 图需要 600ms;net-fail 需要 900ms 后失败
+const loadedAt = new Map(); // index -> 'loading' | 'ready' | 'error'
+const pendingTimers = new Map();
+
+function loadImage(idx) {
+  if (loadedAt.has(idx)) return;
+  const img = IMAGES[idx];
+  loadedAt.set(idx, 'loading');
+  const delay = img.kind === 'local' ? 60 : img.kind === 'net' ? 600 : 900;
+  pendingTimers.set(idx, setTimeout(() => {
+    loadedAt.set(idx, img.kind === 'net-fail' ? 'error' : 'ready');
+    render();
+  }, delay));
+}
+
+let current = 0;
+let variant = 'A';
+
+function render() {
+  // 懒加载窗口:current ± 1
+  for (const idx of pendingTimers.keys()) {
+    if (Math.abs(idx - current) > 1) { clearTimeout(pendingTimers.get(idx)); pendingTimers.delete(idx); loadedAt.delete(idx); }
+  }
+  for (let i = Math.max(0, current - 1); i <= Math.min(IMAGES.length - 1, current + 1); i++) {
+    loadImage(i);
+  }
+  const root = document.getElementById('variant-root');
+  if (variant === 'A') root.innerHTML = renderA();
+  if (variant === 'B') root.innerHTML = renderB();
+  if (variant === 'C') root.innerHTML = renderC();
+  // 重绑事件
+  document.querySelectorAll('[data-nav]').forEach(b => b.onclick = () => {
+    const d = b.dataset.nav === 'next' ? 1 : -1;
+    current = Math.max(0, Math.min(IMAGES.length - 1, current + d));
+    render();
+  });
+  document.querySelectorAll('[data-thumb]').forEach(t => t.onclick = () => {
+    current = Number(t.dataset.thumb); render();
+  });
+  document.querySelectorAll('[data-retry]').forEach(b => {
+    b.onclick = () => {
+      const idx = Number(b.dataset.retry);
+      loadedAt.delete(idx);
+      loadImage(idx);
+      render();
+    };
+  });
+}
+
+function stageFor(idx) {
+  const state = loadedAt.get(idx);
+  const img = IMAGES[idx];
+  if (state === 'ready') {
+    return `<img src="${img.src}" alt="图 ${idx + 1}">`;
+  }
+  if (state === 'loading') {
+    return `<div class="gvA-skeleton">加载中… (${img.kind === 'net' ? '网络图' : '本地图'})</div>`;
+  }
+  if (state === 'error') {
+    return `<div class="gvA-err"><span>⚠ 下载失败</span><button class="retry" data-retry="${idx}">重试</button></div>`;
+  }
+  // 未加载(窗口外)
+  return `<div class="gvA-skeleton">…</div>`;
+}
+
+// ── Variant A:固定舞台(主图固定高度,缩略图条固定尺寸单行横滚) ──
+function renderA() {
+  const failCount = [...loadedAt.values()].filter(s => s === 'error').length;
+  return `
+  <div class="gvA-stage">
+    <button class="gvA-nav gvA-prev" data-nav="prev">‹</button>
+    ${stageFor(current)}
+    <button class="gvA-nav gvA-next" data-nav="next">›</button>
+    <div class="gvA-indicator">${current + 1} / ${IMAGES.length}${failCount ? ` · ⚠${failCount}` : ''}</div>
+  </div>
+  <div class="gvA-thumbs">
+    ${IMAGES.map((img, i) => {
+      const state = loadedAt.get(i);
+      const active = i === current ? ' active' : '';
+      if (state === 'ready') return `<button class="gvA-thumb${active}" data-thumb="${i}"><img src="${img.src}"></button>`;
+      if (state === 'error') return `<button class="gvA-thumb err${active}" data-thumb="${i}">⚠</button>`;
+      return `<button class="gvA-thumb${active}" data-thumb="${i}"><div style="font-size:9px;color:var(--rp-muted);padding:2px">${i + 1}</div></button>`;
+    }).join('')}
+  </div>`;
+}
+
+// ── Variant B:自适应流式(主图按比例,缩略图条自适应,失败折叠卡片) ──
+function renderB() {
+  const state = loadedAt.get(current);
+  const img = IMAGES[current];
+  const failCount = [...loadedAt.values()].filter(s => s === 'error').length;
+  let stage;
+  if (state === 'ready') {
+    stage = `<div class="gvB-imgwrap"><img src="${img.src}"></div><div class="gvB-caption">${current + 1} / ${IMAGES.length} · ${img.kind === 'net' ? '网络图' : '本地图'} · ${img.label || ''}</div>`;
+  } else if (state === 'error') {
+    stage = `<div class="gvB-err-card"><span>⚠ 图 ${current + 1} 下载失败</span><button class="retry" data-retry="${current}">重试</button></div>`;
+  } else {
+    stage = `<div class="gvB-skeleton">${state === 'loading' ? '加载中…' : '…'}</div>`;
+  }
+  return `
+  <div class="gvB-stage">
+    <button class="gvC-nav gvB-prev" data-nav="prev" style="position:static;transform:none;width:28px;height:28px;border-radius:8px">‹</button>
+    ${stage}
+    <button class="gvC-nav gvB-next" data-nav="next" style="position:static;transform:none;width:28px;height:28px;border-radius:8px">›</button>
+  </div>
+  ${failCount ? `<div style="padding:6px 12px;font-size:11px;color:var(--rp-gold);background:var(--rp-highlight-low)">${failCount} 张网络图下载失败(折叠显示)</div>` : ''}
+  <div class="gvB-thumbs">
+    ${IMAGES.map((img, i) => {
+      const s = loadedAt.get(i);
+      const active = i === current ? ' active' : '';
+      if (s === 'ready') return `<button class="gvB-thumb${active}" data-thumb="${i}"><img src="${img.src}"></button>`;
+      if (s === 'error') return `<button class="gvB-thumb${active}" data-thumb="${i}"><span class="badge">⚠</span></button>`;
+      return `<button class="gvB-thumb${active}" data-thumb="${i}" style="opacity:0.5">${i + 1}</button>`;
+    }).join('')}
+  </div>`;
+}
+
+// ── Variant C:极简覆盖(无缩略图条,角落计数,失败徽章) ──
+function renderC() {
+  const failCount = [...loadedAt.values()].filter(s => s === 'error').length;
+  const state = loadedAt.get(current);
+  let stage;
+  if (state === 'ready') {
+    stage = `<img src="${IMAGES[current].src}">`;
+  } else if (state === 'error') {
+    stage = `<div class="gvC-err"><span>⚠ 下载失败</span><button class="retry" data-retry="${current}">重试</button></div>`;
+  } else {
+    stage = `<div class="gvC-skeleton">${state === 'loading' ? '加载中…' : '…'}</div>`;
+  }
+  return `
+  <div class="gvC-stage">
+    <button class="gvC-nav gvC-prev" data-nav="prev">‹</button>
+    ${stage}
+    <button class="gvC-nav gvC-next" data-nav="next">›</button>
+    ${failCount ? `<div class="gvC-fail-badge">⚠ ${failCount} 张失败</div>` : ''}
+    <div class="gvC-counter">${current + 1} / ${IMAGES.length}</div>
+  </div>`;
+}
+
+// ── 变体切换 ──────────────────────────────────────────────
+const VARIANT_LABELS = {
+  A: 'A — 固定舞台',
+  B: 'B — 自适应流式',
+  C: 'C — 极简覆盖',
+};
+
+function setVariant(v) {
+  variant = v;
+  const url = new URL(location.href);
+  url.searchParams.set('variant', v);
+  history.replaceState(null, '', url);
+  document.getElementById('sw-label').innerHTML = `<b>${v}</b> — ${VARIANT_LABELS[v].slice(4)}`;
+  render();
+}
+
+const urlVar = new URL(location.href).searchParams.get('variant');
+setVariant(urlVar === 'B' ? 'B' : urlVar === 'C' ? 'C' : 'A');
+
+document.getElementById('sw-prev').onclick = () => setVariant(variant === 'A' ? 'C' : String.fromCharCode(variant.charCodeAt(0) - 1));
+document.getElementById('sw-next').onclick = () => setVariant(variant === 'C' ? 'A' : String.fromCharCode(variant.charCodeAt(0) + 1));
+
+// 键盘 ←/→(input/textarea 聚焦时不拦截)
+document.addEventListener('keydown', (e) => {
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  if (e.key === 'ArrowLeft') { e.preventDefault(); setVariant(variant === 'A' ? 'C' : String.fromCharCode(variant.charCodeAt(0) - 1)); }
+  if (e.key === 'ArrowRight') { e.preventDefault(); setVariant(variant === 'C' ? 'A' : String.fromCharCode(variant.charCodeAt(0) + 1)); }
+});
+</script>
+</body>
+</html>
