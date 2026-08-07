@@ -9,13 +9,14 @@
  * @对应文档章节: 软件定义书.md 6.1 (整体布局)、6.6 (设置页面);
  *   ipc-protocol.md 第 4 章 handshake
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   EVENT_CHANNELS,
   PROTOCOL_VERSION,
   type GitStatusUpdatedPayload,
   type SessionDestroyedPayload,
 } from '@shared/protocol';
+import { LocalAppearanceProvider, useLocalAppearance } from './components/LocalAppearanceProvider';
 import { clearCachedStatus, setCachedStatus } from '@shared/git-status-cache';
 import { claimSession } from './hooks/claim-gate';
 import { AppStateProvider, useAppDispatch, useAppState, useIpcSync } from './store';
@@ -37,6 +38,18 @@ type HandshakeState =
   | { status: 'error'; message: string; errorCode: string | null };
 
 export function App(): JSX.Element {
+  // LocalAppearanceProvider 必须在最顶层(早于 handshake):错误/握手态也需要本机主题,
+  // 而那些状态不走 useIpcSync(本机外观原本只在连接成功路径拉取)。详见
+  // src/renderer/components/LocalAppearanceProvider.tsx 与
+  // docs/plans/远程窗口错误态架构修复.md。
+  return (
+    <LocalAppearanceProvider>
+      <AppBody />
+    </LocalAppearanceProvider>
+  );
+}
+
+function AppBody(): JSX.Element {
   const [handshake, setHandshake] = useState<HandshakeState>({ status: 'pending' });
 
   // F12(DROP-1 重构):window 层成为拖拽决策的"唯一权威"。
@@ -128,56 +141,53 @@ export function App(): JSX.Element {
       });
   }, []);
 
+  // ?backend= 标识本窗口是否连远程 daemon(preload 从 URL query 解析,窗口创建时定死,
+  // 见 window-manager.ts createWindow)。在 render 期间算一次,本函数所有错误分支共用,
+  // 消除原先三处重复的 new URLSearchParams(...).get('backend') 判定。
+  const isRemoteWindow = detectRemoteWindow();
+
   if (handshake.status === 'pending') {
-    return <FullPagePlaceholder title="Marina" subtitle="正在握手…" />;
+    return (
+      <FramelessShell>
+        <PendingCard />
+      </FramelessShell>
+    );
   }
 
   if (handshake.status === 'mismatch') {
+    // Bug 1 现场:原走 FullPagePlaceholder(无 WindowChrome)→ frame:false 窗口无标题栏。
+    // 改走 FramelessShell,标题栏 + 本机主题由外壳保证,这里只给版本说明卡片。
     return (
-      <FullPagePlaceholder
-        title="Marina"
-        subtitle="协议版本不匹配"
-        body={`主进程协议版本 ${handshake.mainVersion},渲染端 ${handshake.rendererVersion}。请重启应用或重装。`}
-        variant="error"
-      />
+      <FramelessShell>
+        <ProtocolMismatchCard
+          mainVersion={handshake.mainVersion}
+          rendererVersion={handshake.rendererVersion}
+          isRemoteWindow={isRemoteWindow}
+        />
+      </FramelessShell>
     );
   }
 
   if (handshake.status === 'error') {
     // 远程窗口连不上 daemon 时,getProtocolVersion 走 invoke→ensureTransport 会 throw,
-    // 提前在这里失败(到不了 ConnectedShell 的 sync.error)。所以这里也要判断远程窗口,
-    // 显示带标题栏 + 可复制的 RemoteConnectionErrorScreen,而不是无标题栏的 FullPagePlaceholder。
-    const backendId =
-      typeof window !== 'undefined'
-        ? new URLSearchParams(window.location.search).get('backend')
-        : null;
-    if (backendId) {
-      // 必须包 AppStateProvider:RemoteConnectionErrorScreen 内部调 useAppState()
-      // (取 settings.appearance.theme),它渲染的 WindowChrome 和 LanguageProvider
-      // 也各自调 useAppState()。而 useAppState 在无 Provider 时会 throw
-      // ('[store] useAppState 必须在 AppStateProvider 内使用'),没有 ErrorBoundary
-      // 兜底 → 整棵树崩溃白屏 = 用户看到“标题栏还是没有”
-      // (前两次修复无效的真正原因)。这里挂一个 Provider:snapshot 不会被拉
-      // (不调 useIpcSync),settings 保持空默认值 → theme fallback 'rose-pine',
-      // WindowChrome / LanguageProvider 读默认 context 正常渲染,不崩溃。
+    // 提前在这里失败(到不了 ConnectedShell 的 sync.error)。走 FramelessShell:
+    // 标题栏 + 本机主题由外壳保证,不再每条分支自己挂 AppStateProvider / 查 ?backend=。
+    if (isRemoteWindow) {
       return (
-        <AppStateProvider myWindowId={window.api.windowId} myWindowNumber={window.api.windowNumber}>
+        <FramelessShell>
           <RemoteConnectionErrorScreen
             errorMessage={handshake.message}
             errorCode={handshake.errorCode}
-            buildVersion="unknown"
-            buildType="portable"
           />
-        </AppStateProvider>
+        </FramelessShell>
       );
     }
+    // 本地窗口握手 error(window.api 不存在等,极罕见)。同样走 FramelessShell
+    // 保证标题栏,内容是本地启动错误卡片。
     return (
-      <FullPagePlaceholder
-        title="Marina"
-        subtitle="启动失败"
-        body={handshake.message}
-        variant="error"
-      />
+      <FramelessShell>
+        <LocalStartupErrorCard message={handshake.message} />
+      </FramelessShell>
     );
   }
 
@@ -334,35 +344,33 @@ function ConnectedShell({
     document.documentElement.setAttribute('data-platform', platform);
   }, []);
 
+  // ConnectedShell 已在 AppStateProvider 内(AppBody handshake OK 分支包的),
+  // 所以这里的 FramelessShell 用 inheritAppState 复用外层 store,避免嵌套第二个空 store。
+  const isRemoteWindow = detectRemoteWindow();
+
   if (sync.error) {
     // 远程窗口加载失败 = 远程连接失败(preload ensureTransport 抛 ConnectError)。
-    // 绝不静默回退本地。显示带窗口标题栏 + 针对性诊断的错误页(可复制/重试/关窗)。
-    const backendId =
-      typeof window !== 'undefined'
-        ? new URLSearchParams(window.location.search).get('backend')
-        : null;
-    if (backendId) {
+    // 绝不静默回退本地。走 FramelessShell:标题栏 + 本机主题 + 针对性诊断卡片。
+    if (isRemoteWindow) {
       return (
-        <RemoteConnectionErrorScreen
-          errorMessage={sync.error}
-          errorCode={sync.errorCode}
-          buildVersion={buildVersion}
-          buildType={buildType}
-        />
+        <FramelessShell inheritAppState buildVersion={buildVersion} buildType={buildType}>
+          <RemoteConnectionErrorScreen errorMessage={sync.error} errorCode={sync.errorCode} />
+        </FramelessShell>
       );
     }
     return (
-      <FullPagePlaceholder
-        title="Marina"
-        subtitle="加载 snapshot 失败"
-        body={sync.error}
-        variant="error"
-      />
+      <FramelessShell inheritAppState buildVersion={buildVersion} buildType={buildType}>
+        <LocalStartupErrorCard message={`加载 snapshot 失败:${sync.error}`} />
+      </FramelessShell>
     );
   }
 
   if (!sync.ready) {
-    return <FullPagePlaceholder title="Marina" subtitle="加载状态…" />;
+    return (
+      <FramelessShell inheritAppState buildVersion={buildVersion} buildType={buildType}>
+        <PendingCard label="加载状态…" />
+      </FramelessShell>
+    );
   }
 
   return (
@@ -473,28 +481,23 @@ function getRemoteErrorDiagnosis(errorCode: string | null): {
 }
 
 /**
- * 远程窗口连接失败时的全屏错误页。与普通 FullPagePlaceholder 的区别:
- * - 带窗口标题栏(WindowChrome),用户能最小化/最大化/关闭。
- * - 按 error.code 给针对性诊断(标题 + 排查清单),不是笼统一句。
- * - 错误详情可选中 + 一键复制(便于把错误发给排查者)。
- * - 重试(reload 重新走 ensureTransport)+ 关闭窗口 按钮。
+ * 远程连接失败的错误卡片(纯内容,不含标题栏/外壳)。
+ *
+ * 标题栏、data-theme、Provider 树由外层 <FramelessShell> 提供。本组件只负责:
+ * - 按 error.code 给针对性诊断(标题 + 排查清单);
+ * - 错误详情可选中 + 一键复制;
+ * - 重试(reload 重新走 ensureTransport)/ 关窗 按钮。
+ *
+ * 必须在 FramelessShell 内使用(它的 WindowChrome 依赖 AppStateProvider)。
  */
 function RemoteConnectionErrorScreen({
   errorMessage,
   errorCode,
-  buildVersion,
-  buildType,
 }: {
   errorMessage: string;
   errorCode: string | null;
-  buildVersion: string;
-  buildType: 'dev' | 'portable' | 'installed';
 }): JSX.Element {
   const diagnosis = getRemoteErrorDiagnosis(errorCode);
-  const state = useAppState();
-  // snapshot 没加载时 settings 是空对象,fallback 默认主题。data-theme 必须设,
-  // 否则 CSS 变量(--color-bg-primary 等)未定义,整个页面(含标题栏)会变成 fallback 品红。
-  const currentTheme = state.settings.appearance?.theme ?? 'rose-pine';
   const handleRetry = (): void => {
     window.location.reload();
   };
@@ -524,79 +527,199 @@ function RemoteConnectionErrorScreen({
     }
   };
 
-  // 包完整 Provider 树(与主界面一致),确保 WindowChrome / CSS 变量 / portal 容器正常。
   return (
-    <LanguageProvider>
-      <div className="app-root with-shell" data-theme={currentTheme} data-window-style="windows">
-        <WindowChrome windowStyle="windows" buildVersion={buildVersion} buildType={buildType} />
-        <div className="remote-error-screen">
-          <div className="remote-error-card">
-            <h1 className="remote-error-title">{diagnosis.title}</h1>
-            <p className="remote-error-subtitle">
-              这个窗口是远程窗口,但连不上对方电脑上的 Marina。
-            </p>
+    <div className="remote-error-screen">
+      <div className="remote-error-card">
+        <h1 className="remote-error-title">{diagnosis.title}</h1>
+        <p className="remote-error-subtitle">
+          这个窗口是远程窗口,但连不上对方电脑上的 Marina。
+        </p>
 
-            <ol className="remote-error-checklist">
-              {diagnosis.checklist.map((item, i) => (
-                <li key={i}>{item}</li>
+        <ol className="remote-error-checklist">
+          {diagnosis.checklist.map((item, i) => (
+            <li key={i}>{item}</li>
               ))}
-            </ol>
+        </ol>
 
-            {/* 详细错误默认展开(不用 details 折叠),确保始终可见 + 可选中复制 */}
-            <div className="remote-error-detail">
-              <div className="remote-error-detail-label">详细错误(可选中,或点按钮复制)</div>
-              <pre
-                className="remote-error-pre"
-                ref={(el) => {
-                  /* 允许直接选中 */ void el;
-                }}
-              >
-                {errorMessage}
-              </pre>
-              <button
-                type="button"
-                className="settings-button remote-error-copy"
-                onClick={() => void handleCopy()}
-              >
-                复制错误信息
-              </button>
-            </div>
+        {/* 详细错误默认展开(不用 details 折叠),确保始终可见 + 可选中复制 */}
+        <div className="remote-error-detail">
+          <div className="remote-error-detail-label">详细错误(可选中,或点按钮复制)</div>
+          <pre
+            className="remote-error-pre"
+            ref={(el) => {
+              /* 允许直接选中 */ void el;
+            }}
+          >
+            {errorMessage}
+          </pre>
+          <button
+            type="button"
+            className="settings-button remote-error-copy"
+            onClick={() => void handleCopy()}
+          >
+            复制错误信息
+          </button>
+        </div>
 
-            <div className="remote-error-actions">
-              <button type="button" className="settings-button" onClick={handleRetry}>
-                重试连接
-              </button>
-              <button type="button" className="settings-button danger" onClick={handleClose}>
-                关闭窗口
-              </button>
-            </div>
-          </div>
+        <div className="remote-error-actions">
+          <button type="button" className="settings-button" onClick={handleRetry}>
+            重试连接
+          </button>
+          <button type="button" className="settings-button danger" onClick={handleClose}>
+            关闭窗口
+          </button>
         </div>
       </div>
-    </LanguageProvider>
+    </div>
   );
 }
 
-function FullPagePlaceholder({
-  title,
-  subtitle,
-  body,
-  variant,
-  actions,
+// ──────────────────────────────────────────────────────────────────
+// frame:false 窗口的基础外壳 + 错误/握手态卡片
+//
+// 这组组件是 Bug 1/Bug 2 的结构根治:见 docs/plans/远程窗口错误态架构修复.md。
+// 设计原则——所有 frame:false 窗口的可见状态(含错误/握手态)都包在
+// <FramelessShell> 里,标题栏 + 本机主题由外壳统一保证,不再靠每条分支自觉。
+// ──────────────────────────────────────────────────────────────────
+
+/**
+ * 检测本窗口是否连了远程 daemon。
+ *
+ * 读 URL ?backend=(preload 从 query 解析,窗口创建时定死,见 window-manager.ts
+ * createWindow 拼接 ?backend=<profileId>)。AppBody 和 ConnectedShell 各调一次
+ * (不同函数作用域,无法共享局部 const),提成本工具函数消除重复。
+ */
+function detectRemoteWindow(): boolean {
+  return typeof window !== 'undefined'
+    ? new URLSearchParams(window.location.search).get('backend') !== null
+    : false;
+}
+
+/**
+ * frame:false 窗口的基础外壳(Bug 1 的结构根治)。
+ *
+ * 窗口在主进程是 frame:false(window-manager.ts createWindow),系统标题栏被整条
+ * 拿掉,标题栏 100% 由 <WindowChrome> 自绘。所以任何“不渲染 WindowChrome 的
+ * 可见状态”都会让用户看到一个没有最小化/最大化/关闭按钮的窗口(像卡死)。
+ *
+ * 历史上这个约束只靠每条错误分支自觉 —— mismatch 分支漏画过(Bug 1),且修了
+ * 一条又复发另一条(见 git log b501a24/409e619/00fd171 同一天三次修同一 bug)。
+ * 本外壳把“frame:false 窗口可见状态必有标题栏”从口头约定变成结构强制。
+ *
+ * 主题/windowStyle 来自 useLocalAppearance()(本机外观,与连接无关),fallback
+ * 默认值 → Bug 2(错误态用默认主题)根治。
+ *
+ * @param inheritAppState 调用方已在 AppStateProvider 内时设 true,复用外层
+ *   store(避免嵌套第二个空 store)。典型:ConnectedShell 内的 sync.error。
+ *   App 顶层的 handshake 分支不传(默认 false),本外壳自己挂 AppStateProvider
+ *   —— WindowChrome 内部调 useAppState(),无 Provider 会 throw 白屏。
+ */
+function FramelessShell({
+  children,
+  inheritAppState = false,
+  buildVersion = 'unknown',
+  buildType = 'portable',
 }: {
-  title: string;
-  subtitle: string;
-  body?: string;
-  variant?: 'error';
-  actions?: JSX.Element;
+  children: ReactNode;
+  inheritAppState?: boolean;
+  buildVersion?: string;
+  buildType?: 'dev' | 'portable' | 'installed';
 }): JSX.Element {
+  const localAppearance = useLocalAppearance();
+  // 本机外观未拉到时用默认值先渲染(与 settings-manager.ts DEFAULT_SETTINGS.appearance
+  // 一致),拉到后自动切换。本地 IPC 通常 <50ms,用户几乎无感。
+  const theme = localAppearance?.theme ?? 'rose-pine';
+  const windowStyle = localAppearance?.windowStyle ?? 'windows';
+
+  // window.api 不存在 = preload 完全没加载(致命错误,handshake error 的一个起因)。
+  // 此时 WindowChrome 的按钮(调 window.api.invoke)无法工作,AppStateProvider 也
+  // 拿不到 windowId。降级渲染纯静态卡片(与历史 FullPagePlaceholder 行为一致:
+  // 无标题栏但显示错误),避免访问 window.api.windowId 导致白屏。
+  // 说明:这个降级路径没有标题栏 —— 但 preload 没加载时连 IPC 都没有,标题栏按钮
+  // 本来也不能用,降级是合理的(且这是极罕见的致命错误,不是常态)。
+  if (typeof window === 'undefined' || !window.api) {
+    return <div className="app-root" data-theme={theme}>{children}</div>;
+  }
+
+  const shell = (
+    <LanguageProvider>
+      <div className="app-root with-shell" data-theme={theme} data-window-style={windowStyle}>
+        <WindowChrome windowStyle={windowStyle} buildVersion={buildVersion} buildType={buildType} />
+        {children}
+      </div>
+    </LanguageProvider>
+  );
+
+  if (inheritAppState) {
+    // 调用方(如 ConnectedShell)已在 AppStateProvider 内,直接复用。
+    return shell;
+  }
+  // App 顶层的 handshake 分支:自己挂 AppStateProvider(WindowChrome 依赖它)。
   return (
-    <div className="app-root">
-      <div className={`bootstrap-placeholder${variant === 'error' ? ' error' : ''}`}>
-        <h1>{title}</h1>
-        <p className="subtitle">{subtitle}</p>
-        {body && <pre className="error-pre">{body}</pre>}
-        {actions && <div className="bootstrap-actions">{actions}</div>}
+    <AppStateProvider myWindowId={window.api.windowId} myWindowNumber={window.api.windowNumber}>
+      {shell}
+    </AppStateProvider>
+  );
+}
+
+/** 握手中 / 状态加载中的极简卡片(标题栏由 FramelessShell 提供)。 */
+function PendingCard({ label = '正在连接…' }: { label?: string }): JSX.Element {
+  return (
+    <div className="bootstrap-placeholder">
+      <h1>Marina</h1>
+      <p className="subtitle">{label}</p>
+    </div>
+  );
+}
+
+/**
+ * 协议版本不匹配卡片(Bug 1 的内容侧)。标题栏由 FramelessShell 提供。
+ * 远程场景:本机与对方 daemon 协议不一致;本地场景:主进程与渲染端不一致。
+ */
+function ProtocolMismatchCard({
+  mainVersion,
+  rendererVersion,
+  isRemoteWindow,
+}: {
+  mainVersion: number;
+  rendererVersion: number;
+  isRemoteWindow: boolean;
+}): JSX.Element {
+  const handleClose = (): void => {
+    window.close();
+  };
+  return (
+    <div className="bootstrap-placeholder error">
+      <h1>Marina</h1>
+      <p className="subtitle">协议版本不匹配</p>
+      <pre className="error-pre">
+        {isRemoteWindow
+          ? `本机与对方电脑的 Marina 协议版本不一致(本机 v${rendererVersion},对方 v${mainVersion})。\n请把两边升级到同一版本。`
+          : `主进程协议版本 v${mainVersion},渲染端 v${rendererVersion}。\n请重启应用或重装。`}
+      </pre>
+      <div className="bootstrap-actions">
+        <button type="button" className="settings-button" onClick={handleClose}>
+          关闭窗口
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** 本地窗口启动失败卡片(window.api 不存在等极罕见情况)。 */
+function LocalStartupErrorCard({ message }: { message: string }): JSX.Element {
+  const handleClose = (): void => {
+    window.close();
+  };
+  return (
+    <div className="bootstrap-placeholder error">
+      <h1>Marina</h1>
+      <p className="subtitle">启动失败</p>
+      <pre className="error-pre">{message}</pre>
+      <div className="bootstrap-actions">
+        <button type="button" className="settings-button" onClick={handleClose}>
+          关闭窗口
+        </button>
       </div>
     </div>
   );
