@@ -29,7 +29,6 @@ import remarkGfm from 'remark-gfm';
 import type { OpenedFile } from '@shared/types';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { useDomTextHighlight } from '../../hooks/useDomTextHighlight';
-import { useAutoscroll } from '../../hooks/useAutoscroll';
 import { useFileViewerScroll } from '../../hooks/useFileViewerScroll';
 import { COMMAND_CHANNELS, type ReadImagePayload, type ReadImageResponse, type OpenPathFromMarkdownPayload } from '@shared/protocol';
 import { isRemoteUrl } from '@shared/url-scheme';
@@ -152,7 +151,8 @@ export function MarkdownViewer({ sessionId, file, search, scrollRef }: ViewerPro
   });
 
   // Markdown 根本身不滚动；文档级中键自动滚动作用于外层 file-panel-body。
-  useAutoscroll(scrollRef);
+  // 走 Chromium 原生 autoscroll:不 preventDefault 中键 mousedown,点中键即触发
+  //  浏览器原生圆圈图标 + 持续滚动(与浏览器一致)。
 
   if (!content) {
     return <div className="file-viewer-loading">{tx('加载中…', 'Loading…')}</div>;

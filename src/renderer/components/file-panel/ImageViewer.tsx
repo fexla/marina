@@ -9,7 +9,6 @@ import type { OpenedFile } from '@shared/types';
 import { useFileContent } from './useFileContent';
 import { useTranslation } from '../LanguageProvider';
 import { useFileViewerScroll } from '../../hooks/useFileViewerScroll';
-import { useAutoscroll } from '../../hooks/useAutoscroll';
 
 interface ViewerProps {
   sessionId: string;
@@ -35,9 +34,8 @@ export function ImageViewer({ sessionId, file, scrollRef }: ViewerProps): JSX.El
     restoreVersion: file.mtimeMs,
   });
 
-  // 中键自动滚动(v0.3.3):图片查看器用外层 file-panel-body 滚动,与 markdown
-  //  /unknown 共享容器,各自挂各自的 autoscroll(一次只一种 kind 挂载,不冲突)。
-  useAutoscroll(scrollRef);
+  // 中键自动滚动:走 Chromium 原生 autoscroll。图片查看器用外层 file-panel-body
+  //  滚动(与 markdown/unknown 共享容器),原生对该可滚动容器直接生效。
 
   if (!content) {
     return <div className="file-viewer-loading">{tx('加载中…', 'Loading…')}</div>;

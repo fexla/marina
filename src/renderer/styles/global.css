@@ -6770,35 +6770,3 @@ button:focus-visible,
     opacity: 0.8;
   }
 }
-
-/* ─── 中键自动滚动指示器(useAutoscroll)──────────────────────────────────
- * 浏览器风格的圆圈图标:fixed 定位在「按下中键的锚点」,不随滚动移动。
- * 颜色用主题文本色 var(--color-text-primary),描边/填充统一 currentColor,
- * 明暗主题都可见;外圈加半透明背景圆增强对比。指针事件 none,不挡操作。
- */
-.marina-autoscroll-indicator {
-  position: fixed;
-
-  /* 锚点坐标由 hook 写入 left/top(视口坐标)。用 translate(-50%,-50%) 把
-     图标几何中心对齐到锚点,符合「圆圈中心 = 按下点」的直觉。 */
-  transform: translate(-50%, -50%);
-  width: 40px;
-  height: 40px;
-  z-index: 2147483647; /* 永远在最上层,不被面板/弹层遮挡 */
-  pointer-events: none; /* 图标本身不参与命中,避免它吞掉退出用的 mousedown */
-  color: var(--color-text-primary, #333);
-
-  /* 半透明背板:浅色描边在深背景上靠这层托底保证可见,反之亦然。 */
-  background: var(--color-bg-primary, #fff);
-  border-radius: 50%;
-  opacity: 0.92;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
-  display: grid;
-  place-items: center;
-}
-
-.marina-autoscroll-indicator svg {
-  width: 30px;
-  height: 30px;
-  display: block;
-}

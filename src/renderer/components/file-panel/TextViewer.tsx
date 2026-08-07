@@ -20,7 +20,6 @@ import type { OpenedFile } from '@shared/types';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { useFileContent } from './useFileContent';
 import { useDomTextHighlight } from '../../hooks/useDomTextHighlight';
-import { useAutoscroll } from '../../hooks/useAutoscroll';
 import { useFileViewerScroll } from '../../hooks/useFileViewerScroll';
 import { useTranslation } from '../LanguageProvider';
 import { highlightLine, detectLanguageByExt } from './highlight';
@@ -106,9 +105,9 @@ export function TextViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
       (search.visible && search.query.length > 0) || jumpLine !== undefined,
   });
 
-  // 中键自动滚动(v0.3.3):点一下中键进入浏览器风格 autoscroll(圆圈图标 +
-  //  鼠标移动持续滚动,再点/按键退出)。替换原 hand-pan(按住拖动平移)。
-  useAutoscroll(containerRef);
+  // 中键自动滚动:走 Chromium 原生 autoscroll(点中键出现圆圈图标、鼠标移动持续
+  //  滚动,与浏览器一致)。不在此 preventDefault 中键 mousedown —— 一旦拦掉原生就不触发。
+  // (历史:曾自实现 useAutoscroll + 更早的 useMiddleClickPan hand-pan,均已移除以还原原生。)
 
   // v0.3.3 Feature F(T15):从终端 :行号 链接打开时滚动到目标行(不做高亮)。
   // 时序:useFileViewerScroll 在 initialLine 时被 searchActive=true 抑制 restore

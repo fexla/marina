@@ -51,7 +51,6 @@ import { COMMAND_CHANNELS } from '@shared/protocol';
 import { resolveDiffOpenFileState } from '@shared/diff-path';
 import { useFileContent } from './useFileContent';
 import { useDomTextHighlight } from '../../hooks/useDomTextHighlight';
-import { useAutoscroll } from '../../hooks/useAutoscroll';
 import { useFileViewerScroll } from '../../hooks/useFileViewerScroll';
 import { useTranslation } from '../LanguageProvider';
 import { useToast } from '../Toast';
@@ -327,8 +326,8 @@ export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
     },
   });
 
-  // 中键自动滚动(v0.3.3):与 TextViewer 一致,点中键进入浏览器风格 autoscroll。
-  useAutoscroll(bodyScrollRef);
+  // 中键自动滚动:走 Chromium 原生 autoscroll(与 TextViewer 一致),不 preventDefault
+  //  中键 mousedown,点中键即触发浏览器原生圆圈图标 + 持续滚动。
 
   if (!content) {
     return <div className="file-viewer-loading">{tx('加载中…', 'Loading…')}</div>;
