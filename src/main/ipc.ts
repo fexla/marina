@@ -2038,20 +2038,66 @@ async function flushAllStores(deps: IpcLayerDeps): Promise<void> {
 // 关闭、读内容。终端程序经 HTTP 触发的 open/show/close 走 FilePanelService
 // 内部,不经这些 IPC;两类入口共享 service 状态机,事件统一从
 // 'filePanelUpdated' 出(见 wireEventBroadcasts)。
+//
+// H2(架构复核):这些命令携带文件绝对路径/内容,是「同账户数据外发」面。
+// 非 owner 窗口即使知道 sessionId,也不应能读/改别的窗口正在操作的文件面板。
+// 校验放在 IPC adapter 层(本函数),不进 FilePanelService 核心 —— 终端内 HTTP
+// agent 在 session orphan 时仍应能 program-push 更新 main 真值,那类入口直接调
+// FilePanelService、不经这些 IPC,故不受本校验影响。
 // ──────────────────────────────────────────────────────────────────
+
+/**
+ * 校验 requester 是否为 session 的当前 owner(client 语义)。
+ *
+ * 与 FileTreeService.requireOwner 同语义:每个请求重查 owner,避免 session 被
+ * 接管后旧窗口继续读取文件。错误用 makeIpcError 带 code,dispatchCommand 的
+ * WS 路径与 ipcMain 本地路径都能拿到结构化错误(code/message)。
+ *
+ * @throws makeIpcError('SessionNotFound' | 'NotOwner')
+ */
+function requireFilePanelOwner(
+  sessionManager: SessionManager,
+  sessionId: string,
+  requesterId: string,
+): void {
+  const session = sessionManager.get(sessionId);
+  if (!session) {
+    throw makeIpcError(
+      'SessionNotFound',
+      `file-panel 操作被拒绝: sessionId="${sessionId}" 不存在或已关闭。` +
+        '可能原因: renderer 快照过期、session 已被销毁。刷新应用状态后再试。',
+    );
+  }
+  if (session.ownerWindowId !== requesterId) {
+    throw makeIpcError(
+      'NotOwner',
+      `file-panel 操作被拒绝: 当前窗口(client="${requesterId}")不是 ` +
+        `sessionId="${sessionId}" 的 owner(实际 owner="${session.ownerWindowId}")。` +
+        '请先接管该会话,或切换到 owner 窗口操作。',
+    );
+  }
+}
+
 function registerFilePanelHandlers(deps: IpcLayerDeps): void {
-  const { filePanelService } = deps;
+  const { filePanelService, sessionManager } = deps;
 
   registerHandle(
     COMMAND_CHANNELS.FILE_PANEL_GET_OPEN_FILES,
-    (_e, envelope: CommandEnvelope<GetOpenFilesPayload>): FilePanelSnapshot =>
-      filePanelService.getOpenFiles(envelope.payload.sessionId),
+    (_e, envelope: CommandEnvelope<GetOpenFilesPayload>): FilePanelSnapshot => {
+      requireFilePanelOwner(sessionManager, envelope.payload.sessionId, envelope.windowId);
+      return filePanelService.getOpenFiles(envelope.payload.sessionId);
+    },
   );
 
   registerHandle(
     COMMAND_CHANNELS.FILE_PANEL_OPEN,
-    async (_e, envelope: CommandEnvelope<FilePanelActionPayload>): Promise<FilePanelSnapshot> =>
-      filePanelService.openFile(envelope.payload.sessionId, envelope.payload.path),
+    async (
+      _e,
+      envelope: CommandEnvelope<FilePanelActionPayload>,
+    ): Promise<FilePanelSnapshot> => {
+      requireFilePanelOwner(sessionManager, envelope.payload.sessionId, envelope.windowId);
+      return filePanelService.openFile(envelope.payload.sessionId, envelope.payload.path);
+    },
   );
 
   // v0.3.3 Feature B:markdown 文档里的本地文件链接 → 相对 md 目录解析进面板只读查看。
@@ -2061,40 +2107,53 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
     async (
       _e,
       envelope: CommandEnvelope<OpenPathFromMarkdownPayload>,
-    ): Promise<FilePanelSnapshot> =>
-      filePanelService.openFileFromMarkdown(
+    ): Promise<FilePanelSnapshot> => {
+      requireFilePanelOwner(sessionManager, envelope.payload.sessionId, envelope.windowId);
+      return filePanelService.openFileFromMarkdown(
         envelope.payload.sessionId,
         envelope.payload.mdPath,
         envelope.payload.src,
-      ),
+      );
+    },
   );
 
   registerHandle(
     COMMAND_CHANNELS.FILE_PANEL_SHOW,
-    (_e, envelope: CommandEnvelope<FilePanelActionPayload>): FilePanelSnapshot =>
-      filePanelService.showFile(envelope.payload.sessionId, envelope.payload.path),
+    (_e, envelope: CommandEnvelope<FilePanelActionPayload>): FilePanelSnapshot => {
+      requireFilePanelOwner(sessionManager, envelope.payload.sessionId, envelope.windowId);
+      return filePanelService.showFile(envelope.payload.sessionId, envelope.payload.path);
+    },
   );
 
   registerHandle(
     COMMAND_CHANNELS.FILE_PANEL_CLOSE,
-    (_e, envelope: CommandEnvelope<FilePanelActionPayload>): FilePanelSnapshot =>
-      filePanelService.closeFile(envelope.payload.sessionId, envelope.payload.path),
+    (_e, envelope: CommandEnvelope<FilePanelActionPayload>): FilePanelSnapshot => {
+      requireFilePanelOwner(sessionManager, envelope.payload.sessionId, envelope.windowId);
+      return filePanelService.closeFile(envelope.payload.sessionId, envelope.payload.path);
+    },
   );
 
   registerHandle(
     COMMAND_CHANNELS.FILE_PANEL_READ,
-    async (_e, envelope: CommandEnvelope<ReadFilePayload>): Promise<ReadFileResponse> =>
-      filePanelService.readFile(envelope.payload.sessionId, envelope.payload.path),
+    async (_e, envelope: CommandEnvelope<ReadFilePayload>): Promise<ReadFileResponse> => {
+      requireFilePanelOwner(sessionManager, envelope.payload.sessionId, envelope.windowId);
+      return filePanelService.readFile(envelope.payload.sessionId, envelope.payload.path);
+    },
   );
 
   registerHandle(
     COMMAND_CHANNELS.FILE_PANEL_READ_IMAGE,
-    async (_e, envelope: CommandEnvelope<ReadImagePayload>): Promise<ReadImageResponse> =>
-      filePanelService.readImageAsset(
+    async (
+      _e,
+      envelope: CommandEnvelope<ReadImagePayload>,
+    ): Promise<ReadImageResponse> => {
+      requireFilePanelOwner(sessionManager, envelope.payload.sessionId, envelope.windowId);
+      return filePanelService.readImageAsset(
         envelope.payload.sessionId,
         envelope.payload.mdPath,
         envelope.payload.src,
-      ),
+      );
+    },
   );
 
   // v0.3.3 Feature A(ADR-026):gallery 图片表。resolve-image 解析单图为 dataUrl
@@ -2105,12 +2164,14 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
     async (
       _e,
       envelope: CommandEnvelope<GalleryResolveImagePayload>,
-    ): Promise<GalleryResolveImageResponse> =>
-      filePanelService.resolveGalleryImage(
+    ): Promise<GalleryResolveImageResponse> => {
+      requireFilePanelOwner(sessionManager, envelope.payload.sessionId, envelope.windowId);
+      return filePanelService.resolveGalleryImage(
         envelope.payload.sessionId,
         envelope.payload.mdPath,
         envelope.payload.src,
-      ),
+      );
+    },
   );
   registerHandle(
     COMMAND_CHANNELS.GALLERY_OPEN_IMAGE,
@@ -2118,6 +2179,7 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
       _e,
       envelope: CommandEnvelope<GalleryOpenImagePayload>,
     ): Promise<GalleryOpenImageResponse> => {
+      requireFilePanelOwner(sessionManager, envelope.payload.sessionId, envelope.windowId);
       const r = await filePanelService.openGalleryImage(
         envelope.payload.sessionId,
         envelope.payload.mdPath,

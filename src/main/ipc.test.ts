@@ -900,3 +900,119 @@ describe('IPC FILE_TREE', () => {
     );
   });
 });
+
+describe('IPC file-panel owner 校验 (H2)', () => {
+  // H2(架构复核):file-panel/gallery 命令携带文件绝对路径/内容,只允许当前
+  // owner client 操作。helper 在 IPC adapter 层(requireFilePanelOwner)校验,
+  // 不进 FilePanelService core;终端内 HTTP agent 的 program-push 不经这些 IPC。
+
+  function ownerSession(owner: string | null): SessionInfo {
+    return {
+      id: 'sess-owner',
+      pathId: '',
+      templateId: 'shell',
+      originalCwd: '/tmp',
+      currentCwd: '/tmp',
+      cols: 80,
+      rows: 24,
+      pid: 1234,
+      displayName: 'shell',
+      ownerWindowId: owner,
+      state: 'active',
+      createdAt: Date.now(),
+    };
+  }
+
+  it('owner 匹配时放行,filePanelService 被调用', async () => {
+    const { installIpcLayer } = await freshIpc();
+    const { deps, stubs } = makeStubs();
+    stubs.sessionManager.get.mockImplementation((sessionId: string) =>
+      sessionId === 'sess-owner' ? ownerSession('win-owner') : null,
+    );
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    const handler = handlers.get(COMMAND_CHANNELS.FILE_PANEL_GET_OPEN_FILES);
+    expect(handler).toBeTruthy();
+    const result = await handler!(
+      {},
+      {
+        windowId: 'win-owner',
+        requestId: 'fp-1',
+        payload: { sessionId: 'sess-owner' },
+      },
+    );
+
+    // 放行:filePanelService.getOpenFiles 被真实调用(未 start 返回空快照)
+    expect(result).toEqual({ files: [], activePath: null });
+    // 确认没有提前抛 owner 错误:getOpenFiles 走到了 service 层
+    expect(stubs.sessionManager.get).toHaveBeenCalledWith('sess-owner');
+  });
+
+  it('非 owner client 被拒: 抛 NotOwner(code)', async () => {
+    const { installIpcLayer, dispatchCommand } = await freshIpc();
+    const { deps, stubs } = makeStubs();
+    stubs.sessionManager.get.mockImplementation((sessionId: string) =>
+      sessionId === 'sess-owner' ? ownerSession('win-owner') : null,
+    );
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    // WS 路径(dispatchCommand):envelope.windowId 被 daemon 强制填 clientId,
+    // 非 owner 的 client 应收到结构化 NotOwner 错误。
+    const result = await dispatchCommand(COMMAND_CHANNELS.FILE_PANEL_GET_OPEN_FILES, {
+      windowId: 'intruder-client',
+      requestId: 'fp-2',
+      payload: { sessionId: 'sess-owner' },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: 'NotOwner',
+        message: expect.stringContaining('sess-owner'),
+      },
+    });
+  });
+
+  it('session 不存在时被拒: 抛 SessionNotFound(code)', async () => {
+    const { installIpcLayer, dispatchCommand } = await freshIpc();
+    const { deps } = makeStubs();
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    const result = await dispatchCommand(COMMAND_CHANNELS.FILE_PANEL_OPEN, {
+      windowId: 'any-client',
+      requestId: 'fp-3',
+      payload: { sessionId: 'no-such-session', path: '/etc/passwd' },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: 'SessionNotFound',
+        message: expect.stringContaining('no-such-session'),
+      },
+    });
+  });
+
+  it('gallery 命令同样受 owner 校验约束', async () => {
+    const { installIpcLayer, dispatchCommand } = await freshIpc();
+    const { deps, stubs } = makeStubs();
+    stubs.sessionManager.get.mockImplementation((sessionId: string) =>
+      sessionId === 'sess-owner' ? ownerSession('win-owner') : null,
+    );
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    const result = await dispatchCommand(COMMAND_CHANNELS.GALLERY_RESOLVE_IMAGE, {
+      windowId: 'intruder-client',
+      requestId: 'fp-4',
+      payload: { sessionId: 'sess-owner', mdPath: '/tmp/x.md', src: './a.png' },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: 'NotOwner',
+        message: expect.stringContaining('sess-owner'),
+      },
+    });
+  });
+});

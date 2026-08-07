@@ -29,6 +29,7 @@ import { FileListRow } from '../common/FileListRow';
 import { useAppDispatch, useAppState } from '../../store';
 import { useTranslation } from '../LanguageProvider';
 import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
+import { waitForClaim } from '../../hooks/claim-gate';
 import { useToast } from '../Toast';
 import type { ContextMenuItem } from '../ContextMenu';
 import { FileViewer } from './FileViewer';
@@ -59,24 +60,32 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
 
   // mount / sessionId 变化时拉一次真值：接管已有 session、窗口刚聚焦等场景可能
   // 在本组件订阅前已经收到事件。FilePanelService 是唯一状态源。
+  //
+  // H2 owner 校验配套：与 FileTreePanel/GitPanel 同模式，拉取前 waitForClaim，
+  // 消除「renderer 乐观接管(owner 仍 null) → FilePanel mount 立即拉取 → 命中
+  // main 端 requireFilePanelOwner 的 NotOwner」的 race。claim 失败时中止拉取
+  // (不发注定 NotOwner 的 IPC)，由调用方 rollback + 组件卸载处理。
   useEffect(() => {
     let cancelled = false;
-    window.api
-      .invoke<unknown, FilePanelSnapshot>(COMMAND_CHANNELS.FILE_PANEL_GET_OPEN_FILES, {
-        sessionId,
-      })
-      .then((snap) => {
-        if (cancelled) return;
-        dispatch({
-          type: 'file-panel/updated',
+    void waitForClaim(sessionId).then((outcome) => {
+      if (!outcome.ok || cancelled) return;
+      window.api
+        .invoke<unknown, FilePanelSnapshot>(COMMAND_CHANNELS.FILE_PANEL_GET_OPEN_FILES, {
           sessionId,
-          files: snap.files,
-          activePath: snap.activePath,
-          // 初始化拉取/同步已有快照，不是 openFile，不请求激活面板。
-          requestActivation: false,
-        });
-      })
-      .catch((err: unknown) => console.warn('[FilePanel] get-open-files failed', err));
+        })
+        .then((snap) => {
+          if (cancelled) return;
+          dispatch({
+            type: 'file-panel/updated',
+            sessionId,
+            files: snap.files,
+            activePath: snap.activePath,
+            // 初始化拉取/同步已有快照，不是 openFile，不请求激活面板。
+            requestActivation: false,
+          });
+        })
+        .catch((err: unknown) => console.warn('[FilePanel] get-open-files failed', err));
+    });
     return () => {
       cancelled = true;
     };
