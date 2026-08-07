@@ -1344,6 +1344,7 @@ interface UpdateSettingsPayload {
 - 广播 `evt:settings:changed` 给所有窗口
 - 某些设置变化触发副作用:
   - `behavior.autoStart` 变 → 调用 PlatformAdapter.setAutoStart
+  - `remoteDaemon.autoStart` 变 → 无即时副作用;只在下次启动时 main 读它决定是否自动 start WS server(见 index.ts shouldAutoStart)
   - `systemIntegration.explorerContextMenu` 变(V1.2)→ 调注册表
 
 > **v1.3 起 `appearance.followSystemTheme` 已删除**(见软件定义书 ADR-009);renderer 不再发送此字段,main 端 schema 也不接受。

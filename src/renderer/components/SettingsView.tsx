@@ -331,6 +331,10 @@ function RemoteConnectionBlocks({
   const [serverPassword, setServerPassword] = useState('');
   const status = state.remoteDaemonStatus;
   const running = status?.running ?? false;
+  // 启动时自动开启远程连接(settings.remoteDaemon.autoStart)。注意:此开关只
+  // 影响【下次启动】(Marina 启动时 main 读它决定是否自动 start WS server),
+  // 不即时启停当前服务 —— 即时启停是上面「开启/停止」按钮的职责。
+  const autoStartRemote = state.settings.remoteDaemon?.autoStart ?? false;
 
   const handleStart = async (): Promise<void> => {
     setError(null);
@@ -524,6 +528,25 @@ function RemoteConnectionBlocks({
             )}
           </div>
         )}
+
+        <SettingRow
+          label={tx('启动时自动开启', 'Auto-start on launch')}
+          hint={tx(
+            '勾选后,Marina 启动时自动开启远程连接,无需每次手动点“开启”。仅影响下次启动。',
+            'When checked, Marina automatically enables remote connections on launch, so you do not need to click “Enable” every time. Takes effect on next launch.',
+          )}
+        >
+          <label className="settings-checkbox">
+            <input
+              type="checkbox"
+              checked={autoStartRemote}
+              onChange={(e) =>
+                void updateSettings({ remoteDaemon: { autoStart: e.target.checked } }, setError)
+              }
+            />
+            <span>{tx('启动时自动开启', 'Auto-start on launch')}</span>
+          </label>
+        </SettingRow>
 
         <SettingRow
           label={tx('端口', 'Port')}
