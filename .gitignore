@@ -63,7 +63,7 @@ EasyTerm-userdata-*/
 
 # pi-subagents review/session artifacts are machine-local and may contain prompts,
 # transcripts, repository context, or other internal review material.
-.pi-subagents/artifacts/
+.pi-subagents/
 
 # Local PR review notes / drafts — not for upstream
 docs/pr-reviews/
