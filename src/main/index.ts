@@ -47,6 +47,9 @@ import { FileTreePollingService } from './file-tree-polling-service';
 import { GitService } from './git-service';
 import { BackgroundWorkScheduler } from './background-work-scheduler';
 import { SessionWorkspaceManager } from './session-workspace-manager';
+// M2:workspace/pi coordinator(SessionManager 瘦身拆出;组装期 attach 到 sessionManager)。
+import { SessionWorkspaceCoordinator } from './coordinators/session-workspace-coordinator';
+import { PiSessionCoordinator } from './coordinators/pi-session-coordinator';
 import { SkillInstaller } from './skill-installer';
 import { PiBridgeInstaller } from './pi-bridge-installer';
 import { MarkdownThemeManager } from './markdown-theme-manager';
@@ -62,7 +65,13 @@ import {
 import { getBuildType } from './build-type';
 import { logger } from './logger';
 import { PerformanceDiagnostics } from './performance-diagnostics';
-import { enterFlushing, enterQuiescing, enterStopped, getIsQuitting, setQuitting } from './app-lifecycle';
+import {
+  enterFlushing,
+  enterQuiescing,
+  enterStopped,
+  getIsQuitting,
+  setQuitting,
+} from './app-lifecycle';
 import type {
   BookmarksFile,
   RecentFile,
@@ -250,9 +259,22 @@ function bootstrap(): void {
       // 用户在 .bashrc / Profile.ps1 里可以拿这个版本号做条件判断。
       appVersion: app.getVersion(),
       filePanelService,
-      workspaceManager: sessionWorkspaceManager,
     },
   );
+  // M2:workspace/pi 职责从 SessionManager 拆到 coordinator(见 src/main/coordinators/)。
+  // SessionManager 只留 session 核心 + 状态机;coordinator 经 SessionLookup /
+  // PiSessionHooks 接口反向依赖 SessionManager(破循环依赖)。组装顺序:先 coordinator
+  // 再 attach 给 sessionManager,保证 createSession 首次调用前已就绪。
+  const sessionWorkspaceCoordinator = new SessionWorkspaceCoordinator(sessionWorkspaceManager);
+  const piSessionCoordinator = new PiSessionCoordinator(
+    sessionWorkspaceCoordinator,
+    settingsManager,
+  );
+  sessionWorkspaceCoordinator.attachSessionLookup(sessionManager);
+  piSessionCoordinator.attachSessionLookup(sessionManager);
+  piSessionCoordinator.attachHooks(sessionManager);
+  sessionManager.attachWorkspaceCoordinator(sessionWorkspaceCoordinator);
+  sessionManager.attachPiCoordinator(piSessionCoordinator);
   // v0.3.3 ADR-028「查看语义精准化」:窗口重新获焦/从最小化恢复 → 用户回来了,
   // 清该窗口当前选中 session 的 hasUnviewedWork(红灯转正常)。窗口关闭 → 清映射
   // (防泄漏 + 防误判已销毁窗口为“在看”)。接线放在 SessionManager 创建后。
@@ -262,9 +284,10 @@ function bootstrap(): void {
   // 暴露为两条只读根。服务不持有路径缓存，每个请求都回查 SessionManager /
   // SessionWorkspaceManager，避免 cwd 变化、接管或 session 销毁后的陈旧授权。
   // v0.3.3 ADR-024：workspaceId 与 sessionId 解耦，workspaceLookup 改走
-  // SessionManager 的 sessionId→workspaceId→dir 绑定映射（不再直连 workspace manager）。
+  // SessionWorkspaceCoordinator 的 sessionId→workspaceId→dir 绑定映射
+  // (M2:从 SessionManager 搬移,不直连 workspace manager)。
   const workspacePathLookup = {
-    getPathForSession: (sid: string) => sessionManager.getWorkspacePathForSession(sid),
+    getPathForSession: (sid: string) => sessionWorkspaceCoordinator.getWorkspacePathForSession(sid),
   };
   const fileTreeService = new FileTreeService(
     sessionManager,
@@ -609,16 +632,17 @@ function bootstrap(): void {
           );
       });
       // v0.3.3 ADR-024 / Feature D:注入 workspace 操作回调(workspace HTTP 路由用)。
-      // 闭合到 SessionManager 的 workspace 编排方法(它维护 session↔workspaceId 绑定 +
+      // M2:闭合到 SessionWorkspaceCoordinator(它维护 session↔workspaceId 绑定 +
       // 拿 pathScope = session.pathId)。CLI `marina workspace*` 走这些。
       filePanelService.attachWorkspaceOps({
-        getCurrentPath: (sid) => sessionManager.getWorkspacePathForSession(sid),
-        bind: (sid, name, forceNew) => sessionManager.bindWorkspace(sid, name, forceNew),
-        list: (sid) => sessionManager.listWorkspaces(sid),
-        newWorkspace: (sid) => sessionManager.switchToNewWorkspace(sid),
-        unpin: (sid, name) => sessionManager.unpinWorkspace(sid, name),
+        getCurrentPath: (sid) => sessionWorkspaceCoordinator.getWorkspacePathForSession(sid),
+        bind: (sid, name, forceNew) =>
+          sessionWorkspaceCoordinator.bindWorkspace(sid, name, forceNew),
+        list: (sid) => sessionWorkspaceCoordinator.listWorkspaces(sid),
+        newWorkspace: (sid) => sessionWorkspaceCoordinator.switchToNewWorkspace(sid),
+        unpin: (sid, name) => sessionWorkspaceCoordinator.unpinWorkspace(sid, name),
         readSnapshotForSession: (sid) =>
-          sessionManager.readWorkspaceSnapshot(sid) as Promise<{
+          sessionWorkspaceCoordinator.readWorkspaceSnapshot(sid) as Promise<{
             openedFiles: Array<{ path: string; kind: string; external: boolean }>;
             activeFilePath: string | null;
             scroll: Record<string, { scrollTop: number; scrollLeft: number }>;
@@ -636,9 +660,11 @@ function bootstrap(): void {
           commandPanelService.runCommand(sid, command, title, clientId),
       });
       // v0.3.3 ADR-028：闭合 pi 事件处理(pi package POST /pi-session-event →
-      // SessionManager.applyPiSessionEvent)。pi package 是哑转发器，决策在 SessionManager。
+      // PiSessionCoordinator.handlePiSessionEvent)。pi package 是哑转发器，
+      // 决策在 PiSessionCoordinator(状态副作用经 hooks 回 SessionManager)。
       filePanelService.attachPiEventOps({
-        applyPiSessionEvent: (sid, payload) => sessionManager.applyPiSessionEvent(sid, payload),
+        applyPiSessionEvent: (sid, payload) =>
+          piSessionCoordinator.handlePiSessionEvent(sid, payload),
       });
       // v0.3.0:注入 Git 可用性判定回调。GitService.evaluateAvailability 是纯函数
       // (只接受 cwd + pathKind,不持 session 引用),避免循环依赖。注入后,
@@ -714,6 +740,7 @@ function bootstrap(): void {
         pathManager,
         settingsManager,
         sessionManager,
+        workspaceCoordinator: sessionWorkspaceCoordinator,
         sshProfileManager,
         remoteProfileManager,
         knownHostsManager,

@@ -168,7 +168,8 @@ export interface CommandRunOps {
 
 /**
  * v0.3.3 ADR-028：pi package 事件处理回调(注入式，与 WorkspaceOps 同款)。由 index.ts
- * 闭合到 SessionManager.applyPiSessionEvent。未注入时 /pi-session-event 返 503。
+ * 闭合到 PiSessionCoordinator.handlePiSessionEvent(M2:从 SessionManager 拆出)。
+ * 未注入时 /pi-session-event 返 503。
  * FilePanelService 不持 SessionManager(保持可测)，只拿这个 op 供 HTTP 路由用。
  */
 export interface PiEventOps {
@@ -1427,7 +1428,7 @@ export class FilePanelService extends EventEmitter {
 
   /**
    * v0.3.3 ADR-028:POST /pi-session-event。body {terminal, piSessionId, event, reason?, name?}。
-   * 解析 + 校验后转发给注入的 piEventOps(SessionManager.applyPiSessionEvent)。
+   * 解析 + 校验后转发给注入的 piEventOps(PiSessionCoordinator.handlePiSessionEvent)。
    * fire-and-forget 语义：响应只表“已接收”，不保证 pi 业务结果(那由后续 evt 推送)。
    * 处理失败返 500 + error，但 pi 不会因此卡住(它不等业务结果)。
    */

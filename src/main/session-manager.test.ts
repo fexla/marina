@@ -35,6 +35,9 @@ import type { WindowManager } from './window-manager';
 import type { PathManager } from './path-manager';
 import type { PlatformAdapter, ShellInfo } from './platform';
 import type { Settings, Template } from '@shared/types';
+// M2:coordinator(workspace/pi 从 SessionManager 拆出后,测试经它们驱动)。
+import { SessionWorkspaceCoordinator } from './coordinators/session-workspace-coordinator';
+import { PiSessionCoordinator } from './coordinators/pi-session-coordinator';
 
 // ──────────────────────────────────────────────────────────────────
 // FakePty
@@ -283,6 +286,8 @@ function makeManager(
     spawnFn?: PtySpawnFn;
     adapter?: PlatformAdapter;
     settings?: SettingsManager;
+    /** 覆盖默认 stub window manager(isSessionCurrentlyViewed 等需要可控窗口) */
+    win?: WindowManager;
     /** 默认 0 — 测试不走 resize quiet 窗口,避免每个测试都要算时序 */
     resizeQuietMs?: number;
     /** M1-I:默认 0 — 同上,测试默认跳过启动期 grace,markActive 立即生效 */
@@ -314,9 +319,13 @@ function makeManager(
   mgr: SessionManager;
   win: WindowManager;
   path: StubPathManager;
+  /** M2:workspace coordinator(供 workspace/pi 测试直接驱动)。 */
+  workspaceCoordinator: SessionWorkspaceCoordinator;
+  /** M2:pi coordinator(供 pi 测试直接驱动 handlePiSessionEvent)。 */
+  piCoordinator: PiSessionCoordinator;
 } {
   FakePty.reset();
-  const win = makeStubWindowManager();
+  const win = opts.win ?? makeStubWindowManager();
   const path = makeStubPathManager();
   const tmpl = makeStubTemplatesManager(opts.templates ?? []);
   const settings = opts.settings ?? makeStubSettingsManager();
@@ -330,9 +339,19 @@ function makeManager(
     emitBatchMs: opts.emitBatchMs ?? 0,
     skipCwdValidation: true,
     filePanelService: opts.filePanelService ?? null,
-    workspaceManager: (opts.workspaceManager ?? null) as SessionWorkspaceSource | null,
   });
-  return { mgr, win, path };
+  // M2:coordinator 接线(镜像 index.ts 组装)。makeManager 默认把两个 coordinator
+  // 都建好并 attach,让 workspace/pi 测试能直接驱动;不传 workspaceManager = 禁用。
+  const workspaceCoordinator = new SessionWorkspaceCoordinator(
+    (opts.workspaceManager ?? null) as SessionWorkspaceSource | null,
+  );
+  workspaceCoordinator.attachSessionLookup(mgr);
+  const piCoordinator = new PiSessionCoordinator(workspaceCoordinator, settings);
+  piCoordinator.attachSessionLookup(mgr);
+  piCoordinator.attachHooks(mgr);
+  mgr.attachWorkspaceCoordinator(workspaceCoordinator);
+  mgr.attachPiCoordinator(piCoordinator);
+  return { mgr, win, path, workspaceCoordinator, piCoordinator };
 }
 
 function decodeEmbeddedTmuxScript(command: string): string {
@@ -2660,7 +2679,7 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
       resumeSwitch?: boolean;
       getRecord?: (wsId: string) => unknown;
     } = {},
-  ): { mgr: SessionManager; created: string[] } {
+  ): { mgr: SessionManager; created: string[]; pi: PiSessionCoordinator } {
     const created: string[] = [];
     let counter = 0;
     const settings = makeStubSettingsManager();
@@ -2668,14 +2687,14 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
     pi.enabled = opts.enabled ?? true;
     pi.newConversationCreatesWorkspace = opts.newCreates ?? true;
     pi.resumeSwitchesWorkspace = opts.resumeSwitch ?? true;
-    const { mgr } = makeManager({
+    const { mgr, piCoordinator } = makeManager({
       settings,
       workspaceManager: {
         create: async () => {
           counter += 1;
           const wsId = `ws-${counter}`;
           created.push(wsId);
-          return { workspaceId: wsId, dir: `C:\fake\${wsId}` };
+          return { workspaceId: wsId, dir: `C:\\fake\\${wsId}` };
         },
         discard: async () => {},
         release: () => {},
@@ -2683,7 +2702,7 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
         getRecord: (wsId: string) => (opts.getRecord ? opts.getRecord(wsId) : { name: null }),
       },
     });
-    return { mgr, created };
+    return { mgr, created, pi: piCoordinator };
   }
 
   async function makeSession(mgr: SessionManager): Promise<{ sid: string; base: number }> {
@@ -2698,10 +2717,10 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
   }
 
   it('session_start(new) 声明 isPiAgent + 创建新 workspace + 记映射', async () => {
-    const { mgr, created } = makePiManager();
+    const { mgr, created, pi } = makePiManager();
     const { sid } = await makeSession(mgr);
     const base = created.length; // session 初始 workspace 已计
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'new',
@@ -2711,21 +2730,21 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
   });
 
   it('resume 切回仍活着的 workspace（不新建）', async () => {
-    const { mgr, created } = makePiManager();
+    const { mgr, created, pi } = makePiManager();
     const { sid } = await makeSession(mgr);
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'new',
     });
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-2',
       event: 'session_start',
       reason: 'new',
     });
     const beforeResume = created.length;
     // resume pi-1：映射活(ws-对应 getRecord truthy) → 切回，不新建
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'resume',
@@ -2734,15 +2753,15 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
   });
 
   it('resume 时目标 workspace 已被回收 → 新建并更新映射', async () => {
-    const { mgr, created } = makePiManager({ getRecord: () => undefined });
+    const { mgr, created, pi } = makePiManager({ getRecord: () => undefined });
     const { sid } = await makeSession(mgr);
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'new',
     });
     const beforeResume = created.length;
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'resume',
@@ -2751,28 +2770,28 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
   });
 
   it('agent_settled 设 hasUnviewedWork=true；agent_working 清除', async () => {
-    const { mgr } = makePiManager();
+    const { mgr, pi } = makePiManager();
     const { sid } = await makeSession(mgr);
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'startup',
     });
-    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_settled' });
+    await pi.handlePiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_settled' });
     expect(mgr.get(sid)?.hasUnviewedWork).toBe(true);
-    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_working' });
+    await pi.handlePiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_working' });
     expect(mgr.get(sid)?.hasUnviewedWork).toBe(false);
   });
 
   it('markViewed 清除 hasUnviewedWork；未标记时幂等 no-op', async () => {
-    const { mgr } = makePiManager();
+    const { mgr, pi } = makePiManager();
     const { sid } = await makeSession(mgr);
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'startup',
     });
-    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_settled' });
+    await pi.handlePiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_settled' });
     expect(mgr.get(sid)?.hasUnviewedWork).toBe(true);
     mgr.markViewed(sid);
     expect(mgr.get(sid)?.hasUnviewedWork).toBe(false);
@@ -2780,14 +2799,14 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
   });
 
   it('name_changed 在未手动改名时更新 displayName', async () => {
-    const { mgr } = makePiManager();
+    const { mgr, pi } = makePiManager();
     const { sid } = await makeSession(mgr);
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'startup',
     });
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'name_changed',
       name: '重构认证模块',
@@ -2796,15 +2815,15 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
   });
 
   it('name_changed 在 manuallyRenamed 时不动 displayName', async () => {
-    const { mgr } = makePiManager();
+    const { mgr, pi } = makePiManager();
     const { sid } = await makeSession(mgr);
     mgr.renameSession(sid, '我的终端');
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'startup',
     });
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'name_changed',
       name: '不应生效',
@@ -2813,15 +2832,15 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
   });
 
   it('session_shutdown(reason:quit) 清 isPiAgent + 删 piSession 映射', async () => {
-    const { mgr, created } = makePiManager();
+    const { mgr, created, pi } = makePiManager();
     const { sid } = await makeSession(mgr);
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'new',
     });
     expect(mgr.get(sid)?.isPiAgent).toBe(true);
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'session_shutdown',
       reason: 'quit',
@@ -2829,7 +2848,7 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
     expect(mgr.get(sid)?.isPiAgent).toBe(false);
     const beforeResume = created.length;
     // 映射已删 → resume 会重建
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'resume',
@@ -2838,10 +2857,10 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
   });
 
   it('settings.enabled=false 时 pi 不建 workspace，但 isPiAgent 仍准确', async () => {
-    const { mgr, created } = makePiManager({ enabled: false });
+    const { mgr, created, pi } = makePiManager({ enabled: false });
     const { sid } = await makeSession(mgr);
     const base = created.length;
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'new',
@@ -2851,9 +2870,9 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
   });
 
   it('applyPiSessionEvent 对不存在的 session 静默 no-op（不抛）', async () => {
-    const { mgr } = makePiManager();
+    const { pi } = makePiManager();
     await expect(
-      mgr.applyPiSessionEvent('no-such-sid', { piSessionId: 'pi-1', event: 'agent_settled' }),
+      pi.handlePiSessionEvent('no-such-sid', { piSessionId: 'pi-1', event: 'agent_settled' }),
     ).resolves.toBeUndefined();
   });
 
@@ -2864,7 +2883,7 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
     const settings = makeStubSettingsManager();
     (settings.get() as Settings).advanced.activeIdleThresholdSeconds = 1;
     const created: string[] = [];
-    const { mgr } = makeManager({
+    const { mgr, piCoordinator: pi } = makeManager({
       settings,
       workspaceManager: {
         create: async () => {
@@ -2879,7 +2898,7 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
       },
     });
     const { sid } = await makeSession(mgr);
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'startup',
@@ -2887,13 +2906,13 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
 
     vi.useFakeTimers();
     try {
-      await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_working' });
+      await pi.handlePiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_working' });
       expect(mgr.get(sid)?.state).toBe('active');
       // 推进远超 idle 阈值（1s）→ 旧逻辑会转 idle，piWorking 抑制后应仍是 active。
       vi.advanceTimersByTime(5000);
       expect(mgr.get(sid)?.state).toBe('active');
       // agent_settled 解锁 → 交还字节流检测，阈值后自然回 idle。
-      await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_settled' });
+      await pi.handlePiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_settled' });
       vi.advanceTimersByTime(5000);
       expect(mgr.get(sid)?.state).toBe('idle');
     } finally {
@@ -2908,7 +2927,7 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
     visible?: boolean;
     minimized?: boolean;
     destroyed?: boolean;
-  }): { mgr: SessionManager } {
+  }): { mgr: SessionManager; pi: PiSessionCoordinator } {
     const visible = opts.visible ?? true;
     const minimized = opts.minimized ?? false;
     const destroyed = opts.destroyed ?? false;
@@ -2924,42 +2943,28 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
     const created: string[] = [];
     const settings = makeStubSettingsManager();
     (settings.get() as Settings).piIntegration.enabled = true;
-    const mgr = new SessionManager(
+    const { mgr, piCoordinator } = makeManager({
       win,
-      makeStubPathManager(),
-      makeStubTemplatesManager([]),
       settings,
-      {
-        spawnFn: fakeSpawn,
-        platformAdapter: makeFakeAdapter(),
-        hookFileResolver: () => 'C:\\fake\\hook.ps1',
-        resizeQuietMs: 0,
-        startupGraceMs: 0,
-        inputQuietMs: 0,
-        emitBatchMs: 0,
-        skipCwdValidation: true,
-        workspaceManager: {
-          create: async () => {
-            const wsId = `ws-${created.length + 1}`;
-            created.push(wsId);
-            return { workspaceId: wsId, dir: `C:\\fake\\${wsId}` };
-          },
-          discard: async () => {},
-          release: () => {},
-          getPathForWorkspace: () => null,
-          getRecord: () => ({
-            name: null,
-            createdAt: 0,
-            closedAt: null,
-            pinned: false,
-            pathScope: null,
-          }),
-        } as unknown as NonNullable<
-          ConstructorParameters<typeof SessionManager>[4]
-        >['workspaceManager'],
-      } as unknown as ConstructorParameters<typeof SessionManager>[4],
-    );
-    return { mgr };
+      workspaceManager: {
+        create: async () => {
+          const wsId = `ws-${created.length + 1}`;
+          created.push(wsId);
+          return { workspaceId: wsId, dir: `C:\\fake\\${wsId}` };
+        },
+        discard: async () => {},
+        release: () => {},
+        getPathForWorkspace: () => null,
+        getRecord: () => ({
+          name: null,
+          createdAt: 0,
+          closedAt: null,
+          pinned: false,
+          pathScope: null,
+        }),
+      },
+    });
+    return { mgr, pi: piCoordinator };
   }
 
   it('isSessionCurrentlyViewed：owner 窗口可见+选中=true；最小化/未选中/无 owner=false', async () => {
@@ -2980,49 +2985,49 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
   });
 
   it('agent_settled 时正被看 → 不标 hasUnviewedWork（实时目睹完成的人不打红灯）', async () => {
-    const { mgr } = makePiManagerWithView({ visible: true, minimized: false });
+    const { mgr, pi } = makePiManagerWithView({ visible: true, minimized: false });
     const { sid } = await makeSession(mgr);
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'startup',
     });
     mgr.markViewed(sid, 'w1'); // 用户正看着这个终端
-    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_settled' });
+    await pi.handlePiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_settled' });
     expect(mgr.get(sid)?.hasUnviewedWork).toBe(false); // 正被看 → 不标红
   });
 
   it('agent_settled 时未在看（窗口最小化）→ 标 hasUnviewedWork', async () => {
-    const { mgr } = makePiManagerWithView({ visible: true, minimized: true });
+    const { mgr, pi } = makePiManagerWithView({ visible: true, minimized: true });
     const { sid } = await makeSession(mgr);
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'startup',
     });
     mgr.markViewed(sid, 'w1'); // 选中了但窗口最小化 → 不算在看
-    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_settled' });
+    await pi.handlePiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_settled' });
     expect(mgr.get(sid)?.hasUnviewedWork).toBe(true);
   });
 
   it('onWindowRegainedAttention：窗口获焦 → 清该窗口选中 session 的未看标记', async () => {
-    const { mgr } = makePiManagerWithView({ visible: true, minimized: false });
+    const { mgr, pi } = makePiManagerWithView({ visible: true, minimized: false });
     const { sid } = await makeSession(mgr);
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'startup',
     });
     // 先造一个未看标记（settled 时窗口最小化）
-    const { mgr: mgr2 } = makePiManagerWithView({ visible: true, minimized: true });
+    const { mgr: mgr2, pi: pi2 } = makePiManagerWithView({ visible: true, minimized: true });
     const { sid: sid2 } = await makeSession(mgr2);
-    await mgr2.applyPiSessionEvent(sid2, {
+    await pi2.handlePiSessionEvent(sid2, {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'startup',
     });
     mgr2.markViewed(sid2, 'w1');
-    await mgr2.applyPiSessionEvent(sid2, { piSessionId: 'pi-1', event: 'agent_settled' });
+    await pi2.handlePiSessionEvent(sid2, { piSessionId: 'pi-1', event: 'agent_settled' });
     expect(mgr2.get(sid2)?.hasUnviewedWork).toBe(true);
     // 窗口获焦 → 清除
     mgr2.onWindowRegainedAttention('w1');
@@ -3043,22 +3048,22 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
   // ── 主 piSessionId 锁定：子 agent 事件不污染主终端 ──────────────
 
   it('子 agent 的 name_changed 被忽略（终端名不被改成 subagent-xxx）', async () => {
-    const { mgr } = makePiManager();
+    const { mgr, pi } = makePiManager();
     const { sid } = await makeSession(mgr);
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-main',
       event: 'session_start',
       reason: 'startup',
     });
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-main',
       event: 'name_changed',
       name: '主对话',
     });
     expect(mgr.get(sid)?.displayName).toBe('主对话');
     // 主 agent working 中，subagent 起子 session 发 name_changed(子 piSid + 子名)
-    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-main', event: 'agent_working' });
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, { piSessionId: 'pi-main', event: 'agent_working' });
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'subagent-worker-927388da01',
       event: 'name_changed',
       name: 'subagent-worker-927388da01',
@@ -3068,17 +3073,17 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
   });
 
   it('子 agent 的 session_start 被忽略（不切 workspace、不抢主绑定）', async () => {
-    const { mgr, created } = makePiManager();
+    const { mgr, created, pi } = makePiManager();
     const { sid } = await makeSession(mgr);
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-main',
       event: 'session_start',
       reason: 'startup',
     });
     const base = created.length;
     // 主 agent working 中 subagent 起 session_start(子 piSid)
-    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-main', event: 'agent_working' });
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, { piSessionId: 'pi-main', event: 'agent_working' });
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'subagent-1',
       event: 'session_start',
       reason: 'fork',
@@ -3087,76 +3092,76 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
   });
 
   it('子 agent 的 agent_settled 被忽略（不干扰主对话状态）', async () => {
-    const { mgr } = makePiManager();
+    const { mgr, pi } = makePiManager();
     const { sid } = await makeSession(mgr);
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-main',
       event: 'session_start',
       reason: 'startup',
     });
-    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-main', event: 'agent_working' });
+    await pi.handlePiSessionEvent(sid, { piSessionId: 'pi-main', event: 'agent_working' });
     // 子 agent settled(子 piSid) → 忽略，不设 hasUnviewedWork
-    await mgr.applyPiSessionEvent(sid, { piSessionId: 'subagent-1', event: 'agent_settled' });
+    await pi.handlePiSessionEvent(sid, { piSessionId: 'subagent-1', event: 'agent_settled' });
     expect(mgr.get(sid)?.hasUnviewedWork).toBe(false);
     // 主 agent settled(主 piSid) → 正常设
-    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-main', event: 'agent_settled' });
+    await pi.handlePiSessionEvent(sid, { piSessionId: 'pi-main', event: 'agent_settled' });
     expect(mgr.get(sid)?.hasUnviewedWork).toBe(true);
   });
 
   it('/new 切换：shutdown 旧主 + start 新主 → 新主事件正常工作', async () => {
-    const { mgr } = makePiManager();
+    const { mgr, pi } = makePiManager();
     const { sid } = await makeSession(mgr);
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-old',
       event: 'session_start',
       reason: 'startup',
     });
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-old',
       event: 'name_changed',
       name: '旧对话',
     });
     // /new：pi 先 shutdown 旧主(清主绑定)，再 session_start 新主
-    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-old', event: 'session_shutdown' });
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, { piSessionId: 'pi-old', event: 'session_shutdown' });
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-new',
       event: 'session_start',
       reason: 'new',
     });
     // 新主的 name_changed → 正常生效（未被当子 agent 忽略）
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-new',
       event: 'name_changed',
       name: '新对话',
     });
     expect(mgr.get(sid)?.displayName).toBe('新对话');
     // 新主的 agent 事件也正常
-    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-new', event: 'agent_settled' });
+    await pi.handlePiSessionEvent(sid, { piSessionId: 'pi-new', event: 'agent_settled' });
     expect(mgr.get(sid)?.hasUnviewedWork).toBe(true);
   });
 
   it('重启 pi（shutdown quit + start）后新 piSessionId 正常绑定', async () => {
-    const { mgr, created } = makePiManager();
+    const { mgr, created, pi } = makePiManager();
     const { sid } = await makeSession(mgr);
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-a',
       event: 'session_start',
       reason: 'startup',
     });
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-a',
       event: 'session_shutdown',
       reason: 'quit',
     });
     expect(mgr.get(sid)?.isPiAgent).toBe(false);
     // 重新跑 pi(新 piSid) → 正常绑定
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-b',
       event: 'session_start',
       reason: 'startup',
     });
     expect(mgr.get(sid)?.isPiAgent).toBe(true);
-    await mgr.applyPiSessionEvent(sid, {
+    await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-b',
       event: 'name_changed',
       name: '重启后',

@@ -222,6 +222,7 @@ import type { PathManager } from './path-manager';
 import { pathRefFromId } from './path-manager';
 import type { SettingsManager } from './settings-manager';
 import type { SessionManager } from './session-manager';
+import type { SessionWorkspaceCoordinator } from './coordinators/session-workspace-coordinator';
 import type { SshProfileManager } from './ssh-profile-manager';
 import type { RemoteProfileManager } from './remote-profile-manager';
 import { RemoteProfileManagerError } from './remote-profile-manager';
@@ -240,6 +241,11 @@ export interface IpcLayerDeps {
   pathManager: PathManager;
   settingsManager: SettingsManager;
   sessionManager: SessionManager;
+  /**
+   * M2:workspace 资源协调器(ADR-024 的 session↔workspaceId 绑定 + workspace 编排)。
+   * 从 SessionManager 拆出后,workspace IPC 路由直接委托它(index.ts 注入)。
+   */
+  workspaceCoordinator: SessionWorkspaceCoordinator;
   sshProfileManager?: SshProfileManager;
   /** v2.0 远程后端(ADR-014 / §14.9):client 端 remote daemon profile 管理。可选。 */
   remoteProfileManager?: RemoteProfileManager;
@@ -2091,10 +2097,7 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
 
   registerHandle(
     COMMAND_CHANNELS.FILE_PANEL_OPEN,
-    async (
-      _e,
-      envelope: CommandEnvelope<FilePanelActionPayload>,
-    ): Promise<FilePanelSnapshot> => {
+    async (_e, envelope: CommandEnvelope<FilePanelActionPayload>): Promise<FilePanelSnapshot> => {
       requireFilePanelOwner(sessionManager, envelope.payload.sessionId, envelope.windowId);
       return filePanelService.openFile(envelope.payload.sessionId, envelope.payload.path);
     },
@@ -2143,10 +2146,7 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
 
   registerHandle(
     COMMAND_CHANNELS.FILE_PANEL_READ_IMAGE,
-    async (
-      _e,
-      envelope: CommandEnvelope<ReadImagePayload>,
-    ): Promise<ReadImageResponse> => {
+    async (_e, envelope: CommandEnvelope<ReadImagePayload>): Promise<ReadImageResponse> => {
       requireFilePanelOwner(sessionManager, envelope.payload.sessionId, envelope.windowId);
       return filePanelService.readImageAsset(
         envelope.payload.sessionId,
@@ -2833,18 +2833,18 @@ function decryptStoredPassword(blob: string): { password?: string } {
   }
 }
 
-// ────────────────────────────────────────────────────────────────
 // v0.3.3 ADR-024 / Feature D:workspace 域 IPC handler(renderer 快照同步 +
 // workspace 操作)。CLI 走 HTTP(/workspace*),renderer 走这些 IPC。
-// 编排全部委托给 SessionManager(它维护 session↔workspaceId 绑定 + pathScope)。
+// M2:编排全部委托给 SessionWorkspaceCoordinator(它维护 session↔workspaceId
+// 绑定 + pathScope)。
 function registerWorkspaceHandlers(deps: IpcLayerDeps): void {
-  const { sessionManager } = deps;
+  const { workspaceCoordinator } = deps;
 
   // 查当前 session 绑定的 workspace 绝对路径。
   registerHandle(
     COMMAND_CHANNELS.WORKSPACE_GET_CURRENT,
     (_e, envelope: CommandEnvelope<{ sessionId: string }>): { path: string | null } => {
-      return { path: sessionManager.getWorkspacePathForSession(envelope.payload.sessionId) };
+      return { path: workspaceCoordinator.getWorkspacePathForSession(envelope.payload.sessionId) };
     },
   );
 
@@ -2855,7 +2855,7 @@ function registerWorkspaceHandlers(deps: IpcLayerDeps): void {
       _e,
       envelope: CommandEnvelope<{ sessionId: string }>,
     ): Promise<{ items: WorkspaceSummary[] }> => {
-      const items = await sessionManager.listWorkspaces(envelope.payload.sessionId);
+      const items = await workspaceCoordinator.listWorkspaces(envelope.payload.sessionId);
       return { items };
     },
   );
@@ -2867,7 +2867,7 @@ function registerWorkspaceHandlers(deps: IpcLayerDeps): void {
       _e,
       envelope: CommandEnvelope<{ sessionId: string; name: string; new?: boolean }>,
     ): Promise<WorkspaceBindResult> => {
-      return sessionManager.bindWorkspace(
+      return workspaceCoordinator.bindWorkspace(
         envelope.payload.sessionId,
         envelope.payload.name,
         envelope.payload.new === true,
@@ -2882,7 +2882,7 @@ function registerWorkspaceHandlers(deps: IpcLayerDeps): void {
       _e,
       envelope: CommandEnvelope<{ sessionId: string }>,
     ): Promise<{ workspaceId: string; dir: string }> => {
-      return sessionManager.switchToNewWorkspace(envelope.payload.sessionId);
+      return workspaceCoordinator.switchToNewWorkspace(envelope.payload.sessionId);
     },
   );
 
@@ -2893,7 +2893,7 @@ function registerWorkspaceHandlers(deps: IpcLayerDeps): void {
       _e,
       envelope: CommandEnvelope<{ sessionId: string; name?: string | null }>,
     ): Promise<{ workspaceId: string } | null> => {
-      return sessionManager.unpinWorkspace(
+      return workspaceCoordinator.unpinWorkspace(
         envelope.payload.sessionId,
         envelope.payload.name ?? null,
       );
@@ -2907,7 +2907,7 @@ function registerWorkspaceHandlers(deps: IpcLayerDeps): void {
       _e,
       envelope: CommandEnvelope<{ sessionId: string }>,
     ): Promise<{ snapshot: WorkspaceFilePanelSnapshot | null }> => {
-      const snap = await sessionManager.readWorkspaceSnapshot(envelope.payload.sessionId);
+      const snap = await workspaceCoordinator.readWorkspaceSnapshot(envelope.payload.sessionId);
       return { snapshot: (snap as WorkspaceFilePanelSnapshot | null) ?? null };
     },
   );
@@ -2919,7 +2919,7 @@ function registerWorkspaceHandlers(deps: IpcLayerDeps): void {
       _e,
       envelope: CommandEnvelope<{ sessionId: string; snapshot: WorkspaceFilePanelSnapshot }>,
     ): Promise<void> => {
-      await sessionManager.writeWorkspaceSnapshot(
+      await workspaceCoordinator.writeWorkspaceSnapshot(
         envelope.payload.sessionId,
         envelope.payload.snapshot,
       );
