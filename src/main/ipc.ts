@@ -30,6 +30,7 @@ import type { GitService } from './git-service';
 import type { FileTreePollingService } from './file-tree-polling-service';
 import type { PerformanceDiagnostics } from './performance-diagnostics';
 import type { SkillInstaller } from './skill-installer';
+import type { PiBridgeInstaller } from './pi-bridge-installer';
 import type { MarkdownThemeManager } from './markdown-theme-manager';
 import type { CodeBlockRunner } from './code-block-runner';
 import type { CommandPanelService, CommandPanelUpdateEvent } from './command-panel-service';
@@ -194,6 +195,9 @@ import {
   type ImeProbeDumpResponse,
   type InstallMarinaSkillPayload,
   type InstallMarinaSkillResponse,
+  type PiBridgeInstallPayload,
+  type PiBridgeInstallResponse,
+  type PiBridgeStatusResponse,
   type RunCodeBlockPayload,
   type RunCodeBlockResponse,
   type StopCodeBlockPayload,
@@ -266,6 +270,8 @@ export interface IpcLayerDeps {
   performanceDiagnostics: PerformanceDiagnostics;
   /** 内置 show-in-marina skill 的项目级安装服务。 */
   skillInstaller: SkillInstaller;
+  /** v0.3.3 ADR-028：pi-marina-bridge package 安装服务（全局/项目级）。 */
+  piBridgeInstaller: PiBridgeInstaller;
   /**
    * Markdown 面板主题管理器(Typora 式可扩展)。生产必填;负责扫主题目录、
    * 读 CSS 文本、fs.watch 自动发现增删。
@@ -1080,6 +1086,35 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       _e,
       envelope: CommandEnvelope<InstallMarinaSkillPayload>,
     ): Promise<InstallMarinaSkillResponse> => deps.skillInstaller.install(envelope.payload),
+  );
+
+  // v0.3.3 ADR-028：pi-marina-bridge 安装（全局/项目级）+ 状态查询。同 skill-install
+  // 一样写当前 backend（项目级写 daemon 上所选项目；全局写 daemon 主机 ~/.pi/agent），
+  // 因此远程窗口也由 daemon 执行，不标 local-control。
+  registerHandle(
+    COMMAND_CHANNELS.PI_BRIDGE_INSTALL,
+    async (
+      _e,
+      envelope: CommandEnvelope<PiBridgeInstallPayload>,
+    ): Promise<PiBridgeInstallResponse> => {
+      const r = await deps.piBridgeInstaller.install(envelope.payload);
+      return {
+        alreadyInstalled: r.alreadyInstalled,
+        packageDir: r.packageDir,
+        settingsFile: r.settingsFile,
+      };
+    },
+  );
+  registerHandle(
+    COMMAND_CHANNELS.PI_BRIDGE_STATUS,
+    async (_e, _envelope): Promise<PiBridgeStatusResponse> => {
+      const piInstalled = deps.piBridgeInstaller.isPiInstalled();
+      // 已装检测：读全局 settings.json 的 packages 是否含稳定位置路径。
+      const globallyInstalled = await deps.piBridgeInstaller
+        .isGloballyInstalled()
+        .catch(() => false);
+      return { piInstalled, globallyInstalled };
+    },
   );
 
   // SSH profiles / remote bookmarks

@@ -138,6 +138,10 @@ export const COMMAND_CHANNELS = {
   PATH_REMOVE_FROM_RECENT: 'cmd:path:remove-from-recent',
   /** 将内置 show-in-marina skill 安装到所选收藏项目的 agent 目录。 */
   SKILL_INSTALL_MARINA: 'cmd:skill:install-marina',
+  /** v0.3.3 ADR-028：安装 pi-marina-bridge package（全局或项目级）。 */
+  PI_BRIDGE_INSTALL: 'cmd:pi-bridge:install',
+  /** v0.3.3 ADR-028：查询 pi 是否安装 + pi-marina-bridge 是否已装（UI 按钮状态）。 */
+  PI_BRIDGE_STATUS: 'cmd:pi-bridge:status',
 
   // SSH profile / remote path 域
   SSH_PROFILE_LIST: 'cmd:ssh-profile:list',
@@ -688,6 +692,31 @@ export interface InstallMarinaSkillPayload {
 export interface InstallMarinaSkillResponse {
   installed: Array<{ target: 'pi' | 'claude' | 'codex'; destination: string }>;
   conflicts: Array<{ target: 'pi' | 'claude' | 'codex'; destination: string }>;
+}
+
+/** v0.3.3 ADR-028：cmd:pi-bridge:install payload。scope='project' 需 projectPath。 */
+export interface PiBridgeInstallPayload {
+  scope: 'global' | 'project';
+  /** scope='project' 时必填：收藏项目根目录。 */
+  projectPath?: string;
+}
+
+/** v0.3.3 ADR-028：cmd:pi-bridge:install response。 */
+export interface PiBridgeInstallResponse {
+  /** 本次是否已是已装状态（未实际写入）。 */
+  alreadyInstalled: boolean;
+  /** package 稳定位置。 */
+  packageDir: string;
+  /** 写入的 pi settings.json。 */
+  settingsFile: string;
+}
+
+/** v0.3.3 ADR-028：cmd:pi-bridge:status response。UI 按钮状态用。 */
+export interface PiBridgeStatusResponse {
+  /** pi 是否在 PATH 上。false 时安装按钮应禁用并提示先装 pi。 */
+  piInstalled: boolean;
+  /** pi-marina-bridge 是否已装到全局 settings.json。 */
+  globallyInstalled: boolean;
 }
 
 /** cmd:session:update-ui-layout payload。main 端合并并校验区块值。 */

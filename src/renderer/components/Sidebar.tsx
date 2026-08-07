@@ -2546,6 +2546,33 @@ function PathItem({
           hint: '为 Pi / Claude Code / Codex 安装 show-in-marina',
           onSelect: () => setSkillInstallerOpen(true),
         });
+        // v0.3.3 ADR-028：项目级安装 pi-marina-bridge（写该项目的 .pi/settings.json）。
+        // 全局安装见设置页。需 pi 已装，未装时 main 抛 PiNotInstalled，这里 toast 提示。
+        items.push({
+          label: '为此项目安装 pi 集成…',
+          hint: '注册 pi-marina-bridge 到本项目（仅本项目生效）',
+          onSelect: () => {
+            window.api
+              .invoke<{ scope: 'project'; projectPath: string }, { alreadyInstalled: boolean }>(
+                COMMAND_CHANNELS.PI_BRIDGE_INSTALL,
+                { scope: 'project', projectPath: node.path },
+              )
+              .then((r) =>
+                toast.push({
+                  kind: 'success',
+                  message: r.alreadyInstalled
+                    ? 'pi 集成已为本项目安装过'
+                    : '已为本项目安装 pi 集成，重启已运行的 pi 后生效',
+                }),
+              )
+              .catch((err: unknown) =>
+                toast.push({
+                  kind: 'error',
+                  message: `安装 pi 集成失败:${err instanceof Error ? err.message : String(err)}`,
+                }),
+              );
+          },
+        });
       }
     } else if (node.category === 'temporary' || node.category === 'recent') {
       items.push({ divider: true, label: '' });

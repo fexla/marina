@@ -48,6 +48,7 @@ import { GitService } from './git-service';
 import { BackgroundWorkScheduler } from './background-work-scheduler';
 import { SessionWorkspaceManager } from './session-workspace-manager';
 import { SkillInstaller } from './skill-installer';
+import { PiBridgeInstaller } from './pi-bridge-installer';
 import { MarkdownThemeManager } from './markdown-theme-manager';
 import { getPlatformAdapter } from './platform';
 import { AIClient } from './ai-client';
@@ -223,6 +224,29 @@ function bootstrap(): void {
     sourceDir: app.isPackaged
       ? join(process.resourcesPath, 'skills', 'show-in-marina')
       : join(__dirname, '..', '..', 'src', 'skills', 'show-in-marina'),
+  });
+  // v0.3.3 ADR-028：pi-marina-bridge package 安装器。dev 从源码读、installed 从
+  // extraResources(pi-marina-bridge/)读。复制到 ~/.pi/agent/packages 稳定位置后
+  // spawn `pi install`。pi 检测走 PlatformAdapter.resolveExecutable（§8.1）。
+  const piBridgeInstaller = new PiBridgeInstaller({
+    sourceDir: app.isPackaged
+      ? join(process.resourcesPath, 'pi-marina-bridge')
+      : join(__dirname, '..', '..', 'packages', 'pi-marina-bridge'),
+    homeDir: app.getPath('home'),
+    resolvePi: () => {
+      // macOS 适配器占位会 throw；判 pi 存在性不应让主进程崩，catch 后返 null。
+      try {
+        const adapter = getPlatformAdapter();
+        // process.env 含 undefined 值，resolveExecutable 要 Record<string,string>；过滤。
+        const env: Record<string, string> = {};
+        for (const [k, v] of Object.entries(process.env)) {
+          if (typeof v === 'string') env[k] = v;
+        }
+        return adapter.resolveExecutable('pi', env);
+      } catch {
+        return null;
+      }
+    },
   });
   // session 工作区只存 Marina 自己的临时展示文档。它不参与 Path 树、不暴露为
   // 产品意义的 workspace，且按 settings.filePanel.workspaceRetentionDays 延期回收。
@@ -701,6 +725,7 @@ function bootstrap(): void {
         fileTreePollingService,
         performanceDiagnostics,
         skillInstaller,
+        piBridgeInstaller,
         markdownThemeManager,
         codeBlockRunner,
         commandPanelService,

@@ -44,6 +44,7 @@ import {
   type ExportSettingsResponse,
   type PickSshKeyFileResponse,
   type PerformanceStatus,
+  type PiBridgeStatusResponse,
   type CaptureCpuProfileResponse,
   type SetExplorerIntegrationResponse,
   type SshAgentStatusResponse,
@@ -732,6 +733,37 @@ function AppearancePanel({ setError }: { setError: (msg: string | null) => void 
   const uiFontFamily = a?.uiFontFamily ?? '';
   const uiZoom = a?.uiZoom ?? 1;
 
+  // v0.3.3 ADR-028：pi-marina-bridge 全局安装状态（pi 集成区块的安装按钮用）。
+  const [piStatus, setPiStatus] = useState<PiBridgeStatusResponse | null>(null);
+  const [piInstalling, setPiInstalling] = useState(false);
+  useEffect(() => {
+    // 一次性查 pi 是否装 + bridge 是否已全局安装；失败(远程旧 daemon)静默。
+    void window.api
+      .invoke<null, PiBridgeStatusResponse>(COMMAND_CHANNELS.PI_BRIDGE_STATUS, null)
+      .then(setPiStatus)
+      .catch(() => setPiStatus(null));
+  }, []);
+  const installPiBridgeGlobal = async (): Promise<void> => {
+    setError(null);
+    setPiInstalling(true);
+    try {
+      const r = await window.api.invoke<{ scope: 'global' }, { alreadyInstalled: boolean }>(
+        COMMAND_CHANNELS.PI_BRIDGE_INSTALL,
+        { scope: 'global' },
+      );
+      setPiStatus((s) => (s ? { ...s, globallyInstalled: true } : s));
+      setError(
+        r.alreadyInstalled
+          ? 'pi 集成 package 已安装（全局）。'
+          : 'pi 集成 package 已安装（全局）。重启已运行的 pi 进程后生效。',
+      );
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPiInstalling(false);
+    }
+  };
+
   const language = a?.language ?? 'system';
 
   // CP-4 勘误 #3:用 queryLocalFonts 真实枚举系统字体,推荐字体置顶。
@@ -1013,6 +1045,32 @@ function AppearancePanel({ setError }: { setError: (msg: string | null) => void 
           />
           <span>{tx('启用', 'Enable')}</span>
         </label>
+      </SettingRow>
+
+      {/* v0.3.3 ADR-028：全局安装 pi-marina-bridge package。需 pi 已装。 */}
+      <SettingRow
+        label={tx('安装 pi 集成 package（全局）', 'Install pi integration package (global)')}
+        hint={tx(
+          '把内置 pi-marina-bridge package 注册到全局 pi（~/.pi/agent），所有项目生效。需先安装 pi。项目级安装见侧栏收藏路径右键。',
+          'Register the built-in pi-marina-bridge package with global pi (~/.pi/agent), effective in all projects. Requires pi installed first. For per-project install, use the sidebar bookmark right-click menu.',
+        )}
+      >
+        {piStatus?.piInstalled === false ? (
+          <span className="settings-hint">
+            {tx('未检测到 pi，请先安装 pi', 'pi not detected; install pi first')}
+          </span>
+        ) : piStatus?.globallyInstalled ? (
+          <span className="settings-hint">{tx('已安装', 'Installed')}</span>
+        ) : (
+          <button
+            type="button"
+            className="settings-button"
+            disabled={piInstalling || piStatus === null}
+            onClick={() => void installPiBridgeGlobal()}
+          >
+            {piInstalling ? tx('安装中…', 'Installing…') : tx('安装', 'Install')}
+          </button>
+        )}
       </SettingRow>
 
       {(state.settings.piIntegration?.enabled ?? true) && (
