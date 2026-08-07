@@ -9,6 +9,22 @@
 
 _暂无。_
 
+## [0.3.3-dev.1] — 2026-08-07
+
+> 0.3.3 系列首个 dev 构建(预发布)。汇总 `0.3.3-preview.2`(2026-08-05)之后的已提交积累,供本地/内测验证。正式发版时合并升格为 `0.3.3`。
+
+### Added
+- **文件树按需轮询**:文件树面板改走 `BackgroundWorkScheduler` 的 demand 感知(HOT/WARM/NONE),切走不刷新、切回立拉,降低后台开销。
+- **右键菜单子菜单分层**:子菜单通过 `createPortal` 分层渲染,避免被父容器裁剪。
+- **Pi 集成(ADR-028)**:pi 对话绑定 workspace、终端活动状态精准化;新增 `pi-marina-bridge` 哑转发器 extension;命令面板(`marina run`)使用文档补齐。
+- **文件面板中键自动滚动**:中键改为浏览器风格自动滚动,替换原 hand-pan。
+
+### Changed
+- 侧栏:remote 窗口默认到「本机」段;"SSH" 改名为 "Remote"。
+
+### Fixed
+- 构建:恢复 preview2 的 release gates 与 `switch:*` npm 脚本(内部)。
+
 ## [0.3.3-preview.2] — 2026-08-05
 
 > 第二个 0.3.3 预览构建（0.3.3-preview 的后续开发构建）。相对 `0.3.3-preview`(2026-08-04)
