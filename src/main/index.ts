@@ -62,7 +62,7 @@ import {
 import { getBuildType } from './build-type';
 import { logger } from './logger';
 import { PerformanceDiagnostics } from './performance-diagnostics';
-import { getIsQuitting, setQuitting } from './app-lifecycle';
+import { enterFlushing, enterQuiescing, enterStopped, getIsQuitting, setQuitting } from './app-lifecycle';
 import type {
   BookmarksFile,
   RecentFile,
@@ -419,9 +419,11 @@ function bootstrap(): void {
 
   let quitFinalizationState: 'idle' | 'flushing' | 'ready' = 'idle';
   app.on('before-quit', (event) => {
-    setQuitting();
+    // H4 quiesce 有序退出:先关门(enterQuiescing),transport gate 自此拒绝
+    // 新工作;再停 session/scheduler;flush 前进 flushing;完成后 stopped。
+    enterQuiescing();
     if (quitFinalizationState === 'ready') return;
-    // Electron 不等待 async event listener。第一次退出必须 preventDefault，显式等
+    // Electron 不等待 async event listener。第一次退出必须 preventDefault,显式等
     // report/store 的 1 秒预算后再 app.quit；否则 finalized=true 只写在内存里。
     event.preventDefault();
     if (quitFinalizationState === 'flushing') return;
@@ -430,8 +432,12 @@ function bootstrap(): void {
     gitService.shutdownPolling();
     fileTreePollingService.shutdown();
     backgroundWorkScheduler.shutdown();
+    // H4:关 HTTP ingress(agent 脚本的 file-panel/command 通道)。WS ingress 由
+    // dispatchCommand 的 quiesce gate 拒绝新命令;server 随 app.quit 进程回收。
+    void filePanelService.stop();
     void (async () => {
       logger.info('main', 'before-quit: shutting down session manager + flushing stores');
+      enterFlushing();
       try {
         const flushAll = Promise.all([
           settingsManager.flush(),
@@ -449,6 +455,7 @@ function bootstrap(): void {
         logger.warn('main', 'flush during quit failed', err);
       } finally {
         quitFinalizationState = 'ready';
+        enterStopped();
         app.quit();
       }
     })();

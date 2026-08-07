@@ -233,7 +233,7 @@ import { parseSshConfig } from './ssh-config-parser';
 import { detectSshAgent } from './ssh-agent';
 import { logger } from './logger';
 import { performanceMetrics } from './performance-metrics';
-import { setQuitting } from './app-lifecycle';
+import { getLifecycleState, isQuiescing, setQuitting } from './app-lifecycle';
 
 export interface IpcLayerDeps {
   windowManager: WindowManager;
@@ -426,7 +426,17 @@ function registerHandle<P = unknown>(
     }
   };
   rawHandlers.set(channel, measuredHandler as RawHandler);
-  ipcMain.handle(channel, (e, envelope) => measuredHandler(e, envelope as CommandEnvelope<P>));
+  ipcMain.handle(channel, (e, envelope) => {
+    // 退出 quiesce gate(H4):进入退出流程后,本地 IPC 也拒绝新工作,
+    // 避免新命令落在 shutdown/flush 之后。与 dispatchCommand 的 WS gate 对称。
+    if (isQuiescing()) {
+      throw makeIpcError(
+        'Quiescing',
+        `channel="${channel}" rejected: app is shutting down (lifecycle=${getLifecycleState()})`,
+      );
+    }
+    return measuredHandler(e, envelope as CommandEnvelope<P>);
+  });
 }
 
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
@@ -476,6 +486,17 @@ export async function dispatchCommand(
 ): Promise<
   { ok: true; result: unknown } | { ok: false; error: { code: string; message: string } }
 > {
+  // 退出 quiesce gate(H4):进入退出流程后,WS 路径也拒绝新命令。
+  // 远程 client 在 daemon 退出窗口内发来的命令不会落在 shutdown/flush 之后。
+  if (isQuiescing()) {
+    return {
+      ok: false,
+      error: {
+        code: 'Quiescing',
+        message: `channel="${channel}" rejected: app is shutting down (lifecycle=${getLifecycleState()})`,
+      },
+    };
+  }
   const handler = rawHandlers.get(channel);
   if (!handler) {
     return {

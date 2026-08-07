@@ -593,6 +593,37 @@ describe('IPC dialog commands over remote transport', () => {
   });
 });
 
+describe('IPC quiesce gate (H4)', () => {
+  it('进入退出流程后 dispatchCommand 拒绝新 command(Quiescing)', async () => {
+    const { installIpcLayer, dispatchCommand } = await freshIpc();
+    const { deps } = makeStubs();
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    // 先注册一个正常 handler(如 SETTINGS_GET_APPEARANCE),确认 gate 只在 quiescing 后生效
+    const normalHandler = handlers.get(COMMAND_CHANNELS.SETTINGS_GET_APPEARANCE);
+    expect(normalHandler).toBeTruthy();
+
+    // freshIpc 的 vi.resetModules 让 app-lifecycle 也是全新实例;ipc.ts 与这里
+    // import 同一份(都是 reset 后首次加载),enterQuiescing 会作用于同一模块态。
+    const lifecycle = await import('./app-lifecycle');
+    lifecycle.enterQuiescing();
+
+    const result = await dispatchCommand(COMMAND_CHANNELS.SETTINGS_GET_APPEARANCE, {
+      windowId: 'test-window',
+      requestId: 'quiescing-test',
+      payload: {},
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: 'Quiescing',
+        message: expect.stringContaining(COMMAND_CHANNELS.SETTINGS_GET_APPEARANCE),
+      },
+    });
+  });
+});
+
 describe('IPC WINDOW_CREATE', () => {
   it('透传 backendProfileId/selectSessionId/simpleMode 给客户端本地 WindowManager', async () => {
     const { installIpcLayer } = await freshIpc();

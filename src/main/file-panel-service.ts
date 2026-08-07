@@ -54,6 +54,7 @@ import type {
 } from '@shared/protocol';
 import { isRemoteUrl } from '@shared/url-scheme';
 import { normalizePath } from './path-manager';
+import { isQuiescing } from './app-lifecycle';
 import { logger } from './logger';
 
 const MODULE = 'FilePanelService';
@@ -1206,6 +1207,14 @@ export class FilePanelService extends EventEmitter {
     // 其余所有接口都要鉴权(包括 GET)。先校验 token,再路由。
     if (!this.checkAuth(req)) {
       this.send(res, 401, { error: 'unauthorized: invalid or missing token' });
+      return;
+    }
+
+    // 退出 quiesce gate(H4):进入退出流程后拒绝新的 HTTP 工作(agent 脚本在
+    // daemon 退出窗口内发来的请求不落 shutdown/flush 之后)。/health 在上面
+    // 已提前放行,存活探测不受影响。
+    if (isQuiescing()) {
+      this.send(res, 503, { error: 'shutting down' });
       return;
     }
     const terminal = u.searchParams.get('terminal') ?? undefined;
