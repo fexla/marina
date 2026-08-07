@@ -2473,10 +2473,32 @@ html[data-maximized='true'] .app-root.with-shell {
 }
 
 .command-rerun-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
-  padding: 1px 6px;
-  font-size: 12px;
-  line-height: 1.4;
+  padding: 2px 6px;
+  line-height: 1;
+}
+
+.command-rerun-icon {
+  display: block;
+}
+
+.command-rerun-btn.is-running .command-rerun-icon {
+  animation: command-refresh-spin 800ms linear infinite;
+}
+
+.command-refreshing-indicator {
+  color: #e8a317;
+  font-size: 11px;
+  line-height: 1;
+}
+
+@keyframes command-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .command-scope-btn:hover,
@@ -2494,6 +2516,11 @@ html[data-maximized='true'] .app-root.with-shell {
   overflow: auto;
   padding: 8px 10px;
   font-size: 12px;
+
+  /* body 为终端拖拽默认禁用选区；命令输出复用 MarkdownCodeBlock 的“运行选中”
+   * 交互，必须在内容容器恢复文本选择。toolbar/tab 仍保持不可选。 */
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .command-panel-empty {
@@ -2514,17 +2541,6 @@ html[data-maximized='true'] .app-root.with-shell {
  * 样式，否则“命令”与“已打开”会再次漂移。 */
 .command-output {
   min-height: 100%;
-}
-
-.command-panel-body:has(.markdown-body) .command-running-indicator {
-  margin: 0;
-  padding: 4px 10px;
-}
-
-.command-running-indicator {
-  color: #e8a317;
-  font-size: 11px;
-  margin-bottom: 4px;
 }
 
 .command-output-pending {

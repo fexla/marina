@@ -11,9 +11,9 @@
  *   (按 command 派生 key),避免重复 tab。
  * - per-指令刷新由两个独立维度组成:refreshPolicy.scope 决定仅前台还是允许后台，
  *   refreshPolicy.interval 决定手动/5s/30s；后台轮询统一走 BackgroundWorkScheduler。
- * - output 实时流复用 CodeBlockRunner 的 'output' 事件 → ipc 转 evt:system:code-block-output
- *   (runId 空间一致,renderer 按 runId 订阅)。每次 run 开始先清空上一轮 output，本服务只
- *   累积当前 run 的 stdout/stderr；exited 时翻状态机并广播最终快照。
+ * - output 复用 CodeBlockRunner 的内部 'output' 事件，但不向 renderer 转发逐 chunk 流。
+ *   entry.output 始终保留最近一次已完成结果；当前 run 写有界 pending buffer，exited 时
+ *   原子替换并经 owner-only commandPanelUpdated 广播，取消/被取代则丢弃 pending。
  * - 持久化(D6,套用 ADR-024):command-panel.json,本服务只持内存态,读写委托
  *   workspaceOps(与 FilePanelService 同款注入)。持久化触发由 renderer/上层驱动。
  *
@@ -168,6 +168,15 @@ interface RunOrigin extends RunRoute {
 }
 
 /**
+ * 一次尚未完成的 run 的候选结果。entry.output 始终保留最近一次已完成结果，
+ * 当前轮 stdout/stderr 先写这里，只有 exited 才原子提交，避免刷新期间内容闪空。
+ */
+interface PendingRunOutput {
+  generation: number;
+  output: string;
+}
+
+/**
  * 命令面板后端服务。单例(与 FilePanelService 同生命周期,index.ts 组装)。
  *
  * 状态机(CommandRunStatus):
@@ -186,6 +195,8 @@ export class CommandPanelService extends EventEmitter {
   private readonly demandConsumers = new Map<string, string>();
   /** pending runner.run 尚未返回 runId 时也可由新 run/close 通过 generation 使其失效。 */
   private readonly runGenerations = new Map<string, number>();
+  /** runKey → 当前轮候选输出；有界累积，完成前不进入 renderer 快照。 */
+  private readonly pendingRunOutputs = new Map<string, PendingRunOutput>();
   /** 最近一次 program-push/立即刷新开始时间；只用于吞掉紧随其后的首次 HOT 重复 run。 */
   private readonly lastDirectRunAt = new Map<string, number>();
   /** runKey → 发起 client；在 runner.run 返回 runId 前也存在。 */
@@ -583,10 +594,12 @@ export class CommandPanelService extends EventEmitter {
       generation,
       clientId: originClientId,
     });
+    // 双缓冲：entry.output 是已提交结果；当前轮单独有界累积。这样 running 快照
+    // 仍带旧 Markdown，用户可以继续阅读/选择，exited 时才一次性替换。
+    this.pendingRunOutputs.set(runKey, { generation, output: '' });
 
-    // output 是“最近一次结果”而非历史日志。本轮内 stdout/stderr 才继续 append。
-    entry.output = '';
-    entry.lastExitCode = null;
+    // lastExitCode 与 output 同属“最近一次已完成结果”；running 期间保留，既能
+    // 区分首次运行和“上次成功但空输出”，也避免刷新开始时丢失完成态信息。
     entry.lastRunAt = Date.now();
     entry.status = 'running';
     this.emitUpdated(sessionId, { requestActivation: false, commandKey: entry.key });
@@ -610,7 +623,9 @@ export class CommandPanelService extends EventEmitter {
       if (this.runGenerations.get(runKey) !== generation) return;
       this.runGenerations.delete(runKey);
       this.runOrigins.delete(runKey);
-      // SSH/Shell/Spawn/CodeTooLarge —— 透传 CodeBlockError 的 code 到状态机
+      this.pendingRunOutputs.delete(runKey);
+      // SSH/Shell/Spawn/CodeTooLarge —— 到失败确定时才替换旧结果；运行开始到这里
+      // 之间旧 Markdown 始终可见，不会因 pending spawn 闪空。
       entry.status = 'error';
       const code = (err as CodeBlockError)?.code ?? 'SpawnFailed';
       entry.output = `⚠ 执行失败(${code}): ${err instanceof Error ? err.message : String(err)}`;
@@ -628,10 +643,12 @@ export class CommandPanelService extends EventEmitter {
     if (!state) return;
     const entry = state.commands.find((c) => c.key === route.key);
     if (!entry) return;
-    // spawnRun 已在每轮开始清空旧结果；这里仅拼接当前 run 内的 stdout/stderr，
-    // 保留两条 stream 的到达顺序。
-    entry.output = appendTruncated(entry.output, data, OUTPUT_MAX_BYTES);
-    // output chunk 不 emit updated(避免逐 chunk 广播整个 snapshot);exited 时统一发。
+    const pending = this.pendingRunOutputs.get(runKey);
+    if (!pending || pending.generation !== route.generation) return;
+    // stdout/stderr 只写当前 generation 的候选缓冲，保留两条 stream 到达顺序。
+    // entry.output 不动，因此运行中 renderer 始终展示最近一次完整结果。
+    pending.output = appendTruncated(pending.output, data, OUTPUT_MAX_BYTES);
+    // output chunk 不 emit updated(避免逐 chunk 广播整个 snapshot);exited 时统一提交。
   }
 
   /** 处理 CodeBlockRunner 的 exited 事件(属于命令面板的 run)。 */
@@ -653,14 +670,20 @@ export class CommandPanelService extends EventEmitter {
     if (!state) {
       this.runRoutes.delete(runId);
       this.runGenerations.delete(runKey);
+      this.pendingRunOutputs.delete(runKey);
       return;
     }
     const entry = state.commands.find((c) => c.key === route.key);
     if (!entry) {
       this.runRoutes.delete(runId);
       this.runGenerations.delete(runKey);
+      this.pendingRunOutputs.delete(runKey);
       return;
     }
+    const pending = this.pendingRunOutputs.get(runKey);
+    // generation 已在函数入口核对；此时把完整候选结果一次性提交。成功但没有
+    // stdout/stderr 也必须提交空串，表示本轮确实替换了旧结果。
+    entry.output = pending?.generation === route.generation ? pending.output : '';
     entry.lastExitCode = exitCode;
     entry.status = exitCode === 0 ? 'exited' : 'error';
     if (entry.status === 'error' && !entry.output) {
@@ -671,6 +694,7 @@ export class CommandPanelService extends EventEmitter {
     this.runRoutes.delete(runId);
     this.runGenerations.delete(runKey);
     this.runOrigins.delete(runKey);
+    this.pendingRunOutputs.delete(runKey);
     if (entry.lastRunId === runId) entry.lastRunId = null;
     this.emitUpdated(route.sessionId, { requestActivation: false, commandKey: route.key });
     logger.info(
@@ -802,6 +826,8 @@ export class CommandPanelService extends EventEmitter {
     const runKey = this.commandRunKey(sessionId, entry.key);
     this.runGenerations.delete(runKey);
     this.runOrigins.delete(runKey);
+    // cancel / supersede 永不提交半截结果；旧的 entry.output 继续作为最后完整结果。
+    this.pendingRunOutputs.delete(runKey);
     this.lastDirectRunAt.delete(runKey);
     if (entry.status === 'running') entry.status = 'idle';
     if (!entry.lastRunId) return;

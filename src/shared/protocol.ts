@@ -1680,8 +1680,8 @@ export type CommandRunStatus = 'idle' | 'running' | 'exited' | 'error';
  * - key 是稳定身份:同一 command 字符串去重 upsert(重跑复用同 key),避免重复 tab。
  * - command 是任意 shell 字符串(bash 执行);「引用内置脚本」不是独立形态,它就是
  *   command 的一种(如 `bash panel-scripts/map.sh`)。
- * - output 是最近一次运行的拼接输出(stdout+stderr),renderer 当 markdown 渲染。
- *   单条上限 OUTPUT_MAX_BYTES(防失控累积),超出尾部裁切保留最新。
+ * - output 是最近一次**已完成**运行的拼接输出(stdout+stderr),renderer 当 markdown 渲染。
+ *   新一轮 running 时继续保留，main 在退出后原子替换；单条上限 OUTPUT_MAX_BYTES。
  */
 export interface CommandEntry {
   /** 稳定身份(由 command 派生),同 command 去重。 */
@@ -1694,11 +1694,11 @@ export interface CommandEntry {
   refreshPolicy: CommandRefreshPolicy;
   /** 最近一次 runId(用于匹配流式 output/exited 事件)。 */
   lastRunId: string | null;
-  /** 最近一次退出码(null=仍在跑或被信号杀)。 */
+  /** 最近一次已完成退出码；running 时保留上一轮值，首次运行/spawn 失败/信号退出为 null。 */
   lastExitCode: number | null;
   /** 当前状态机位置。 */
   status: CommandRunStatus;
-  /** 最近一次输出(stdout+stderr 拼接),renderer 当 markdown 渲染。 */
+  /** 最近一次已完成输出(stdout+stderr 拼接)；running 期间仍保留，renderer 当 markdown 渲染。 */
   output: string;
   /** 最近一次运行结束时间(epoch ms),用于展示。 */
   lastRunAt: number | null;

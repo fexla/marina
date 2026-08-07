@@ -233,7 +233,7 @@ describe('CommandPanelService', () => {
       expect(svc.isCommandPanelRun('markdown-run')).toBe(false);
     });
 
-    it('同一指令重跑时用新输出替换上一次结果', async () => {
+    it('重跑期间保留已完成结果，退出后再原子替换', async () => {
       const first = await svc.runCommand('s1', 'echo hello', null, 'w1');
       const firstRunId = first.commands[0]!.lastRunId!;
       runner.emitOutput(firstRunId, 'stdout', 'old result\n');
@@ -241,10 +241,71 @@ describe('CommandPanelService', () => {
 
       const second = await svc.runCommand('s1', 'echo hello', null, 'w1');
       const secondRunId = second.commands[0]!.lastRunId!;
+      expect(svc.getSnapshot('s1').commands[0]).toMatchObject({
+        status: 'running',
+        output: 'old result\n',
+        lastExitCode: 0,
+      });
+
       runner.emitOutput(secondRunId, 'stdout', 'new result\n');
+      // 当前轮 stdout/stderr 只进 pending buffer；完成前不得让旧 Markdown 闪空或半更新。
+      expect(svc.getSnapshot('s1').commands[0]!.output).toBe('old result\n');
+
+      runner.emitExited(secondRunId, 0, null);
+      expect(svc.getSnapshot('s1').commands[0]).toMatchObject({
+        status: 'exited',
+        output: 'new result\n',
+      });
+    });
+
+    it('重跑成功但没有输出时，完成后用空结果替换旧内容', async () => {
+      const first = await svc.runCommand('s1', 'echo hello', null, 'w1');
+      const firstRunId = first.commands[0]!.lastRunId!;
+      runner.emitOutput(firstRunId, 'stdout', 'old result\n');
+      runner.emitExited(firstRunId, 0, null);
+
+      const second = await svc.runCommand('s1', 'echo hello', null, 'w1');
+      const secondRunId = second.commands[0]!.lastRunId!;
+      expect(svc.getSnapshot('s1').commands[0]).toMatchObject({
+        status: 'running',
+        output: 'old result\n',
+        lastExitCode: 0,
+      });
       runner.emitExited(secondRunId, 0, null);
 
-      expect(svc.getSnapshot('s1').commands[0]!.output).toBe('new result\n');
+      expect(svc.getSnapshot('s1').commands[0]).toMatchObject({
+        status: 'exited',
+        output: '',
+        lastExitCode: 0,
+      });
+
+      const third = await svc.runCommand('s1', 'echo hello', null, 'w1');
+      // output 为空仍可能代表“上一轮已完成且无输出”，不能退化成首次运行占位。
+      expect(svc.getSnapshot('s1').commands[0]).toMatchObject({
+        status: 'running',
+        output: '',
+        lastExitCode: 0,
+      });
+      runner.emitExited(third.commands[0]!.lastRunId!, 0, null);
+    });
+
+    it('重跑被窗口关闭取消时丢弃 pending 输出并保留旧结果', async () => {
+      const first = await svc.runCommand('s1', 'echo hello', null, 'w1');
+      const firstRunId = first.commands[0]!.lastRunId!;
+      runner.emitOutput(firstRunId, 'stdout', 'old result\n');
+      runner.emitExited(firstRunId, 0, null);
+
+      const second = await svc.runCommand('s1', 'echo hello', null, 'w1');
+      const secondRunId = second.commands[0]!.lastRunId!;
+      runner.emitOutput(secondRunId, 'stdout', 'partial replacement\n');
+      svc.onWindowClosed('w1');
+      // 模拟 stop 后仍迟到的 exited；generation/route 清理必须挡住它。
+      runner.emitExited(secondRunId, 1, 'SIGTERM');
+
+      expect(svc.getSnapshot('s1').commands[0]).toMatchObject({
+        status: 'idle',
+        output: 'old result\n',
+      });
     });
 
     it('非零退出码 → 状态 error', async () => {

@@ -34,6 +34,7 @@ import { useAppDispatch, useAppState } from '../../store';
 import { useToast } from '../Toast';
 import { useTranslation } from '../LanguageProvider';
 import { MarkdownDocument } from '../file-panel/MarkdownDocument';
+import { Icon } from '../icons';
 
 interface CommandPanelProps {
   /** 绑定的终端 session id;父级按 session 切换重新挂载。 */
@@ -242,13 +243,30 @@ export function CommandPanel({ sessionId, search }: CommandPanelProps): JSX.Elem
             ))}
           </select>
           <button
-            className="command-rerun-btn"
+            className={
+              'command-rerun-btn' + (activeEntry.status === 'running' ? ' is-running' : '')
+            }
             onClick={() => rerun(activeEntry)}
             disabled={activeEntry.status === 'running'}
-            title={tx('立即刷新', 'Refresh now')}
+            title={
+              activeEntry.status === 'running'
+                ? tx('正在刷新', 'Refreshing')
+                : tx('立即刷新', 'Refresh now')
+            }
+            aria-label={
+              activeEntry.status === 'running'
+                ? tx('正在刷新', 'Refreshing')
+                : tx('立即刷新', 'Refresh now')
+            }
+            aria-busy={activeEntry.status === 'running'}
           >
-            {activeEntry.status === 'running' ? '…' : '↻'}
+            <Icon name="refresh" size={12} className="command-rerun-icon" />
           </button>
+          {activeEntry.status === 'running' && (
+            <span className="command-refreshing-indicator" role="status">
+              {tx('刷新中', 'Refreshing')}
+            </span>
+          )}
         </div>
       )}
 
@@ -270,9 +288,9 @@ export function CommandPanel({ sessionId, search }: CommandPanelProps): JSX.Elem
 }
 
 /**
- * 单条命令的来源 adapter：保留 running / pending / empty 状态，只把已经聚合好的
- * stdout Markdown 交给与“已打开”面板相同的 MarkdownDocument。entry.output 已由
- * CommandPanelService 按 OUTPUT_MAX_BYTES 有界裁切，本层不再复制另一套截断规则。
+ * 单条命令的来源 adapter：entry.output 是 main 原子提交的“最近一次已完成结果”。
+ * 刷新期间继续渲染它，不在正文插入 running 文案或清空 DOM，避免阅读位置和代码
+ * 选区跳动。只有首次运行尚无结果时显示等待占位。
  */
 function CommandOutput({
   sessionId,
@@ -283,9 +301,13 @@ function CommandOutput({
   entry: CommandEntry;
   search: PanelSearchProps;
 }): JSX.Element {
+  const { tx } = useTranslation();
+  // 空字符串既可能是“从未完成过”，也可能是上一轮成功但确实没有输出。
+  // running 期间 main 保留上一轮 lastExitCode，让这里能保持“无输出”完成态，
+  // 不会错误闪回“等待首次结果”。有文本的 spawn/signal 错误自然走 output 分支。
+  const hasCompletedResult = entry.output.length > 0 || entry.lastExitCode !== null;
   return (
     <div className="command-output">
-      {entry.status === 'running' && <div className="command-running-indicator">running…</div>}
       {entry.output ? (
         <MarkdownDocument
           sessionId={sessionId}
@@ -293,10 +315,12 @@ function CommandOutput({
           documentIdentity={`command:${entry.key}`}
           search={search}
         />
-      ) : entry.status === 'running' ? (
-        <p className="command-output-pending">…</p>
+      ) : entry.status === 'running' && !hasCompletedResult ? (
+        <p className="command-output-pending">
+          {tx('等待首次结果…', 'Waiting for the first result…')}
+        </p>
       ) : (
-        <p className="command-output-empty">(无输出)</p>
+        <p className="command-output-empty">{tx('(无输出)', '(No output)')}</p>
       )}
     </div>
   );

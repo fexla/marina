@@ -48,6 +48,7 @@ import {
   Brain,
   Palette,
   Plus,
+  RefreshCw,
   Search,
   Settings,
   Sliders,
@@ -124,6 +125,7 @@ export const Icons = {
   list: List,
   close: X,
   plus: Plus,
+  refresh: RefreshCw,
 
   // 勘误第二轮 #4:内置模板 / shell 的"官方"图标。
   // 没有真品牌 SVG 时退而求其次:用语义贴近的 lucide vector icon 替原 emoji

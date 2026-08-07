@@ -99,4 +99,16 @@ describe('global.css 样式契约', () => {
     const missing = [...new Set(referenced.filter((token) => !declared.has(token)))];
     expect(missing).toEqual([]);
   });
+
+  it('命令面板输出必须恢复文本选择以复用代码块“运行选中”交互', () => {
+    // body 全局 user-select:none；若命令输出容器不显式覆盖，MarkdownCodeBlock 的
+    // selectionchange/mouseup 逻辑永远收不到有效选区，悬浮运行按钮也不会出现。
+    const outputRules = rules.filter((rule) => rule.selector.includes('.command-panel-body'));
+    const restoresSelection = outputRules.some(
+      (rule) =>
+        /(?:^|;)\s*user-select\s*:\s*text\s*(?:;|$)/i.test(rule.body) &&
+        /(?:^|;)\s*-webkit-user-select\s*:\s*text\s*(?:;|$)/i.test(rule.body),
+    );
+    expect(restoresSelection).toBe(true);
+  });
 });
