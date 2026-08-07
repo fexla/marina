@@ -3039,4 +3039,129 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
     mgr.onWindowClosed('w1');
     expect(mgr.isSessionCurrentlyViewed(sid)).toBe(false);
   });
+
+  // ── 主 piSessionId 锁定：子 agent 事件不污染主终端 ──────────────
+
+  it('子 agent 的 name_changed 被忽略（终端名不被改成 subagent-xxx）', async () => {
+    const { mgr } = makePiManager();
+    const { sid } = await makeSession(mgr);
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-main',
+      event: 'session_start',
+      reason: 'startup',
+    });
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-main',
+      event: 'name_changed',
+      name: '主对话',
+    });
+    expect(mgr.get(sid)?.displayName).toBe('主对话');
+    // 主 agent working 中，subagent 起子 session 发 name_changed(子 piSid + 子名)
+    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-main', event: 'agent_working' });
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'subagent-worker-927388da01',
+      event: 'name_changed',
+      name: 'subagent-worker-927388da01',
+    });
+    // 终端名仍是主对话名，未被污染
+    expect(mgr.get(sid)?.displayName).toBe('主对话');
+  });
+
+  it('子 agent 的 session_start 被忽略（不切 workspace、不抢主绑定）', async () => {
+    const { mgr, created } = makePiManager();
+    const { sid } = await makeSession(mgr);
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-main',
+      event: 'session_start',
+      reason: 'startup',
+    });
+    const base = created.length;
+    // 主 agent working 中 subagent 起 session_start(子 piSid)
+    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-main', event: 'agent_working' });
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'subagent-1',
+      event: 'session_start',
+      reason: 'fork',
+    });
+    expect(created.length).toBe(base); // 子 session_start 没建 workspace
+  });
+
+  it('子 agent 的 agent_settled 被忽略（不干扰主对话状态）', async () => {
+    const { mgr } = makePiManager();
+    const { sid } = await makeSession(mgr);
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-main',
+      event: 'session_start',
+      reason: 'startup',
+    });
+    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-main', event: 'agent_working' });
+    // 子 agent settled(子 piSid) → 忽略，不设 hasUnviewedWork
+    await mgr.applyPiSessionEvent(sid, { piSessionId: 'subagent-1', event: 'agent_settled' });
+    expect(mgr.get(sid)?.hasUnviewedWork).toBe(false);
+    // 主 agent settled(主 piSid) → 正常设
+    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-main', event: 'agent_settled' });
+    expect(mgr.get(sid)?.hasUnviewedWork).toBe(true);
+  });
+
+  it('/new 切换：shutdown 旧主 + start 新主 → 新主事件正常工作', async () => {
+    const { mgr } = makePiManager();
+    const { sid } = await makeSession(mgr);
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-old',
+      event: 'session_start',
+      reason: 'startup',
+    });
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-old',
+      event: 'name_changed',
+      name: '旧对话',
+    });
+    // /new：pi 先 shutdown 旧主(清主绑定)，再 session_start 新主
+    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-old', event: 'session_shutdown' });
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-new',
+      event: 'session_start',
+      reason: 'new',
+    });
+    // 新主的 name_changed → 正常生效（未被当子 agent 忽略）
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-new',
+      event: 'name_changed',
+      name: '新对话',
+    });
+    expect(mgr.get(sid)?.displayName).toBe('新对话');
+    // 新主的 agent 事件也正常
+    await mgr.applyPiSessionEvent(sid, { piSessionId: 'pi-new', event: 'agent_settled' });
+    expect(mgr.get(sid)?.hasUnviewedWork).toBe(true);
+  });
+
+  it('重启 pi（shutdown quit + start）后新 piSessionId 正常绑定', async () => {
+    const { mgr, created } = makePiManager();
+    const { sid } = await makeSession(mgr);
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-a',
+      event: 'session_start',
+      reason: 'startup',
+    });
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-a',
+      event: 'session_shutdown',
+      reason: 'quit',
+    });
+    expect(mgr.get(sid)?.isPiAgent).toBe(false);
+    // 重新跑 pi(新 piSid) → 正常绑定
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-b',
+      event: 'session_start',
+      reason: 'startup',
+    });
+    expect(mgr.get(sid)?.isPiAgent).toBe(true);
+    await mgr.applyPiSessionEvent(sid, {
+      piSessionId: 'pi-b',
+      event: 'name_changed',
+      name: '重启后',
+    });
+    expect(mgr.get(sid)?.displayName).toBe('重启后');
+    expect(created.length).toBeGreaterThan(0);
+  });
 });

@@ -1783,6 +1783,25 @@ export class SessionManager extends EventEmitter {
       );
       return;
     }
+    // v0.3.3 ADR-028「主 piSessionId 锁定」:每个 Marina terminal 同一时刻只绑定
+    // 一个「主 pi 对话」。subagent tool 等机制起的临时子 session 有独立 piSessionId,
+    // 其事件全部忽略 —— 子 agent 是临时辅助,不该污染主终端的 workspace/名字/状态
+    // (实测:子 agent 的 name_changed 会把终端名改成 "subagent-worker-xxx")。
+    //
+    // 规则(纯靠 piSessionId 比对,不依赖任何第三方 subagent package 的 env 约定):
+    //   - currentMain===null(初始 / 旧主已 session_shutdown):接受,session_start 据此
+    //     绑定新主;零星的其它事件也接受(启动竞态,无害)。
+    //   - 否则 piSessionId!==currentMain:子 agent 事件,忽略。
+    //   - 合法主切换(/new /resume /fork /重启 pi)前 pi 必先发 session_shutdown 清空
+    //     主绑定,随后的 session_start 才能绑定新主 → 「关闭 pi 或 /new 后新 pi 正常工作」。
+    const currentMainPiSid = this.sessionToPiSession.get(sessionId) ?? null;
+    if (currentMainPiSid !== null && payload.piSessionId !== currentMainPiSid) {
+      logger.info(
+        'SessionManager',
+        `pi-event 忽略(子agent) sid=${sessionId} piSid=${payload.piSessionId} main=${currentMainPiSid} event=${payload.event}`,
+      );
+      return;
+    }
     const settings = this.settingsManager.get().piIntegration;
     logger.info(
       'SessionManager',
