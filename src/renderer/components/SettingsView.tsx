@@ -756,37 +756,6 @@ function AppearancePanel({ setError }: { setError: (msg: string | null) => void 
   const uiFontFamily = a?.uiFontFamily ?? '';
   const uiZoom = a?.uiZoom ?? 1;
 
-  // v0.3.3 ADR-028：pi-marina-bridge 全局安装状态（pi 集成区块的安装按钮用）。
-  const [piStatus, setPiStatus] = useState<PiBridgeStatusResponse | null>(null);
-  const [piInstalling, setPiInstalling] = useState(false);
-  useEffect(() => {
-    // 一次性查 pi 是否装 + bridge 是否已全局安装；失败(远程旧 daemon)静默。
-    void window.api
-      .invoke<null, PiBridgeStatusResponse>(COMMAND_CHANNELS.PI_BRIDGE_STATUS, null)
-      .then(setPiStatus)
-      .catch(() => setPiStatus(null));
-  }, []);
-  const installPiBridgeGlobal = async (): Promise<void> => {
-    setError(null);
-    setPiInstalling(true);
-    try {
-      const r = await window.api.invoke<{ scope: 'global' }, { alreadyInstalled: boolean }>(
-        COMMAND_CHANNELS.PI_BRIDGE_INSTALL,
-        { scope: 'global' },
-      );
-      setPiStatus((s) => (s ? { ...s, globallyInstalled: true } : s));
-      setError(
-        r.alreadyInstalled
-          ? 'pi 集成 package 已安装（全局）。'
-          : 'pi 集成 package 已安装（全局）。重启已运行的 pi 进程后生效。',
-      );
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setPiInstalling(false);
-    }
-  };
-
   const language = a?.language ?? 'system';
 
   // CP-4 勘误 #3:用 queryLocalFonts 真实枚举系统字体,推荐字体置顶。
@@ -1049,100 +1018,6 @@ function AppearancePanel({ setError }: { setError: (msg: string | null) => void 
           }
         />
       </SettingRow>
-
-      {/* v0.3.3 ADR-028：pi 集成。pi 跑在终端里时自动绑定 workspace + 指示灯精准化。 */}
-      <SettingRow
-        label={tx('pi 集成', 'pi integration')}
-        hint={tx(
-          '通过 Marina 打开 pi(@earendil-works/pi-coding-agent)时，每个对话绑定独立临时 workspace；切对话即切 workspace。pi 工作完成但未查看时，侧栏指示灯转警告色。需安装 pi package(packages/pi-marina-bridge)。',
-          'When you run pi (@earendil-works/pi-coding-agent) inside a Marina terminal, each conversation binds its own temporary workspace; switching conversations switches workspace. When pi finishes work you have not viewed, the sidebar indicator turns a warning color. Requires the pi package (packages/pi-marina-bridge).',
-        )}
-      >
-        <label className="settings-checkbox">
-          <input
-            type="checkbox"
-            checked={state.settings.piIntegration?.enabled ?? true}
-            onChange={(e) =>
-              void updateSettings({ piIntegration: { enabled: e.target.checked } }, setError)
-            }
-          />
-          <span>{tx('启用', 'Enable')}</span>
-        </label>
-      </SettingRow>
-
-      {/* v0.3.3 ADR-028：全局安装 pi-marina-bridge package。需 pi 已装。 */}
-      <SettingRow
-        label={tx('安装 pi 集成 package（全局）', 'Install pi integration package (global)')}
-        hint={tx(
-          '把内置 pi-marina-bridge package 注册到全局 pi（~/.pi/agent），所有项目生效。需先安装 pi。项目级安装见侧栏收藏路径右键。',
-          'Register the built-in pi-marina-bridge package with global pi (~/.pi/agent), effective in all projects. Requires pi installed first. For per-project install, use the sidebar bookmark right-click menu.',
-        )}
-      >
-        {piStatus?.piInstalled === false ? (
-          <span className="settings-hint">
-            {tx('未检测到 pi，请先安装 pi', 'pi not detected; install pi first')}
-          </span>
-        ) : piStatus?.globallyInstalled ? (
-          <span className="settings-hint">{tx('已安装', 'Installed')}</span>
-        ) : (
-          <button
-            type="button"
-            className="settings-button"
-            disabled={piInstalling || piStatus === null}
-            onClick={() => void installPiBridgeGlobal()}
-          >
-            {piInstalling ? tx('安装中…', 'Installing…') : tx('安装', 'Install')}
-          </button>
-        )}
-      </SettingRow>
-
-      {(state.settings.piIntegration?.enabled ?? true) && (
-        <>
-          <SettingRow
-            label={tx('新建对话时创建新 workspace', 'New conversation creates workspace')}
-            hint={tx(
-              'pi 里 /new、/fork 切到新对话时，给该对话创建一个新的临时 workspace。',
-              'When you start a new conversation in pi (/new, /fork), create a fresh temporary workspace for it.',
-            )}
-          >
-            <label className="settings-checkbox">
-              <input
-                type="checkbox"
-                checked={state.settings.piIntegration?.newConversationCreatesWorkspace ?? true}
-                onChange={(e) =>
-                  void updateSettings(
-                    { piIntegration: { newConversationCreatesWorkspace: e.target.checked } },
-                    setError,
-                  )
-                }
-              />
-              <span>{tx('启用', 'Enable')}</span>
-            </label>
-          </SettingRow>
-
-          <SettingRow
-            label={tx('resume 对话时切回 workspace', 'Resume switches to workspace')}
-            hint={tx(
-              'pi 里 /resume 或冷启动接续某对话时，切回该对话绑定的 workspace(已被回收则新建)。',
-              'When you resume a conversation in pi (/resume or cold start), switch back to its bound workspace (or create a new one if it was reclaimed).',
-            )}
-          >
-            <label className="settings-checkbox">
-              <input
-                type="checkbox"
-                checked={state.settings.piIntegration?.resumeSwitchesWorkspace ?? true}
-                onChange={(e) =>
-                  void updateSettings(
-                    { piIntegration: { resumeSwitchesWorkspace: e.target.checked } },
-                    setError,
-                  )
-                }
-              />
-              <span>{tx('启用', 'Enable')}</span>
-            </label>
-          </SettingRow>
-        </>
-      )}
 
       <SettingRow
         label={tx('主题目录', 'Themes folder')}
@@ -3101,6 +2976,41 @@ function AiPanel({ setError }: { setError: (msg: string | null) => void }): JSX.
   const [testing, setTesting] = useState(false);
   const [showKey, setShowKey] = useState(false);
 
+  // v0.3.3 ADR-028：pi-marina-bridge 全局安装状态（pi 集成区块的安装按钮用）。
+  const [piStatus, setPiStatus] = useState<PiBridgeStatusResponse | null>(null);
+  const [piInstalling, setPiInstalling] = useState(false);
+  useEffect(() => {
+    // 一次性查 pi 是否装 + bridge 是否已全局安装；失败(远程旧 daemon)静默。
+    void window.api
+      .invoke<null, PiBridgeStatusResponse>(COMMAND_CHANNELS.PI_BRIDGE_STATUS, null)
+      .then(setPiStatus)
+      .catch(() => setPiStatus(null));
+  }, []);
+  const installPiBridgeGlobal = async (): Promise<void> => {
+    setError(null);
+    setPiInstalling(true);
+    try {
+      const r = await window.api.invoke<{ scope: 'global' }, { alreadyInstalled: boolean }>(
+        COMMAND_CHANNELS.PI_BRIDGE_INSTALL,
+        { scope: 'global' },
+      );
+      setPiStatus((s) => (s ? { ...s, globallyInstalled: true } : s));
+      toast.push({
+        kind: 'success',
+        message: r.alreadyInstalled
+          ? 'pi 集成 package 已安装（全局）。'
+          : 'pi 集成 package 已安装（全局）。重启已运行的 pi 进程后生效。',
+      });
+    } catch (err: unknown) {
+      toast.push({
+        kind: 'error',
+        message: `安装 pi 集成失败:${err instanceof Error ? err.message : String(err)}`,
+      });
+    } finally {
+      setPiInstalling(false);
+    }
+  };
+
   const handleTest = async (): Promise<void> => {
     setError(null);
     setTesting(true);
@@ -3131,6 +3041,100 @@ function AiPanel({ setError }: { setError: (msg: string | null) => void }): JSX.
   return (
     <section className="settings-panel">
       <h2 className="settings-panel-title">{tx('AI 助手', 'AI Assistant')}</h2>
+
+      {/* v0.3.3 ADR-028：pi 集成。pi 跑在终端里时自动绑定 workspace + 指示灯精准化。 */}
+      <SettingRow
+        label={tx('pi 集成', 'pi integration')}
+        hint={tx(
+          '通过 Marina 打开 pi(@earendil-works/pi-coding-agent)时，每个对话绑定独立临时 workspace；切对话即切 workspace。pi 工作完成但未查看时，侧栏指示灯转警告色。需安装 pi package。',
+          'When you run pi (@earendil-works/pi-coding-agent) inside a Marina terminal, each conversation binds its own temporary workspace; switching conversations switches workspace. When pi finishes work you have not viewed, the sidebar indicator turns a warning color. Requires the pi package.',
+        )}
+      >
+        <label className="settings-checkbox">
+          <input
+            type="checkbox"
+            checked={state.settings.piIntegration?.enabled ?? true}
+            onChange={(e) =>
+              void updateSettings({ piIntegration: { enabled: e.target.checked } }, setError)
+            }
+          />
+          <span>{tx('启用', 'Enable')}</span>
+        </label>
+      </SettingRow>
+
+      {/* v0.3.3 ADR-028：全局安装 pi-marina-bridge package。需 pi 已装。项目级安装见侧栏收藏路径右键。 */}
+      <SettingRow
+        label={tx('安装 pi 集成 package（全局）', 'Install pi integration package (global)')}
+        hint={tx(
+          '把内置 pi-marina-bridge package 注册到全局 pi（~/.pi/agent），所有项目生效。需先安装 pi。项目级安装见侧栏收藏路径右键。',
+          'Register the built-in pi-marina-bridge package with global pi (~/.pi/agent), effective in all projects. Requires pi installed first. For per-project install, use the sidebar bookmark right-click menu.',
+        )}
+      >
+        {piStatus?.piInstalled === false ? (
+          <span className="settings-hint">
+            {tx('未检测到 pi，请先安装 pi', 'pi not detected; install pi first')}
+          </span>
+        ) : piStatus?.globallyInstalled ? (
+          <span className="settings-hint">{tx('已安装', 'Installed')}</span>
+        ) : (
+          <button
+            type="button"
+            className="settings-button"
+            disabled={piInstalling || piStatus === null}
+            onClick={() => void installPiBridgeGlobal()}
+          >
+            {piInstalling ? tx('安装中…', 'Installing…') : tx('安装', 'Install')}
+          </button>
+        )}
+      </SettingRow>
+
+      {(state.settings.piIntegration?.enabled ?? true) && (
+        <>
+          <SettingRow
+            label={tx('新建对话时创建新 workspace', 'New conversation creates workspace')}
+            hint={tx(
+              'pi 里 /new、/fork 切到新对话时，给该对话创建一个新的临时 workspace。',
+              'When you start a new conversation in pi (/new, /fork), create a fresh temporary workspace for it.',
+            )}
+          >
+            <label className="settings-checkbox">
+              <input
+                type="checkbox"
+                checked={state.settings.piIntegration?.newConversationCreatesWorkspace ?? true}
+                onChange={(e) =>
+                  void updateSettings(
+                    { piIntegration: { newConversationCreatesWorkspace: e.target.checked } },
+                    setError,
+                  )
+                }
+              />
+              <span>{tx('启用', 'Enable')}</span>
+            </label>
+          </SettingRow>
+
+          <SettingRow
+            label={tx('resume 对话时切回 workspace', 'Resume switches to workspace')}
+            hint={tx(
+              'pi 里 /resume 或冷启动接续某对话时，切回该对话绑定的 workspace(已被回收则新建)。',
+              'When you resume a conversation in pi (/resume or cold start), switch back to its bound workspace (or create a new one if it was reclaimed).',
+            )}
+          >
+            <label className="settings-checkbox">
+              <input
+                type="checkbox"
+                checked={state.settings.piIntegration?.resumeSwitchesWorkspace ?? true}
+                onChange={(e) =>
+                  void updateSettings(
+                    { piIntegration: { resumeSwitchesWorkspace: e.target.checked } },
+                    setError,
+                  )
+                }
+              />
+              <span>{tx('启用', 'Enable')}</span>
+            </label>
+          </SettingRow>
+        </>
+      )}
       <p className="settings-panel-hint">
         {tx(
           'Marina 第一个 LLM 集成点。当前唯一用途是 BETA-006:active→idle 跃迁前让 LLM 看一眼 scrollback,避免 Vite 等长输出工具被误判 idle。所有 API 调用走主进程,不暴露 key 到 renderer。',
