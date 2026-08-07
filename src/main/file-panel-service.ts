@@ -46,7 +46,12 @@ import { promises as fs, watch, type FSWatcher, type Stats } from 'node:fs';
 import { basename, dirname, resolve, join, isAbsolute } from 'node:path';
 import type { OpenedFile } from '@shared/types';
 import { detectFileKind } from '@shared/file-kind';
-import type { FilePanelSnapshot, ReadFileResponse, ReadImageResponse, GalleryResolveImageResponse } from '@shared/protocol';
+import type {
+  FilePanelSnapshot,
+  ReadFileResponse,
+  ReadImageResponse,
+  GalleryResolveImageResponse,
+} from '@shared/protocol';
 import { isRemoteUrl } from '@shared/url-scheme';
 import { normalizePath } from './path-manager';
 import { logger } from './logger';
@@ -98,9 +103,7 @@ export interface FilePanelSessionLookup {
  * → NativeImage.toPNG()。成功返回 PNG Buffer;不可截(无 owner/窗口已销毁/最小化)
  * 返回 {error}。HTTP /screenshot 路由调它。
  */
-export type WindowCaptureFn = (
-  sessionId: string,
-) => Promise<{ png: Buffer } | { error: string }>;
+export type WindowCaptureFn = (sessionId: string) => Promise<{ png: Buffer } | { error: string }>;
 
 /**
  * v0.3.3 ADR-024:workspace 操作回调(由 index.ts 闭合到 SessionManager)。
@@ -140,9 +143,12 @@ export interface WorkspaceOps {
    * (openedFiles/activeFilePath/scroll/runs)。切换 workspace 后用此重建 PanelState
    * + renderer 恢复 scroll/runs。无绑定/无快照返 null。
    */
-  readSnapshotForSession?(
-    sessionId: string,
-  ): Promise<{ openedFiles: Array<{ path: string; kind: string; external: boolean }>; activeFilePath: string | null; scroll: Record<string, { scrollTop: number; scrollLeft: number }>; runs: unknown } | null>;
+  readSnapshotForSession?(sessionId: string): Promise<{
+    openedFiles: Array<{ path: string; kind: string; external: boolean }>;
+    activeFilePath: string | null;
+    scroll: Record<string, { scrollTop: number; scrollLeft: number }>;
+    runs: unknown;
+  } | null>;
 }
 
 /**
@@ -715,9 +721,7 @@ export class FilePanelService extends EventEmitter {
   private async downloadNetworkImage(
     sessionId: string,
     url: string,
-  ): Promise<
-    { buf: Buffer; mime: string; cachePath: string } | { error: string }
-  > {
+  ): Promise<{ buf: Buffer; mime: string; cachePath: string } | { error: string }> {
     if (!this.workspaceOps) return { error: 'workspace not available (ops not injected)' };
     const wsPath = this.workspaceOps.getCurrentPath(sessionId);
     if (!wsPath) return { error: 'workspace not available' };
@@ -800,9 +804,7 @@ export class FilePanelService extends EventEmitter {
       // 落盘失败不影响本次返回(已拿到 buf + mime);只是下次会重下。记 warn。
       logger.warn(
         MODULE,
-        `gallery 缓存写入失败(不影响本次渲染): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `gallery 缓存写入失败(不影响本次渲染): ${err instanceof Error ? err.message : String(err)}`,
       );
     }
     return { buf, mime, cachePath };
@@ -1133,19 +1135,36 @@ export class FilePanelService extends EventEmitter {
         // 且避免并发 fs 压力);全失败也不阻塞(降级 missing)。
         files = await Promise.all(
           snap.openedFiles.map(async (f): Promise<OpenedFile> => {
-            const abs = f.external || isAbsolute(f.path) ? f.path : wsDir ? join(wsDir, f.path) : f.path;
+            const abs =
+              f.external || isAbsolute(f.path) ? f.path : wsDir ? join(wsDir, f.path) : f.path;
             try {
               const st = await fs.stat(abs);
-              return { path: abs, name: basename(abs), kind: f.kind as OpenedFile['kind'], size: st.size, mtimeMs: st.mtimeMs };
+              return {
+                path: abs,
+                name: basename(abs),
+                kind: f.kind as OpenedFile['kind'],
+                size: st.size,
+                mtimeMs: st.mtimeMs,
+              };
             } catch {
-              return { path: abs, name: basename(abs), kind: f.kind as OpenedFile['kind'], size: 0, mtimeMs: 0, missing: true };
+              return {
+                path: abs,
+                name: basename(abs),
+                kind: f.kind as OpenedFile['kind'],
+                size: 0,
+                mtimeMs: 0,
+                missing: true,
+              };
             }
           }),
         );
         activePath = snap.activeFilePath
-          ? snap.openedFiles.find((f) => f.path === snap.activeFilePath)?.external || isAbsolute(snap.activeFilePath)
+          ? snap.openedFiles.find((f) => f.path === snap.activeFilePath)?.external ||
+            isAbsolute(snap.activeFilePath)
             ? snap.activeFilePath
-            : wsDir ? join(wsDir, snap.activeFilePath) : snap.activeFilePath
+            : wsDir
+              ? join(wsDir, snap.activeFilePath)
+              : snap.activeFilePath
           : null;
       }
     } catch (err) {
@@ -1504,10 +1523,7 @@ export class FilePanelService extends EventEmitter {
   }
 
   /** POST /workspace/bind body {terminal, name, new?} → upsert。 */
-  private async handleWorkspaceBind(
-    req: IncomingMessage,
-    res: ServerResponse,
-  ): Promise<void> {
+  private async handleWorkspaceBind(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.workspaceOps) {
       this.send(res, 503, { error: 'workspace 未启用(workspaceOps 未注入)' });
       return;
@@ -1539,10 +1555,7 @@ export class FilePanelService extends EventEmitter {
   }
 
   /** POST /workspace/new body {terminal} → 切回新空临时 workspace。 */
-  private async handleWorkspaceNew(
-    req: IncomingMessage,
-    res: ServerResponse,
-  ): Promise<void> {
+  private async handleWorkspaceNew(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.workspaceOps) {
       this.send(res, 503, { error: 'workspace 未启用(workspaceOps 未注入)' });
       return;
@@ -1564,10 +1577,7 @@ export class FilePanelService extends EventEmitter {
   }
 
   /** POST /workspace/unpin body {terminal, name?} → 剥 name+pinned。 */
-  private async handleWorkspaceUnpin(
-    req: IncomingMessage,
-    res: ServerResponse,
-  ): Promise<void> {
+  private async handleWorkspaceUnpin(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!this.workspaceOps) {
       this.send(res, 503, { error: 'workspace 未启用(workspaceOps 未注入)' });
       return;

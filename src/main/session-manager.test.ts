@@ -330,9 +330,7 @@ function makeManager(
     emitBatchMs: opts.emitBatchMs ?? 0,
     skipCwdValidation: true,
     filePanelService: opts.filePanelService ?? null,
-    workspaceManager: (opts.workspaceManager ?? null) as
-      SessionWorkspaceSource
-      | null,
+    workspaceManager: (opts.workspaceManager ?? null) as SessionWorkspaceSource | null,
   });
   return { mgr, win, path };
 }
@@ -2537,7 +2535,12 @@ describe('SessionManager — dynamic Git LayoutNode (v0.3.0)', () => {
       const stack = (tree as { children: unknown[] }).children?.[1] as {
         children: { panelId: string }[];
       };
-      expect(stack.children.map((c) => c.panelId)).toEqual(['file-tree', 'git', 'file-panel', 'command']);
+      expect(stack.children.map((c) => c.panelId)).toEqual([
+        'file-tree',
+        'git',
+        'file-panel',
+        'command',
+      ]);
     });
   });
 

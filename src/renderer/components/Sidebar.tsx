@@ -1246,7 +1246,10 @@ function BookmarkPathList({
       rowKind: 'container-tail',
       containerId,
       depth,
-      placement: { targetContainerId: containerId, targetIndex: tailFullIndex } as BookmarkPlacement,
+      placement: {
+        targetContainerId: containerId,
+        targetIndex: tailFullIndex,
+      } as BookmarkPlacement,
     },
   });
   return (
@@ -1803,7 +1806,10 @@ function BookmarkCategory({
         containerId: headEl.dataset.groupParentContainer ?? '',
         index: Number(headEl.dataset.groupIndex ?? '0'),
         depth,
-        nestGroupPlacement: { targetContainerId: bookmarkSubgroupContainerId(gid), targetIndex: subCount },
+        nestGroupPlacement: {
+          targetContainerId: bookmarkSubgroupContainerId(gid),
+          targetIndex: subCount,
+        },
         nestPathPlacement: { targetContainerId: gid, targetIndex: pathCount },
       };
       return resolveDrop(activeType, data, headEl, x, y);
@@ -1835,7 +1841,10 @@ function BookmarkCategory({
     for (const el of tailEls) {
       const r = el.getBoundingClientRect();
       const a = r.width * r.height;
-      if (a < tailArea) { tailArea = a; tailEl = el; }
+      if (a < tailArea) {
+        tailArea = a;
+        tailEl = el;
+      }
     }
     if (tailEl) {
       const rect = tailEl.getBoundingClientRect();
@@ -1880,16 +1889,19 @@ function BookmarkCategory({
             );
           }
           // x 靠右：嵌入 G 的子组末尾（保留旧语义）。
-          const childCount = tailEl.querySelectorAll(
-            ':scope > [data-bookmark-group-id]',
-          ).length;
+          const childCount = tailEl.querySelectorAll(':scope > [data-bookmark-group-id]').length;
           const placement: BookmarkPlacement = {
             targetContainerId: subgroupContainerId,
             targetIndex: childCount,
           };
           return resolveDrop(
             activeType,
-            { rowKind: 'container-tail', containerId: subgroupContainerId, depth: containerDepth, placement },
+            {
+              rowKind: 'container-tail',
+              containerId: subgroupContainerId,
+              depth: containerDepth,
+              placement,
+            },
             tailEl,
             x,
             y,
@@ -1898,10 +1910,21 @@ function BookmarkCategory({
       }
       // 路径容器尾部：追到末尾。 */
       const containerId = tailEl.dataset.containerId ?? tailEl.dataset.groupContainerId ?? '';
-      const depth = Number(tailEl.dataset.containerDepth ?? tailEl.dataset.groupContainerDepth ?? '0');
+      const depth = Number(
+        tailEl.dataset.containerDepth ?? tailEl.dataset.groupContainerDepth ?? '0',
+      );
       const childCount = tailEl.querySelectorAll(':scope > [data-path-id]').length;
-      const placement: BookmarkPlacement = { targetContainerId: containerId, targetIndex: childCount };
-      return resolveDrop(activeType, { rowKind: 'container-tail', containerId, depth, placement }, tailEl, x, y);
+      const placement: BookmarkPlacement = {
+        targetContainerId: containerId,
+        targetIndex: childCount,
+      };
+      return resolveDrop(
+        activeType,
+        { rowKind: 'container-tail', containerId, depth, placement },
+        tailEl,
+        x,
+        y,
+      );
     }
     return null;
   };
@@ -1965,9 +1988,7 @@ function BookmarkCategory({
   /** onDragOver 仅维护 overId（用于折叠组悬停展开计时）。提示线/落点由 pointermove 驱动。 */
   const handleDragOver = (event: DragOverEvent): void => {
     setDragState((prev) =>
-      prev
-        ? { ...prev, ...(event.over ? { overId: String(event.over.id) } : {}) }
-        : prev,
+      prev ? { ...prev, ...(event.over ? { overId: String(event.over.id) } : {}) } : prev,
     );
   };
 
@@ -2021,7 +2042,10 @@ function BookmarkCategory({
     });
   };
 
-  const renderPath = (p: PathNode, dndRow?: { containerId: string; index: number; depth: number }): JSX.Element => {
+  const renderPath = (
+    p: PathNode,
+    dndRow?: { containerId: string; index: number; depth: number },
+  ): JSX.Element => {
     const override = p.kind === 'ssh' ? undefined : displayNames.get(p.id);
     return (
       <PathItem
@@ -2656,7 +2680,12 @@ function PathItem({
             collisionDetection={sessionCollisionDetection}
             onDragStart={(event) => setSessionDragState({ activeId: String(event.active.id) })}
             onDragMove={(event) => {
-              const pointerY = sessionPointerYRef.current ?? (() => { const r = event.active.rect.current.translated; return r ? r.top + r.height / 2 : -Infinity; })();
+              const pointerY =
+                sessionPointerYRef.current ??
+                (() => {
+                  const r = event.active.rect.current.translated;
+                  return r ? r.top + r.height / 2 : -Infinity;
+                })();
               const activeId = String(event.active.id);
               const resolved = resolveSessionIndex(pointerY, activeId);
               if (!resolved) return;

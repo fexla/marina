@@ -1241,9 +1241,8 @@ export class SessionManager extends EventEmitter {
       );
     }
 
-    const current = managed.info.uiLayout ?? createDefaultSessionUiLayout(
-      !isSshPathId(managed.info.pathId),
-    );
+    const current =
+      managed.info.uiLayout ?? createDefaultSessionUiLayout(!isSshPathId(managed.info.pathId));
     const next: SessionUiLayout = {
       version: current.version,
       tree: current.tree,
@@ -1629,9 +1628,7 @@ export class SessionManager extends EventEmitter {
   }
 
   /** 列当前 session 的 pathScope 下的命名 workspace。 */
-  async listWorkspaces(
-    sessionId: string,
-  ): Promise<
+  async listWorkspaces(sessionId: string): Promise<
     Array<{
       workspaceId: string;
       name: string | null;
@@ -1656,9 +1653,7 @@ export class SessionManager extends EventEmitter {
    * new:把当前 session 切到一个新空临时 workspace(原命名 pinned 不动)。
    * 更新绑定;旧临时(未命名)release。
    */
-  async switchToNewWorkspace(
-    sessionId: string,
-  ): Promise<{ workspaceId: string; dir: string }> {
+  async switchToNewWorkspace(sessionId: string): Promise<{ workspaceId: string; dir: string }> {
     if (!this.workspaceManager) {
       throw Object.assign(new Error('workspace manager not configured'), {
         code: 'WorkspaceNotConfigured',
@@ -2644,9 +2639,8 @@ export class SessionManager extends EventEmitter {
     const prev = this.gitAvailabilityBySession.get(managed.info.id) ?? false;
     if (prev === available) return; // 无变化,不 emit
     this.gitAvailabilityBySession.set(managed.info.id, available);
-    const current = managed.info.uiLayout ?? createDefaultSessionUiLayout(
-      !isSshPathId(managed.info.pathId),
-    );
+    const current =
+      managed.info.uiLayout ?? createDefaultSessionUiLayout(!isSshPathId(managed.info.pathId));
     const next: SessionUiLayout = {
       version: current.version,
       tree: createSessionLayoutTree(available, !isSshPathId(managed.info.pathId)),
