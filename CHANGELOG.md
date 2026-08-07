@@ -7,6 +7,30 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+## [0.3.3-dev.3] — 2026-08-08
+
+> 0.3.3 系列第 3 个 dev 构建。汇总 `0.3.3-dev.2` 之后的 pi 集成打磨与架构复核修复,供本地/内测验证。
+
+### Added
+
+- **退出 quiesce 状态机**:退出流程补显式状态机(running→quiescing→flushing→stopped),quiescing 后本地 IPC / WebSocket / HTTP ingress 拒绝新工作(返回 `Quiescing` 错误 / HTTP 503,health 放行),before-quit 有序化为 enterQuiescing → shutdown → enterFlushing → flush(1s 预算) → enterStopped。避免 shutdown/flush 期间的新动作落在关闭之后。
+
+### Changed
+
+- **pi 集成设置从「外观」移到「AI」分类**:pi 集成(workspace 绑定 / 指示灯 / 安装 package)与视觉呈现无关,此前误放在外观分类。移到 AI 分类,安装反馈改用 toast。
+- **workspace 命令路由改 backend-data(ADR-029)**:七个 `WORKSPACE_*` 命令此前误归 local-control,远程窗口的 workspace 读写静默脱节。改为随 session 归 backend(依据软件定义书 14.9.6「数据归 daemon」),ADR-024 的 local-control 声明作废(持久化机制不变)。命令路由补穷尽校验(未知 channel fail-closed),新命令漏分类不再静默走远程。
+- **抽取 app-lifecycle 模块**:`isQuitting` 退出标志原是 index.ts 模块级状态,ipc.ts/tray.ts 反向 import 形成两个静态循环 import。拆出 `src/main/app-lifecycle.ts` 作为退出状态单一事实源,消除循环依赖,ipc.test.ts 移除专用 mock。
+
+### Fixed
+
+- **pi 工作期终端状态打架 + 「已查看」语义精准化(ADR-028)**:(1) pi 思考/读文件期间终端无字节流,旧字节流 idle 检测误判 session idle(黄灯闪烁)还白烧 BETA-006 LLM——新增 `piWorking` 锁,agent_working 时抑制 idle 计时器、稳定 active,settled 后解锁交还字节流检测。(2) 旧逻辑把「切换 terminal」当成唯一「已查看」清除条件——新增「正在看」判定(owner 窗口可见+选中该 session),settled 时若正被看则不标警告色;窗口 focus/从最小化恢复时清除未看标记。
+- **子 agent 事件不再污染主终端(ADR-028)**:pi 调用 subagent 后终端名被改成 `subagent-worker-xxx` ——根因是 subagent 起独立子 session 触发的事件被当成主对话处理。新增「主 piSessionId 锁定」guard,每个 terminal 同一时刻只绑定一个主对话,不同 piSessionId 的子 agent 事件全部忽略;合法主切换(/new /resume /fork /重启)前 pi 必先发 session_shutdown 清空主绑定。
+- **file-panel/gallery 命令加 owner 校验**:9 个文件面板/图片 handler 此前无 owner 校验,非 owner 窗口能读/改别的窗口的文件面板。新增 `requireFilePanelOwner`(本地 IPC 与 WS 都接入),错误带 `SessionNotFound`/`NotOwner` code;FilePanel mount 前 waitForClaim 消除乐观接管期命中 NotOwner 的 race。
+- **session 销毁时回收 panel UI 缓存**:`clearPanelUiState` 文档声称 session 销毁时调用,但生产代码从未接线,已销毁 session 的 UI 缓存(展开目录/选中态/滚动位置)滞留内存随 session 数无界增长。在 SESSION_DESTROYED bridge 补上调用。
+- **统一 frameless 窗口错误态外壳**:frame:false 窗口里「可见状态必须渲染 WindowChrome 才有标题栏」只靠各分支自觉,协议版本不匹配分支漏画标题栏;本机外观死耦合在连接成功路径,错误态拿不到主题。新增 `LocalAppearanceProvider`(顶层拉本机外观,与连接状态解耦)与 `FramelessShell`(结构上保证可见状态必有标题栏+本机主题),4 条握手/错误分支统一改走它。
+- **新窗口默认选中「当前电脑」**:segment 此前持久化到 localStorage 且跨窗口共享,任意窗口切到「远程」后每个新窗口都默认选中远程段。移除持久化,每个新窗口独立从「本机」起步。
+- **命令面板刷新时保留输出**:刷新期间保留上次完成结果直到重跑结束,恢复命令输出里的代码块文本选中,刷新进度指示可访问。
+
 ## [0.3.3-dev.2] — 2026-08-07
 
 > 0.3.3 系列第 2 个 dev 构建。汇总 `0.3.3-dev.1` 之后的设置、侧栏分组与命令面板修复，供本地/内测验证。
