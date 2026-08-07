@@ -26,6 +26,7 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { resolve, sep } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import type {
   Bookmark,
   BookmarksFile,
@@ -43,7 +44,7 @@ import { logger } from './logger';
 
 const RECENT_CAPACITY = 30;
 
-const DEFAULT_BOOKMARKS_FILE: BookmarksFile = { version: 3, groups: [], paths: [] };
+const DEFAULT_BOOKMARKS_FILE: BookmarksFile = { version: 4, groups: [], paths: [] };
 const DEFAULT_RECENT_FILE: RecentFile = { version: 1, paths: [] };
 
 /**
@@ -181,7 +182,7 @@ export class PathManager extends EventEmitter {
 
   /**
    * v0.3.3 ADR-025 / Feature E.1:收藏分组(虚拟容器)。顺序 = 数组位置。
-   * 只一级(group → path);删组后其 id 作废(不回收)。仅收藏有分组。
+   * 每个分组只属于 local 或 ssh；父子组 kind 必须一致。删组后 id 作废。
    */
   private groups: GroupNode[] = [];
 
@@ -209,16 +210,21 @@ export class PathManager extends EventEmitter {
   async initialize(): Promise<{ bookmarksSource: 'main' | 'bak' | 'default' }> {
     const bk = await this.bookmarksStore.load(DEFAULT_BOOKMARKS_FILE);
     const rc = await this.recentStore.load(DEFAULT_RECENT_FILE);
-    // v0.3.3 ADR-025 §4:bookmarks.json v1→v2 迁移(内存层 coerce,沿用 v2.1 §II.1 模式)。
-    //   - version!==2(旧版/损坏回退默认):groups=[],旧 path 补 groupId=undefined。
-    //   - version===2:读 groups(损坏/非数组→[],重名 id 纯由 childOrder 引用,不在此校验路径)。
-    // 损坏条目静默丢弃,与 migrateBookmarkOnLoad 一致 —— 启动期不能因为一条坏数据让用户进不来 Marina。
-    this.groups = migrateGroupsOnLoad(bk.value.groups);
-    // v2.1 §II.1:把磁盘上的旧 schema(kind 缺失 / ssh 但 sshProfileId 缺失)
-    // 在内存层 coerce 成新 discriminated union。损坏条目静默丢弃,与旧
-    // validateBookmarksArray "整体拒绝" 不同 —— 启动期不能因为一条坏数据
-    // 让用户进不来 Marina。
-    this.bookmarks = bk.value.paths.flatMap(migrateBookmarkOnLoad);
+    // v4:先迁移 bookmark kind，再把旧 v1-v3 的无 kind 分组按成员证据拆成
+    // local/ssh 两棵树。混合组会拆实例并重写对应 groupId；完全无证据的旧空组
+    // 回落 local。启动期对单条脏数据仍容错，不能让用户因一个坏分组无法启动。
+    const loadedBookmarks = bk.value.paths.flatMap(migrateBookmarkOnLoad);
+    const migrated = migrateGroupsAndBookmarksOnLoad(bk.value.groups, loadedBookmarks);
+    this.groups = migrated.groups;
+    this.bookmarks = migrated.bookmarks;
+    const normalizedBookmarksFile: BookmarksFile = {
+      version: 4,
+      groups: this.groups.map(serializeGroup),
+      paths: this.bookmarks.slice(),
+    };
+    if (!isDeepStrictEqual(bk.value, normalizedBookmarksFile)) {
+      this.bookmarksStore.set(normalizedBookmarksFile);
+    }
     this.recent = rc.value.paths.flatMap(migrateRecentOnLoad);
     this.sortRecent();
     return { bookmarksSource: bk.source };
@@ -253,24 +259,33 @@ export class PathManager extends EventEmitter {
     defaultTemplateId?: string;
     groupId?: string;
   }): Bookmark {
-    if (
-      input.groupId !== undefined &&
-      (typeof input.groupId !== 'string' ||
-        input.groupId.length === 0 ||
-        !this.findGroupNode(input.groupId))
-    ) {
-      throw new PathManagerError(
-        'GroupNotFound',
-        `[PathManager] addBookmark failed: groupId="${input.groupId}" does not exist. ` +
-          'Possible causes: (1) the group was dissolved in another window, ' +
-          '(2) renderer used a stale path tree. Refresh the sidebar and choose the group again.',
-      );
-    }
     const ref = normalizePathRef({
       kind: input.kind ?? 'local',
       path: input.path,
       ...(input.sshProfileId ? { sshProfileId: input.sshProfileId } : {}),
     });
+    if (input.groupId !== undefined) {
+      const group =
+        typeof input.groupId === 'string' && input.groupId.length > 0
+          ? this.findGroupNode(input.groupId)
+          : undefined;
+      if (!group) {
+        throw new PathManagerError(
+          'GroupNotFound',
+          `addBookmark failed: groupId="${input.groupId}" does not exist. ` +
+            'Possible causes: (1) the group was dissolved in another window, ' +
+            '(2) renderer used a stale path tree. Refresh the sidebar and choose the group again.',
+        );
+      }
+      if (group.kind !== ref.kind) {
+        throw new PathManagerError(
+          'InvalidGroupId',
+          `addBookmark refused cross-kind membership: path kind="${ref.kind}" ` +
+            `cannot enter groupId="${group.id}" kind="${group.kind}". ` +
+            'Choose a group from the same sidebar segment and retry.',
+        );
+      }
+    }
     const id = makePathId(ref);
     if (this.findBookmarkByPath(id)) {
       throw new PathManagerError('BookmarkAlreadyExists', `path="${id}" 已收藏`);
@@ -364,10 +379,11 @@ export class PathManager extends EventEmitter {
     const seen = new Set<string>();
     const next: Bookmark[] = [];
     const allExisting = this.allGroupNodes();
-    const knownGroupIds = new Set(allExisting.map((g) => g.id));
+    const existingById = new Map(allExisting.map((group) => [group.id, group]));
+    const knownGroupIds = new Set(existingById.keys());
 
-    // 组引用校验:扁平表 id 唯一 + 全部存在;subgroupOrder 引用必须在扁平表内
-    // 且无环(沿 subgroupOrder DFS,栈内重复即环)。
+    // reorder 是一次全量事务：组与 path 都必须各覆盖一次。只有这样 renderer 在
+    // 当前 kind 可见树上拖动时，隐藏的另一 kind 数据才不会被误删或脱组。
     const payloadGroupIds = new Set<string>();
     for (const group of payload.groups) {
       if (payloadGroupIds.has(group.id)) {
@@ -378,7 +394,42 @@ export class PathManager extends EventEmitter {
         throw new PathManagerError('InvalidGroupId', `groupId="${group.id}" 不存在`);
       }
     }
-    const orderById = new Map(payload.groups.map((g) => [g.id, g]));
+    if (payloadGroupIds.size !== knownGroupIds.size) {
+      throw new PathManagerError(
+        'InvalidGroupId',
+        `reorder 必须覆盖全部 ${knownGroupIds.size} 个分组，实际 ${payloadGroupIds.size} 个`,
+      );
+    }
+    const orderById = new Map(payload.groups.map((group) => [group.id, group]));
+    const parentByChild = new Map<string, string>();
+    for (const order of payload.groups) {
+      const parent = existingById.get(order.id)!;
+      const childrenInOrder = new Set<string>();
+      for (const childId of order.subgroupOrder) {
+        if (!payloadGroupIds.has(childId)) {
+          throw new PathManagerError(
+            'InvalidGroupId',
+            `subgroupOrder 引用了未在 payload 中的 groupId="${childId}"`,
+          );
+        }
+        if (childrenInOrder.has(childId) || parentByChild.has(childId)) {
+          throw new PathManagerError(
+            'InvalidGroupId',
+            `groupId="${childId}" 被重复引用或同时属于多个父组`,
+          );
+        }
+        const child = existingById.get(childId)!;
+        if (parent.kind !== child.kind) {
+          throw new PathManagerError(
+            'InvalidGroupId',
+            `跨 kind 嵌套被拒绝:parent="${parent.id}"(${parent.kind}) ` +
+              `child="${child.id}"(${child.kind})`,
+          );
+        }
+        childrenInOrder.add(childId);
+        parentByChild.set(childId, order.id);
+      }
+    }
     const visiting = new Set<string>();
     const visited = new Set<string>();
     const assertAcyclic = (groupId: string): void => {
@@ -414,13 +465,21 @@ export class PathManager extends EventEmitter {
       if (!found) {
         throw new PathManagerError('InvalidOrderList', `pathId="${id}" 不在当前 bookmarks 列表`);
       }
-      // 原地改 groupId(唯一真相源)。同一条 bookmark 顺序变即重新 push。
-      if (assignGroupId === undefined) {
-        delete found.groupId;
-      } else {
-        found.groupId = assignGroupId;
+      if (assignGroupId !== undefined) {
+        const targetGroup = existingById.get(assignGroupId);
+        if (!targetGroup || targetGroup.kind !== found.kind) {
+          throw new PathManagerError(
+            'InvalidGroupId',
+            `跨 kind 归组被拒绝:pathId="${id}" kind="${found.kind}" ` +
+              `targetGroup="${assignGroupId}" kind="${targetGroup?.kind ?? 'missing'}"`,
+          );
+        }
       }
-      next.push(found);
+      // 先 clone 再应用 groupId；后续任何校验失败都不会污染 this.bookmarks。
+      const migrated = { ...found } as Bookmark;
+      if (assignGroupId === undefined) delete migrated.groupId;
+      else migrated.groupId = assignGroupId;
+      next.push(migrated);
     };
 
     for (const id of payload.ungrouped) takePath(id, undefined);
@@ -452,10 +511,10 @@ export class PathManager extends EventEmitter {
     }
 
     this.bookmarks = next;
-    // 按 payload 重建组树:每层级「payload 顺序 + 未提及组保留原相对顺序」;
-    // 组节点本体(名字等)从现有树取,保证重排不丢数据。
+    // 全量校验通过后才按 payload 重建组树。组节点本体(name/kind)从现有树取，
+    // payload 只表达顺序与父子关系，不能借 reorder 修改领域属性。
     type Order = { id: string; childOrder: string[]; subgroupOrder: string[] };
-    const rebuildLevel = (orders: Order[], existingChildren: GroupNode[]): GroupNode[] => {
+    const rebuildLevel = (orders: Order[]): GroupNode[] => {
       const out: GroupNode[] = [];
       for (const order of orders) {
         const existing = allExisting.find((g) => g.id === order.id);
@@ -466,46 +525,57 @@ export class PathManager extends EventEmitter {
         out.push({
           id: existing.id,
           name: existing.name,
-          subgroups: rebuildLevel(subOrders, existing.subgroups ?? []),
+          kind: existing.kind,
+          subgroups: rebuildLevel(subOrders),
         });
-      }
-      // 未提及组 = 不在 payload 任意位置出现的组（含仅作为子组被引用的组，
-      // 它们已在上面递归处理，这里不能重复追加）。
-      for (const child of existingChildren) {
-        if (!payloadGroupIds.has(child.id)) out.push(child);
       }
       return out;
     };
     const rootOrders = payload.groups.filter(
       (g) => !payload.groups.some((other) => other.subgroupOrder.includes(g.id)),
     );
-    this.groups = rebuildLevel(rootOrders, this.groups);
+    this.groups = rebuildLevel(rootOrders);
     this.persistBookmarks();
     this.emitChange();
   }
 
   /**
-   * v0.3.3 ADR-025 §6(用户裁决 2026-08-04 起支持嵌套):新建分组。
-   * 组名收藏内唯一、非空、禁路径分隔符(防歧义)、≤64 字符。允许空组。
+   * v0.3.3 ADR-025(kind ownership 修订):新建分组。
+   * 组名在同 kind 内唯一；父子组必须同 kind。local/ssh 共用这一个模块接口，
+   * 但不会共用分组实例。允许用户先创建空组。
    *
    * @param name 组名
-   * @param parentId 父组 id；缺省 = 顶层。父组不存在抛 GroupNotFound。
-   * @returns 新 groupId
+   * @param kind 分组唯一归属的路径域
+   * @param parentId 同 kind 父组 id；缺省 = 该 kind 顶层
+   * @returns 新 group
    *
-   * @throws PathManagerError InvalidName(空/过长/含分隔符)
-   * @throws PathManagerError GroupNameConflict(收藏内重名)
-   * @throws PathManagerError GroupNotFound(parentId 不存在)
+   * @throws PathManagerError InvalidName / GroupNameConflict / GroupNotFound / InvalidGroupId
    */
-  addGroup(name: string, parentId?: string): GroupNode {
+  addGroup(name: string, kind: PathKind, parentId?: string): GroupNode {
+    if (kind !== 'local' && kind !== 'ssh') {
+      throw new PathManagerError(
+        'InvalidName',
+        `addGroup kind must be "local" or "ssh", received "${String(kind)}". ` +
+          'Possible causes: (1) an outdated renderer sent the request, ' +
+          '(2) a remote client bypassed the shared protocol types. Refresh or upgrade the client.',
+      );
+    }
     validateGroupName(name);
-    this.assertGroupNameUnique(name);
-    const group: GroupNode = { id: randomUUID(), name, subgroups: [] };
+    this.assertGroupNameUnique(name, kind);
+    const group: GroupNode = { id: randomUUID(), name, kind, subgroups: [] };
     if (parentId === undefined) {
       this.groups.push(group);
     } else {
       const parent = this.findGroupNode(parentId);
       if (!parent) {
         throw new PathManagerError('GroupNotFound', `groupId="${parentId}" 不存在`);
+      }
+      if (parent.kind !== kind) {
+        throw new PathManagerError(
+          'InvalidGroupId',
+          `addGroup refused cross-kind nesting: parentId="${parentId}" ` +
+            `kind="${parent.kind}" child kind="${kind}". Create the child in the same segment.`,
+        );
       }
       parent.subgroups = parent.subgroups ?? [];
       parent.subgroups.push(group);
@@ -516,7 +586,7 @@ export class PathManager extends EventEmitter {
   }
 
   /**
-   * v0.3.3 ADR-025 §6:重命名分组(收藏内唯一)。树内任意层级可改。
+   * v0.3.3 ADR-025 §6:重命名分组(同 kind 内唯一)。树内任意层级可改。
    *
    * @throws PathManagerError GroupNotFound
    * @throws PathManagerError InvalidName / GroupNameConflict
@@ -528,7 +598,7 @@ export class PathManager extends EventEmitter {
       throw new PathManagerError('GroupNotFound', `groupId="${id}" 不存在`);
     }
     if (group.name === name) return; // 无变化
-    this.assertGroupNameUnique(name, id);
+    this.assertGroupNameUnique(name, group.kind, id);
     group.name = name;
     this.persistBookmarks();
     this.emitChange();
@@ -873,13 +943,20 @@ export class PathManager extends EventEmitter {
   }
 
   /**
-   * v0.3.3 ADR-025:组名收藏内唯一校验(树内任意层级重名都不行)。
+   * 组名在同 PathKind 内唯一；local/ssh 可各有一个同名组。
    * exceptId=正在重命名的组(自身不算冲突)。
    * @throws PathManagerError GroupNameConflict
    */
-  private assertGroupNameUnique(name: string, exceptId?: string): void {
-    if (this.allGroupNodes().some((g) => g.name === name && g.id !== exceptId)) {
-      throw new PathManagerError('GroupNameConflict', `组名「${name}」已存在(收藏内组名唯一)`);
+  private assertGroupNameUnique(name: string, kind: PathKind, exceptId?: string): void {
+    if (
+      this.allGroupNodes().some(
+        (group) => group.kind === kind && group.name === name && group.id !== exceptId,
+      )
+    ) {
+      throw new PathManagerError(
+        'GroupNameConflict',
+        `组名「${name}」已存在(kind="${kind}" 内组名唯一)`,
+      );
     }
   }
 
@@ -953,9 +1030,9 @@ export class PathManager extends EventEmitter {
   }
 
   private persistBookmarks(): void {
-    // v0.3.3 用户裁决后:version=3,groups 递归嵌套(subgroups 数组)。
+    // v4:groups 递归嵌套且每个节点持久化 required kind。
     this.bookmarksStore.set({
-      version: 3,
+      version: 4,
       groups: this.groups.map(serializeGroup),
       paths: this.bookmarks.slice(),
     });
@@ -993,10 +1070,10 @@ export class PathManager extends EventEmitter {
     // validateBookmarksArray / validateRecentArray / validateGroupsArray 做严格 narrow + path normalize。
     const bookmarks = validateBookmarksArray(input.bookmarks);
     const recent = validateRecentArray(input.recent);
-    const groups = input.groups !== undefined ? validateGroupsArray(input.groups) : [];
-    this.bookmarks = bookmarks;
+    const migrated = validateAndMigrateImportedGroups(input.groups ?? [], bookmarks);
+    this.bookmarks = migrated.bookmarks;
     this.recent = recent;
-    this.groups = groups;
+    this.groups = migrated.groups;
     this.sortRecent();
     this.persistBookmarks();
     this.persistRecent();
@@ -1270,23 +1347,25 @@ function migrateRecentOnLoad(raw: unknown): RecentEntry[] {
 }
 
 // ──────────────────────────────────────────────────────────────────
-// v0.3.3 ADR-025 / Feature E.1:收藏分组(group)启动期 migrate + 校验
+// v0.3.3 ADR-025(kind ownership 修订):收藏分组启动期 migrate + 导入校验
 // ──────────────────────────────────────────────────────────────────
 
 /** 深拷贝组森林(getTree 用，避免 renderer 拿到内部引用后误改)。 */
 function cloneGroupForest(groups: GroupNode[]): GroupNode[] {
-  return groups.map((g) => ({
-    id: g.id,
-    name: g.name,
-    subgroups: cloneGroupForest(g.subgroups ?? []),
+  return groups.map((group) => ({
+    id: group.id,
+    name: group.name,
+    kind: group.kind,
+    subgroups: cloneGroupForest(group.subgroups ?? []),
   }));
 }
 
-/** 组树 → 磁盘 v3 形状(递归)。 */
+/** 组树 → 磁盘 v4 形状(递归)。 */
 function serializeGroup(group: GroupNode): PersistedGroup {
   return {
     id: group.id,
     name: group.name,
+    kind: group.kind,
     subgroups: (group.subgroups ?? []).map(serializeGroup),
   };
 }
@@ -1297,7 +1376,7 @@ const PATH_SEPARATORS = /[\\/]/;
 
 /**
  * v0.3.3 ADR-025 §6:组名校验。非空 / ≤64 / 禁路径分隔符(防歧义)。
- * 收藏内唯一性由 assertGroupNameUnique 单独校验(需访问 this.groups)。
+ * 同 kind 唯一性由 assertGroupNameUnique 单独校验(需访问 this.groups)。
  * @throws PathManagerError InvalidName
  */
 function validateGroupName(name: string): void {
@@ -1312,70 +1391,281 @@ function validateGroupName(name: string): void {
   }
 }
 
-/**
- * v0.3.3 ADR-025 §4(嵌套版):启动期 groups coerce。磁盘可能无 groups 字段(v1 文件 /
- * 损坏回退默认)。损坏 entry(非对象 / 缺 id 或 name / 类型错)静默丢弃,与
- * migrateBookmarkOnLoad 容错策略一致。重复 id 只保留首个(防磁盘脏数据)。
- *
- * 兼容 v2 平铺(entry 无 subgroups)与 v3 嵌套(entry.subgroups 数组)；
- * 输出统一为 v3 形状：每组恒带 subgroups 数组(空数组也写)。
- */
-function migrateGroupsOnLoad(raw: unknown): GroupNode[] {
-  if (!Array.isArray(raw)) return [];
-  return migrateGroupLevel(raw, new Set<string>());
+interface LegacyGroupCandidate {
+  id: string;
+  name: string;
+  /** v4 有；v1-v3 缺失。 */
+  kind?: PathKind;
+  subgroups: LegacyGroupCandidate[];
 }
 
-function migrateGroupLevel(raw: unknown[], seenIds: Set<string>): GroupNode[] {
-  const out: GroupNode[] = [];
+interface MigratedGroupState {
+  groups: GroupNode[];
+  bookmarks: Bookmark[];
+}
+
+/**
+ * v1-v3 → v4 分组迁移。
+ *
+ * 状态转换：
+ *   单 kind 成员证据 → 原组归该 kind
+ *   local + ssh 混合证据 → 拆成两个同名、不同 id 的分组实例
+ *   完全无成员证据 → 继承最近的单-kind 祖先；无此祖先则回落 local
+ *
+ * 分组历史 schema 没记录空组创建时 segment，因此根级空组无法无损推断。选择
+ * local fallback 是显式兼容政策：旧缺 kind path 同样回落 local，且能直接修复
+ * “远程段显示本机空组壳”。任何 orphan groupId 都清回未分组，避免 path 消失。
+ */
+function migrateGroupsAndBookmarksOnLoad(
+  rawGroups: unknown,
+  bookmarks: Bookmark[],
+): MigratedGroupState {
+  const candidates = parseGroupsOnLoad(rawGroups, new Set<string>());
+  const migrated = splitGroupsByKind(candidates, bookmarks);
+  repairDuplicateGroupNamesOnLoad(migrated.groups);
+  return migrated;
+}
+
+function parseGroupsOnLoad(raw: unknown, seenIds: Set<string>): LegacyGroupCandidate[] {
+  if (!Array.isArray(raw)) return [];
+  const out: LegacyGroupCandidate[] = [];
   for (const entry of raw) {
     if (typeof entry !== 'object' || entry === null) continue;
-    const r = entry as Record<string, unknown>;
-    if (typeof r['id'] !== 'string' || typeof r['name'] !== 'string') continue;
-    if (r['id'].length === 0 || r['name'].length === 0) continue;
-    if (seenIds.has(r['id'])) continue; // 去重,保留首个(全局去重,防跨层重复)
-    seenIds.add(r['id']);
-    const subgroups = Array.isArray(r['subgroups'])
-      ? migrateGroupLevel(r['subgroups'], seenIds)
-      : [];
-    out.push({ id: r['id'], name: r['name'], subgroups });
+    const record = entry as Record<string, unknown>;
+    if (typeof record['id'] !== 'string' || typeof record['name'] !== 'string') continue;
+    if (!record['id'] || !record['name'] || seenIds.has(record['id'])) continue;
+    seenIds.add(record['id']);
+    const kind =
+      record['kind'] === 'local' || record['kind'] === 'ssh' ? record['kind'] : undefined;
+    out.push({
+      id: record['id'],
+      name: record['name'],
+      ...(kind ? { kind } : {}),
+      subgroups: parseGroupsOnLoad(record['subgroups'] ?? [], seenIds),
+    });
   }
   return out;
 }
 
 /**
- * v0.3.3 ADR-025(嵌套版):导入归档的 groups 严格校验(外部不可信)。
- * 任一条违规(缺 id/name / 重复 id / 子组类型错)整体拒绝,抛 PathManagerError。
- * caller (replaceAll)捕获后让 import 失败,内部状态保留。
+ * 导入归档的 groups 严格校验。允许旧归档缺 kind，随后走与启动相同的可逆迁移；
+ * 但错误类型、重复 id、非法名字或未知 kind 会整体拒绝，内部状态不部分应用。
  */
-function validateGroupsArray(input: unknown): GroupNode[] {
-  return validateGroupLevel(input, new Set<string>());
+function validateAndMigrateImportedGroups(
+  input: unknown,
+  bookmarks: Bookmark[],
+): MigratedGroupState {
+  const candidates = parseGroupsForImport(input, new Set<string>(), 'groups');
+  const migrated = splitGroupsByKind(candidates, bookmarks);
+  assertGroupNamesUniqueByKind(migrated.groups);
+  return migrated;
 }
 
-function validateGroupLevel(input: unknown, seenIds: Set<string>): GroupNode[] {
+function parseGroupsForImport(
+  input: unknown,
+  seenIds: Set<string>,
+  location: string,
+): LegacyGroupCandidate[] {
   if (!Array.isArray(input)) {
-    throw new PathManagerError('InvalidName', 'groups 必须是数组');
+    throw new PathManagerError('InvalidName', `${location} 必须是数组`);
   }
-  const out: GroupNode[] = [];
-  for (let i = 0; i < input.length; i++) {
-    const g = input[i];
-    if (typeof g !== 'object' || g === null) {
-      throw new PathManagerError('InvalidName', `groups[${i}] 不是对象`);
+  return input.map((entry, index) => {
+    const itemLocation = `${location}[${index}]`;
+    if (typeof entry !== 'object' || entry === null) {
+      throw new PathManagerError('InvalidName', `${itemLocation} 不是对象`);
     }
-    const r = g as Record<string, unknown>;
-    if (typeof r['id'] !== 'string' || !r['id']) {
-      throw new PathManagerError('InvalidName', `groups[${i}].id 非法`);
+    const record = entry as Record<string, unknown>;
+    if (typeof record['id'] !== 'string' || !record['id']) {
+      throw new PathManagerError('InvalidName', `${itemLocation}.id 非法`);
     }
-    if (typeof r['name'] !== 'string' || !r['name']) {
-      throw new PathManagerError('InvalidName', `groups[${i}].name 非法`);
+    if (typeof record['name'] !== 'string' || !record['name']) {
+      throw new PathManagerError('InvalidName', `${itemLocation}.name 非法`);
     }
-    validateGroupName(r['name']);
-    if (seenIds.has(r['id'])) {
-      throw new PathManagerError('InvalidName', `groups[${i}].id 重复: ${r['id']}`);
+    validateGroupName(record['name']);
+    if (seenIds.has(record['id'])) {
+      throw new PathManagerError('InvalidName', `${itemLocation}.id 重复: ${record['id']}`);
     }
-    seenIds.add(r['id']);
-    const subgroups =
-      r['subgroups'] === undefined ? [] : validateGroupLevel(r['subgroups'], seenIds);
-    out.push({ id: r['id'], name: r['name'], subgroups });
+    seenIds.add(record['id']);
+    if (record['kind'] !== undefined && record['kind'] !== 'local' && record['kind'] !== 'ssh') {
+      throw new PathManagerError('InvalidName', `${itemLocation}.kind 非法`);
+    }
+    const kind = record['kind'] as PathKind | undefined;
+    return {
+      id: record['id'],
+      name: record['name'],
+      ...(kind ? { kind } : {}),
+      subgroups:
+        record['subgroups'] === undefined
+          ? []
+          : parseGroupsForImport(record['subgroups'], seenIds, `${itemLocation}.subgroups`),
+    };
+  });
+}
+
+/**
+ * 把旧的“全局分组森林”切成 kind-owned 森林，并重写 bookmark.groupId。
+ * 这是迁移的深模块：调用方只交原始森林与 bookmarks，不需要理解证据传播、
+ * mixed 拆分 id 或 orphan 修复细节。
+ */
+function splitGroupsByKind(
+  candidates: LegacyGroupCandidate[],
+  bookmarks: Bookmark[],
+): MigratedGroupState {
+  const directKinds = new Map<string, Set<PathKind>>();
+  for (const bookmark of bookmarks) {
+    if (!bookmark.groupId) continue;
+    const kinds = directKinds.get(bookmark.groupId) ?? new Set<PathKind>();
+    kinds.add(bookmark.kind);
+    directKinds.set(bookmark.groupId, kinds);
   }
-  return out;
+
+  const evidenceById = new Map<string, Set<PathKind>>();
+  const collectEvidence = (node: LegacyGroupCandidate): Set<PathKind> => {
+    const evidence = new Set<PathKind>(directKinds.get(node.id) ?? []);
+    if (node.kind) evidence.add(node.kind);
+    for (const child of node.subgroups) {
+      for (const kind of collectEvidence(child)) evidence.add(kind);
+    }
+    evidenceById.set(node.id, evidence);
+    return evidence;
+  };
+  for (const root of candidates) collectEvidence(root);
+
+  // 空组没有成员证据：单-kind 祖先下继承；mixed/根级无法推断时回落 local。
+  const emptyKindById = new Map<string, PathKind>();
+  const assignEmptyKind = (
+    node: LegacyGroupCandidate,
+    inheritedKind: PathKind | undefined,
+  ): void => {
+    const evidence = evidenceById.get(node.id) ?? new Set<PathKind>();
+    const singleKind = evidence.size === 1 ? [...evidence][0] : undefined;
+    if (evidence.size === 0) emptyKindById.set(node.id, inheritedKind ?? 'local');
+    const childInherited =
+      singleKind ?? (evidence.size === 0 ? (inheritedKind ?? 'local') : undefined);
+    for (const child of node.subgroups) assignEmptyKind(child, childInherited);
+  };
+  for (const root of candidates) assignEmptyKind(root, undefined);
+
+  const branchKinds = (node: LegacyGroupCandidate): Set<PathKind> => {
+    const evidence = evidenceById.get(node.id) ?? new Set<PathKind>();
+    return evidence.size > 0
+      ? evidence
+      : new Set<PathKind>([emptyKindById.get(node.id) ?? 'local']);
+  };
+
+  const allOriginalIds = new Set<string>();
+  const walkCandidates = (nodes: LegacyGroupCandidate[]): void => {
+    for (const node of nodes) {
+      allOriginalIds.add(node.id);
+      walkCandidates(node.subgroups);
+    }
+  };
+  walkCandidates(candidates);
+  const usedIds = new Set(allOriginalIds);
+  const idByOriginalAndKind = new Map<string, string>();
+  const mapKey = (id: string, kind: PathKind): string => `${id}\u0000${kind}`;
+  const deriveSplitId = (id: string, kind: PathKind): string => {
+    const base = `${id}:${kind}`;
+    let candidate = base;
+    let suffix = 2;
+    while (usedIds.has(candidate)) candidate = `${base}:${suffix++}`;
+    usedIds.add(candidate);
+    return candidate;
+  };
+  const assignBranchIds = (node: LegacyGroupCandidate): void => {
+    const kinds = branchKinds(node);
+    const primaryKind: PathKind =
+      node.kind && kinds.has(node.kind) ? node.kind : kinds.has('local') ? 'local' : 'ssh';
+    for (const kind of kinds) {
+      idByOriginalAndKind.set(
+        mapKey(node.id, kind),
+        kind === primaryKind ? node.id : deriveSplitId(node.id, kind),
+      );
+    }
+    for (const child of node.subgroups) assignBranchIds(child);
+  };
+  for (const root of candidates) assignBranchIds(root);
+
+  const buildBranch = (node: LegacyGroupCandidate, kind: PathKind): GroupNode | null => {
+    if (!branchKinds(node).has(kind)) return null;
+    const id = idByOriginalAndKind.get(mapKey(node.id, kind));
+    if (!id) return null;
+    const subgroups = node.subgroups
+      .map((child) => buildBranch(child, kind))
+      .filter((child): child is GroupNode => child !== null);
+    return { id, name: node.name, kind, subgroups };
+  };
+
+  const groups: GroupNode[] = [];
+  for (const root of candidates) {
+    for (const kind of ['local', 'ssh'] as const) {
+      const branch = buildBranch(root, kind);
+      if (branch) groups.push(branch);
+    }
+  }
+
+  const migratedBookmarks = bookmarks.map((bookmark) => {
+    const migrated = { ...bookmark } as Bookmark;
+    if (!bookmark.groupId) return migrated;
+    const mappedId = idByOriginalAndKind.get(mapKey(bookmark.groupId, bookmark.kind));
+    if (mappedId) migrated.groupId = mappedId;
+    else delete migrated.groupId;
+    return migrated;
+  });
+  return { groups, bookmarks: migratedBookmarks };
+}
+
+/** 启动期容错：保留全部组与成员，只对同 kind 重名的后出现组确定性加序号。 */
+function repairDuplicateGroupNamesOnLoad(groups: GroupNode[]): void {
+  const seenByKind = new Map<PathKind, Set<string>>([
+    ['local', new Set<string>()],
+    ['ssh', new Set<string>()],
+  ]);
+  const walk = (nodes: GroupNode[]): void => {
+    for (const group of nodes) {
+      const seen = seenByKind.get(group.kind)!;
+      if (seen.has(group.name)) {
+        const original = group.name;
+        let suffixNumber = 2;
+        let candidate: string;
+        do {
+          const suffix = ` (${suffixNumber++})`;
+          candidate = original.slice(0, GROUP_NAME_MAX - suffix.length) + suffix;
+        } while (seen.has(candidate));
+        group.name = candidate;
+        logger.warn(
+          'PathManager',
+          `migrate group duplicate name: kind=${group.kind} ` +
+            `id=${group.id} old="${original}" new="${candidate}"`,
+        );
+      }
+      seen.add(group.name);
+      walk(group.subgroups ?? []);
+    }
+  };
+  walk(groups);
+}
+
+/** 导入是外部不可信事务：同 kind 重名整体拒绝，不静默改写用户归档。 */
+function assertGroupNamesUniqueByKind(groups: GroupNode[]): void {
+  const seenByKind = new Map<PathKind, Set<string>>([
+    ['local', new Set<string>()],
+    ['ssh', new Set<string>()],
+  ]);
+  const walk = (nodes: GroupNode[]): void => {
+    for (const group of nodes) {
+      const seen = seenByKind.get(group.kind)!;
+      if (seen.has(group.name)) {
+        throw new PathManagerError(
+          'GroupNameConflict',
+          `import contains duplicate group name="${group.name}" in kind="${group.kind}". ` +
+            'Rename one group in the source archive and retry; local/ssh may share a name, ' +
+            'but two groups in the same kind may not.',
+        );
+      }
+      seen.add(group.name);
+      walk(group.subgroups ?? []);
+    }
+  };
+  walk(groups);
 }

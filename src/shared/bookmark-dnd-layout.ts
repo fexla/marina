@@ -199,11 +199,11 @@ export function bookmarkPathIdsForContainer(
 }
 
 /**
- * 把当前 segment 的可见插槽转换为全量容器 index。
+ * 把当前 PathKind 的可见插槽转换为全量容器 index。
  *
- * renderer 只画 local 或 SSH 条目，但 BOOKMARK_REORDER 必须覆盖混合全量列表。插槽
- * 位于某个可见项前时以该 id 为锚；可见末尾位于最后一个可见项之后、任何隐藏尾项
- * 之前。这样隐藏项不丢失，且释放后的可见顺序与 placeholder 一致。
+ * path 未分组列表和顶层 group 列表都可能混排 local/ssh；BOOKMARK_REORDER 又必须
+ * 覆盖全量。插槽位于某个可见项前时以该 id 为锚；有可见项的末尾位于最后一个
+ * 可见项之后。该算法对字符串 id 通用，path/group 调用者共用这一个纯函数。
  */
 export function visibleBookmarkSlotToFullIndex(
   fullItems: string[],

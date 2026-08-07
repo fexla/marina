@@ -100,6 +100,9 @@ describe('moveBookmarkToPlacement', () => {
 
   it('把当前 segment 可见插槽映射到混合全量列表，预览与释放顺序一致', () => {
     const full = ['local-a', 'ssh-hidden', 'local-b', 'ssh-tail'];
+    // active 在目标行之前时，调用方必须传“移除 active 后”的目标行 index=0。
+    expect(visibleBookmarkSlotToFullIndex(full, ['local-a', 'local-b'], 'local-a', 0)).toBe(1);
+    // 同一目标行的下半区 = before index + 1；也等价于当前 kind 的可见末尾。
     expect(visibleBookmarkSlotToFullIndex(full, ['local-a', 'local-b'], 'local-a', 1)).toBe(2);
     expect(
       moveBookmarkToPlacement({ ungrouped: full, groups: [] }, 'local-a', {
@@ -142,6 +145,30 @@ describe('moveBookmarkGroupToPlacement', () => {
       { id: 'X', childOrder: [], subgroupOrder: [] },
     ],
   };
+
+  it('按当前 kind 的可见根组插槽移动时保留隐藏 kind 根组', () => {
+    const layout: BookmarkOrderLayout = {
+      ungrouped: [],
+      groups: [
+        { id: 'local-a', childOrder: [], subgroupOrder: [] },
+        { id: 'ssh-hidden', childOrder: [], subgroupOrder: [] },
+        { id: 'local-b', childOrder: [], subgroupOrder: [] },
+      ],
+    };
+    const fullIndex = visibleBookmarkSlotToFullIndex(
+      ['local-a', 'ssh-hidden', 'local-b'],
+      ['local-a', 'local-b'],
+      'local-a',
+      2,
+    );
+    expect(fullIndex).toBe(2);
+    expect(
+      moveBookmarkGroupToPlacement(layout, 'local-a', {
+        targetContainerId: BOOKMARK_ROOT_GROUP_CONTAINER,
+        targetIndex: fullIndex!,
+      })?.groups.map((group) => group.id),
+    ).toEqual(['ssh-hidden', 'local-b', 'local-a']);
+  });
 
   it('C 直接进入 A.subgroups 的 B 后插槽', () => {
     const next = moveBookmarkGroupToPlacement(TREE, 'C', {

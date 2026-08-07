@@ -20,6 +20,7 @@ import type {
   FileTreeRootId,
   MdTheme,
   OpenedFile,
+  PathKind,
   PathTree,
   PersistedGroup,
   RemoteDaemonProfile,
@@ -41,9 +42,9 @@ export type {
  * 协议版本号。Main 与 Renderer 不匹配时拒绝 handshake。
  * Bump 规则:破坏性变更 +1;新增 channel 或扩展 payload 不需要 bump。
  */
-// v3 把命令面板的混合 strategy 拆成 refreshPolicy(scope + interval)，并新增
-// 独立 update channel。新 renderer 会读取 refreshPolicy，不能与旧 v2 daemon 混用。
-export const PROTOCOL_VERSION = 3 as const;
+// v4 为 GroupNode / BOOKMARK_GROUP_ADD 增加 required kind。新 renderer 必须按
+// local/ssh 分组树隔离渲染，不能与仍返回无 kind group 的旧 v3 daemon 混用。
+export const PROTOCOL_VERSION = 4 as const;
 
 /** host-only 连接发现协议固定扫描的 daemon 端口范围(含首尾)。 */
 export const REMOTE_DAEMON_PORT_MIN = 32780 as const;
@@ -887,11 +888,13 @@ export interface ReorderBookmarksPayload {
 }
 
 /**
- * v0.3.3 ADR-025:新建分组,返回新 groupId。组名收藏内唯一。
- * parentId = 父组 id(嵌套子组)；缺省 = 顶层。
+ * v0.3.3 ADR-025:新建分组,返回新 groupId。组名在同 kind 内唯一。
+ * parentId = 同 kind 父组 id(嵌套子组)；缺省 = 该 kind 的顶层。
  */
 export interface AddBookmarkGroupPayload {
   name: string;
+  /** 分组归属的路径域；local 与 ssh 共用实现，但不共用分组实例。 */
+  kind: PathKind;
   parentId?: string;
 }
 export interface AddBookmarkGroupResponse {

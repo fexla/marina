@@ -110,7 +110,7 @@ describe('PathManager — 初始化', () => {
   it('从持久化恢复 bookmarks', async () => {
     const { mgr } = makeManager({
       initialBookmarks: {
-        version: 3,
+        version: 4,
         groups: [],
         paths: [
           { id: 'b1', path: TEST_PATH_A, addedAt: 1 },
@@ -236,7 +236,7 @@ describe('PathManager — addBookmark / removeBookmark', () => {
   it('addBookmark 带 groupId 时原子地直接进入该组', async () => {
     const { mgr, bookmarksStore } = makeManager();
     await mgr.initialize();
-    const group = mgr.addGroup('工作');
+    const group = mgr.addGroup('工作', 'local');
 
     const bookmark = mgr.addBookmark({ path: TEST_PATH_A, groupId: group.id });
 
@@ -594,8 +594,8 @@ describe('PathManager — 收藏分组 (ADR-025 / Feature E.1)', () => {
     mgr.addBookmark({ path: TEST_PATH_A });
     mgr.addBookmark({ path: TEST_PATH_B });
     mgr.addBookmark({ path: TEST_PATH_C });
-    const g1 = mgr.addGroup('工作');
-    const g2 = mgr.addGroup('个人');
+    const g1 = mgr.addGroup('工作', 'local');
+    const g2 = mgr.addGroup('个人', 'local');
     return { mgr, bookmarksStore, g1, g2 };
   }
 
@@ -624,11 +624,11 @@ describe('PathManager — 收藏分组 (ADR-025 / Feature E.1)', () => {
     });
     await mgr.initialize();
     const tree = mgr.getTree();
-    expect(tree.groups).toEqual([{ id: 'g1', name: '工作', subgroups: [] }]);
+    expect(tree.groups).toEqual([{ id: 'g1', name: '工作', kind: 'local', subgroups: [] }]);
     expect(tree.bookmarks[0]!.groupId).toBe('g1');
   });
 
-  it('迁移:v3 文件带嵌套 subgroups → 原样恢复', async () => {
+  it('迁移:v3 文件带嵌套 subgroups → 按成员证据归 local', async () => {
     const { mgr } = makeManager({
       initialBookmarks: {
         version: 3,
@@ -640,7 +640,7 @@ describe('PathManager — 收藏分组 (ADR-025 / Feature E.1)', () => {
           },
         ],
         paths: [{ id: 'b1', path: TEST_PATH_A, groupId: 'g1-1', addedAt: 1 }],
-      },
+      } as unknown as BookmarksFile,
     });
     await mgr.initialize();
     const tree = mgr.getTree();
@@ -648,7 +648,8 @@ describe('PathManager — 收藏分组 (ADR-025 / Feature E.1)', () => {
       {
         id: 'g1',
         name: '工作',
-        subgroups: [{ id: 'g1-1', name: '项目A', subgroups: [] }],
+        kind: 'local',
+        subgroups: [{ id: 'g1-1', name: '项目A', kind: 'local', subgroups: [] }],
       },
     ]);
     expect(tree.bookmarks[0]!.groupId).toBe('g1-1');
@@ -671,26 +672,28 @@ describe('PathManager — 收藏分组 (ADR-025 / Feature E.1)', () => {
     });
     await mgr.initialize();
     const tree = mgr.getTree();
-    expect(tree.groups).toEqual([{ id: 'g1', name: '工作', subgroups: [] }]);
+    expect(tree.groups).toEqual([{ id: 'g1', name: '工作', kind: 'local', subgroups: [] }]);
   });
 
-  it('持久化:persistBookmarks 写 version=3 + 递归 groups + path.groupId', async () => {
-    const { mgr, bookmarksStore, g1 } = await makeWithGroups();
+  it('持久化:persistBookmarks 写 version=4 + kind + 递归 groups + path.groupId', async () => {
+    const { mgr, bookmarksStore, g1, g2 } = await makeWithGroups();
     // 把 A、B 放进 g1，并给 g1 建一个子组 g1-1
-    const sub = mgr.addGroup('子组', g1.id);
+    const sub = mgr.addGroup('子组', 'local', g1.id);
     mgr.reorderBookmarks({
       ungrouped: [TEST_PATH_C],
       groups: [
         { id: g1.id, childOrder: [TEST_PATH_A, TEST_PATH_B], subgroupOrder: [sub.id] },
         { id: sub.id, childOrder: [], subgroupOrder: [] },
+        { id: g2.id, childOrder: [], subgroupOrder: [] },
       ],
     });
     const last = bookmarksStore.setHistory.at(-1);
-    expect(last).toMatchObject({ version: 3 });
+    expect(last).toMatchObject({ version: 4 });
     expect(last!.groups).toContainEqual({
       id: g1.id,
       name: '工作',
-      subgroups: [{ id: sub.id, name: '子组', subgroups: [] }],
+      kind: 'local',
+      subgroups: [{ id: sub.id, name: '子组', kind: 'local', subgroups: [] }],
     });
     const persistedA = last!.paths.find((p) => (p as { path?: string }).path === TEST_PATH_A);
     expect(persistedA).toMatchObject({ groupId: g1.id });
@@ -698,10 +701,13 @@ describe('PathManager — 收藏分组 (ADR-025 / Feature E.1)', () => {
 
   // ── 分层 reorder ─────────────────────────────────────────────
   it('分层 reorder:把 path 移进分组 + 调顺序 + groupId 正确', async () => {
-    const { mgr, g1 } = await makeWithGroups();
+    const { mgr, g1, g2 } = await makeWithGroups();
     mgr.reorderBookmarks({
       ungrouped: [TEST_PATH_C],
-      groups: [{ id: g1.id, childOrder: [TEST_PATH_B, TEST_PATH_A], subgroupOrder: [] }],
+      groups: [
+        { id: g1.id, childOrder: [TEST_PATH_B, TEST_PATH_A], subgroupOrder: [] },
+        { id: g2.id, childOrder: [], subgroupOrder: [] },
+      ],
     });
     const tree = mgr.getTree();
     // bookmarks 数组顺序 = ungrouped + 各 group childOrder 拼接
@@ -753,14 +759,15 @@ describe('PathManager — 收藏分组 (ADR-025 / Feature E.1)', () => {
     ).toThrowError(/InvalidGroupId/);
   });
 
-  it('分层 reorder:未提及的空组保留原相对顺序追加', async () => {
+  it('分层 reorder:遗漏空组 → InvalidGroupId，原树不变', async () => {
     const { mgr, g1, g2 } = await makeWithGroups();
-    // payload 只提 g2，g1 不在 payload → 保留在根级末尾
-    mgr.reorderBookmarks({
-      ungrouped: [TEST_PATH_A, TEST_PATH_B, TEST_PATH_C],
-      groups: [{ id: g2.id, childOrder: [], subgroupOrder: [] }],
-    });
-    expect(mgr.getTree().groups.map((g) => g.id)).toEqual([g2.id, g1.id]);
+    expect(() =>
+      mgr.reorderBookmarks({
+        ungrouped: [TEST_PATH_A, TEST_PATH_B, TEST_PATH_C],
+        groups: [{ id: g2.id, childOrder: [], subgroupOrder: [] }],
+      }),
+    ).toThrowError(/InvalidGroupId/);
+    expect(mgr.getTree().groups.map((group) => group.id)).toEqual([g1.id, g2.id]);
   });
 
   it('分层 reorder:未知 groupId → InvalidGroupId', async () => {
@@ -774,12 +781,15 @@ describe('PathManager — 收藏分组 (ADR-025 / Feature E.1)', () => {
   });
 
   it('分层 reorder:遗漏某个 path → InvalidOrderList', async () => {
-    const { mgr, g1 } = await makeWithGroups();
+    const { mgr, g1, g2 } = await makeWithGroups();
     // 只排了 A,漏了 B、C
     expect(() =>
       mgr.reorderBookmarks({
         ungrouped: [TEST_PATH_A],
-        groups: [{ id: g1.id, childOrder: [], subgroupOrder: [] }],
+        groups: [
+          { id: g1.id, childOrder: [], subgroupOrder: [] },
+          { id: g2.id, childOrder: [], subgroupOrder: [] },
+        ],
       }),
     ).toThrowError(/InvalidOrderList/);
   });
@@ -800,33 +810,38 @@ describe('PathManager — 收藏分组 (ADR-025 / Feature E.1)', () => {
   // ── group CRUD ───────────────────────────────────────────────
   it('addGroup:新建空组(追加末尾),返回 id;允许空组', async () => {
     const { mgr } = await makeWithGroups();
-    const g = mgr.addGroup('新组');
+    const g = mgr.addGroup('新组', 'local');
     expect(g.id).toBeTruthy();
     expect(mgr.getTree().groups.map((x) => x.name)).toContain('新组');
     // 空组在 tree 里可见(没有子 path)
-    expect(mgr.getTree().groups.at(-1)).toEqual({ id: g.id, name: '新组', subgroups: [] });
+    expect(mgr.getTree().groups.at(-1)).toEqual({
+      id: g.id,
+      name: '新组',
+      kind: 'local',
+      subgroups: [],
+    });
   });
 
   it('addGroup:parentId 指定父组 → 成为子组;未知父组 → GroupNotFound', async () => {
     const { mgr, g1 } = await makeWithGroups();
-    const sub = mgr.addGroup('子组', g1.id);
+    const sub = mgr.addGroup('子组', 'local', g1.id);
     const tree = mgr.getTree();
     expect(tree.groups.map((g) => g.id)).toEqual([g1.id, expect.anything()]);
     expect(tree.groups.find((g) => g.id === g1.id)!.subgroups!.map((s) => s.id)).toEqual([sub.id]);
-    expect(() => mgr.addGroup('孤儿', 'nope')).toThrowError(/GroupNotFound/);
+    expect(() => mgr.addGroup('孤儿', 'local', 'nope')).toThrowError(/GroupNotFound/);
   });
 
   it('addGroup:空名 / 过长 / 含分隔符 → InvalidName', async () => {
     const { mgr } = await makeWithGroups();
-    expect(() => mgr.addGroup('')).toThrowError(/InvalidName/);
-    expect(() => mgr.addGroup('a'.repeat(65))).toThrowError(/InvalidName/);
-    expect(() => mgr.addGroup('a/b')).toThrowError(/InvalidName/);
-    expect(() => mgr.addGroup('a\\b')).toThrowError(/InvalidName/);
+    expect(() => mgr.addGroup('', 'local')).toThrowError(/InvalidName/);
+    expect(() => mgr.addGroup('a'.repeat(65), 'local')).toThrowError(/InvalidName/);
+    expect(() => mgr.addGroup('a/b', 'local')).toThrowError(/InvalidName/);
+    expect(() => mgr.addGroup('a\\b', 'local')).toThrowError(/InvalidName/);
   });
 
   it('addGroup:收藏内重名 → GroupNameConflict', async () => {
     const { mgr } = await makeWithGroups();
-    expect(() => mgr.addGroup('工作')).toThrowError(/GroupNameConflict/);
+    expect(() => mgr.addGroup('工作', 'local')).toThrowError(/GroupNameConflict/);
   });
 
   it('renameGroup:改名成功;收藏内重名(排除自身)→ GroupNameConflict', async () => {
@@ -845,11 +860,14 @@ describe('PathManager — 收藏分组 (ADR-025 / Feature E.1)', () => {
   });
 
   it('removeGroup:子 path groupId 清空→归未分组,path 不丢', async () => {
-    const { mgr, g1 } = await makeWithGroups();
+    const { mgr, g1, g2 } = await makeWithGroups();
     // 先把 A、B 放进 g1
     mgr.reorderBookmarks({
       ungrouped: [TEST_PATH_C],
-      groups: [{ id: g1.id, childOrder: [TEST_PATH_A, TEST_PATH_B], subgroupOrder: [] }],
+      groups: [
+        { id: g1.id, childOrder: [TEST_PATH_A, TEST_PATH_B], subgroupOrder: [] },
+        { id: g2.id, childOrder: [], subgroupOrder: [] },
+      ],
     });
     mgr.removeGroup(g1.id);
     const tree = mgr.getTree();
@@ -861,7 +879,7 @@ describe('PathManager — 收藏分组 (ADR-025 / Feature E.1)', () => {
 
   it('removeGroup:解散嵌套组 → 子 path 提升到父组,子组提升到父级位置', async () => {
     const { mgr, g1, g2 } = await makeWithGroups();
-    const sub = mgr.addGroup('子组', g1.id);
+    const sub = mgr.addGroup('子组', 'local', g1.id);
     mgr.reorderBookmarks({
       ungrouped: [],
       groups: [
@@ -914,7 +932,7 @@ describe('PathManager — 收藏分组 (ADR-025 / Feature E.1)', () => {
       recent: [],
     });
     const tree = mgr.getTree();
-    expect(tree.groups).toEqual([{ id: 'g1', name: '导入组', subgroups: [] }]);
+    expect(tree.groups).toEqual([{ id: 'g1', name: '导入组', kind: 'local', subgroups: [] }]);
     expect(tree.bookmarks[0]!.groupId).toBe('g1');
   });
 
@@ -939,7 +957,7 @@ describe('PathManager — 收藏分组 (ADR-025 / Feature E.1)', () => {
   it('replaceAll:groups 含重复 id → 拒绝(内部状态保留)', async () => {
     const { mgr } = makeManager();
     await mgr.initialize();
-    mgr.addGroup('已存在');
+    mgr.addGroup('已存在', 'local');
     expect(() =>
       mgr.replaceAll({
         groups: [
@@ -952,6 +970,262 @@ describe('PathManager — 收藏分组 (ADR-025 / Feature E.1)', () => {
     ).toThrowError(/InvalidName/);
     // 原状态未变
     expect(mgr.getTree().groups.map((g) => g.name)).toEqual(['已存在']);
+  });
+
+  it('迁移:v3 根级空组无成员证据 → 回落 local，不再出现在 SSH 段', async () => {
+    const { mgr, bookmarksStore } = makeManager({
+      initialBookmarks: {
+        version: 3,
+        groups: [{ id: 'empty', name: '本机空组', subgroups: [] }],
+        paths: [],
+      } as unknown as BookmarksFile,
+    });
+    await mgr.initialize();
+    expect(mgr.getTree().groups).toEqual([
+      { id: 'empty', name: '本机空组', kind: 'local', subgroups: [] },
+    ]);
+    expect(bookmarksStore.setHistory.at(-1)?.version).toBe(4);
+  });
+
+  it('迁移:v3 SSH-only 组按成员证据归 ssh，空子组继承 ssh', async () => {
+    const { mgr } = makeManager({
+      initialBookmarks: {
+        version: 3,
+        groups: [
+          {
+            id: 'remote',
+            name: '远程项目',
+            subgroups: [{ id: 'remote-empty', name: '待整理', subgroups: [] }],
+          },
+        ],
+        paths: [
+          {
+            id: 'b-ssh',
+            path: '~/repo',
+            kind: 'ssh',
+            sshProfileId: 'profile-a',
+            groupId: 'remote',
+            addedAt: 1,
+          },
+        ],
+      } as unknown as BookmarksFile,
+    });
+    await mgr.initialize();
+    expect(mgr.getTree().groups).toEqual([
+      {
+        id: 'remote',
+        name: '远程项目',
+        kind: 'ssh',
+        subgroups: [{ id: 'remote-empty', name: '待整理', kind: 'ssh', subgroups: [] }],
+      },
+    ]);
+  });
+
+  it('迁移:v3 混合组拆成 local/ssh 两个实例，并重写 SSH groupId', async () => {
+    const { mgr } = makeManager({
+      initialBookmarks: {
+        version: 3,
+        groups: [{ id: 'mixed', name: '项目', subgroups: [] }],
+        paths: [
+          { id: 'b-local', path: TEST_PATH_A, groupId: 'mixed', addedAt: 1 },
+          {
+            id: 'b-ssh',
+            path: '~/repo',
+            kind: 'ssh',
+            sshProfileId: 'profile-a',
+            groupId: 'mixed',
+            addedAt: 2,
+          },
+        ],
+      } as unknown as BookmarksFile,
+    });
+    await mgr.initialize();
+    const tree = mgr.getTree();
+    expect(tree.groups.map((group) => [group.name, group.kind])).toEqual([
+      ['项目', 'local'],
+      ['项目', 'ssh'],
+    ]);
+    const localGroup = tree.groups.find((group) => group.kind === 'local')!;
+    const sshGroup = tree.groups.find((group) => group.kind === 'ssh')!;
+    expect(localGroup.id).toBe('mixed');
+    expect(sshGroup.id).not.toBe('mixed');
+    expect(tree.bookmarks.find((bookmark) => bookmark.kind === 'local')!.groupId).toBe(
+      localGroup.id,
+    );
+    expect(tree.bookmarks.find((bookmark) => bookmark.kind === 'ssh')!.groupId).toBe(sshGroup.id);
+  });
+
+  it('迁移:v3 嵌套 mixed 祖先按 kind 拆树，空后代继承单-kind 父组', async () => {
+    const { mgr } = makeManager({
+      initialBookmarks: {
+        version: 3,
+        groups: [
+          {
+            id: 'root',
+            name: '全部项目',
+            subgroups: [
+              {
+                id: 'local-child',
+                name: '本机项目',
+                subgroups: [{ id: 'local-empty', name: '待整理', subgroups: [] }],
+              },
+            ],
+          },
+        ],
+        paths: [
+          { id: 'b-local', path: TEST_PATH_A, groupId: 'local-child', addedAt: 1 },
+          {
+            id: 'b-ssh',
+            path: '~/repo',
+            kind: 'ssh',
+            sshProfileId: 'profile-a',
+            groupId: 'root',
+            addedAt: 2,
+          },
+        ],
+      } as unknown as BookmarksFile,
+    });
+    await mgr.initialize();
+    const tree = mgr.getTree();
+    const localRoot = tree.groups.find((group) => group.kind === 'local')!;
+    const sshRoot = tree.groups.find((group) => group.kind === 'ssh')!;
+    expect(localRoot.subgroups?.[0]).toMatchObject({
+      id: 'local-child',
+      kind: 'local',
+      subgroups: [{ id: 'local-empty', name: '待整理', kind: 'local', subgroups: [] }],
+    });
+    expect(sshRoot.subgroups).toEqual([]);
+  });
+
+  it('迁移:v4 合法数据幂等，不产生额外写盘', async () => {
+    const { mgr, bookmarksStore } = makeManager({
+      initialBookmarks: {
+        version: 4,
+        groups: [{ id: 'g', name: '项目', kind: 'local', subgroups: [] }],
+        paths: [
+          {
+            id: 'b',
+            path: TEST_PATH_A,
+            kind: 'local',
+            groupId: 'g',
+            addedAt: 1,
+          },
+        ],
+      },
+    });
+    await mgr.initialize();
+    expect(bookmarksStore.setHistory).toEqual([]);
+    expect(mgr.getTree().groups[0]!.kind).toBe('local');
+  });
+
+  it('迁移:orphan groupId 清回未分组，避免收藏从 UI 消失', async () => {
+    const { mgr } = makeManager({
+      initialBookmarks: {
+        version: 3,
+        groups: [],
+        paths: [{ id: 'orphan', path: TEST_PATH_A, groupId: 'missing', addedAt: 1 }],
+      } as unknown as BookmarksFile,
+    });
+    await mgr.initialize();
+    expect(mgr.getTree().bookmarks[0]!.groupId).toBeUndefined();
+  });
+
+  it('group kind:同名可跨 kind 共存；父子组与 bookmark 禁止跨 kind', async () => {
+    const { mgr } = makeManager();
+    await mgr.initialize();
+    const local = mgr.addGroup('项目', 'local');
+    const ssh = mgr.addGroup('项目', 'ssh');
+    expect(local.name).toBe(ssh.name);
+    expect(() => mgr.addGroup('非法 kind', 'remote' as never)).toThrowError(/InvalidName/);
+    expect(() => mgr.addGroup('错误子组', 'ssh', local.id)).toThrowError(/InvalidGroupId/);
+    expect(() => mgr.addBookmark({ path: TEST_PATH_A, groupId: ssh.id })).toThrowError(
+      /InvalidGroupId/,
+    );
+    expect(mgr.getTree().bookmarks).toEqual([]);
+  });
+
+  it('导入:同 kind 重名组整体拒绝；不同 kind 同名允许', async () => {
+    const { mgr } = makeManager();
+    await mgr.initialize();
+    expect(() =>
+      mgr.replaceAll({
+        groups: [
+          { id: 'local-a', name: '项目', kind: 'local' },
+          { id: 'local-b', name: '项目', kind: 'local' },
+        ],
+        bookmarks: [],
+        recent: [],
+      }),
+    ).toThrowError(/GroupNameConflict/);
+
+    mgr.replaceAll({
+      groups: [
+        { id: 'local', name: '项目', kind: 'local' },
+        { id: 'ssh', name: '项目', kind: 'ssh' },
+      ],
+      bookmarks: [],
+      recent: [],
+    });
+    expect(mgr.getTree().groups.map((group) => [group.name, group.kind])).toEqual([
+      ['项目', 'local'],
+      ['项目', 'ssh'],
+    ]);
+  });
+
+  it('启动迁移:同 kind 重名组确定性改名，保留两个组', async () => {
+    const { mgr } = makeManager({
+      initialBookmarks: {
+        version: 4,
+        groups: [
+          { id: 'a', name: '项目', kind: 'local', subgroups: [] },
+          { id: 'b', name: '项目', kind: 'local', subgroups: [] },
+        ],
+        paths: [],
+      },
+    });
+    await mgr.initialize();
+    expect(mgr.getTree().groups.map((group) => group.name)).toEqual(['项目', '项目 (2)']);
+  });
+
+  it('reorder:同一子组被两个父组引用时拒绝，失败后原树不变', async () => {
+    const { mgr, g1, g2 } = await makeWithGroups();
+    const child = mgr.addGroup('子组', 'local', g1.id);
+    const before = mgr.getTree();
+    expect(() =>
+      mgr.reorderBookmarks({
+        ungrouped: [TEST_PATH_A, TEST_PATH_B, TEST_PATH_C],
+        groups: [
+          { id: g1.id, childOrder: [], subgroupOrder: [child.id] },
+          { id: child.id, childOrder: [], subgroupOrder: [] },
+          { id: g2.id, childOrder: [], subgroupOrder: [child.id] },
+        ],
+      }),
+    ).toThrowError(/InvalidGroupId/);
+    expect(mgr.getTree()).toEqual(before);
+  });
+
+  it('reorder:跨 kind 归组被拒绝，失败后 bookmarks/group 树保持原状', async () => {
+    const { mgr } = makeManager();
+    await mgr.initialize();
+    mgr.addBookmark({ path: TEST_PATH_A });
+    mgr.addBookmark({
+      path: '~/repo',
+      kind: 'ssh',
+      sshProfileId: 'profile-a',
+    });
+    const local = mgr.addGroup('本机', 'local');
+    const ssh = mgr.addGroup('远程', 'ssh');
+    const before = mgr.getTree();
+    expect(() =>
+      mgr.reorderBookmarks({
+        ungrouped: [],
+        groups: [
+          { id: local.id, childOrder: ['ssh:profile-a:~%2Frepo'], subgroupOrder: [] },
+          { id: ssh.id, childOrder: [TEST_PATH_A], subgroupOrder: [] },
+        ],
+      }),
+    ).toThrowError(/InvalidGroupId/);
+    expect(mgr.getTree()).toEqual(before);
   });
 });
 

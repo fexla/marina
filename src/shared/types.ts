@@ -319,11 +319,14 @@ interface PathNodeBase {
  * 用户裁决(2026-08-04)：分组可递归嵌套 —— `subgroups` 为直接子组(有序)。
  * 树的表达：PathTree.groups = 顶层分组数组，子组挂在各自 subgroups 下。
  * `id` = 新生成的 UUID，不与 pathId 复用；解散组后该 id 作废(不回收)。
+ * `kind` = 该分组唯一归属的路径域；同一棵分组子树内父子 kind 必须一致。
  * 显示顺序 = 所在层级的 children 数组位置；组内 path 顺序 = bookmarks 数组位置。
  */
 export interface GroupNode {
   id: string;
   name: string;
+  /** 分组只属于一个路径域；local 与 ssh 共用实现，不共用分组实例。 */
+  kind: PathKind;
   /** v0.3.3 嵌套子组（有序）；无 = [] / undefined（旧数据）。 */
   subgroups?: GroupNode[];
 }
@@ -656,24 +659,25 @@ export interface Settings {
  * 通过 buildBookmark 构造。
  */
 /**
- * v0.3.3 ADR-025:磁盘层分组形状。v3 起分组可递归嵌套：
- * 顶层数组 = roots，`subgroups` = 直接子组（有序）。
- * v2 平铺文件（无 subgroups 字段）启动期迁移时补空数组。
+ * v0.3.3 ADR-025:磁盘层分组形状。v3 起分组可递归嵌套；v4 起每个分组
+ * 必须归属一个 PathKind，且父子组 kind 一致。顶层数组 = roots，`subgroups`
+ * = 直接子组（有序）。v1-v3 文件由 PathManager 启动迁移到 v4。
  */
 export interface PersistedGroup {
   id: string;
   name: string;
+  kind: PathKind;
   /** v3 嵌套子组；v2 文件缺此字段，迁移时补 [] */
   subgroups?: PersistedGroup[];
 }
 
 /**
  * bookmarks.json schema。v0.3.3 起 version=2（新增 groups 与 path.groupId），
- * 用户裁决后 version=3（groups 递归嵌套，subgroups 数组）。
- * v1 文件（无 groups / path 无 groupId）启动期迁移为 v3（见 PathManager.initialize）。
+ * version=3（groups 递归嵌套），version=4（group.kind 必填）。
+ * v1-v3 文件启动期迁移为 v4（见 PathManager.initialize）。
  */
 export interface BookmarksFile {
-  version: 3;
+  version: 4;
   /** 顶层分组；子组在各自 subgroups 内。 */
   groups: PersistedGroup[];
   paths: PersistedBookmark[];

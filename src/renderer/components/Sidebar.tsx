@@ -62,13 +62,21 @@ import {
   type CreateSessionResponse,
   type PickFolderResponse,
 } from '@shared/protocol';
-import type { GroupNode, PathNode, SessionInfo, SshProfile, Template } from '@shared/types';
+import type {
+  GroupNode,
+  PathKind,
+  PathNode,
+  SessionInfo,
+  SshProfile,
+  Template,
+} from '@shared/types';
 import { disambiguatePathNames } from '@shared/path-display';
 import { hasAnyRemote } from '@shared/remote-visibility';
 import { makeSshPathId } from '@shared/remote-path';
 import {
   BOOKMARK_ROOT_GROUP_CONTAINER,
   BOOKMARK_UNGROUPED_CONTAINER,
+  bookmarkGroupIdsForContainer,
   bookmarkPathIdsForContainer,
   bookmarkSubgroupContainerId,
   isDescendantGroupInLayout,
@@ -130,6 +138,25 @@ import { SshConnectionDialog } from './SshConnectionDialog';
  * beta.9 完全一致(本地视野不变式)。
  */
 type SidebarSegment = 'local' | 'remote';
+
+/** segmented control 是 UI 语言；PathKind 才是 Path/Bookmark/Group 的领域语言。 */
+function pathKindForSegment(segment: SidebarSegment): PathKind {
+  return segment === 'remote' ? 'ssh' : 'local';
+}
+
+/**
+ * GroupNode.kind 是后端不变式；renderer 仍递归过滤，避免旧 daemon / 损坏快照
+ * 把另一 kind 子树渲染出来。返回 clone，绝不修改 store 的 PathTree。
+ */
+function filterGroupForestByKind(groups: GroupNode[], kind: PathKind): GroupNode[] {
+  return groups
+    .filter((group) => group.kind === kind)
+    .map((group) => ({
+      ...group,
+      subgroups: filterGroupForestByKind(group.subgroups ?? [], kind),
+    }));
+}
+
 interface BackendDirectoryPickerIntent {
   kind: 'bookmark' | 'temporary';
   /** bookmark 从分组菜单发起时，选择结果原子地直接进入该组。 */
@@ -301,21 +328,22 @@ export function Sidebar(): JSX.Element {
   const directoryPickerInitialPath =
     selectedBackendPath?.kind === 'local' ? selectedBackendPath.path : undefined;
 
-  // SSH 方案 v2.1 §II.3:三栏按 segment 过滤(本地 = kind==='local',包含
-  // WSL UNC 路径;远程 = kind==='ssh')。本地用户无 profile + 未启 enableRemote
-  // 时 effectiveSegment 强制 'local',跟 beta.9 一样。
+  // SSH 方案 v2.1 §II.3:三栏按 segment 过滤(本地包含 WSL UNC；远程=SSH)。
+  // 分组从 v4 起也持有同一个 PathKind，因此 path 与 group 使用同一真相源。
+  const effectivePathKind = pathKindForSegment(effectiveSegment);
   const filterNodesBySegment = (nodes: PathNode[]): PathNode[] =>
-    effectiveSegment === 'remote'
-      ? nodes.filter((n) => n.kind === 'ssh')
-      : nodes.filter((n) => n.kind === 'local');
+    nodes.filter((node) => node.kind === effectivePathKind);
   const bookmarksFiltered = useMemo(
     () => filterNodesBySegment(state.pathTree.bookmarks),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [state.pathTree.bookmarks, effectiveSegment],
   );
-  // v0.3.3 ADR-025:收藏分组(虚拟节点)不分本地/远程 —— 分组是跨 segment 的组织容器,
-  // 只有里面的 path 按 segment 过滤。故 groups 直接取全集。
-  const groupsFiltered = useMemo(() => state.pathTree.groups ?? [], [state.pathTree.groups]);
+  // ADR-025 kind ownership 修订：local/ssh 共用分组功能，但每个分组实例只归属
+  // 一个 kind。这里只给当前 segment 可见树；BookmarkCategory 另收全量树做 DnD。
+  const groupsFiltered = useMemo(
+    () => filterGroupForestByKind(state.pathTree.groups ?? [], effectivePathKind),
+    [state.pathTree.groups, effectivePathKind],
+  );
   // 收藏去重名(Category 内部算的那套提到外面,BookmarkCategory 复用)。
   const bookmarkDisplayNames = useMemo(
     () => disambiguatePathNames(bookmarksFiltered),
@@ -365,6 +393,7 @@ export function Sidebar(): JSX.Element {
     try {
       await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_GROUP_ADD, {
         name: name.trim(),
+        kind: effectivePathKind,
         ...(parentId ? { parentId } : {}),
       });
     } catch (err) {
@@ -705,6 +734,7 @@ export function Sidebar(): JSX.Element {
           paths={bookmarksFiltered}
           allPaths={state.pathTree.bookmarks}
           groups={groupsFiltered}
+          allGroups={state.pathTree.groups}
           collapsed={isCategoryCollapsed('bookmark')}
           onToggleCollapsed={() => handleToggleCategory('bookmark')}
           onContextMenu={(e) =>
@@ -1238,8 +1268,15 @@ function BookmarkPathList({
   const activePathId = dragState?.activeType === 'bookmark-path' ? dragState.activeId : undefined;
   const visibleIds = paths.map((path) => path.id);
   const fullIds = bookmarkPathIdsForContainer(fullLayout, containerId) ?? visibleIds;
-  // 末尾兑底的 placement（用全量索引，hidden segment 不丢）。
-  const tailFullIndex = fullIds.filter((id) => id !== activePathId).length;
+  // 可见插槽必须锚定到全量容器；否则未分组区里隐藏的另一 kind path 会被跨越
+  // 或丢失。末尾定义为“最后一个当前 kind 项之后、隐藏尾项之前”。
+  const tailFullIndex =
+    visibleBookmarkSlotToFullIndex(
+      fullIds,
+      visibleIds,
+      activePathId,
+      visibleIds.filter((id) => id !== activePathId).length,
+    ) ?? fullIds.filter((id) => id !== activePathId).length;
   const { setNodeRef, isOver } = useDroppable({
     id: `${PATH_LIST_DROP_ID_PREFIX}${encodeURIComponent(containerId)}`,
     data: {
@@ -1264,7 +1301,19 @@ function BookmarkPathList({
         data-container-id={containerId}
         data-container-depth={depth}
       >
-        {paths.map((path, i) => renderPath(path, { containerId, index: i, depth }))}
+        {paths.map((path, visibleIndex) => {
+          const indexAfterRemovingActive = visibleIds
+            .filter((id) => id !== activePathId)
+            .indexOf(path.id);
+          const fullIndex =
+            visibleBookmarkSlotToFullIndex(
+              fullIds,
+              visibleIds,
+              activePathId,
+              indexAfterRemovingActive >= 0 ? indexAfterRemovingActive : visibleIndex,
+            ) ?? visibleIndex;
+          return renderPath(path, { containerId, index: fullIndex, depth });
+        })}
       </ul>
     </SortableContext>
   );
@@ -1306,7 +1355,15 @@ function BookmarkGroupList({
   const containerId =
     parentId === null ? BOOKMARK_ROOT_GROUP_CONTAINER : bookmarkSubgroupContainerId(parentId);
   const activeGroupId = dragState?.activeType === 'bookmark-group' ? dragState.activeId : undefined;
-  const tailIndex = groups.filter((g) => g.id !== activeGroupId).length;
+  const visibleIds = groups.map((group) => group.id);
+  const fullIds = bookmarkGroupIdsForContainer(fullLayout, containerId) ?? visibleIds;
+  const tailIndex =
+    visibleBookmarkSlotToFullIndex(
+      fullIds,
+      visibleIds,
+      activeGroupId,
+      visibleIds.filter((id) => id !== activeGroupId).length,
+    ) ?? fullIds.filter((id) => id !== activeGroupId).length;
   const { setNodeRef, isOver } = useDroppable({
     id: `${GROUP_LIST_DROP_ID_PREFIX}${encodeURIComponent(containerId)}`,
     ...(disabled ? { disabled } : {}),
@@ -1329,24 +1386,36 @@ function BookmarkGroupList({
         data-group-container-id={containerId}
         data-group-container-depth={depth}
       >
-        {groups.map((group, i) => (
-          <GroupBlock
-            key={group.id}
-            group={group}
-            depth={depth}
-            index={i}
-            containerId={containerId}
-            dragState={dragState}
-            fullLayout={fullLayout}
-            collapsedSet={collapsedSet}
-            toggleGroup={toggleGroup}
-            byGroup={byGroup}
-            renderPath={renderPath}
-            onRequestAddSubgroup={onRequestAddSubgroup}
-            onRequestAddFolder={onRequestAddFolder}
-            {...(addFolderDisabledReason ? { addFolderDisabledReason } : {})}
-          />
-        ))}
+        {groups.map((group, visibleIndex) => {
+          const indexAfterRemovingActive = visibleIds
+            .filter((id) => id !== activeGroupId)
+            .indexOf(group.id);
+          return (
+            <GroupBlock
+              key={group.id}
+              group={group}
+              depth={depth}
+              index={
+                visibleBookmarkSlotToFullIndex(
+                  fullIds,
+                  visibleIds,
+                  activeGroupId,
+                  indexAfterRemovingActive >= 0 ? indexAfterRemovingActive : visibleIndex,
+                ) ?? visibleIndex
+              }
+              containerId={containerId}
+              dragState={dragState}
+              fullLayout={fullLayout}
+              collapsedSet={collapsedSet}
+              toggleGroup={toggleGroup}
+              byGroup={byGroup}
+              renderPath={renderPath}
+              onRequestAddSubgroup={onRequestAddSubgroup}
+              onRequestAddFolder={onRequestAddFolder}
+              {...(addFolderDisabledReason ? { addFolderDisabledReason } : {})}
+            />
+          );
+        })}
       </div>
     </SortableContext>
   );
@@ -1401,9 +1470,18 @@ function GroupBlock({
     !!activeGroupId &&
     (activeGroupId === group.id || isDescendantGroupInLayout(fullLayout, activeGroupId, group.id));
   const subgroupContainerId = bookmarkSubgroupContainerId(group.id);
+  const visibleSubgroupIds = subgroups.map((subgroup) => subgroup.id);
+  const fullSubgroupIds =
+    bookmarkGroupIdsForContainer(fullLayout, subgroupContainerId) ?? visibleSubgroupIds;
   const groupPlacement: BookmarkPlacement = {
     targetContainerId: subgroupContainerId,
-    targetIndex: subgroups.filter((subgroup) => subgroup.id !== activeGroupId).length,
+    targetIndex:
+      visibleBookmarkSlotToFullIndex(
+        fullSubgroupIds,
+        visibleSubgroupIds,
+        activeGroupId,
+        visibleSubgroupIds.filter((id) => id !== activeGroupId).length,
+      ) ?? fullSubgroupIds.filter((id) => id !== activeGroupId).length,
   };
   const visiblePathIds = gPaths.map((path) => path.id);
   const fullPathIds = bookmarkPathIdsForContainer(fullLayout, group.id) ?? visiblePathIds;
@@ -1518,6 +1596,7 @@ function BookmarkCategory({
   paths,
   allPaths,
   groups,
+  allGroups,
   collapsed,
   onToggleCollapsed,
   onContextMenu,
@@ -1533,8 +1612,10 @@ function BookmarkCategory({
   paths: PathNode[];
   /** backend 全量收藏（用于提交完整 reorder，绝不能丢掉另一 segment）。 */
   allPaths: PathNode[];
-  /** 分组森林（顶层数组；子组递归挂在 subgroups 下）。 */
+  /** 当前 PathKind 的可见分组森林（用于渲染、菜单和碰撞）。 */
   groups: GroupNode[];
+  /** backend 全量分组森林（用于提交完整 reorder，绝不能丢另一 kind）。 */
+  allGroups: GroupNode[];
   collapsed: boolean;
   onToggleCollapsed: () => void;
   onContextMenu: (e: MouseEvent<HTMLElement>) => void;
@@ -1613,14 +1694,14 @@ function BookmarkCategory({
       });
       for (const sub of node.subgroups ?? []) walk(sub);
     };
-    for (const g of groups) walk(g);
+    for (const group of allGroups) walk(group);
     return {
       ungrouped: allPaths
         .filter((path) => !path.groupId || !groupIds.has(path.groupId))
         .map((path) => path.id),
       groups: groupsFlat,
     };
-  }, [allPaths, groups]);
+  }, [allGroups, allPaths]);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
@@ -1854,6 +1935,32 @@ function BookmarkCategory({
       // 缩进列）= 同级后置（放在 G 之后、G 的下一个兄弟之前）；x 靠右 = 嵌入 G 末尾。
       const subgroupContainerId = tailEl.dataset.groupContainerId;
       if (subgroupContainerId) {
+        if (
+          subgroupContainerId === BOOKMARK_ROOT_GROUP_CONTAINER &&
+          activeType === 'bookmark-group'
+        ) {
+          const visibleRootIds = groups.map((group) => group.id);
+          const fullRootIds =
+            bookmarkGroupIdsForContainer(fullLayout, BOOKMARK_ROOT_GROUP_CONTAINER) ??
+            visibleRootIds;
+          const placement: BookmarkPlacement = {
+            targetContainerId: BOOKMARK_ROOT_GROUP_CONTAINER,
+            targetIndex:
+              visibleBookmarkSlotToFullIndex(
+                fullRootIds,
+                visibleRootIds,
+                dragState?.activeId,
+                visibleRootIds.filter((id) => id !== dragState?.activeId).length,
+              ) ?? fullRootIds.filter((id) => id !== dragState?.activeId).length,
+          };
+          return resolveDrop(
+            activeType,
+            { rowKind: 'container-tail', containerId: subgroupContainerId, depth: 0, placement },
+            tailEl,
+            x,
+            y,
+          );
+        }
         // 从容器 id 反解出 G。容器 id 形如 __marina_subgroups__:<encodeURIComponent gid>。
         const gid = decodeSubgroupId(subgroupContainerId);
         const gOrder = gid ? fullLayout.groups.find((g) => g.id === gid) : undefined;
@@ -1908,15 +2015,28 @@ function BookmarkCategory({
           );
         }
       }
-      // 路径容器尾部：追到末尾。 */
+      // 路径容器尾部：DOM 只含当前 kind，必须把可见末尾映射回全量 path 容器。
       const containerId = tailEl.dataset.containerId ?? tailEl.dataset.groupContainerId ?? '';
       const depth = Number(
         tailEl.dataset.containerDepth ?? tailEl.dataset.groupContainerDepth ?? '0',
       );
-      const childCount = tailEl.querySelectorAll(':scope > [data-path-id]').length;
+      const visiblePathIds = Array.from(
+        tailEl.querySelectorAll<HTMLElement>(':scope > [data-path-id]'),
+      )
+        .map((element) => element.dataset.pathId)
+        .filter((id): id is string => id !== undefined);
+      const activePathId =
+        dragState?.activeType === 'bookmark-path' ? dragState.activeId : undefined;
+      const fullPathIds = bookmarkPathIdsForContainer(fullLayout, containerId) ?? visiblePathIds;
       const placement: BookmarkPlacement = {
         targetContainerId: containerId,
-        targetIndex: childCount,
+        targetIndex:
+          visibleBookmarkSlotToFullIndex(
+            fullPathIds,
+            visiblePathIds,
+            activePathId,
+            visiblePathIds.filter((id) => id !== activePathId).length,
+          ) ?? fullPathIds.filter((id) => id !== activePathId).length,
       };
       return resolveDrop(
         activeType,

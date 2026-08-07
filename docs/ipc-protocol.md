@@ -6,15 +6,18 @@
 > 这份文档定义所有消息的 schema、语义、错误码、时序约束。
 > 实现代码必须严格遵循,不允许"自由发挥"。
 
-文档版本:3.0 · 最后更新:2026-08-07
+文档版本:4.0 · 最后更新:2026-08-07
 
+> **v4.0 变更**(收藏分组 kind 隔离):
+> - `GroupNode.kind` 与新增分组 payload 的 `kind` 改为必填，local/ssh 分组树必须隔离。
+> - 新 renderer 不能与仍返回无 kind group 的 v3 daemon 混用，`PROTOCOL_VERSION` 升为 4。
+>
 > **v3.0 变更**(命令面板刷新策略勘误):
 > - `CommandEntry.strategy` 拆为必填 `refreshPolicy: { scope, interval }`；前后台范围与刷新间隔不再混为一个枚举。
 > - 新增 `cmd:command-panel:update-refresh-policy`，payload 只提交当前控件字段的 `patch`，main 在最新真值上合并。
 > - `cmd:command-panel:set-demand` 的 consumer 只取命令信封 clientId；owner 切换、窗口关闭、远程断线必须清旧 demand。
 > - 因删除字段、增加 renderer 必需字段与替换 channel，`PROTOCOL_VERSION` 由 2 升为 3；v2/v3 握手拒绝混用。
 >
-
 > **v2.5 变更**(ADR-021 需求感知后台任务):
 > - 新增 backend-data `cmd:git:set-polling-demand`，renderer 只上报固定枚举 HOT/WARM/NONE；consumerId 必须取 envelope.windowId。
 > - Git demand 支持本地窗口与远程 WS client；窗口关闭/断线/owner 变化统一撤销。
@@ -373,7 +376,7 @@ Renderer 启动
   ↓
 2. invoke('cmd:app:get-protocol-version', {})
   ↓
-3. 收到 { protocolVersion: 3 }
+3. 收到 { protocolVersion: 4 }
   ↓
 4. 比较与 Renderer 编译时的 PROTOCOL_VERSION,不匹配 → 抛错并显示升级提示
   ↓
@@ -1082,6 +1085,7 @@ interface AddBookmarkPayload {
   path: string;                 // 绝对路径,Main 会校验存在性
   displayName?: string;
   defaultTemplateId?: string;
+  groupId?: string;             // 只能引用 local 分组；不存在/跨 kind 均拒绝
 }
 // Response
 interface AddBookmarkResponse {
@@ -1136,13 +1140,57 @@ interface RenameBookmarkPayload {
 #### `cmd:bookmark:reorder`
 ```typescript
 interface ReorderBookmarksPayload {
-  orderedPathIds: string[];     // 必须包含所有现有 bookmark 的 id,数量一致
+  ungrouped: string[];
+  groups: Array<{
+    id: string;
+    childOrder: string[];
+    subgroupOrder: string[];
+  }>;
 }
 // Response: {}
 ```
 
+payload 必须覆盖当前 backend 的**全部 bookmark 和全部 group**各一次；renderer 即使只
+显示当前 PathKind，也必须用全量 PathTree 生成提交。父子组、group/path membership
+必须同 kind。Main 完成全部校验后才原子替换顺序、父子关系与 groupId。
+
 **Errors**:
-- `InvalidOrderList`:列表与现有不一致(漏了或多了 id)
+- `InvalidOrderList`:path 漏项、重复或未知
+- `InvalidGroupId`:group 漏项、重复、未知、多父、成环或跨 kind
+
+---
+
+#### `cmd:bookmark:group:add`
+```typescript
+interface AddBookmarkGroupPayload {
+  name: string;
+  kind: 'local' | 'ssh';        // required；一个分组实例只属于一个 PathKind
+  parentId?: string;            // 给定时必须引用同 kind 父组
+}
+interface AddBookmarkGroupResponse { id: string }
+```
+
+组名在同 kind 内唯一；local/ssh 可存在同名组。允许空组。
+
+**Errors**:`InvalidName`、`GroupNameConflict`、`GroupNotFound`、`InvalidGroupId`
+
+#### `cmd:bookmark:group:rename`
+```typescript
+interface RenameBookmarkGroupPayload { id: string; name: string }
+// Response: {}
+```
+
+**Errors**:`InvalidName`、`GroupNameConflict`、`GroupNotFound`
+
+#### `cmd:bookmark:group:remove`
+```typescript
+interface RemoveBookmarkGroupPayload { id: string }
+// Response: {}
+```
+
+解散组但绝不删 path：直接成员提升到同 kind 父组（根组则归未分组），子组提升一级。
+
+**Errors**:`GroupNotFound`
 
 ---
 
@@ -2078,11 +2126,14 @@ try {
 
 ### 10.1 当前版本
 
-`PROTOCOL_VERSION = 3`(在 `src/shared/protocol.ts` 中定义为常量)。
+`PROTOCOL_VERSION = 4`(在 `src/shared/protocol.ts` 中定义为常量)。
 
+> v4.0(2026-08-07):major bump。触发原因 = 收藏 `GroupNode.kind` 与新增分组 payload 的
+> `kind` 改为必填，local/ssh 树必须隔离。详见顶部 v4.0 changelog。
+>
 > v3.0(2026-08-07):major bump。触发原因 = 命令面板删除混合 `strategy` 字段，改为 renderer
 > 必需的 `refreshPolicy`，并用 `update-refresh-policy` 替换旧 channel。详见顶部 v3.0 changelog。
-
+>
 > v2.0(2026-07-05):major bump。触发原因 = 命令信封 `windowId` → `clientId`(字段重命名,
 > 见 §10.2"必须 bump major")。
 
@@ -2136,7 +2187,7 @@ export interface Settings { ... }
 export interface ShellInfo { id: string; name: string; path: string; }
 
 // src/shared/protocol.ts
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 export const Channels = {
   // Commands
