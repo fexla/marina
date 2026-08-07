@@ -112,6 +112,10 @@ function PanelStack({
   const [pendingWidth, setPendingWidth] = useState<number | null>(null);
   const dragCleanupRef = useRef<(() => void) | null>(null);
   const openedCount = appState.filePanels.get(session.id)?.files.length ?? 0;
+  const commandSnapshot = appState.commandPanels.get(session.id);
+  const activeCommandHasOutput = Boolean(
+    commandSnapshot?.commands.find((entry) => entry.key === commandSnapshot.activeKey)?.output,
+  );
   const width = pendingWidth ?? persisted.width;
 
   // ADR-021:PanelStack 是“当前 Session + 当前面板”的 UI 真值源。Git 可见且本窗口
@@ -140,8 +144,8 @@ function PanelStack({
   // 副本把重计算降为可中断更新，避免“大结果集 + 输入一键”冻结整个 renderer。
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const [searchCaseSensitive, setSearchCaseSensitive] = useState(false);
-  // v0.3.1 C3:文件内查找的命中数/当前序号由 FileViewer 算后汇报(事件),
-  // LayoutHost 只展示。导航(onNext/onPrev)反向 dispatch 事件给 FileViewer。
+  // v0.3.1 C3:文件内查找的命中数/当前序号由当前 Markdown/FileViewer 汇报(事件),
+  // LayoutHost 只展示。导航(onNext/onPrev)反向 dispatch 事件给当前 viewer。
   const [searchMatches, setSearchMatches] = useState(0);
   const [searchCurrent, setSearchCurrent] = useState(0);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -164,7 +168,7 @@ function PanelStack({
     dockBodyRef.current?.focus();
   }, []);
 
-  // v0.3.1 C3:监听 FileViewer 汇报的文件内查找结果(matches/current)。
+  // v0.3.1 C3:监听当前 viewer 汇报的文件内查找结果(matches/current)。
   // 只收本 session 的事件(多窗口时其他窗口的 LayoutHost 不响应)。
   useEffect(() => {
     const onResult = (e: Event): void => {
@@ -325,7 +329,10 @@ function PanelStack({
             caseSensitive={searchCaseSensitive}
             onToggleCase={() => setSearchCaseSensitive((v) => !v)}
             inputRef={searchInputRef}
-            showNavigator={activePanelId === 'file-panel' && openedCount > 0}
+            showNavigator={
+              (activePanelId === 'file-panel' && openedCount > 0) ||
+              (activePanelId === 'command' && activeCommandHasOutput)
+            }
             matches={searchMatches}
             current={searchCurrent}
             onNext={() => navigateSearch('next')}

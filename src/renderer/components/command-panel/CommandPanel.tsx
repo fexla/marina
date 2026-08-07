@@ -10,9 +10,9 @@
  *   output 在 entry.output 里(main 端聚合),第一版不做流式实时(命令通常秒级完成)。
  * - per-指令刷新拆成两个正交控件：前台/后台 toggle 只决定隐藏时是否继续，
  *   刷新间隔 select 只决定手动/5s/30s；面板可见性另行上报 demand。
- * - 渲染用轻量 markdown(ReactMarkdown + remarkGfm + 外链 open-external),
- *   不复用 MarkdownViewer(它耦合 OpenedFile 磁盘路径;命令输出是内存字符串,
- *   抽取它改动面大,违反已封箱代码最小改动原则。后续如需图片/代码块执行再抽取)。
+ * - 输出正文复用“已打开”面板的 MarkdownDocument（主题 / GFM / 外链 / 代码块 /
+ *   搜索同一实现）。命令输出只有内存字符串，所以只传稳定 command key 作缓存身份，
+ *   不伪造文件路径；本地链接/图片/gallery 等路径能力仍只属于真实 OpenedFile。
  *
  * @对应文档: ADR-028(docs/方案-命令面板-20260802.md)、ADR-023(CodeBlockRunner)。
  *
@@ -21,9 +21,7 @@
  * - 不缓存指令列表到 localStorage(状态由 main 真值源推;切面板 <16ms 靠 store
  *   快照本身,LayoutHost 卸载组件但 store 不丢)。
  */
-import { useEffect, useMemo, useRef, type AnchorHTMLAttributes } from 'react';
-import ReactMarkdown, { type Components } from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { useEffect } from 'react';
 import {
   COMMAND_CHANNELS,
   type CommandEntry,
@@ -35,11 +33,12 @@ import type { PanelSearchProps } from '../layout/panel-registry';
 import { useAppDispatch, useAppState } from '../../store';
 import { useToast } from '../Toast';
 import { useTranslation } from '../LanguageProvider';
+import { MarkdownDocument } from '../file-panel/MarkdownDocument';
 
 interface CommandPanelProps {
   /** 绑定的终端 session id;父级按 session 切换重新挂载。 */
   sessionId: string;
-  /** dock 级搜索状态(命令面板暂不用,保留接口对称)。 */
+  /** dock 级搜索状态；透传给共享 MarkdownDocument 做正文查找。 */
   search: PanelSearchProps;
 }
 
@@ -54,17 +53,11 @@ const INTERVAL_OPTIONS: ReadonlyArray<{
   { value: '5s', zh: '每 5 秒', en: 'Every 5s' },
 ];
 
-/** 判断字符串是否为外链(http(s)/mailto),命令输出里的链接点开走系统浏览器。 */
-function isExternalLink(href: string): boolean {
-  return /^https?:\/\//i.test(href) || /^mailto:/i.test(href);
-}
-
-export function CommandPanel({ sessionId }: CommandPanelProps): JSX.Element {
+export function CommandPanel({ sessionId, search }: CommandPanelProps): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
   const { tx } = useTranslation();
   const toast = useToast();
-  const bodyRef = useRef<HTMLDivElement | null>(null);
 
   const snapshot: CommandPanelSnapshot = state.commandPanels.get(sessionId) ?? {
     commands: [],
@@ -260,7 +253,7 @@ export function CommandPanel({ sessionId }: CommandPanelProps): JSX.Element {
       )}
 
       {/* 输出区(markdown 渲染) */}
-      <div className="command-panel-body" ref={bodyRef}>
+      <div className="command-panel-body">
         {!activeEntry ? (
           <div className="command-panel-empty">
             <p>{tx('尚无命令', 'No commands yet')}</p>
@@ -269,48 +262,37 @@ export function CommandPanel({ sessionId }: CommandPanelProps): JSX.Element {
             </p>
           </div>
         ) : (
-          <CommandOutput entry={activeEntry} />
+          <CommandOutput sessionId={sessionId} entry={activeEntry} search={search} />
         )}
       </div>
     </div>
   );
 }
 
-/** 单条命令的输出渲染(markdown)。外链点开走系统浏览器。 */
-function CommandOutput({ entry }: { entry: CommandEntry }): JSX.Element {
-  // markdown components:外链 → open-external;其余默认。命令输出无 mdPath 概念,
-  // 本地路径链接不支持(那是 T14 Feature F 的范畴,命令面板不承担)。
-  const components = useMemo<Components>(
-    () => ({
-      // 参数类型必须兼容 react-markdown 的 Components['a'](ClassAttributes &
-      // AnchorHTMLAttributes & ExtraProps)—— 不能用收窄的自定义字面量类型。
-      a: ({ href, children }: AnchorHTMLAttributes<HTMLAnchorElement>) => {
-        const handle = (e: React.MouseEvent): void => {
-          if (!href || href.startsWith('#')) return;
-          e.preventDefault();
-          if (isExternalLink(href)) {
-            window.api
-              .invoke(COMMAND_CHANNELS.SYSTEM_OPEN_EXTERNAL, { url: href })
-              .catch((err: unknown) => console.warn('[command] openExternal failed', err));
-          }
-        };
-        return (
-          <a href={href} onClick={handle} target="_blank" rel="noopener noreferrer">
-            {children}
-          </a>
-        );
-      },
-    }),
-    [],
-  );
-
+/**
+ * 单条命令的来源 adapter：保留 running / pending / empty 状态，只把已经聚合好的
+ * stdout Markdown 交给与“已打开”面板相同的 MarkdownDocument。entry.output 已由
+ * CommandPanelService 按 OUTPUT_MAX_BYTES 有界裁切，本层不再复制另一套截断规则。
+ */
+function CommandOutput({
+  sessionId,
+  entry,
+  search,
+}: {
+  sessionId: string;
+  entry: CommandEntry;
+  search: PanelSearchProps;
+}): JSX.Element {
   return (
     <div className="command-output">
       {entry.status === 'running' && <div className="command-running-indicator">running…</div>}
       {entry.output ? (
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-          {entry.output}
-        </ReactMarkdown>
+        <MarkdownDocument
+          sessionId={sessionId}
+          markdown={entry.output}
+          documentIdentity={`command:${entry.key}`}
+          search={search}
+        />
       ) : entry.status === 'running' ? (
         <p className="command-output-pending">…</p>
       ) : (

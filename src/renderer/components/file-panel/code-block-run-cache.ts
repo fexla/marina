@@ -4,8 +4,9 @@
  *   MarkdownCodeBlock 卸载重挂后仍能恢复,并在组件不在场时继续接收流式事件。
  *
  * @关键设计:
- * - identity = sessionId + 文档路径 + Markdown 源位置 + 代码摘要。同一 terminal
- *   切走再切回命中同一条;换 session/cwd 不共享,文档代码变化也不复用旧输出。
+ * - identity = sessionId + 文档稳定身份 + Markdown 源位置 + 代码摘要。文件来源用
+ *   规范化路径，命令来源用稳定 command key；切走再切回命中同一条，换 session
+ *   或正文代码变化不会错误复用旧输出。
  * - 全局事件桥在 renderer 生命周期内只安装一次。组件卸载只退订 store listener,
  *   不退订 IPC,所以运行到一半切 terminal 不丢 output/exited 事件。
  * - 这是类似 fileViewerScroll 的 L1 工作态:跨组件重挂保留,应用重启可丢。输出
@@ -79,11 +80,11 @@ function hashCode(text: string): string {
  */
 export function createCodeBlockRunKey(
   sessionId: string,
-  documentPath: string,
+  documentIdentity: string,
   sourcePosition: string | number,
   code: string,
 ): string {
-  return `${sessionId}\0${documentPath}\0${String(sourcePosition)}\0${code.length}:${hashCode(code)}`;
+  return `${sessionId}\0${documentIdentity}\0${String(sourcePosition)}\0${code.length}:${hashCode(code)}`;
 }
 
 function appendBounded(previous: string, next: string): string {
@@ -301,8 +302,7 @@ export function exportCodeBlockRuns(): Array<{
   output: string;
   exitCode: number | null;
 }> {
-  const out: Array<{ key: string; state: string; output: string; exitCode: number | null }> =
-    [];
+  const out: Array<{ key: string; state: string; output: string; exitCode: number | null }> = [];
   for (const [key, entry] of entries) {
     if (entry.state !== 'exited') continue;
     out.push({

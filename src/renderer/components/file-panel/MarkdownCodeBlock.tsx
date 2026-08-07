@@ -48,8 +48,8 @@ import {
 interface MarkdownCodeBlockProps {
   /** Markdown 面板绑定的 session;main/daemon 据此读 backend 与 currentCwd。 */
   sessionId: string;
-  /** 文档绝对路径,只用于窗口内 cache identity,不写日志/磁盘。 */
-  documentPath: string;
+  /** 文档稳定身份,只用于窗口内 cache identity,不要求是文件路径,不写日志/磁盘。 */
+  documentIdentity: string;
   /** react-markdown 源位置(offset 优先,line:column 兜底),区分同文档重复代码块。 */
   sourcePosition: string | number;
   /** react-markdown code 节点的 className,形如 `language-bash`。 */
@@ -59,12 +59,12 @@ interface MarkdownCodeBlockProps {
 }
 
 /**
- * 单个 fenced code block 的可交互外壳。由 MarkdownViewer 的 pre renderer
- * 在识别到 code 子节点后挂载;非 shell 语言仍渲染普通 <pre><code>(无工具栏)。
+ * 单个 fenced code block 的可交互外壳。由共享 MarkdownDocument 的 pre renderer
+ * 在识别到 code 子节点后挂载;非 shell 语言仍渲染普通 <pre><code>(无运行按钮)。
  */
 export function MarkdownCodeBlock({
   sessionId,
-  documentPath,
+  documentIdentity,
   sourcePosition,
   className,
   code,
@@ -80,8 +80,8 @@ export function MarkdownCodeBlock({
   const label = language ?? extractRawLabel(className);
 
   const cacheKey = useMemo(
-    () => createCodeBlockRunKey(sessionId, documentPath, sourcePosition, code),
-    [code, documentPath, sessionId, sourcePosition],
+    () => createCodeBlockRunKey(sessionId, documentIdentity, sourcePosition, code),
+    [code, documentIdentity, sessionId, sourcePosition],
   );
   const { state, runId, output, exitCode } = useCodeBlockRunSnapshot(cacheKey);
 

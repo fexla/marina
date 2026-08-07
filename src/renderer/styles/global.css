@@ -2335,13 +2335,15 @@ html[data-maximized='true'] .app-root.with-shell {
 /* body 里是自带背景的 .markdown-body 时,去掉本容器 padding,让 .markdown-body
  * 撑满整个可视区 —— 它的自带背景(github 白/深、custom 用户的米黄…)覆盖整片,
  * 不再"内容区周围一圈 marina 主题色",短内容时下方也不露 marina。
- * text / image / placeholder 没有 .markdown-body 子节点,padding 保留。
+ * file-panel 与 command-panel 共用 MarkdownDocument,两种 adapter 必须应用同一
+ * 内容面契约；text / image / placeholder 没有 .markdown-body 子节点,padding 保留。
  * 不认风格名,对所有 markdown 风格统一生效。 */
-.file-panel-body:has(.markdown-body) {
+.file-panel-body:has(.markdown-body),
+.command-panel-body:has(.markdown-body) {
   padding: 0;
 }
 
-/* ── CommandPanel (v0.3.3 ADR-027):AI 推送命令、输出渲染 markdown ── */
+/* ── CommandPanel (v0.3.3 ADR-028):AI 推送命令、输出渲染 markdown ── */
 .command-panel-content {
   display: flex;
   flex-direction: column;
@@ -2507,39 +2509,16 @@ html[data-maximized='true'] .app-root.with-shell {
   font-family: var(--font-mono, monospace);
 }
 
+/* Markdown 排版全部来自共享 MarkdownDocument 的 .file-markdown-viewer /
+ * .markdown-body；这里仅维持命令来源 adapter 的可视区高度，禁止再复制 pre/table/a
+ * 样式，否则“命令”与“已打开”会再次漂移。 */
 .command-output {
-  line-height: 1.5;
-  word-break: break-word;
+  min-height: 100%;
 }
 
-.command-output pre {
-  background-color: var(--color-bg-elevated, #f0f);
-  padding: 6px 8px;
-  border-radius: 4px;
-  overflow-x: auto;
-  font-family: var(--font-mono, monospace);
-  font-size: 11px;
-}
-
-.command-output table {
-  border-collapse: collapse;
-  width: 100%;
-  margin: 6px 0;
-}
-
-.command-output th,
-.command-output td {
-  border: 1px solid color-mix(in srgb, var(--color-text-primary, #f0f) 18%, transparent);
-  padding: 3px 6px;
-  text-align: left;
-}
-
-.command-output td a {
-  overflow-wrap: anywhere;
-}
-
-.command-output a {
-  color: var(--color-info, #f0f);
+.command-panel-body:has(.markdown-body) .command-running-indicator {
+  margin: 0;
+  padding: 4px 10px;
 }
 
 .command-running-indicator {
