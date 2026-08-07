@@ -1,0 +1,255 @@
+/**
+ * @file pi-session-coordinator.ts
+ * @purpose M2:pi 集成业务层(主 piSessionId 锁定 + reason 分发 + pi↔workspace 映射),
+ * 从 SessionManager 拆出。状态副作用经 hooks 回调驱动 SessionManager 状态机。
+ *
+ * @关键设计:
+ * - 分两层拆:pi 业务层(本文件)管「谁的主对话、要不要动 workspace」;状态副作用
+ *   (isPiAgent / piWorking / hasUnviewedWork / displayName)经 PiSessionHooks 回调
+ *   给 SessionManager 实现,它有自己的 ManagedSession 上下文,不用把状态机内部
+ *   暴露给 coordinator(封装不破)。
+ * - 主 piSessionId 锁定(v0.3.3 ADR-028):每个 Marina terminal 同一时刻只绑定一个
+ *   「主 pi 对话」,subagent 等临时子 session 的事件全部忽略,不污染主终端。
+ * - 依赖:SessionWorkspaceCoordinator(做 workspace 操作)+ PiSessionHooks(状态副作用)
+ *   + PiSettingsSource(读 settings.piIntegration)。全程不碰 ManagedSession。
+ *
+ * @对应文档章节:v0.3.3 ADR-028 + M2 设计(pi 业务层独立)
+ *
+ * @不要在这里做的事:
+ * - 不要碰 ManagedSession / markActive / emitStateChanged(那是 SessionManager 的 hooks)
+ * - 不要持久化映射(内存态,workspace 走 retentionDays 回收)
+ */
+import { logger } from '../logger';
+import type { Settings } from '@shared/types';
+import type { SessionLookup } from './session-lookup';
+import type { SessionWorkspaceCoordinator } from './session-workspace-coordinator';
+
+/**
+ * pi 事件 → SessionManager 状态副作用的回调接口。SessionManager 实现(它有
+ * ManagedSession 上下文);PiSessionCoordinator 只通知意图,幂等判断/当前值判断
+ * 留在 SessionManager 的 hooks 里。
+ */
+export interface PiSessionHooks {
+  /** pi 身份声明/退出:isPiAgent 翻转为 true/false(幂等,仅变化时 emit)。 */
+  onPiAgentChanged(sessionId: string, isPiAgent: boolean): void;
+  /** pi 开始工作:锁 piWorking、清 idle timer、markActive、清 hasUnviewedWork。 */
+  onPiWorking(sessionId: string): void;
+  /** pi 这轮完成:解锁 piWorking、markActive、按「是否正在看」标 hasUnviewedWork。 */
+  onPiSettled(sessionId: string): void;
+  /** pi 退出:解锁 piWorking(让字节流 idle 检测接管终态)。 */
+  onPiShutdown(sessionId: string): void;
+  /** pi 对话名 → 终端显示名(受 manuallyRenamed 保护)。 */
+  onPiName(sessionId: string, name: string | null): void;
+}
+
+/** PiSessionCoordinator 对 settings 的最小依赖:只读 piIntegration(破循环 + 可测)。 */
+export interface PiSettingsSource {
+  get(): { piIntegration: Settings['piIntegration'] };
+}
+
+export class PiSessionCoordinator {
+  /**
+   * v0.3.3 ADR-028：Marina sessionId → 当前活跃 pi 对话 id 的反查(主锁)。
+   * 用于 session 销毁 / pi 退出时清理 piSessionToWorkspace。
+   */
+  private readonly sessionToPiSession = new Map<string, string>();
+  /**
+   * v0.3.3 ADR-028：pi 对话 ↔ workspace 运行时映射(路径 B)。key=piSessionId，
+   * value=workspaceId。用于 pi resume 时切回对应 workspace(还活着则切回、被回收则新建)。
+   * **内存态，不持久化**。
+   */
+  private readonly piSessionToWorkspace = new Map<string, string>();
+  private hooks: PiSessionHooks | null = null;
+  private lookup: SessionLookup | null = null;
+
+  constructor(
+    private readonly workspaceCoordinator: SessionWorkspaceCoordinator,
+    private readonly settingsManager: PiSettingsSource,
+  ) {}
+
+  /** 注入 SessionManager 实现的 hooks(状态副作用)。 */
+  attachHooks(hooks: PiSessionHooks): void {
+    this.hooks = hooks;
+  }
+
+  /** 注入 SessionManager 的只读 session 查询(session 不存在守卫)。 */
+  attachSessionLookup(lookup: SessionLookup): void {
+    this.lookup = lookup;
+  }
+
+  /**
+   * 处理 pi package 转发的事件。所有 pi 业务决策集中于此,调用方(file-panel-service
+   * HTTP /pi-session-event)不需要理解事件语义。fire-and-forget:失败只 log,不抛
+   * (不能阻塞 pi)。
+   *
+   * @param sessionId Marina session id(= body.terminal = env.TERMINAL_ID)
+   * @param payload 已校验的事件体(由 HTTP handler 解析)
+   */
+  async handlePiSessionEvent(
+    sessionId: string,
+    payload: {
+      piSessionId: string;
+      event:
+        | 'session_start'
+        | 'session_shutdown'
+        | 'agent_working'
+        | 'agent_settled'
+        | 'name_changed';
+      reason?: string;
+      name?: string | null;
+    },
+  ): Promise<void> {
+    if (!this.lookup?.hasSession(sessionId)) {
+      // 竞态：session 刚销毁或 terminal id 伪造。静默丢弃(pi 不该被卡)。
+      logger.warn(
+        'PiSessionCoordinator',
+        `applyPiSessionEvent: session not found sid=${sessionId} event=${payload.event}`,
+      );
+      return;
+    }
+    // v0.3.3 ADR-028「主 piSessionId 锁定」:每个 Marina terminal 同一时刻只绑定
+    // 一个「主 pi 对话」。subagent tool 等机制起的临时子 session 有独立 piSessionId,
+    // 其事件全部忽略 —— 子 agent 是临时辅助,不该污染主终端的 workspace/名字/状态
+    // (实测:子 agent 的 name_changed 会把终端名改成 "subagent-worker-xxx")。
+    //
+    // 规则(纯靠 piSessionId 比对,不依赖任何第三方 subagent package 的 env 约定):
+    //   - currentMain===null(初始 / 旧主已 session_shutdown):接受,session_start 据此
+    //     绑定新主;零星的其它事件也接受(启动竞态,无害)。
+    //   - 否则 piSessionId!==currentMain:子 agent 事件,忽略。
+    //   - 合法主切换(/new /resume /fork /重启 pi)前 pi 必先发 session_shutdown 清空
+    //     主绑定,随后的 session_start 才能绑定新主 → 「关闭 pi 或 /new 后新 pi 正常工作」。
+    const currentMainPiSid = this.sessionToPiSession.get(sessionId) ?? null;
+    if (currentMainPiSid !== null && payload.piSessionId !== currentMainPiSid) {
+      logger.info(
+        'PiSessionCoordinator',
+        `pi-event 忽略(子agent) sid=${sessionId} piSid=${payload.piSessionId} main=${currentMainPiSid} event=${payload.event}`,
+      );
+      return;
+    }
+    const settings = this.settingsManager.get().piIntegration;
+    logger.info(
+      'PiSessionCoordinator',
+      `pi-event sid=${sessionId} piSid=${payload.piSessionId} event=${payload.event} reason=${payload.reason ?? '-'}`,
+    );
+
+    switch (payload.event) {
+      case 'session_start':
+        // 声明 pi 身份(无论开关，isPiAgent 总是准确反映“终端在跑 pi”)。
+        this.hooks?.onPiAgentChanged(sessionId, true);
+        this.sessionToPiSession.set(sessionId, payload.piSessionId);
+        await this.handlePiConversationSwitch(
+          sessionId,
+          payload.piSessionId,
+          payload.reason ?? 'startup',
+          settings,
+        );
+        break;
+
+      case 'session_shutdown':
+        // pi 进程要退出了。workspace 按现有生命周期(Marina session 销毁时 release)；
+        // 这里不提前 release(与销毁路径竞争)。
+        this.sessionToPiSession.delete(sessionId);
+        // reason=quit 时 pi 对话彻底结束，其 workspace 映射随之失效。
+        if (payload.reason === 'quit') {
+          this.piSessionToWorkspace.delete(payload.piSessionId);
+        }
+        this.hooks?.onPiAgentChanged(sessionId, false);
+        // 解锁 piWorking(若处于 working 中途退出):让字节流 idle 检测接管终态。
+        this.hooks?.onPiShutdown(sessionId);
+        break;
+
+      case 'agent_working':
+        // v0.3.3 ADR-028「终端状态精准化」:pi 重新开始工作 → 接管 state。
+        this.hooks?.onPiWorking(sessionId);
+        break;
+
+      case 'agent_settled':
+        // v0.3.3 ADR-028:pi 这轮完成 → 解锁 state + 标记未看成果。
+        this.hooks?.onPiSettled(sessionId);
+        break;
+
+      case 'name_changed':
+        // pi 对话名 → 终端显示名(受 manuallyRenamed 保护)。
+        this.hooks?.onPiName(sessionId, payload.name ?? null);
+        break;
+    }
+  }
+
+  /**
+   * pi 对话切换的核心：按 piSessionId 绑定/切回 workspace。
+   * - new/fork → 建新 workspace + 记映射(用户意图：创建新 workspace)。
+   * - resume/startup → 查映射：目标 workspace 还活着(getRecord≠null)就切回；
+   *   被回收/首访则新建 + 记映射。
+   *
+   * workspace 不命名/不 pin，切走的旧 pi 对话 workspace 不在这里 release
+   * (它仍由 piSessionToWorkspace 持有引用，等 pi shutdown quit 或终端销毁才释放)。
+   * 这与 ADR-024 的 switchToNewWorkspace 不同——那里是 CLI 主动切临时。
+   */
+  private async handlePiConversationSwitch(
+    sessionId: string,
+    piSessionId: string,
+    reason: string,
+    settings: Settings['piIntegration'],
+  ): Promise<void> {
+    if (!this.workspaceCoordinator.isWorkspaceEnabled()) return; // 未启用 workspace(测试/禁用)→ 跳过
+    const wantsNew = reason === 'new' || reason === 'fork';
+    const wantsResume = reason === 'resume' || reason === 'startup';
+
+    if (wantsNew && settings.enabled && settings.newConversationCreatesWorkspace) {
+      await this.createAndBindPiWorkspace(sessionId, piSessionId);
+      return;
+    }
+    if (wantsResume && settings.enabled && settings.resumeSwitchesWorkspace) {
+      const existingWs = this.piSessionToWorkspace.get(piSessionId);
+      // workspace “还活着”判定：manifest 里有 record(未被 cleanupExpired 回收)。
+      if (existingWs && this.workspaceCoordinator.getRecord(existingWs)) {
+        // 切回：把当前 session 的 workspace 绑定指向它。
+        this.workspaceCoordinator.switchSessionToWorkspace(sessionId, existingWs);
+        logger.info(
+          'PiSessionCoordinator',
+          `pi-resume: switch back piSid=${piSessionId} ws=${existingWs}`,
+        );
+      } else {
+        // 被回收或首访 → 新建。映射覆盖(若是首访则新增，若是回收则替换陈旧值)。
+        await this.createAndBindPiWorkspace(sessionId, piSessionId);
+      }
+      return;
+    }
+    // reload / 未知 reason / 开关关闭 → 不动 workspace。
+  }
+
+  /**
+   * 建新 workspace 并绑定到 session(pi 对话)，同时记入 piSessionToWorkspace 映射。
+   * workspace 创建失败不阻塞 pi；当前 session 继续用旧 workspace(若有)。
+   */
+  private async createAndBindPiWorkspace(sessionId: string, piSessionId: string): Promise<void> {
+    if (!this.workspaceCoordinator.isWorkspaceEnabled()) return;
+    try {
+      const created = await this.workspaceCoordinator.createForSession(sessionId);
+      this.piSessionToWorkspace.set(piSessionId, created.workspaceId);
+      logger.info(
+        'PiSessionCoordinator',
+        `pi-new-workspace: sid=${sessionId} piSid=${piSessionId} ws=${created.workspaceId}`,
+      );
+    } catch (err) {
+      logger.warn(
+        'PiSessionCoordinator',
+        `pi workspace create failed sid=${sessionId} piSid=${piSessionId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * session 销毁时清理 pi 映射(终端关了，里面的 pi 对话也不复存在)。
+   * SessionManager.destroySession 同步调用。
+   */
+  onSessionDestroyed(sessionId: string): void {
+    const piSid = this.sessionToPiSession.get(sessionId);
+    if (piSid) {
+      this.sessionToPiSession.delete(sessionId);
+      this.piSessionToWorkspace.delete(piSid);
+    }
+  }
+}
