@@ -13,10 +13,11 @@ import type { SessionLookup } from './session-lookup';
 function makeHooks(): { [K in keyof PiSessionHooks]: ReturnType<typeof vi.fn> } {
   return {
     onPiAgentChanged: vi.fn(),
-    onPiWorking: vi.fn(),
-    onPiSettled: vi.fn(),
-    onPiShutdown: vi.fn(),
     onPiName: vi.fn(),
+    bindAgent: vi.fn(),
+    unbindAgent: vi.fn(),
+    notifyAgentWorking: vi.fn(),
+    notifyAgentSettled: vi.fn(),
   };
 }
 
@@ -197,7 +198,7 @@ describe('PiSessionCoordinator — 主锁(子 agent 忽略)', () => {
 });
 
 describe('PiSessionCoordinator — 其余事件 → hooks', () => {
-  it('agent_working → onPiWorking;agent_settled → onPiSettled', async () => {
+  it('agent_working → notifyAgentWorking;agent_settled → notifyAgentSettled', async () => {
     const { pi, hooks } = makePi();
     await pi.handlePiSessionEvent('s1', {
       piSessionId: 'pi-1',
@@ -205,9 +206,9 @@ describe('PiSessionCoordinator — 其余事件 → hooks', () => {
       reason: 'startup',
     });
     await pi.handlePiSessionEvent('s1', { piSessionId: 'pi-1', event: 'agent_working' });
-    expect(hooks.onPiWorking).toHaveBeenCalledWith('s1');
+    expect(hooks.notifyAgentWorking).toHaveBeenCalledWith('s1');
     await pi.handlePiSessionEvent('s1', { piSessionId: 'pi-1', event: 'agent_settled' });
-    expect(hooks.onPiSettled).toHaveBeenCalledWith('s1');
+    expect(hooks.notifyAgentSettled).toHaveBeenCalledWith('s1');
   });
 
   it('name_changed → onPiName(name);name 缺省传 null', async () => {
@@ -227,7 +228,7 @@ describe('PiSessionCoordinator — 其余事件 → hooks', () => {
     expect(hooks.onPiName).toHaveBeenLastCalledWith('s1', null);
   });
 
-  it('session_shutdown → onPiAgentChanged(false) + onPiShutdown', async () => {
+  it('session_shutdown → onPiAgentChanged(false) + unbindAgent', async () => {
     const { pi, hooks } = makePi();
     await pi.handlePiSessionEvent('s1', {
       piSessionId: 'pi-1',
@@ -240,7 +241,7 @@ describe('PiSessionCoordinator — 其余事件 → hooks', () => {
       reason: 'quit',
     });
     expect(hooks.onPiAgentChanged).toHaveBeenLastCalledWith('s1', false);
-    expect(hooks.onPiShutdown).toHaveBeenCalledWith('s1');
+    expect(hooks.unbindAgent).toHaveBeenCalledWith('s1');
   });
 });
 
@@ -250,7 +251,7 @@ describe('PiSessionCoordinator — session 不存在 / onSessionDestroyed', () =
     await expect(
       pi.handlePiSessionEvent('no-such', { piSessionId: 'pi-1', event: 'agent_settled' }),
     ).resolves.toBeUndefined();
-    expect(hooks.onPiSettled).not.toHaveBeenCalled();
+    expect(hooks.notifyAgentSettled).not.toHaveBeenCalled();
     expect(ws.createForSession).not.toHaveBeenCalled();
   });
 

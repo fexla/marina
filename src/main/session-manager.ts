@@ -51,6 +51,7 @@ import type {
   DockLayoutState,
   LayoutNode,
   SessionInfo,
+  SessionState,
   SessionUiLayout,
   SessionUiLayoutPatch,
   Template,
@@ -58,6 +59,9 @@ import type {
 } from '@shared/types';
 import type { WindowManager } from './window-manager';
 import type { PathManager } from './path-manager';
+import { ByteStreamStateGetter } from './state-getters/byte-stream-state-getter';
+import type { AgentStateGetter } from './state-getters/agent-state-getter';
+import type { TerminalStateGetter } from './state-getters/terminal-state-getter';
 import type { TemplatesManager } from './templates-manager';
 import type { SettingsManager } from './settings-manager';
 import type { AIClient } from './ai-client';
@@ -420,19 +424,16 @@ interface ManagedSession {
   /** 是否已收到过任意 OSC 1337。一旦 true,所有 cwd 兜底永久关闭 */
   oscReceived: boolean;
   /**
-   * Resize quiet 窗口截止时间戳 (ms epoch)。
-   * 详见 RESIZE_QUIET_MS 注释 (CP-3 勘误 #3 v2)。
-   * 0 = 无窗口 (从未 resize)。
+   * 字节流启发式状态判断(fallback getter)。createSession 时创建,始终在。
+   * 封装原散落的 resizeQuiet / startupGrace / inputEcho quiet 窗口逻辑。
+   * agent 绑定时 stateGetter 指向 agent getter,此 getter 冻结(解绑后恢复)。
    */
-  resizeQuietUntil: number;
-  /** M1-I:启动期 grace 截止 ts (createSession 时 = now + STARTUP_GRACE_MS) */
-  startupGraceUntil: number;
+  byteStreamGetter: ByteStreamStateGetter;
   /**
-   * Input echo quiet 窗口截止 ts。sendInput 时 = now + INPUT_QUIET_MS;
-   * handlePtyData 在该窗口内不触发 markActive(详见 INPUT_QUIET_MS 注释)。
-   * 0 = 无窗口 (从未 sendInput)。
+   * 当前生效的状态判断 getter。默认指向 byteStreamGetter(fallback);
+   * bindAgent 后指向 agent getter(pi / claude-code / codex),unbindAgent 回退。
    */
-  inputQuietUntil: number;
+  stateGetter: TerminalStateGetter;
   /**
    * BETA-006 v2.1:用户上次按 Enter (\r 或 \n) 的时刻 (ms epoch)。
    * 0 = 从未按过。recheckIdle 把"距上次 Enter 多久"作为元数据喂给 LLM,
@@ -459,17 +460,6 @@ interface ManagedSession {
    * Windows Terminal hostname 等会持续刷标题,不锁住会冲掉用户的命名)。
    */
   manuallyRenamed: boolean;
-  /**
-   * v0.3.3 ADR-028「终端状态精准化」:pi 正在工作(agent_working 已收到、
-   * agent_settled 未到)时为 true。true 期间抑制字节流 idle 检测——保持
-   * state=active,不起 idleTimer、不转 idle、不烧 BETA-006 LLM 复核。
-   *
-   * 动机:pi 思考/读文件期间终端无字节流,旧逻辑会把 session 误判 idle
-   * (黄灯闪烁),且触发 BETA-006 烧 LLM 去判断一件“pi 已经告诉我们 working”
-   * 的事。pi 事件是比字节流更权威的“agent 在不在工作”信号,working 期
-   * state 听 pi 的。settled 后清零,交还字节流检测。
-   */
-  piWorking: boolean;
   /**
    * PER-2 / F1:IPC 聚合缓冲 — 8ms 窗口内积累的 sessionOutput,timer 到点
    * 一次性 emit。降低高速 PTY 输出场景下 IPC 消息数,缓解 renderer 反压。
@@ -826,60 +816,57 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * @implements PiSessionHooks.onPiWorking:pi 开始工作 → 接管 state。
-   * 1) 锁 piWorking=true:scheduleIdleCheck 短路,字节流 idle 检测抑制。
-   * 2) 清 idleTimer + markActive 让 state 立即回 active(绿)。
-   * 3) 清 hasUnviewedWork(新一轮工作覆盖旧的未看成果)。
+   * @implements PiSessionHooks.bindAgent:agent(pi / claude-code / codex)绑定 →
+   * stateGetter 换成 agent getter,字节流检测旁路。PiSessionCoordinator 在
+   * session_start 时创建 AgentStateGetter 并传入。applyState 立即拉取 agent 状态。
    */
-  onPiWorking(sessionId: string): void {
+  bindAgent(sessionId: string, getter: AgentStateGetter): void {
     const managed = this.sessions.get(sessionId);
     if (!managed) return;
-    managed.piWorking = true;
-    if (managed.idleTimer) {
-      clearTimeout(managed.idleTimer);
-      managed.idleTimer = null;
-    }
-    this.markActive(managed);
+    managed.stateGetter = getter;
+    // byteStreamGetter 保留(agent 期间冻结,unbindAgent 后恢复)
+    this.applyState(managed);
+  }
+
+  /**
+   * @implements PiSessionHooks.unbindAgent:agent 退出(session_shutdown)→
+   * stateGetter 回退到 byteStreamGetter(fallback),字节流检测恢复。
+   */
+  unbindAgent(sessionId: string): void {
+    const managed = this.sessions.get(sessionId);
+    if (!managed) return;
+    managed.stateGetter = managed.byteStreamGetter;
+    this.applyState(managed);
+  }
+
+  /**
+   * @implements PiSessionHooks.notifyAgentWorking:agent 开始工作。
+   * PiSessionCoordinator 已先调 agentGetter.onWorking()(更新 getter 内部 working),
+   * 这里只处理 hasUnviewedWork(新一轮覆盖旧的未看成果)+ applyState(getter → active)。
+   */
+  notifyAgentWorking(sessionId: string): void {
+    const managed = this.sessions.get(sessionId);
+    if (!managed) return;
     if (managed.info.hasUnviewedWork) {
       managed.info.hasUnviewedWork = false;
       this.emitStateChanged(managed, { hasUnviewedWork: false });
     }
+    this.applyState(managed); // agent getter:working → active,立即生效
   }
 
   /**
-   * @implements PiSessionHooks.onPiSettled:pi 这轮完成 → 解锁 state + 标记未看成果。
-   * - piWorking=false 后,scheduleIdleCheck 恢复正常。
-   * - markActive 重新起一个 idle 计时器作为解锁后的检测起点。
-   * - hasUnviewedWork:仅当用户此刻「没在看」该 session 才标记。
+   * @implements PiSessionHooks.notifyAgentSettled:agent 这轮完成。
+   * PiSessionCoordinator 已先调 agentGetter.onSettled(),这里 applyState(getter →
+   * idle,立即,agent 权威)+ 标 hasUnviewedWork(仅当用户此刻没在看)。
    */
-  onPiSettled(sessionId: string): void {
+  notifyAgentSettled(sessionId: string): void {
     const managed = this.sessions.get(sessionId);
     if (!managed) return;
-    managed.piWorking = false;
-    // agent_settled 是 pi 明确的"这轮完成"信号,直接切 idle —— 不走 markActive
-    // 起字节流 idle 计时器。原设计(ADR-028)用 markActive 是怕 settled 后字节流
-    // 尾巴闪,但那要等 activeIdleThresholdSeconds(~3s)才 idle,package 明确说完成了
-    // 还延迟 3s 反直觉。代价:settled 后若有字节流尾巴,onData 会 markActive 短暂
-    // 闪一下 active 再回 idle(几百 ms),远好于固定 3s 延迟。
-    if (managed.idleTimer) {
-      clearTimeout(managed.idleTimer);
-      managed.idleTimer = null;
-    }
-    if (managed.info.state !== 'idle') {
-      managed.info.state = 'idle';
-      this.emitStateChanged(managed, { state: 'idle' });
-    }
+    this.applyState(managed); // agent getter:settled → idle,立即生效
     if (!this.isSessionCurrentlyViewed(sessionId) && !managed.info.hasUnviewedWork) {
       managed.info.hasUnviewedWork = true;
       this.emitStateChanged(managed, { hasUnviewedWork: true });
     }
-  }
-
-  /** @implements PiSessionHooks.onPiShutdown:pi 退出 → 解锁 piWorking(字节流检测接管)。 */
-  onPiShutdown(sessionId: string): void {
-    const managed = this.sessions.get(sessionId);
-    if (!managed) return;
-    managed.piWorking = false;
   }
 
   /** @implements PiSessionHooks.onPiName:pi 对话名 → 终端显示名(受 manuallyRenamed 保护)。 */
@@ -1192,6 +1179,14 @@ export class SessionManager extends EventEmitter {
     };
 
     const disposables: IDisposable[] = [];
+    // 状态判断 getter:fallback = 字节流启发式。agent 绑定时 stateGetter 换成
+    // agent getter(PiSessionCoordinator.bindAgent),解绑后回退到这里。
+    const byteStreamGetter = new ByteStreamStateGetter(
+      this.startupGraceMs,
+      this.resizeQuietMs,
+      this.inputQuietMs,
+      () => this.getIdleThresholdMs(),
+    );
     const managed: ManagedSession = {
       info,
       pty,
@@ -1203,14 +1198,12 @@ export class SessionManager extends EventEmitter {
       cwdGraceTimer: null,
       cwdPollTimer: null,
       oscReceived: false,
-      resizeQuietUntil: 0,
-      startupGraceUntil: Date.now() + this.startupGraceMs,
-      inputQuietUntil: 0,
+      byteStreamGetter,
+      stateGetter: byteStreamGetter,
       lastEnterAt: 0,
       lastInputAt: 0,
       recentKeys: [],
       manuallyRenamed: false,
-      piWorking: false,
       pendingEmit: null,
       pendingEmitTimer: null,
       // BETA-006 v2 + CURSOR-1:headless 镜像,scrollback 行数对齐 renderer
@@ -1257,9 +1250,9 @@ export class SessionManager extends EventEmitter {
     //   idle(黄)  = 等待命令(含 banner 期 + prompt 等待)
     //   exited(灰) = 进程已退出(不变)
     //
-    // 因此创建时直接 state='idle',无需 scheduleIdleCheck 兜底 — markActive 仅在
-    // grace 期外的真字节流到达时触发,grace 内 banner 字节会跳过 markActive,
-    // 状态自然停在 idle 不跳。"OSC-only banner 卡 active"的旧 bug 同步消失。
+    // 因此创建时直接 state='idle' — ByteStreamStateGetter 的 startupGrace 期内
+    // banner 字节不点亮(getState 返回 idle),状态自然停在 idle 不跳。
+    // "OSC-only banner 卡 active"的旧 bug 同步消失。
     //
     // 对应工单库 BETA-008、软件定义书 8.3 节(ADR-014)。
 
@@ -1550,17 +1543,13 @@ export class SessionManager extends EventEmitter {
     // 注意 lastInputAt 在每次 sendInput 都更新,即使内容只是箭头键 / Ctrl-X。
     const now = Date.now();
     managed.lastInputAt = now;
-    // CUR-1:用户按 Enter (\r 或 \n) → 关闭 input quiet 窗口,让紧随的
-    // 真实命令输出立即触发 markActive。否则 200ms 内的真输出被压成
-    // "状态点保持 idle 黄色",直到 200ms 后才变绿 — 用户视角"按 Enter
-    // 后命令延迟一拍才显示在跑"。
-    // 普通按键(非 Enter)仍走原逻辑顺延 quiet 窗口。
-    if (text.includes('\r') || text.includes('\n')) {
-      managed.inputQuietUntil = 0;
-      managed.lastEnterAt = now;
-    } else {
-      managed.inputQuietUntil = now + this.inputQuietMs;
-    }
+    // CUR-1:Enter (\r/\n) 关闭 input quiet(让紧随真实输出立即 active);
+    // 普通键延展 quiet(它们是 echo / TUI 重绘源)。quiet 窗口判断在 getter 内部
+    // (ByteStreamStateGetter.onInput)。lastEnterAt 留 SessionManager 给 BETA-006
+    // 复核元数据用(getHeadlessTail + meta)。
+    const isEnter = text.includes('\r') || text.includes('\n');
+    if (isEnter) managed.lastEnterAt = now;
+    managed.stateGetter.onInput(isEnter);
     // BETA-006 v2.2:按键事件 ring buffer。**绝不存内容,只存时间戳+类别**。
     // 进:classifyInput 返回 char/enter/backspace/other,push 一条。
     // 出:超 TTL 或超 cap 的从头部移除(典型 ring buffer)。
@@ -1609,13 +1598,12 @@ export class SessionManager extends EventEmitter {
     if (!managed) return { accepted: false, reason: 'session-not-found' };
     if (!managed.pty) return { accepted: false, reason: 'pty-exited' };
     const dims = validateDimensions(cols, rows);
-    // 勘误第二轮:即便 no-op 也开 quiet 窗口。原因 — Claude Code 这类 TUI 在
-    // 终端被"重新显示"时会自发整屏重绘(切 tab 后用户回到它,xterm 重挂
-    // → claude code 收到任意刺激 → 重绘 → markActive → idle tab 闪绿)。
-    // TerminalView mount 后总会调一次 resize(即使 dims 与 spawn 时相同),
-    // 这就是"我刚被显示"信号。原来的 no-op short-circuit 把该信号丢掉了,
-    // 导致 idle session 闪绿。这里改为先开 quiet 窗口、再决定是否真 resize。
-    managed.resizeQuietUntil = Date.now() + this.resizeQuietMs;
+    // 勘误第二轮:即便 no-op 也通知 getter 开 quiet 窗口。原因 — Claude Code 这类
+    // TUI 在终端被“重新显示”时会自发整屏重绘(切 tab 后用户回到它,xterm 重挂
+    // → claude code 收到任意刺激 → 重绘 → 闪绿)。TerminalView mount 后总会调一次
+    // resize(即使 dims 与 spawn 时相同),这就是“我刚被显示”信号。原来的 no-op
+    // short-circuit 把该信号丢掉了。ByteStreamStateGetter.onResize 内部设 quiet 窗口。
+    managed.stateGetter.onResize();
     if (dims.cols === managed.info.cols && dims.rows === managed.info.rows) {
       return { accepted: true };
     }
@@ -1906,28 +1894,13 @@ export class SessionManager extends EventEmitter {
       // 就在 thresholdSec 静默后触发,几 ms 误差无关紧要。
       managed.headlessTerm?.write(parsed.passthrough);
 
-      // 状态机:有输出 → active,重置 idle 计时器。
-      // 跳过 markActive 的三种 quiet 窗口(scrollback / sessionOutput 仍正常,
-      // 只跳过 markActive):
-      //   - resize quiet (CP-3 勘误 #3 v2):避免 ConPTY/SIGWINCH 重绘字节让
-      //     tab 闪绿;TerminalView mount 时也无条件触发此窗口
-      //   - startup grace (M1-I):session 初创 1.5s 内的 banner/prompt 输出
-      //     视作"应有的启动声",BETA-008 后初始 state='idle',grace 期 banner
-      //     字节跳过 markActive,自然停在 idle 不闪绿
-      //   - input echo quiet (抖动源 C/E):压住 sendInput 后 200ms 内的 echo /
-      //     TUI 重绘字节,避免"敲键自己点亮状态点"
-      const now = Date.now();
-      if (
-        now >= managed.resizeQuietUntil &&
-        now >= managed.startupGraceUntil &&
-        now >= managed.inputQuietUntil
-      ) {
-        this.markActive(managed);
-      } else if (now < managed.startupGraceUntil) {
-        // BETA-008 后:grace 期内初始 state='idle',banner 字节流不让它变 active,
-        // 但也不需要 scheduleIdleCheck 兜底(根本就在 idle)。
-        // markActive 流程在 grace 期外才走,scheduleIdleCheck 由 markActive 自己起。
-      }
+      // 状态判断转发给 getter + applyState(agent getter 时 onByte no-op,
+      // 字节流完全旁路;byteStream getter 走 quiet 窗口判断 —— 三种 quiet
+      // 窗口 resize/startupGrace/inputEcho 的逻辑在 ByteStreamStateGetter)。
+      // quiet 窗口内字节 getState 返回原状态,applyState 幂等不 reschedule,
+      // 与原“quiet 字节不触发 markActive”语义一致。
+      managed.stateGetter.onByte();
+      this.applyState(managed);
     }
   }
 
@@ -2126,82 +2099,118 @@ export class SessionManager extends EventEmitter {
   // 内部:状态机 (active / idle)
   // ──────────────────────────────────────────────────────────────────
 
-  private markActive(managed: ManagedSession): void {
+  /**
+   * 拉取当前 getter 状态并应用(状态机统一入口)。
+   *
+   * - 字节 / resize / 输入 / agent 事件触发 → 调 applyState
+   * - getState() 返回值与当前 state 比对:未变则幂等返回(quiet 窗口内字节不改变
+   *   状态,也不重起 idle 定时器,与原“quiet 字节不触发 markActive”一致)
+   * - active→idle 跃迁(byteStream getter):走 BETA-006 LLM 复核守卫(maybeRecheckIdle),
+   *   LLM 说 keep-active 则保持 + 重新起定时器,否则转 idle。agent getter 的
+   *   settled→idle 不复核(agent 权威)
+   * - exited 是终态,不从 exited 回
+   */
+  private applyState(managed: ManagedSession): void {
     if (managed.info.state === 'exited') return; // 不会从 exited 回来
-    if (managed.info.state !== 'active') {
-      managed.info.state = 'active';
-      this.emitStateChanged(managed, { state: 'active' });
-    }
-    this.scheduleIdleCheck(managed);
-  }
-
-  private scheduleIdleCheck(managed: ManagedSession): void {
-    // v0.3.3 ADR-028:pi 正在工作时 state 听 pi 的,不起字节流 idle 计时器。
-    // 否则 pi 思考/读文件期(终端无字节流)到点会转 idle(黄灯闪)且烧 BETA-006
-    // LLM 去判断一件“pi 已经告诉我们 working”的事。settled 后 piWorking 清零,
-    // 字节流 idle 检测自然接管。
-    if (managed.piWorking) {
-      if (managed.idleTimer) {
-        clearTimeout(managed.idleTimer);
-        managed.idleTimer = null;
-      }
+    const next = managed.stateGetter.getState();
+    if (next === managed.info.state) return; // 幂等:状态未变,不 reschedule
+    // active → idle(byteStream getter):BETA-006 复核守卫
+    if (
+      next === 'idle' &&
+      managed.info.state === 'active' &&
+      managed.stateGetter === managed.byteStreamGetter
+    ) {
+      this.maybeRecheckIdle(managed);
       return;
     }
-    if (managed.idleTimer) clearTimeout(managed.idleTimer);
-    const thresholdSec = this.settingsManager.get().advanced.activeIdleThresholdSeconds;
-    const ms = Math.max(100, thresholdSec * 1000);
+    // 其余跃迁(idle→active,或 agent getter 的任何跃迁):直接应用
+    managed.info.state = next;
+    this.emitStateChanged(managed, { state: next });
+    this.rescheduleIdleTimer(managed, next);
+  }
+
+  /**
+   * idle 定时器调度(只 byteStream getter + active 起;agent getter 事件驱动,无定时器)。
+   *
+   * - active → 起 threshold 定时器,到期再 applyState(getState 此时判 idle → BETA-006 复核)
+   * - idle / exited → 清定时器
+   * - agent getter(bind 后)→ 清定时器(agent 的 settled 事件直接驱动 idle,不等阈值)
+   */
+  private rescheduleIdleTimer(managed: ManagedSession, state: SessionState): void {
+    if (managed.idleTimer) {
+      clearTimeout(managed.idleTimer);
+      managed.idleTimer = null;
+    }
+    // 只有 byteStream getter + active 起定时器(agent getter 事件驱动)
+    if (managed.stateGetter !== managed.byteStreamGetter) return;
+    if (state !== 'active') return;
+    const ms = this.getIdleThresholdMs();
     managed.idleTimer = setTimeout(() => {
       managed.idleTimer = null;
       if (managed.info.state !== 'active') return;
-      // BETA-006:active→idle 跃迁前给 LLM 看一眼 scrollback 尾部判断。
-      // 仅在用户开启 statusRecheckEnabled 且 aiClient.isConfigured() 时生效。
-      // 失败 / LLM 异常时回退到原行为(直接转 idle),不阻塞主流程。
-      const s = this.settingsManager.get();
-      if (s.ai?.statusRecheckEnabled && this.aiClient && this.aiClient.isConfigured()) {
-        // BETA-006 v2:从 @xterm/headless buffer 拿"已渲染"文本(无 ANSI
-        // 噪音 / 无 PSReadLine 重绘残影)。
-        // CURSOR-1 后:原 settings.ai.statusRecheckSource='raw' 路径(裸字节
-        // ring 末 2KB)已删除,headless 是唯一输入源。screenshot 选项仍预留。
-        const tail = managed.headlessTerm ? this.getHeadlessTail(managed, 40) : '';
-        // BETA-006 v2.1:把"上次 Enter / 上次任意输入距今多久"喂给 LLM,
-        // 帮它区分"长命令在跑"vs"用户打字未按回车"。
-        // BETA-006 v2.2:再附最近按键事件 ring buffer(类别+时间,无内容),
-        // 让 LLM 看到节奏 — 连续 char 流 = 在打字,只一个 enter 后归零 = 命令在跑。
-        const now = Date.now();
-        const meta = {
-          enterAgeMs: managed.lastEnterAt ? now - managed.lastEnterAt : null,
-          inputAgeMs: managed.lastInputAt ? now - managed.lastInputAt : null,
-          recentKeys: managed.recentKeys.map((k) => ({
-            ageMs: now - k.ts,
-            kind: k.kind,
-          })),
-        };
-        this.aiClient
-          .recheckIdle(tail, meta)
-          .then((verdict) => {
-            if (verdict === 'keep-active') {
-              // LLM 判定还在跑 → 重新调度,不转 idle
-              if (managed.info.state === 'active') this.scheduleIdleCheck(managed);
-              return;
-            }
-            if (managed.info.state === 'active') {
-              managed.info.state = 'idle';
-              this.emitStateChanged(managed, { state: 'idle' });
-            }
-          })
-          .catch((err) => {
-            logger.warn('SessionManager', 'BETA-006 LLM recheck failed, fallback', err);
-            if (managed.info.state === 'active') {
-              managed.info.state = 'idle';
-              this.emitStateChanged(managed, { state: 'idle' });
-            }
-          });
-        return;
-      }
-      // 默认路径:直接转 idle
+      // 到期重新拉取:getState 判 idle(字节过期)→ applyState 的 active→idle 守卫
+      // 触发 BETA-006 复核;getState 仍 active(阈值内又有字节)则幂等。
+      this.applyState(managed);
+    }, ms);
+  }
+
+  /**
+   * BETA-006:active→idle 跃迁前的 LLM 复核守卫(只 byteStream getter)。
+   *
+   * 从 @xterm/headless buffer 拿 scrollback 尾部 + 按键元数据(lastEnterAt /
+   * lastInputAt / recentKeys),喂给 aiClient.recheckIdle 让 LLM 判断:
+   * - keep-active → 还在跑,重新起 idle 定时器(下一轮再判断)
+   * - settle / 未配置 aiClient → 转 idle
+   * 失败 / 异常回退 idle,不阻塞主流程。
+   */
+  private maybeRecheckIdle(managed: ManagedSession): void {
+    if (managed.info.state !== 'active') return;
+    const s = this.settingsManager.get();
+    if (s.ai?.statusRecheckEnabled && this.aiClient && this.aiClient.isConfigured()) {
+      const tail = managed.headlessTerm ? this.getHeadlessTail(managed, 40) : '';
+      const now = Date.now();
+      const meta = {
+        enterAgeMs: managed.lastEnterAt ? now - managed.lastEnterAt : null,
+        inputAgeMs: managed.lastInputAt ? now - managed.lastInputAt : null,
+        recentKeys: managed.recentKeys.map((k) => ({
+          ageMs: now - k.ts,
+          kind: k.kind,
+        })),
+      };
+      this.aiClient
+        .recheckIdle(tail, meta)
+        .then((verdict) => {
+          if (verdict === 'keep-active') {
+            // LLM 判还在跑 → 保持 active,重新起 idle 定时器
+            if (managed.info.state === 'active') this.rescheduleIdleTimer(managed, 'active');
+            return;
+          }
+          // 转 idle
+          if (managed.info.state === 'active') {
+            managed.info.state = 'idle';
+            this.emitStateChanged(managed, { state: 'idle' });
+          }
+        })
+        .catch((err) => {
+          logger.warn('SessionManager', 'BETA-006 LLM recheck failed, fallback', err);
+          if (managed.info.state === 'active') {
+            managed.info.state = 'idle';
+            this.emitStateChanged(managed, { state: 'idle' });
+          }
+        });
+      return;
+    }
+    // 未启用 LLM 复核 → 直接转 idle
+    if (managed.info.state === 'active') {
       managed.info.state = 'idle';
       this.emitStateChanged(managed, { state: 'idle' });
-    }, ms);
+    }
+  }
+
+  /** idle 阈值(ms),从 settings.advanced.activeIdleThresholdSeconds 读,>= 100ms。*/
+  private getIdleThresholdMs(): number {
+    const thresholdSec = this.settingsManager.get().advanced.activeIdleThresholdSeconds;
+    return Math.max(100, thresholdSec * 1000);
   }
 
   /**

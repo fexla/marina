@@ -21,6 +21,7 @@
  */
 import { logger } from '../logger';
 import type { Settings } from '@shared/types';
+import { AgentStateGetter } from '../state-getters/agent-state-getter';
 import type { SessionLookup } from './session-lookup';
 import type { SessionWorkspaceCoordinator } from './session-workspace-coordinator';
 
@@ -32,14 +33,17 @@ import type { SessionWorkspaceCoordinator } from './session-workspace-coordinato
 export interface PiSessionHooks {
   /** pi 身份声明/退出:isPiAgent 翻转为 true/false(幂等,仅变化时 emit)。 */
   onPiAgentChanged(sessionId: string, isPiAgent: boolean): void;
-  /** pi 开始工作:锁 piWorking、清 idle timer、markActive、清 hasUnviewedWork。 */
-  onPiWorking(sessionId: string): void;
-  /** pi 这轮完成:解锁 piWorking、markActive、按「是否正在看」标 hasUnviewedWork。 */
-  onPiSettled(sessionId: string): void;
-  /** pi 退出:解锁 piWorking(让字节流 idle 检测接管终态)。 */
-  onPiShutdown(sessionId: string): void;
   /** pi 对话名 → 终端显示名(受 manuallyRenamed 保护)。 */
   onPiName(sessionId: string, name: string | null): void;
+  // ── agent 状态机集成(终端状态分层:agent getter 接管,字节流 fallback 旁路)──
+  /** agent 绑定(session_start):SessionManager 把 stateGetter 换成传入的 agent getter。 */
+  bindAgent(sessionId: string, getter: AgentStateGetter): void;
+  /** agent 解绑(session_shutdown):stateGetter 回退到 byteStream fallback。 */
+  unbindAgent(sessionId: string): void;
+  /** agent 开始工作:Coordinator 已先调 getter.onWorking();这里清 hasUnviewedWork + applyState。 */
+  notifyAgentWorking(sessionId: string): void;
+  /** agent 这轮完成:Coordinator 已先调 getter.onSettled();这里 applyState + 标 hasUnviewedWork。 */
+  notifyAgentSettled(sessionId: string): void;
 }
 
 /** PiSessionCoordinator 对 settings 的最小依赖:只读 piIntegration(破循环 + 可测)。 */
@@ -61,6 +65,12 @@ export class PiSessionCoordinator {
   private readonly piSessionToWorkspace = new Map<string, string>();
   private hooks: PiSessionHooks | null = null;
   private lookup: SessionLookup | null = null;
+  /**
+   * 每个 pi 会话的 AgentStateGetter(session_start 创建,session_shutdown/销毁删除)。
+   * PiCoordinator 持有引用以调 onWorking/onSettled(更新 getter),状态应用经
+   * SessionManager 的 notifyAgentWorking/notifyAgentSettled(applyState)。
+   */
+  private readonly agentGetters = new Map<string, AgentStateGetter>();
 
   constructor(
     private readonly workspaceCoordinator: SessionWorkspaceCoordinator,
@@ -133,10 +143,15 @@ export class PiSessionCoordinator {
     );
 
     switch (payload.event) {
-      case 'session_start':
+      case 'session_start': {
         // 声明 pi 身份(无论开关，isPiAgent 总是准确反映“终端在跑 pi”)。
         this.hooks?.onPiAgentChanged(sessionId, true);
         this.sessionToPiSession.set(sessionId, payload.piSessionId);
+        // 终端状态分层:创建 AgentStateGetter 并 bind —— stateGetter 换成 agent
+        // getter,字节流检测旁路。pi 的 working/settled 经 getter 权威驱动状态。
+        const agentGetter = new AgentStateGetter();
+        this.agentGetters.set(sessionId, agentGetter);
+        this.hooks?.bindAgent(sessionId, agentGetter);
         await this.handlePiConversationSwitch(
           sessionId,
           payload.piSessionId,
@@ -144,6 +159,7 @@ export class PiSessionCoordinator {
           settings,
         );
         break;
+      }
 
       case 'session_shutdown':
         // pi 进程要退出了。workspace 按现有生命周期(Marina session 销毁时 release)；
@@ -154,19 +170,29 @@ export class PiSessionCoordinator {
           this.piSessionToWorkspace.delete(payload.piSessionId);
         }
         this.hooks?.onPiAgentChanged(sessionId, false);
-        // 解锁 piWorking(若处于 working 中途退出):让字节流 idle 检测接管终态。
-        this.hooks?.onPiShutdown(sessionId);
+        // 终端状态分层:unbind agent getter → stateGetter 回退到 byteStream fallback,
+        // 字节流检测恢复(接管终态判断)。
+        this.hooks?.unbindAgent(sessionId);
+        this.agentGetters.delete(sessionId);
         break;
 
-      case 'agent_working':
-        // v0.3.3 ADR-028「终端状态精准化」:pi 重新开始工作 → 接管 state。
-        this.hooks?.onPiWorking(sessionId);
+      case 'agent_working': {
+        // pi 重新开始工作 → agent getter 标记 working(getter 权威),
+        // SessionManager 清 hasUnviewedWork + applyState(getter → active)。
+        const getter = this.agentGetters.get(sessionId);
+        getter?.onWorking();
+        this.hooks?.notifyAgentWorking(sessionId);
         break;
+      }
 
-      case 'agent_settled':
-        // v0.3.3 ADR-028:pi 这轮完成 → 解锁 state + 标记未看成果。
-        this.hooks?.onPiSettled(sessionId);
+      case 'agent_settled': {
+        // pi 这轮完成 → agent getter 标记 settled(getter → idle,立即,agent 权威),
+        // SessionManager applyState + 标 hasUnviewedWork(未看)。
+        const getter = this.agentGetters.get(sessionId);
+        getter?.onSettled();
+        this.hooks?.notifyAgentSettled(sessionId);
         break;
+      }
 
       case 'name_changed':
         // pi 对话名 → 终端显示名(受 manuallyRenamed 保护)。
@@ -250,6 +276,12 @@ export class PiSessionCoordinator {
     if (piSid) {
       this.sessionToPiSession.delete(sessionId);
       this.piSessionToWorkspace.delete(piSid);
+    }
+    // 终端状态分层:防御性 unbind(session 销毁时若 pi 仍在 bind,回退 getter)。
+    // SessionManager.destroySession 会清 managed,unbind 无害(session 不存在则 no-op)。
+    if (this.agentGetters.has(sessionId)) {
+      this.hooks?.unbindAgent(sessionId);
+      this.agentGetters.delete(sessionId);
     }
   }
 }
