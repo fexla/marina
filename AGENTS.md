@@ -3,7 +3,7 @@
 > 你正在 YOLO 模式下为 Marina 贡献代码。本文件**只放每次都要遵守的行为宪法**(工作模式、红线边界、注释/测试/提交纪律)。
 > 场景性规则(构建/版本号/子系统规范/测试清单/历史归档)已拆到 `docs/` 下按需文档,见文末「按需文档索引」——做到对应工作时再去读,不必常驻。
 >
-> 文档版本:1.10 · 本文件的版本变更历史见 `docs/AGENTS-changelog.md`。
+> 文档版本:1.11 · 本文件的版本变更历史见 `docs/AGENTS-changelog.md`。
 
 ## 0. 你必须先读的文件
 
@@ -500,6 +500,25 @@ Marina 的开发被切分成 **N 个检查点**,与 `软件定义书.md` 第 15 
 ### 5.2 测试栈与场景细则
 
 > 测试栈选型(Vitest / mock / memfs)、必测场景清单(状态机/核心管理器/协议/持久化/解析)、不需要测试的部分、覆盖率目标、如何跑测试——已迁至 `docs/testing.md`。
+
+### 5.3 agent 必须自己跑能跑的验证(关键)
+
+不只是写单测。完成一批改动后,**agent 必须自己跑项目提供的所有能跑的验证设施,不要把能自测的东西丢给开发者手测**。开发者不读代码,他靠你跑过的自动化 + 真实交互体感来确认方向。
+
+**每次改动后必须自己跑的**:
+- `npm test`(单元测试)+ `npm run typecheck` + `npm run lint` —— commit 前必跑,全绿才能算"做完了"。
+- `npm run smoke`(启动冒烟,`scripts/smoke-launch.mjs`)—— **改了 main 进程组装 / IPC / preload / 任何启动路径后必跑**。验证 main + 至少一个窗口能在 5s 内起来、无 preload-error / render-process-gone。先 `electron-vite build` 产 `out/` 再跑(或 `npm run dev` 已 build 则 `out/main/index.js` 已在)。日志看到 `bootstrap starting` + 无致命模式 = PASS。
+- `npm run smoke:interactive [--terminal-deck|--file-viewer-scroll]`(`scripts/smoke-interactive.mjs`)—— 改了终端 / 文件面板 / session 创建路径后跑,验真实 Electron 下的交互。
+- 项目里任何别的 integration / e2e 脚本。
+
+**只有这些才让开发者手测**(自动化覆盖不到的最后一公里):
+- UI 视觉("丑" / 反人类,自动化感知不到)
+- 真实交互体感(延迟 / 顺滑度,需要人感知)
+- agent 无法自动触发的真实外部依赖(真 pi 进程的对话行为 / 真远程 daemon / 真硬件)
+
+**原则**:如果你能让一个脚本/测试自动验证某件事,就不要写进"用户测试指南"让开发者点。把能自测的全自测了,开发者测的才是自动化够不到的。
+
+**配套陷阱(踩过)**:装 Electron 二进制**不要用 `--ignore-scripts`**。`npm install --ignore-scripts`(常用于重建被误删的 `node_modules/.bin`)会跳过 electron 的 postinstall(下载二进制),导致 `npm run dev` / `npm run smoke` 报 `Error: Electron uninstall`。装 electron 二进制用 `node node_modules/electron/install.js`(走 `.npmrc` 的 electron_mirror),或正常 `npm install`(不带 ignore-scripts)。
 
 ## 6. Git 提交纪律
 
