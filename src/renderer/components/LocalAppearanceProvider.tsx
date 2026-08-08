@@ -34,7 +34,6 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import {
   COMMAND_CHANNELS,
   EVENT_CHANNELS,
-  type GetAppearanceSettingsResponse,
   type LocalAppearanceChangedPayload,
 } from '@shared/protocol';
 import type { Settings } from '@shared/types';
@@ -58,7 +57,7 @@ export function LocalAppearanceProvider({ children }: { children: ReactNode }): 
     // 首次拉取本机 appearance。local-control 命令,远程窗口也走客户端本地 IPC
     // (不经远程 WS),所以远程连接失败时依然可用 —— 这是修 Bug 2 的关键。
     void window.api
-      .invoke<undefined, GetAppearanceSettingsResponse>(
+      .invoke(
         COMMAND_CHANNELS.SETTINGS_GET_APPEARANCE,
         undefined,
       )

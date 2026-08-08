@@ -14,7 +14,6 @@
  */
 import { useEffect, useState } from 'react';
 import { COMMAND_CHANNELS } from '@shared/protocol';
-import type { RemoteDaemonProfile } from '@shared/types';
 
 /**
  * @returns 远程窗口显示名「displayName (host)」;本地窗口 / profile 已删 = null/id 兜底。
@@ -30,7 +29,7 @@ export function useBackendLabel(): string | null {
     }
     let cancelled = false;
     void window.api
-      .invoke<undefined, { profiles: RemoteDaemonProfile[] }>(
+      .invoke(
         COMMAND_CHANNELS.REMOTE_PROFILE_LIST,
         undefined,
       )

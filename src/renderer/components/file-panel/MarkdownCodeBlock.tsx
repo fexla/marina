@@ -29,7 +29,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   COMMAND_CHANNELS,
   type CodeBlockLanguage,
-  type RunCodeBlockResponse,
 } from '@shared/protocol';
 import { isRunnable, resolveLanguage } from '@shared/markdown-command';
 import { Icon } from '../icons';
@@ -244,7 +243,7 @@ export function MarkdownCodeBlock({
       // cache 先进入 running 并清空旧结果;事件桥在组件卸载后仍持续收输出。
       beginCodeBlockRun(cacheKey);
       window.api
-        .invoke<unknown, RunCodeBlockResponse>(COMMAND_CHANNELS.SYSTEM_RUN_CODE_BLOCK, {
+        .invoke(COMMAND_CHANNELS.SYSTEM_RUN_CODE_BLOCK, {
           sourceSessionId: sessionId,
           language,
           code: codeToRun,

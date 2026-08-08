@@ -21,10 +21,9 @@ import { useEffect, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import {
   COMMAND_CHANNELS,
   EVENT_CHANNELS,
-  type GetWindowMaxStateResponse,
   type WindowMaxStateChangedPayload,
 } from '@shared/protocol';
-import type { RemoteDaemonProfile, WindowStyle } from '@shared/types';
+import type { WindowStyle } from '@shared/types';
 import { Minus, Square, Copy as RestoreIcon, X } from 'lucide-react';
 import { focusTerminalDom } from '../focus';
 import { useAppState } from '../store';
@@ -52,7 +51,7 @@ export function WindowChrome({ windowStyle, buildVersion, buildType }: Props): J
   useEffect(() => {
     let cancelled = false;
     void window.api
-      .invoke<undefined, GetWindowMaxStateResponse>(
+      .invoke(
         COMMAND_CHANNELS.WINDOW_GET_MAX_STATE,
         undefined,
       )
@@ -133,7 +132,7 @@ export function WindowChrome({ windowStyle, buildVersion, buildType }: Props): J
     // REMOTE_PROFILE_LIST 是 local-control(见 protocol.ts LOCAL_CONTROL_COMMANDS_SET),
     // 远程窗口里也走客户端本地 IPC,返回客户端本地保存的 profile 列表。
     void window.api
-      .invoke<undefined, { profiles: RemoteDaemonProfile[] }>(
+      .invoke(
         COMMAND_CHANNELS.REMOTE_PROFILE_LIST,
         undefined,
       )

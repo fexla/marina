@@ -71,7 +71,7 @@ export function CommandPanel({ sessionId, search }: CommandPanelProps): JSX.Elem
   useEffect(() => {
     let cancelled = false;
     window.api
-      .invoke<unknown, CommandPanelSnapshot>(COMMAND_CHANNELS.COMMAND_PANEL_GET_STATE, {
+      .invoke(COMMAND_CHANNELS.COMMAND_PANEL_GET_STATE, {
         sessionId,
       })
       .then((snap) => {
@@ -109,7 +109,7 @@ export function CommandPanel({ sessionId, search }: CommandPanelProps): JSX.Elem
   // 操作:切 tab / 关 tab / 独立改前后台范围与间隔 / 立即刷新(重跑)
   const showCommand = (key: string): void => {
     window.api
-      .invoke<unknown, CommandPanelSnapshot>(COMMAND_CHANNELS.COMMAND_PANEL_SHOW, {
+      .invoke(COMMAND_CHANNELS.COMMAND_PANEL_SHOW, {
         sessionId,
         commandKey: key,
       })
@@ -129,7 +129,7 @@ export function CommandPanel({ sessionId, search }: CommandPanelProps): JSX.Elem
 
   const closeCommand = (key: string): void => {
     window.api
-      .invoke<unknown, CommandPanelSnapshot>(COMMAND_CHANNELS.COMMAND_PANEL_CLOSE, {
+      .invoke(COMMAND_CHANNELS.COMMAND_PANEL_CLOSE, {
         sessionId,
         commandKey: key,
       })
@@ -164,7 +164,7 @@ export function CommandPanel({ sessionId, search }: CommandPanelProps): JSX.Elem
   const rerun = (entry: CommandEntry): void => {
     // 重跑 = 再推一次同 command(upsert 复用 key,立即跑一次)
     window.api
-      .invoke<unknown, CommandPanelSnapshot>(COMMAND_CHANNELS.COMMAND_PANEL_RUN, {
+      .invoke(COMMAND_CHANNELS.COMMAND_PANEL_RUN, {
         sessionId,
         command: entry.command,
         title: entry.title,

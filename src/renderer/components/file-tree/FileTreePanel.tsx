@@ -27,7 +27,6 @@ import {
   type FileTreeChangedPayload,
   type FileTreePollingDir,
   type FileTreeRootInfo,
-  type GetFileTreeRootsResponse,
   type ListFileTreeDirectoryResponse,
   type ListFileTreeRecursiveResponse,
 } from '@shared/protocol';
@@ -137,10 +136,7 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
         return { ...current, [key]: next };
       });
       try {
-        const snapshot = await window.api.invoke<
-          { sessionId: string; rootId: FileTreeRootId; relativePath: string },
-          ListFileTreeDirectoryResponse
-        >(COMMAND_CHANNELS.FILE_TREE_LIST_DIRECTORY, { sessionId, rootId, relativePath });
+        const snapshot = await window.api.invoke(COMMAND_CHANNELS.FILE_TREE_LIST_DIRECTORY, { sessionId, rootId, relativePath });
         // 大目录返回最多 500 项；标记为 transition 让 React concurrent renderer
         // 可在构建大量行时主动让出主线程，避免一次同步更新冻结整个窗口。
         startTransition(() => {
@@ -251,7 +247,7 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
     void waitForClaim(sessionId).then((outcome) => {
       if (cancelled || !outcome.ok) return;
       window.api
-        .invoke<{ sessionId: string }, GetFileTreeRootsResponse>(
+        .invoke(
           COMMAND_CHANNELS.FILE_TREE_GET_ROOTS,
           {
             sessionId,
@@ -287,7 +283,7 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
     Promise.all(
       missing.map((r) =>
         window.api
-          .invoke<{ sessionId: string; rootId: FileTreeRootId }, ListFileTreeRecursiveResponse>(
+          .invoke(
             COMMAND_CHANNELS.FILE_TREE_LIST_RECURSIVE,
             { sessionId, rootId: r.id },
           )

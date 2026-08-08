@@ -117,7 +117,7 @@ export function waitForClaim(sessionId: string): Promise<ClaimOutcome> {
  * 两者互不影响。
  */
 export function claimSession(sessionId: string): Promise<ClaimSessionResponse> {
-  const claim = window.api.invoke<{ sessionId: string }, ClaimSessionResponse>(
+  const claim = window.api.invoke(
     COMMAND_CHANNELS.SESSION_CLAIM,
     { sessionId },
   );

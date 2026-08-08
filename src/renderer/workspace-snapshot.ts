@@ -45,10 +45,7 @@ export async function restoreWorkspaceSnapshot(
   sessionId: string,
 ): Promise<void> {
   try {
-    const { snapshot } = await window.api.invoke<
-      { sessionId: string },
-      { snapshot: WorkspaceFilePanelSnapshot | null }
-    >(
+    const { snapshot } = await window.api.invoke(
       // 通道名用常量(COMMAND_CHANNELS 是值,不是类型;旧代码 type-import 导致
       // 只能字面量 + 错误 cast,这里恢复值 import 用真实常量)。
       COMMAND_CHANNELS.WORKSPACE_READ_SNAPSHOT,
@@ -163,7 +160,7 @@ async function doWriteSnapshot(
     runs,
   };
   try {
-    await window.api.invoke<{ sessionId: string; snapshot: WorkspaceFilePanelSnapshot }, void>(
+    await window.api.invoke(
       COMMAND_CHANNELS.WORKSPACE_WRITE_SNAPSHOT,
       { sessionId, snapshot },
     );

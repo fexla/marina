@@ -21,7 +21,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   COMMAND_CHANNELS,
   type GalleryResolveImagePayload,
-  type GalleryResolveImageResponse,
 } from '@shared/protocol';
 import { parseGalleryCode } from '@shared/gallery-parser';
 import { useTranslation } from '../LanguageProvider';
@@ -94,7 +93,7 @@ export function GalleryViewer({
         src: item.src,
       };
       window.api
-        .invoke<GalleryResolveImagePayload, GalleryResolveImageResponse>(
+        .invoke(
           COMMAND_CHANNELS.GALLERY_RESOLVE_IMAGE,
           payload,
         )

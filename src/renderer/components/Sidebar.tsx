@@ -58,9 +58,6 @@ import {
 import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import {
   COMMAND_CHANNELS,
-  type AddBookmarkResponse,
-  type CreateSessionResponse,
-  type PickFolderResponse,
 } from '@shared/protocol';
 import type {
   GroupNode,
@@ -438,12 +435,12 @@ export function Sidebar(): JSX.Element {
     // 真正的本地窗口保留 beta.9 native folder picker；groupId 与 path 在一个
     // BOOKMARK_ADD 中提交，避免先闪到未分组再 reorder 的半完成状态。
     try {
-      const result = await window.api.invoke<unknown, PickFolderResponse>(
+      const result = await window.api.invoke(
         COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER,
         {},
       );
       if (result.path === null) return;
-      await window.api.invoke<unknown, AddBookmarkResponse>(COMMAND_CHANNELS.BOOKMARK_ADD, {
+      await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_ADD, {
         path: result.path,
         ...(groupId ? { groupId } : {}),
       });
@@ -459,7 +456,7 @@ export function Sidebar(): JSX.Element {
   const createSessionAtPath = async (path: string): Promise<void> => {
     const templateId = state.defaultTemplateId ?? 'shell';
     const dims = state.lastTerminalDims;
-    const res = await window.api.invoke<unknown, CreateSessionResponse>(
+    const res = await window.api.invoke(
       COMMAND_CHANNELS.SESSION_CREATE,
       {
         pathId: path,
@@ -501,7 +498,7 @@ export function Sidebar(): JSX.Element {
       return;
     }
     try {
-      const result = await window.api.invoke<unknown, PickFolderResponse>(
+      const result = await window.api.invoke(
         COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER,
         {},
       );
@@ -522,7 +519,7 @@ export function Sidebar(): JSX.Element {
     if (!intent) return;
     try {
       if (intent.kind === 'bookmark') {
-        await window.api.invoke<unknown, AddBookmarkResponse>(COMMAND_CHANNELS.BOOKMARK_ADD, {
+        await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_ADD, {
           path,
           ...(intent.groupId ? { groupId: intent.groupId } : {}),
         });
@@ -617,7 +614,7 @@ export function Sidebar(): JSX.Element {
       const path = (file as File & { path?: string }).path;
       if (!path) continue;
       try {
-        await window.api.invoke<unknown, AddBookmarkResponse>(COMMAND_CHANNELS.BOOKMARK_ADD, {
+        await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_ADD, {
           path,
         });
       } catch (err) {
@@ -2490,7 +2487,7 @@ function PathItem({
     const templateId = node.defaultTemplateId ?? state.defaultTemplateId ?? 'shell';
     try {
       const dims = state.lastTerminalDims;
-      const res = await window.api.invoke<unknown, CreateSessionResponse>(
+      const res = await window.api.invoke(
         COMMAND_CHANNELS.SESSION_CREATE,
         {
           pathId: node.id,
@@ -2657,7 +2654,7 @@ function PathItem({
           hint: '注册 pi-marina-bridge 到本项目（仅本项目生效）',
           onSelect: () => {
             window.api
-              .invoke<{ scope: 'project'; projectPath: string }, { alreadyInstalled: boolean }>(
+              .invoke(
                 COMMAND_CHANNELS.PI_BRIDGE_INSTALL,
                 { scope: 'project', projectPath: node.path },
               )

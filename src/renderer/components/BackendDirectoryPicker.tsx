@@ -58,10 +58,7 @@ export function BackendDirectoryPicker({
     setLoading(true);
     setError(null);
     try {
-      const result = await window.api.invoke<
-        { path?: string },
-        ListDirectoryPickerResponse
-      >(COMMAND_CHANNELS.DIRECTORY_PICKER_LIST, path ? { path } : {});
+      const result = await window.api.invoke(COMMAND_CHANNELS.DIRECTORY_PICKER_LIST, path ? { path } : {});
       if (sequence !== requestSequenceRef.current) return;
       setListing(result);
     } catch (caught: unknown) {

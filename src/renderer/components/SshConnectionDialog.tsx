@@ -20,8 +20,6 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { KeyRound, Plus, Server } from 'lucide-react';
 import {
   COMMAND_CHANNELS,
-  type AddSshProfileResponse,
-  type PickSshKeyFileResponse,
 } from '@shared/protocol';
 import type { SshProfile } from '@shared/types';
 import { useOverlayRegistration } from '../ui-overlay-stack';
@@ -139,7 +137,7 @@ export function SshConnectionDialog({
   const pickKeyFile = async (): Promise<void> => {
     setError(null);
     try {
-      const result = await window.api.invoke<unknown, PickSshKeyFileResponse>(
+      const result = await window.api.invoke(
         COMMAND_CHANNELS.SSH_PROFILE_PICK_KEY_FILE,
         keyFilePath.trim() ? { defaultPath: keyFilePath.trim() } : {},
       );
@@ -156,7 +154,7 @@ export function SshConnectionDialog({
     try {
       const normalizedHost = host.trim();
       const normalizedUsername = username.trim();
-      const response = await window.api.invoke<unknown, AddSshProfileResponse>(
+      const response = await window.api.invoke(
         COMMAND_CHANNELS.SSH_PROFILE_ADD,
         {
           name: name.trim() || `${normalizedUsername}@${normalizedHost}`,

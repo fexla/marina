@@ -11,7 +11,7 @@
  *   错把路径写到客户端机器。
  */
 import { useEffect, useRef, useState } from 'react';
-import { COMMAND_CHANNELS, type InstallMarinaSkillResponse } from '@shared/protocol';
+import { COMMAND_CHANNELS } from '@shared/protocol';
 import { useModal } from './Modal';
 
 const TARGETS = [
@@ -71,10 +71,7 @@ export function SkillInstallDialog({
     }
     setInstalling(true);
     try {
-      const result = await window.api.invoke<
-        { projectPath: string; targets: TargetId[]; overwrite: boolean },
-        InstallMarinaSkillResponse
-      >(COMMAND_CHANNELS.SKILL_INSTALL_MARINA, { projectPath, targets, overwrite });
+      const result = await window.api.invoke(COMMAND_CHANNELS.SKILL_INSTALL_MARINA, { projectPath, targets, overwrite });
       if (result.conflicts.length > 0 && !overwrite) {
         const preview = result.conflicts
           .map((conflict) => `${conflict.target}: ${conflict.destination}`)

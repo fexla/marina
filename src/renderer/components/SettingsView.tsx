@@ -35,24 +35,13 @@ import {
   REMOTE_DAEMON_PORT_MAX,
   REMOTE_DAEMON_PORT_MIN,
   type AddTemplatePayload,
-  type AddSshProfileResponse,
-  type AddTemplateResponse,
   type ExplorerIntegrationStatus,
-  type ImportSettingsResponse,
   type KnownHostsRefreshResponse,
-  type ListShellsResponse,
-  type ExportSettingsResponse,
-  type PickSshKeyFileResponse,
   type PerformanceStatus,
   type PiBridgeStatusResponse,
-  type CaptureCpuProfileResponse,
-  type SetExplorerIntegrationResponse,
   type SshAgentStatusResponse,
   type SshConfigEntryDto,
-  type SshConfigListResponse,
-  type UpdateSshProfileResponse,
   type UpdateTemplatePayload,
-  type UpdateTemplateResponse,
 } from '@shared/protocol';
 import { formatDisplayPath, toWslUncPath } from '@shared/path-display';
 import type {
@@ -339,7 +328,7 @@ function RemoteConnectionBlocks({
   const handleStart = async (): Promise<void> => {
     setError(null);
     try {
-      await window.api.invoke(COMMAND_CHANNELS.REMOTE_DAEMON_START, {});
+      await window.api.invoke(COMMAND_CHANNELS.REMOTE_DAEMON_START, undefined);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -347,7 +336,7 @@ function RemoteConnectionBlocks({
   const handleStop = async (): Promise<void> => {
     setError(null);
     try {
-      await window.api.invoke(COMMAND_CHANNELS.REMOTE_DAEMON_STOP, {});
+      await window.api.invoke(COMMAND_CHANNELS.REMOTE_DAEMON_STOP, undefined);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -1031,7 +1020,7 @@ function AppearancePanel({ setError }: { setError: (msg: string | null) => void 
           className="settings-button"
           onClick={() =>
             window.api
-              .invoke(COMMAND_CHANNELS.MD_THEME_OPEN_DIR, {})
+              .invoke(COMMAND_CHANNELS.MD_THEME_OPEN_DIR, undefined)
               .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
           }
         >
@@ -1083,7 +1072,7 @@ function ShellPanel({ setError }: { setError: (msg: string | null) => void }): J
   useEffect(() => {
     let cancelled = false;
     window.api
-      .invoke<unknown, ListShellsResponse>(COMMAND_CHANNELS.SETTINGS_LIST_SHELLS, {})
+      .invoke(COMMAND_CHANNELS.SETTINGS_LIST_SHELLS, undefined)
       .then((res) => {
         if (!cancelled) setShells(res.shells);
       })
@@ -1385,7 +1374,7 @@ function TemplateEditor({
           shellFirst: draft.shellFirst,
           postExitAction: draft.postExitAction,
         };
-        await window.api.invoke<AddTemplatePayload, AddTemplateResponse>(
+        await window.api.invoke(
           COMMAND_CHANNELS.TEMPLATE_ADD,
           payload,
         );
@@ -1402,7 +1391,7 @@ function TemplateEditor({
             postExitAction: draft.postExitAction,
           },
         };
-        await window.api.invoke<UpdateTemplatePayload, UpdateTemplateResponse>(
+        await window.api.invoke(
           COMMAND_CHANNELS.TEMPLATE_UPDATE,
           payload,
         );
@@ -1810,7 +1799,7 @@ function DataPanel({ setError }: { setError: (msg: string | null) => void }): JS
   useEffect(() => {
     let cancelled = false;
     window.api
-      .invoke<unknown, { dataDir: string }>(COMMAND_CHANNELS.SYSTEM_GET_DATA_DIR, {})
+      .invoke(COMMAND_CHANNELS.SYSTEM_GET_DATA_DIR, undefined)
       .then((res) => {
         if (!cancelled && res?.dataDir) setDataDir(res.dataDir);
       })
@@ -1825,7 +1814,7 @@ function DataPanel({ setError }: { setError: (msg: string | null) => void }): JS
   useEffect(() => {
     let cancelled = false;
     window.api
-      .invoke<unknown, ListShellsResponse>(COMMAND_CHANNELS.SETTINGS_LIST_SHELLS, {})
+      .invoke(COMMAND_CHANNELS.SETTINGS_LIST_SHELLS, undefined)
       .then((res) => {
         if (cancelled) return;
         const distros = res.shells
@@ -1847,7 +1836,7 @@ function DataPanel({ setError }: { setError: (msg: string | null) => void }): JS
 
   const handleOpenDataDir = (): void => {
     setError(null);
-    window.api.invoke(COMMAND_CHANNELS.SYSTEM_OPEN_DATA_DIR, {}).catch((err: unknown) => {
+    window.api.invoke(COMMAND_CHANNELS.SYSTEM_OPEN_DATA_DIR, undefined).catch((err: unknown) => {
       setError(err instanceof Error ? err.message : String(err));
     });
   };
@@ -1857,9 +1846,9 @@ function DataPanel({ setError }: { setError: (msg: string | null) => void }): JS
     setLastExportPath(null);
     setBusy('export');
     try {
-      const res = await window.api.invoke<unknown, ExportSettingsResponse>(
+      const res = await window.api.invoke(
         COMMAND_CHANNELS.SETTINGS_EXPORT,
-        {},
+        undefined,
       );
       if (res.filePath) setLastExportPath(res.filePath);
     } catch (err: unknown) {
@@ -1873,9 +1862,9 @@ function DataPanel({ setError }: { setError: (msg: string | null) => void }): JS
     setError(null);
     setBusy('import');
     try {
-      const res = await window.api.invoke<unknown, ImportSettingsResponse>(
+      const res = await window.api.invoke(
         COMMAND_CHANNELS.SETTINGS_IMPORT,
-        {},
+        undefined,
       );
       if (res.status === 'error') {
         setError(
@@ -1934,7 +1923,7 @@ function DataPanel({ setError }: { setError: (msg: string | null) => void }): JS
         setError(tx('请先选择 WSL 发行版', 'Select a WSL distro first'));
         return;
       }
-      const result = await window.api.invoke<unknown, { path: string | null }>(
+      const result = await window.api.invoke(
         COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER,
         { defaultPath: toWslUncPath(distro, wslPath) },
       );
@@ -2107,7 +2096,7 @@ function RemotePanel({ setError }: { setError: (msg: string | null) => void }): 
 
   const refreshAgent = useCallback(() => {
     window.api
-      .invoke<unknown, SshAgentStatusResponse>(COMMAND_CHANNELS.SSH_AGENT_STATUS, {})
+      .invoke(COMMAND_CHANNELS.SSH_AGENT_STATUS, undefined)
       .then(setAgentStatus)
       .catch((err) => {
         console.warn('[RemotePanel] ssh-agent status query failed', err);
@@ -2115,7 +2104,7 @@ function RemotePanel({ setError }: { setError: (msg: string | null) => void }): 
   }, []);
   const refreshSshConfig = useCallback(() => {
     window.api
-      .invoke<unknown, SshConfigListResponse>(COMMAND_CHANNELS.SSH_CONFIG_LIST, {})
+      .invoke(COMMAND_CHANNELS.SSH_CONFIG_LIST, undefined)
       .then((r) => setSshConfigEntries(r.entries))
       .catch((err) => {
         console.warn('[RemotePanel] ssh_config list failed', err);
@@ -2123,7 +2112,7 @@ function RemotePanel({ setError }: { setError: (msg: string | null) => void }): 
   }, []);
   const refreshKnownHosts = useCallback(() => {
     window.api
-      .invoke<unknown, KnownHostsRefreshResponse>(COMMAND_CHANNELS.KNOWN_HOSTS_REFRESH, {})
+      .invoke(COMMAND_CHANNELS.KNOWN_HOSTS_REFRESH, undefined)
       .then(setKnownHosts)
       .catch((err) => {
         console.warn('[RemotePanel] known_hosts refresh failed', err);
@@ -2199,13 +2188,13 @@ function RemotePanel({ setError }: { setError: (msg: string | null) => void }): 
             partial.password = '';
           }
         }
-        await window.api.invoke<unknown, UpdateSshProfileResponse>(
+        await window.api.invoke(
           COMMAND_CHANNELS.SSH_PROFILE_UPDATE,
           { id: editingProfileId, partial },
         );
         resetSshForm();
       } else {
-        const res = await window.api.invoke<unknown, AddSshProfileResponse>(
+        const res = await window.api.invoke(
           COMMAND_CHANNELS.SSH_PROFILE_ADD,
           {
             name: sshName,
@@ -2234,7 +2223,7 @@ function RemotePanel({ setError }: { setError: (msg: string | null) => void }): 
   const handlePickSshKeyFile = async (): Promise<void> => {
     setError(null);
     try {
-      const res = await window.api.invoke<unknown, PickSshKeyFileResponse>(
+      const res = await window.api.invoke(
         COMMAND_CHANNELS.SSH_PROFILE_PICK_KEY_FILE,
         { ...(sshKeyFile.trim() ? { defaultPath: sshKeyFile.trim() } : {}) },
       );
@@ -2728,7 +2717,7 @@ function SystemIntegrationPanel({
 
   const refreshStatus = useCallback(async () => {
     try {
-      const s = await window.api.invoke<undefined, ExplorerIntegrationStatus>(
+      const s = await window.api.invoke(
         COMMAND_CHANNELS.EXPLORER_INTEGRATION_GET_STATUS,
         undefined,
       );
@@ -2750,7 +2739,7 @@ function SystemIntegrationPanel({
         kind === 'classic'
           ? COMMAND_CHANNELS.EXPLORER_INTEGRATION_SET_CLASSIC
           : COMMAND_CHANNELS.EXPLORER_INTEGRATION_SET_MODERN;
-      const res = await window.api.invoke<{ enabled: boolean }, SetExplorerIntegrationResponse>(
+      const res = await window.api.invoke(
         channel,
         { enabled },
       );
@@ -2982,7 +2971,7 @@ function AiPanel({ setError }: { setError: (msg: string | null) => void }): JSX.
   useEffect(() => {
     // 一次性查 pi 是否装 + bridge 是否已全局安装；失败(远程旧 daemon)静默。
     void window.api
-      .invoke<null, PiBridgeStatusResponse>(COMMAND_CHANNELS.PI_BRIDGE_STATUS, null)
+      .invoke(COMMAND_CHANNELS.PI_BRIDGE_STATUS, undefined)
       .then(setPiStatus)
       .catch(() => setPiStatus(null));
   }, []);
@@ -2990,7 +2979,7 @@ function AiPanel({ setError }: { setError: (msg: string | null) => void }): JSX.
     setError(null);
     setPiInstalling(true);
     try {
-      const r = await window.api.invoke<{ scope: 'global' }, { alreadyInstalled: boolean }>(
+      const r = await window.api.invoke(
         COMMAND_CHANNELS.PI_BRIDGE_INSTALL,
         { scope: 'global' },
       );
@@ -3015,7 +3004,7 @@ function AiPanel({ setError }: { setError: (msg: string | null) => void }): JSX.
     setError(null);
     setTesting(true);
     try {
-      const res = await window.api.invoke<undefined, { ok: boolean; message: string }>(
+      const res = await window.api.invoke(
         COMMAND_CHANNELS.AI_TEST_CONNECTION,
         undefined,
       );
@@ -3351,7 +3340,7 @@ function AdvancedPanel({ setError }: { setError: (msg: string | null) => void })
 
   const refreshPerformanceStatus = useCallback((): void => {
     window.api
-      .invoke<unknown, PerformanceStatus>(COMMAND_CHANNELS.PERFORMANCE_GET_STATUS, {})
+      .invoke(COMMAND_CHANNELS.PERFORMANCE_GET_STATUS, undefined)
       .then(setPerformanceStatus)
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
   }, [setError]);
@@ -3362,7 +3351,7 @@ function AdvancedPanel({ setError }: { setError: (msg: string | null) => void })
 
   const handleOpenLogs = (): void => {
     setError(null);
-    window.api.invoke(COMMAND_CHANNELS.SYSTEM_OPEN_LOGS_DIR, {}).catch((err: unknown) => {
+    window.api.invoke(COMMAND_CHANNELS.SYSTEM_OPEN_LOGS_DIR, undefined).catch((err: unknown) => {
       setError(err instanceof Error ? err.message : String(err));
     });
   };
@@ -3370,7 +3359,7 @@ function AdvancedPanel({ setError }: { setError: (msg: string | null) => void })
   const handleOpenPerformanceReports = (): void => {
     setError(null);
     window.api
-      .invoke(COMMAND_CHANNELS.PERFORMANCE_OPEN_REPORTS_DIR, {})
+      .invoke(COMMAND_CHANNELS.PERFORMANCE_OPEN_REPORTS_DIR, undefined)
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
   };
 
@@ -3378,9 +3367,9 @@ function AdvancedPanel({ setError }: { setError: (msg: string | null) => void })
     setError(null);
     setPerformanceBusy('report');
     try {
-      const status = await window.api.invoke<unknown, PerformanceStatus>(
+      const status = await window.api.invoke(
         COMMAND_CHANNELS.PERFORMANCE_WRITE_REPORT,
-        {},
+        undefined,
       );
       setPerformanceStatus(status);
     } catch (err) {
@@ -3401,12 +3390,9 @@ function AdvancedPanel({ setError }: { setError: (msg: string | null) => void })
     setError(null);
     setPerformanceBusy('profile');
     try {
-      const result = await window.api.invoke<
-        { durationSeconds: number },
-        CaptureCpuProfileResponse
-      >(COMMAND_CHANNELS.PERFORMANCE_CAPTURE_CPU_PROFILE, { durationSeconds: 15 });
+      const result = await window.api.invoke(COMMAND_CHANNELS.PERFORMANCE_CAPTURE_CPU_PROFILE, { durationSeconds: 15 });
       refreshPerformanceStatus();
-      await window.api.invoke(COMMAND_CHANNELS.PERFORMANCE_OPEN_REPORTS_DIR, {});
+      await window.api.invoke(COMMAND_CHANNELS.PERFORMANCE_OPEN_REPORTS_DIR, undefined);
       window.alert(tx(`CPU Profile 已生成：${result.path}`, `CPU Profile created: ${result.path}`));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -3418,7 +3404,7 @@ function AdvancedPanel({ setError }: { setError: (msg: string | null) => void })
   const handleReset = (): void => {
     setError(null);
     window.api
-      .invoke(COMMAND_CHANNELS.SETTINGS_RESET, {})
+      .invoke(COMMAND_CHANNELS.SETTINGS_RESET, undefined)
       .then(() => {
         setConfirmingReset(false);
       })

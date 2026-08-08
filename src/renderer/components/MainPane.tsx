@@ -23,8 +23,6 @@
 import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import {
   COMMAND_CHANNELS,
-  type CreateSessionResponse,
-  type ListShellsResponse,
 } from '@shared/protocol';
 import { formatPathDisplayPath } from '@shared/path-display';
 import type { SessionInfo, Template } from '@shared/types';
@@ -265,7 +263,7 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
     }
     let cancelled = false;
     window.api
-      .invoke<unknown, ListShellsResponse>(COMMAND_CHANNELS.SETTINGS_LIST_SHELLS, {})
+      .invoke(COMMAND_CHANNELS.SETTINGS_LIST_SHELLS, undefined)
       .then((res) => {
         if (!cancelled) setShells(res.shells);
       })
@@ -287,7 +285,7 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
     setCreating(true);
     try {
       const dims = state.lastTerminalDims;
-      const res = await window.api.invoke<unknown, CreateSessionResponse>(
+      const res = await window.api.invoke(
         COMMAND_CHANNELS.SESSION_CREATE,
         {
           pathId,

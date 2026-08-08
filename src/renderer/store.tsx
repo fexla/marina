@@ -35,7 +35,6 @@ import {
   type FilePanelUpdatedPayload,
   type CommandPanelSnapshot,
   type CommandPanelUpdatedPayload,
-  type ListMdThemesResponse,
   type MdThemeListUpdatedPayload,
   type GetSnapshotResponse,
   type PathTreeUpdatedPayload,
@@ -46,7 +45,6 @@ import {
   type SessionStateChangedPayload,
   type SettingsChangedPayload,
   // 外观归属客户端(local-control):远程窗口读写本机 appearance 的 payload
-  type GetAppearanceSettingsResponse,
   type LocalAppearanceChangedPayload,
   type SshProfilesUpdatedPayload,
   type RemoteDaemonStatusPayload,
@@ -927,9 +925,9 @@ export function useIpcSync(): {
           // 包成 IIFE 返回 cleanup,cleanups.push 要求每个参数是 () => void。
           (() => {
             void window.api
-              .invoke<unknown, { status: RemoteDaemonStatusPayload }>(
+              .invoke(
                 COMMAND_CHANNELS.REMOTE_DAEMON_GET_STATUS,
-                {},
+                undefined,
               )
               .then((r) => dispatch({ type: 'remoteDaemonStatus/update', status: r.status }))
               .catch(() => {
@@ -1041,7 +1039,7 @@ export function useIpcSync(): {
           ),
         );
 
-        const snapshot = await window.api.invoke<{ myWindowId: string }, GetSnapshotResponse>(
+        const snapshot = await window.api.invoke(
           COMMAND_CHANNELS.APP_GET_SNAPSHOT,
           { myWindowId: window.api.windowId },
         );
@@ -1053,7 +1051,7 @@ export function useIpcSync(): {
         // 因此后续新增/改名/删除由本地 REMOTE_PROFILES_UPDATED 持续同步。
         let localRemoteProfiles = snapshot.remoteBackendProfiles;
         try {
-          const result = await window.api.invoke<undefined, { profiles: RemoteDaemonProfile[] }>(
+          const result = await window.api.invoke(
             COMMAND_CHANNELS.REMOTE_PROFILE_LIST,
             undefined,
           );
@@ -1069,7 +1067,7 @@ export function useIpcSync(): {
         let localAppearance = snapshot.settings.appearance;
         if (window.api.backendProfileId) {
           try {
-            const result = await window.api.invoke<undefined, GetAppearanceSettingsResponse>(
+            const result = await window.api.invoke(
               COMMAND_CHANNELS.SETTINGS_GET_APPEARANCE,
               undefined,
             );
@@ -1093,7 +1091,7 @@ export function useIpcSync(): {
         // 自定义 markdown 主题列表:启动拉一次(订阅已覆盖后续增删广播)。
         // 失败不阻塞主流程 —— 设置页下拉只是少自定义项,内置主题仍可用。
         try {
-          const { themes } = await window.api.invoke<undefined, ListMdThemesResponse>(
+          const { themes } = await window.api.invoke(
             COMMAND_CHANNELS.MD_THEME_LIST,
             undefined,
           );

@@ -25,13 +25,15 @@ import {
   REMOTE_DAEMON_PORT_MAX,
   REMOTE_DAEMON_PORT_MIN,
   getCommandRouting,
-  type ClipboardReadTextResponse,
-  type ClipboardWriteTextPayload,
-  type ClipboardWriteTextResponse,
   type CommandEnvelope,
   type GetRemoteConnectionPayload,
   type GetRemoteConnectionResponse,
 } from '@shared/protocol';
+import {
+  type CommandChannelKey,
+  type CommandPayload,
+  type CommandResponse,
+} from '@shared/command-contracts';
 import { RemoteTransport, ConnectError, ConnectErrorCode, type WSLike } from './remote-transport';
 
 /**
@@ -272,19 +274,25 @@ function ensureTransport(): Promise<void> {
 }
 
 /** 向客户端本地 Electron main 发命令,永不经过远程 transport。 */
-function invokeLocal<P, R>(channel: string, payload: P): Promise<R> {
-  const envelope: CommandEnvelope<P> = {
+function invokeLocal<K extends CommandChannelKey>(
+  channel: K,
+  payload: CommandPayload<K>,
+): Promise<CommandResponse<K>> {
+  const envelope: CommandEnvelope<CommandPayload<K>> = {
     windowId,
     requestId: crypto.randomUUID(),
     payload,
   };
-  return ipcRenderer.invoke(channel, envelope) as Promise<R>;
+  return ipcRenderer.invoke(channel, envelope) as Promise<CommandResponse<K>>;
 }
 
 /**
  * 包装 invoke:本地控制面命令始终走 ipcRenderer；远程窗口的后端业务命令走 WS。
  */
-async function invoke<P, R>(channel: string, payload: P): Promise<R> {
+async function invoke<K extends CommandChannelKey>(
+  channel: K,
+  payload: CommandPayload<K>,
+): Promise<CommandResponse<K>> {
   // “在新窗口中打开 session”横跨两个控制域,不能整体发给 daemon:
   // 1) daemon 数据面:旧 owner release session;
   // 2) 客户端控制面:本地创建继承同一 backend 的 BrowserWindow;
@@ -313,11 +321,11 @@ async function invoke<P, R>(channel: string, payload: P): Promise<R> {
       const current = snapshot.sessions?.find((s) => s.id === request.sessionId);
       if (!current || current.ownerWindowId !== null) throw err;
     }
-    return invokeLocal<Record<string, unknown>, R>(COMMAND_CHANNELS.WINDOW_CREATE, {
+    return invokeLocal(COMMAND_CHANNELS.WINDOW_CREATE, {
       backendProfileId: backend,
       selectSessionId: request.sessionId,
       ...(request.simpleMode ? { simpleMode: true } : {}),
-    });
+    }) as Promise<CommandResponse<K>>;
   }
 
   if (getCommandRouting(channel) === 'local-control') {
@@ -327,18 +335,18 @@ async function invoke<P, R>(channel: string, payload: P): Promise<R> {
     if (channel === COMMAND_CHANNELS.WINDOW_CREATE && backend) {
       const requested =
         payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
-      return invokeLocal<Record<string, unknown>, R>(channel, {
+      return invokeLocal(COMMAND_CHANNELS.WINDOW_CREATE, {
         backendProfileId: backend,
         ...requested,
-      });
+      }) as Promise<CommandResponse<K>>;
     }
-    return invokeLocal<P, R>(channel, payload);
+    return invokeLocal(channel, payload);
   }
   await ensureTransport();
   if (remoteTransport) {
-    return remoteTransport.invoke<R>(channel, payload);
+    return remoteTransport.invoke<CommandResponse<K>>(channel, payload);
   }
-  return invokeLocal<P, R>(channel, payload);
+  return invokeLocal(channel, payload);
 }
 
 /**
@@ -464,7 +472,7 @@ const api = {
   clipboard: {
     async readText(): Promise<string> {
       try {
-        const res = await invoke<undefined, ClipboardReadTextResponse>(
+        const res = await invoke(
           COMMAND_CHANNELS.SYSTEM_CLIPBOARD_READ_TEXT,
           undefined,
         );
@@ -475,7 +483,7 @@ const api = {
     },
     async writeText(text: string): Promise<boolean> {
       try {
-        const res = await invoke<ClipboardWriteTextPayload, ClipboardWriteTextResponse>(
+        const res = await invoke(
           COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT,
           { text },
         );

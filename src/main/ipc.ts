@@ -215,8 +215,12 @@ import {
   type SetCommandDemandPayload,
   type GetCommandPanelStatePayload,
 } from '@shared/protocol';
+import type {
+  CommandContractMap,
+  CommandPayload,
+  CommandResponse,
+} from '@shared/command-contracts';
 import type { AppSnapshot, MdTheme, RemoteDaemonProfile, Settings, Template } from '@shared/types';
-import type { CaptureCpuProfilePayload } from '@shared/performance-types';
 import type { WindowManager } from './window-manager';
 import type { PathManager } from './path-manager';
 import { pathRefFromId } from './path-manager';
@@ -399,15 +403,18 @@ function sendEventTo<P>(clientId: string, channel: string, payload: P): void {
 type RawHandler = (e: Electron.IpcMainInvokeEvent, envelope: CommandEnvelope) => unknown;
 const rawHandlers = new Map<string, RawHandler>();
 
-function registerHandle<P = unknown>(
-  channel: string,
-  handler: (e: Electron.IpcMainInvokeEvent, envelope: CommandEnvelope<P>) => unknown,
+function registerHandle<K extends keyof CommandContractMap>(
+  channel: K,
+  handler: (
+    e: Electron.IpcMainInvokeEvent,
+    envelope: CommandEnvelope<CommandPayload<K>>,
+  ) => CommandResponse<K> | Promise<CommandResponse<K>>,
 ): void {
   // 0.3.2 性能飞行记录器:统一在 transport 入口按固定 channel 名计时。
   // 不记录 envelope/payload,因此不会把路径、命令或终端内容写进自动报告。
   const measuredHandler = (
     e: Electron.IpcMainInvokeEvent,
-    envelope: CommandEnvelope<P>,
+    envelope: CommandEnvelope<CommandPayload<K>>,
   ): unknown => {
     const finish = performanceMetrics.begin(`ipc.${channel}`);
     try {
@@ -441,7 +448,7 @@ function registerHandle<P = unknown>(
         `channel="${channel}" rejected: app is shutting down (lifecycle=${getLifecycleState()})`,
       );
     }
-    return measuredHandler(e, envelope as CommandEnvelope<P>);
+    return measuredHandler(e, envelope as CommandEnvelope<CommandPayload<K>>);
   });
 }
 
@@ -1590,7 +1597,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     }
   });
 
-  registerHandle<CaptureCpuProfilePayload>(
+  registerHandle(
     COMMAND_CHANNELS.PERFORMANCE_CAPTURE_CPU_PROFILE,
     async (_e, envelope) =>
       performanceDiagnostics.captureCpuProfile(envelope.payload.durationSeconds ?? 15),

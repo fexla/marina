@@ -38,7 +38,7 @@ export function LastSessionConfirmBridge(): null {
         if (confirmed) {
           // 确认 → 让主进程进入退出流程(setQuitting + app.quit)
           try {
-            await window.api.invoke(COMMAND_CHANNELS.APP_QUIT, undefined);
+            await window.api.invoke(COMMAND_CHANNELS.APP_QUIT, {});
           } catch {
             /* 主进程已退出,invoke 失败属正常 */
           }

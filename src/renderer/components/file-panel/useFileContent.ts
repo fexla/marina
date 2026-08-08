@@ -10,7 +10,7 @@
  * loading 期返回 null(viewer 显示"加载中");read 失败回落到 unknown+message。
  */
 import { useEffect, useState } from 'react';
-import { COMMAND_CHANNELS, type ReadFilePayload, type ReadFileResponse } from '@shared/protocol';
+import { COMMAND_CHANNELS, type ReadFileResponse } from '@shared/protocol';
 
 export function useFileContent(
   sessionId: string,
@@ -27,7 +27,7 @@ export function useFileContent(
     let cancelled = false;
     setLoaded(null); // 切换文件 / 刷新时先清空,viewer 显示 loading
     window.api
-      .invoke<ReadFilePayload, ReadFileResponse>(COMMAND_CHANNELS.FILE_PANEL_READ, {
+      .invoke(COMMAND_CHANNELS.FILE_PANEL_READ, {
         sessionId,
         path,
       })

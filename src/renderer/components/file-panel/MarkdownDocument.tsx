@@ -34,9 +34,6 @@ import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   COMMAND_CHANNELS,
-  type OpenPathFromMarkdownPayload,
-  type ReadImagePayload,
-  type ReadImageResponse,
 } from '@shared/protocol';
 import { isRemoteUrl } from '@shared/url-scheme';
 import { useDomTextHighlight } from '../../hooks/useDomTextHighlight';
@@ -216,7 +213,7 @@ function MdLink({ href, children, sessionId, mdPath }: MdLinkProps): JSX.Element
       return;
     }
     window.api
-      .invoke<OpenPathFromMarkdownPayload, unknown>(COMMAND_CHANNELS.FILE_PANEL_OPEN_PATH, {
+      .invoke(COMMAND_CHANNELS.FILE_PANEL_OPEN_PATH, {
         sessionId,
         mdPath,
         src: href,
@@ -326,7 +323,7 @@ function MdImage({
     setErr(null);
     let cancelled = false;
     window.api
-      .invoke<ReadImagePayload, ReadImageResponse>(COMMAND_CHANNELS.FILE_PANEL_READ_IMAGE, {
+      .invoke(COMMAND_CHANNELS.FILE_PANEL_READ_IMAGE, {
         sessionId,
         mdPath,
         src,

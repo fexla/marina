@@ -91,13 +91,6 @@ import { Check, Maximize2, Minimize2, Plus, X } from 'lucide-react';
 import {
   COMMAND_CHANNELS,
   EVENT_CHANNELS,
-  type AttachTerminalViewResponse,
-  type CreateSessionResponse,
-  type GetScrollbackPayload,
-  type GetScrollbackResponse,
-  type ImeProbeDumpPayload,
-  type ImeProbeDumpResponse,
-  type SendInputResponse,
   type SessionOutputPayload,
 } from '@shared/protocol';
 import type { SessionInfo, ThemeId } from '@shared/types';
@@ -796,10 +789,7 @@ export function TerminalView({
       if (!trimmed) return;
       if (line !== undefined) setPendingLineJump(trimmed, line);
       window.api
-        .invoke<
-          { sessionId: string; path: string },
-          { files: unknown[]; activePath: string | null }
-        >(COMMAND_CHANNELS.FILE_PANEL_OPEN, { sessionId: session.id, path: trimmed })
+        .invoke(COMMAND_CHANNELS.FILE_PANEL_OPEN, { sessionId: session.id, path: trimmed })
         .then((snap) => {
           if (line !== undefined && snap.activePath) {
             movePendingLineJump(trimmed, snap.activePath);
@@ -1055,7 +1045,7 @@ export function TerminalView({
     const firstAttach = firstAttachRef.current;
     firstAttachRef.current = false;
     void window.api
-      .invoke<unknown, AttachTerminalViewResponse>(COMMAND_CHANNELS.SESSION_ATTACH_TERMINAL_VIEW, {
+      .invoke(COMMAND_CHANNELS.SESSION_ATTACH_TERMINAL_VIEW, {
         sessionId: session.id,
         viewId: viewIdRef.current,
       })
@@ -1677,7 +1667,7 @@ export function TerminalView({
     );
 
     void window.api
-      .invoke<GetScrollbackPayload, GetScrollbackResponse>(
+      .invoke(
         COMMAND_CHANNELS.SESSION_GET_SCROLLBACK,
         { sessionId: session.id },
       )
@@ -1918,7 +1908,7 @@ export function TerminalView({
         console.warn('[IME-LEAK]', leakEntry);
         // fire-and-forget — IPC 失败不阻塞用户输入,main handler 已有兜底
         void window.api
-          .invoke<ImeProbeDumpPayload, ImeProbeDumpResponse>(COMMAND_CHANNELS.LOGGER_IME_DUMP, {
+          .invoke(COMMAND_CHANNELS.LOGGER_IME_DUMP, {
             meta: { t: leakEntry.t, sessionId: session.id },
             entries,
           })
@@ -1945,7 +1935,7 @@ export function TerminalView({
       }
       const base64 = encodeStringToBase64(data);
       void window.api
-        .invoke<{ sessionId: string; data: string }, SendInputResponse>(
+        .invoke(
           COMMAND_CHANNELS.SESSION_SEND_INPUT,
           { sessionId: session.id, data: base64 },
         )
@@ -2557,7 +2547,7 @@ function ReconnectButton({ session }: { session: SessionInfo }): JSX.Element {
     try {
       const dims = state.lastTerminalDims;
       const templateId = session.templateId || state.defaultTemplateId || 'shell';
-      const res = await window.api.invoke<unknown, CreateSessionResponse>(
+      const res = await window.api.invoke(
         COMMAND_CHANNELS.SESSION_CREATE,
         {
           pathId: session.pathId,

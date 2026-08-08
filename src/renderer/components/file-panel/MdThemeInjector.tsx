@@ -20,7 +20,7 @@
  * 不渲染 UI(返回 null),纯副作用组件,挂在 App 顶层全局生效。
  */
 import { useEffect } from 'react';
-import { COMMAND_CHANNELS, type GetMdThemeCssResponse } from '@shared/protocol';
+import { COMMAND_CHANNELS } from '@shared/protocol';
 import { useAppState } from '../../store';
 
 const STYLE_ID = 'md-custom-theme';
@@ -38,7 +38,7 @@ export function MdThemeInjector(): null {
     }
     let cancelled = false;
     void window.api
-      .invoke<{ id: string }, GetMdThemeCssResponse>(COMMAND_CHANNELS.MD_THEME_GET_CSS, {
+      .invoke(COMMAND_CHANNELS.MD_THEME_GET_CSS, {
         id: markdownStyle,
       })
       .then(({ css }) => {

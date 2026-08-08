@@ -23,7 +23,6 @@ import { startTransition, useCallback, useEffect, useMemo, useState } from 'reac
 import {
   COMMAND_CHANNELS,
   EVENT_CHANNELS,
-  type GetGitStatusResponse,
   type GitStatusGroup,
   type GitStatusTone,
   type GitStatusUpdatedPayload,
@@ -157,7 +156,7 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
     // 就继续显示旧值,不回到 loading 占位。
     setState((s) => ({ ...s, loading: true, error: undefined }));
     try {
-      const resp = await window.api.invoke<unknown, GetGitStatusResponse>(
+      const resp = await window.api.invoke(
         COMMAND_CHANNELS.GIT_GET_STATUS,
         { sessionId },
       );
@@ -311,10 +310,7 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
   // v0.3.1 勘误:resolve 相对路径 → 绝对路径(供复制绝对路径 / reveal)。复用 fileListRowContextMenu
   // 的 copyPathItems / revealInExplorerItem,与 file-tree/file-panel 菜单一致。
   const resolveAbsPath = async (relativePath: string): Promise<string> => {
-    const res = await window.api.invoke<
-      { sessionId: string; relativePath: string },
-      { absolutePath: string }
-    >(COMMAND_CHANNELS.GIT_RESOLVE_PATH, { sessionId, relativePath });
+    const res = await window.api.invoke(COMMAND_CHANNELS.GIT_RESOLVE_PATH, { sessionId, relativePath });
     return res.absolutePath;
   };
 

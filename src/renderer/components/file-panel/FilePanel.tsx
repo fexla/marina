@@ -70,7 +70,7 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
     void waitForClaim(sessionId).then((outcome) => {
       if (!outcome.ok || cancelled) return;
       window.api
-        .invoke<unknown, FilePanelSnapshot>(COMMAND_CHANNELS.FILE_PANEL_GET_OPEN_FILES, {
+        .invoke(COMMAND_CHANNELS.FILE_PANEL_GET_OPEN_FILES, {
           sessionId,
         })
         .then((snap) => {
