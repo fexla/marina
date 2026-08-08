@@ -450,23 +450,27 @@ const LOCAL_CONTROL_COMMANDS_SET: ReadonlySet<string> = new Set<CommandChannel>(
  * 因此 getCommandRouting 对不在本集合的未知 channel 直接抛错。
  */
 const COMMAND_CHANNEL_VALUES: ReadonlySet<string> = new Set<CommandChannel>(
-  Object.values(COMMAND_CHANNELS)
+  Object.values(COMMAND_CHANNELS),
 );
 
 /** 查询某 channel 的路由域。preload 用这个决定走本地 IPC 还是 WS。 */
 export function getCommandRouting(channel: string): CommandRoutingDomain {
+  // smoke:* 是 smoke 测试设施的内部回报通道(smoke-interactive.ts 用
+  // ipcMain.handleOnce('smoke:report')),非产品协议命令、不在 COMMAND_CHANNELS。
+  // fail-closed 对协议命令正确(拼错/遗漏早暴露),但内部测试通道必须放行到
+  // local-control —— 否则 preload invoke(getCommandRouting 决定本地/远程路由)
+  // 会抛错,smoke harness 无法 report。H1 引入 fail-closed 时漏了这条。
+  if (channel.startsWith('smoke:')) return 'local-control';
   if (!COMMAND_CHANNEL_VALUES.has(channel)) {
     throw new Error(
       `[protocol] getCommandRouting: unknown command channel "${channel}". ` +
         `Known channels are defined in COMMAND_CHANNELS (${COMMAND_CHANNEL_VALUES.size} total). ` +
         `Possible causes: (1) channel 名拼错/传入了事件通道(evt:*)或自由字符串, ` +
         `(2) 新增命令通道后未同步更新 COMMAND_CHANNELS, ` +
-        `(3) 新旧协议版本 channel 不匹配。`
+        `(3) 新旧协议版本 channel 不匹配。`,
     );
   }
-  return LOCAL_CONTROL_COMMANDS_SET.has(channel)
-    ? 'local-control'
-    : 'backend-data';
+  return LOCAL_CONTROL_COMMANDS_SET.has(channel) ? 'local-control' : 'backend-data';
 }
 
 /**
