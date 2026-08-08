@@ -42,6 +42,8 @@ import {
   setDaemonPassword,
 } from './daemon-credentials';
 import { FilePanelService } from './file-panel-service';
+import type { WorkspaceOps } from './file-panel-service';
+import { LocalHttpGateway } from './http/local-http-gateway';
 import { FileTreeService } from './file-tree-service';
 import { FileTreePollingService } from './file-tree-polling-service';
 import { GitService } from './git-service';
@@ -214,6 +216,11 @@ function bootstrap(): void {
   // 才调(见下方 initialize 之后)。SessionManager 现在就持有引用,供每个新
   // session 的 createSession 注入 env。详见 file-panel-service.ts 头注。
   const filePanelService = new FilePanelService();
+  // M3:HTTP 传输层从 FilePanelService 拆到 LocalHttpGateway(见
+  // http/local-http-gateway.ts)。service 只留核心面板状态;gateway 持有
+  // service 引用(路由分发目标)+ 5 业务 ops(注入式)。SessionManager 的
+  // env 注入(getUrl)改走 gateway —— FilePanelEnvSource 接口两者都满足。
+  const localHttpGateway = new LocalHttpGateway(filePanelService);
   // 内置 skill 在 dev 从源码读取、installed 包从 extraResources 读取。安装器只会
   // 复制这一份受控内容到用户明确选择的本地收藏项目。
   const skillInstaller = new SkillInstaller({
@@ -259,7 +266,7 @@ function bootstrap(): void {
       // 透传到子 shell 的 TERM_PROGRAM_VERSION,模仿 iTerm2 / WezTerm。
       // 用户在 .bashrc / Profile.ps1 里可以拿这个版本号做条件判断。
       appVersion: app.getVersion(),
-      filePanelService,
+      filePanelService: localHttpGateway,
     },
   );
   // M2:workspace/pi 职责从 SessionManager 拆到 coordinator(见 src/main/coordinators/)。
@@ -456,8 +463,10 @@ function bootstrap(): void {
     fileTreePollingService.shutdown();
     backgroundWorkScheduler.shutdown();
     // H4:关 HTTP ingress(agent 脚本的 file-panel/command 通道)。WS ingress 由
-    // dispatchCommand 的 quiesce gate 拒绝新命令;server 随 app.quit 进程回收。
+    // dispatchCommand 的 quiesce gate 拒绝新命令。M3:server 在 gateway,面板
+    // watcher 在 service,两个都关。
     void filePanelService.stop();
+    void localHttpGateway.stop();
     void (async () => {
       logger.info('main', 'before-quit: shutting down session manager + flushing stores');
       enterFlushing();
@@ -594,7 +603,7 @@ function bootstrap(): void {
       // renderer 不渲染面板,功能优雅降级。原实现会让 start() 的 throw 冒到 bootstrap
       // 的 catch 触发 app.exit(1),用户看到的是启动即崩、无任何 UI。
       try {
-        await filePanelService.start({
+        await localHttpGateway.start({
           enabled: filePanelSettings.enabled,
           port: filePanelSettings.port,
         });
@@ -604,9 +613,9 @@ function bootstrap(): void {
       filePanelService.attachSessionLookup(sessionManager);
       // v0.3.3 T12(testability enabler):注入截图回调 —— agent/CLI 走 HTTP /screenshot
       // 自测 UI。闭合 sessionManager.get→ownerWindowId→windowManager.getById→
-      // webContents.capturePage→toPNG。不引 electron 进 service 层(保持可测)。
+      // webContents.capturePage→toPNG。不引 electron 进网关层(保持可测)。
       // 无 owner / 窗口销毁 / capturePage 抛错都返 {error},路由转 400。
-      filePanelService.attachWindowCapture((sessionId) => {
+      localHttpGateway.attachWindowCapture((sessionId) => {
         const session = sessionManager.get(sessionId);
         const ownerWindowId = session?.ownerWindowId ?? null;
         if (!ownerWindowId) {
@@ -634,7 +643,9 @@ function bootstrap(): void {
       // v0.3.3 ADR-024 / Feature D:注入 workspace 操作回调(workspace HTTP 路由用)。
       // M2:闭合到 SessionWorkspaceCoordinator(它维护 session↔workspaceId 绑定 +
       // 拿 pathScope = session.pathId)。CLI `marina workspace*` 走这些。
-      filePanelService.attachWorkspaceOps({
+      // M3:注入目标是 LocalHttpGateway(workspace 路由迁到网关)。service 保留
+      // 自己的 attachWorkspaceOps(核心面板用:gallery 缓存路径 + workspace 切换重建)。
+      const filePanelWorkspaceOps: WorkspaceOps = {
         getCurrentPath: (sid) => sessionWorkspaceCoordinator.getWorkspacePathForSession(sid),
         bind: (sid, name, forceNew) =>
           sessionWorkspaceCoordinator.bindWorkspace(sid, name, forceNew),
@@ -648,21 +659,27 @@ function bootstrap(): void {
             scroll: Record<string, { scrollTop: number; scrollLeft: number }>;
             runs: unknown;
           } | null>,
-      });
+      };
+      // M3:workspace ops 一份对象,同时注入 gateway(路由)与 service(核心面板:
+      // gallery 缓存路径 + workspace 切换重建 PanelState),避免两份真值。
+      localHttpGateway.attachWorkspaceOps(filePanelWorkspaceOps);
+      filePanelService.attachWorkspaceOps(filePanelWorkspaceOps);
       // v0.3.3 ADR-027:命令面板接线。sessionLookup 破循环依赖(同 file-panel);
       // runner 复用 codeBlockRunner(执行 + output/exited 事件订阅);scheduler 复用
       // backgroundWorkScheduler(per-指令 后台轮询);HTTP /run 经 commandRunOps 转发。
       commandPanelService.attachSessionLookup(sessionManager);
       commandPanelService.attachRunner(codeBlockRunner);
       commandPanelService.attachScheduler(backgroundWorkScheduler);
-      filePanelService.attachCommandRunOps({
+      // M3:/run 路由迁到 gateway,commandRunOps 注入目标是 localHttpGateway。
+      localHttpGateway.attachCommandRunOps({
         runCommand: (sid, command, title, clientId) =>
           commandPanelService.runCommand(sid, command, title, clientId),
       });
       // v0.3.3 ADR-028：闭合 pi 事件处理(pi package POST /pi-session-event →
       // PiSessionCoordinator.handlePiSessionEvent)。pi package 是哑转发器，
       // 决策在 PiSessionCoordinator(状态副作用经 hooks 回 SessionManager)。
-      filePanelService.attachPiEventOps({
+      // M3:/pi-session-event 路由迁到 gateway,piEventOps 注入目标是 localHttpGateway。
+      localHttpGateway.attachPiEventOps({
         applyPiSessionEvent: (sid, payload) =>
           piSessionCoordinator.handlePiSessionEvent(sid, payload),
       });

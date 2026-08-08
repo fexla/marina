@@ -342,18 +342,18 @@ describe('FilePanelService - openFileFromMarkdown (Feature B)', () => {
     await writeFile(join(dir, 'r.md'), '# hi');
     await writeFile(join(dir, 'a.txt'), 'x');
     // 注意:不 openFile md,直接调 → mdPath 不在列表
-    await expect(
-      svc.openFileFromMarkdown('s1', join(dir, 'r.md'), 'a.txt'),
-    ).rejects.toMatchObject({ code: 'NotFound' });
+    await expect(svc.openFileFromMarkdown('s1', join(dir, 'r.md'), 'a.txt')).rejects.toMatchObject({
+      code: 'NotFound',
+    });
   });
 
   it('文件不存在 → NotFound', async () => {
     await writeFile(join(dir, 'r.md'), '# hi');
     await svc.openFile('s1', 'r.md');
     const mdPath = join(dir, 'r.md');
-    await expect(
-      svc.openFileFromMarkdown('s1', mdPath, 'nope.txt'),
-    ).rejects.toMatchObject({ code: 'NotFound' });
+    await expect(svc.openFileFromMarkdown('s1', mdPath, 'nope.txt')).rejects.toMatchObject({
+      code: 'NotFound',
+    });
   });
 
   it('src 指向目录 → NotFile(拒绝,与 openFile 一致)', async () => {
@@ -379,334 +379,6 @@ describe('FilePanelService - openFileFromMarkdown (Feature B)', () => {
   });
 });
 
-describe('FilePanelService - HTTP 鉴权与路由', () => {
-  let dir: string;
-  let svc: FilePanelService;
-  let baseUrl: string;
-  let token: string;
-
-  beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), 'marina-fp-http-'));
-    svc = new FilePanelService();
-    svc.attachSessionLookup(makeLookup({ s1: { currentCwd: dir, ownerWindowId: 'w1' } }));
-    const url = await svc.start({ enabled: true, port: 0 });
-    baseUrl = url!.baseUrl;
-    token = url!.token;
-  });
-
-  afterEach(async () => {
-    await svc.stop();
-    await rm(dir, { recursive: true, force: true });
-  });
-
-  function authHeaders(): Record<string, string> {
-    return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
-  }
-
-  it('GET /opening-files 返回快照', async () => {
-    await writeFile(join(dir, 'a.txt'), 'x');
-    await svc.openFile('s1', 'a.txt');
-    const r = await fetch(`${baseUrl}/opening-files?terminal=s1`, { headers: authHeaders() });
-    expect(r.status).toBe(200);
-    const body = (await r.json()) as { files: unknown[]; activePath: string };
-    expect(body.files).toHaveLength(1);
-    expect(body.activePath).toContain('a.txt');
-  });
-
-  it('无 token → 401', async () => {
-    const r = await fetch(`${baseUrl}/opening-files?terminal=s1`);
-    expect(r.status).toBe(401);
-  });
-
-  it('GET /health 免鉴权返回 200 (给 marina ping 用)', async () => {
-    // /health 是唯一的免鉴权端点:终端里的 agent 脚本(marina.ps1 ping)
-    // 在未注入 MARINA_TOKEN 时也要能探活,否则无法和"Marina 没在跑"区分。
-    const r = await fetch(`${baseUrl}/health`);
-    expect(r.status).toBe(200);
-    const body = (await r.json()) as { ok: boolean; marina: boolean };
-    expect(body).toEqual({ ok: true, marina: true });
-  });
-
-  it('GET /health 带 token 也 200 (不破坏鉴权流程)', async () => {
-    const r = await fetch(`${baseUrl}/health`, { headers: authHeaders() });
-    expect(r.status).toBe(200);
-  });
-
-  it('错 token → 401', async () => {
-    const r = await fetch(`${baseUrl}/opening-files?terminal=s1`, {
-      headers: { Authorization: 'Bearer wrong' },
-    });
-    expect(r.status).toBe(401);
-  });
-
-  it('POST /open-file 打开 + 切 active', async () => {
-    await writeFile(join(dir, 'm.md'), '# md');
-    const r = await fetch(`${baseUrl}/open-file`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ terminal: 's1', path: 'm.md' }),
-    });
-    expect(r.status).toBe(200);
-    const body = (await r.json()) as { files: { kind: string }[]; activePath: string };
-    expect(body.files[0]!.kind).toBe('markdown');
-    expect(body.activePath).toContain('m.md');
-  });
-
-  it('POST 缺参 → 400', async () => {
-    const r = await fetch(`${baseUrl}/open-file`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ terminal: 's1' }),
-    });
-    expect(r.status).toBe(400);
-  });
-
-  it('GET 缺 terminal → 400', async () => {
-    const r = await fetch(`${baseUrl}/opening-files`, { headers: authHeaders() });
-    expect(r.status).toBe(400);
-  });
-
-  it('未知路径 → 404', async () => {
-    const r = await fetch(`${baseUrl}/nope`, { headers: authHeaders() });
-    expect(r.status).toBe(404);
-  });
-
-  it('POST /close-file 关闭', async () => {
-    await writeFile(join(dir, 'a.txt'), '1');
-    await svc.openFile('s1', 'a.txt');
-    const r = await fetch(`${baseUrl}/close-file`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ terminal: 's1', path: 'a.txt' }),
-    });
-    expect(r.status).toBe(200);
-    const body = (await r.json()) as { files: unknown[] };
-    expect(body.files).toHaveLength(0);
-  });
-
-  it('disabled → start 返回 null + getUrl null', async () => {
-    const off = new FilePanelService();
-    expect(await off.start({ enabled: false, port: 0 })).toBeNull();
-    expect(off.getUrl()).toBeNull();
-    await off.stop();
-  });
-});
-
-// v0.3.3 T12(testability enabler):GET /screenshot —— agent/CLI 远程截图自测 UI。
-// windowCapture 注入式(mock webContents),验证鉴权 / 成功返 image/png / 错误返 400 / 未注入返 503。
-describe('FilePanelService - HTTP /screenshot (T12)', () => {
-  let svc: FilePanelService;
-  let baseUrl: string;
-  let token: string;
-
-  beforeEach(async () => {
-    svc = new FilePanelService();
-    svc.attachSessionLookup(makeLookup({ s1: { currentCwd: '/', ownerWindowId: 'w1' } }));
-    const url = await svc.start({ enabled: true, port: 0 });
-    baseUrl = url!.baseUrl;
-    token = url!.token;
-  });
-
-  afterEach(async () => {
-    await svc.stop();
-  });
-
-  function authHeaders(): Record<string, string> {
-    return { Authorization: `Bearer ${token}` };
-  }
-
-  it('无鉴权 → 401(同其他路由)', async () => {
-    const r = await fetch(`${baseUrl}/screenshot?terminal=s1`);
-    expect(r.status).toBe(401);
-  });
-
-  it('windowCapture 未注入 → 503(功能未启用,不崩)', async () => {
-    const r = await fetch(`${baseUrl}/screenshot?terminal=s1`, { headers: authHeaders() });
-    expect(r.status).toBe(503);
-  });
-
-  it('缺 terminal 查询参数 → 400', async () => {
-    svc.attachWindowCapture(async () => ({ png: Buffer.alloc(0) }));
-    const r = await fetch(`${baseUrl}/screenshot`, { headers: authHeaders() });
-    expect(r.status).toBe(400);
-  });
-
-  it('capture 成功 → 200 + image/png + PNG 字节', async () => {
-    // 模拟一个 1×1 PNG(webContents.capturePage→toPNG 的替身)
-    const fakePng = Buffer.from(
-      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
-      'base64',
-    );
-    svc.attachWindowCapture(async (sessionId) => {
-      expect(sessionId).toBe('s1');
-      return { png: fakePng };
-    });
-    const r = await fetch(`${baseUrl}/screenshot?terminal=s1`, { headers: authHeaders() });
-    expect(r.status).toBe(200);
-    expect(r.headers.get('content-type')).toBe('image/png');
-    const buf = Buffer.from(await r.arrayBuffer());
-    expect(buf.equals(fakePng)).toBe(true);
-  });
-
-  it('capture 返 {error}(无 owner/窗口销毁)→ 400 + JSON error', async () => {
-    svc.attachWindowCapture(async () => ({ error: 'owner 窗口已关闭' }));
-    const r = await fetch(`${baseUrl}/screenshot?terminal=s1`, { headers: authHeaders() });
-    expect(r.status).toBe(400);
-    const body = (await r.json()) as { error: string };
-    expect(body.error).toContain('owner');
-  });
-
-  it('capture 抛异常 → 500(服务端 bug 兼底)', async () => {
-    svc.attachWindowCapture(async () => {
-      throw new Error('boom');
-    });
-    const r = await fetch(`${baseUrl}/screenshot?terminal=s1`, { headers: authHeaders() });
-    expect(r.status).toBe(500);
-  });
-});
-
-// v0.3.3 ADR-024 / Feature D:workspace HTTP 路由(CLI `marina workspace*` 用)。
-describe('FilePanelService - HTTP /workspace* (T10)', () => {
-  let svc: FilePanelService;
-  let baseUrl: string;
-  let token: string;
-
-  beforeEach(async () => {
-    svc = new FilePanelService();
-    svc.attachSessionLookup(makeLookup({ s1: { currentCwd: '/', ownerWindowId: 'w1' } }));
-    const url = await svc.start({ enabled: true, port: 0 });
-    baseUrl = url!.baseUrl;
-    token = url!.token;
-  });
-
-  afterEach(async () => {
-    await svc.stop();
-  });
-
-  function authHeaders(): Record<string, string> {
-    return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
-  }
-
-  it('workspaceOps 未注入 → 所有路由 503', async () => {
-    const r = await fetch(`${baseUrl}/workspace?terminal=s1`, { headers: authHeaders() });
-    expect(r.status).toBe(503);
-  });
-
-  it('GET /workspace → 当前 session 绑定路径;无绑定 → 404', async () => {
-    let path = 'C:\\ws\\abc';
-    svc.attachWorkspaceOps({
-      getCurrentPath: () => path,
-      bind: async () => ({ kind: 'created', workspaceId: 'w', dir: path }),
-      list: async () => [],
-      newWorkspace: async () => ({ workspaceId: 'w', dir: path }),
-      unpin: async () => ({ workspaceId: 'w' }),
-    });
-    const r = await fetch(`${baseUrl}/workspace?terminal=s1`, { headers: authHeaders() });
-    expect(r.status).toBe(200);
-    expect((await r.json()) as { path: string }).toEqual({ path });
-
-    path = '';
-    const r2 = await fetch(`${baseUrl}/workspace?terminal=s1`, { headers: authHeaders() });
-    expect(r2.status).toBe(404);
-  });
-
-  it('GET /workspace/list → items', async () => {
-    svc.attachWorkspaceOps({
-      getCurrentPath: () => null,
-      bind: async () => ({ kind: 'created', workspaceId: 'w', dir: 'd' }),
-      list: async () => [
-        { workspaceId: 'w1', name: 'a', createdAt: 1, closedAt: null, pinned: true, pathScope: 'P', fileCount: 2 },
-      ],
-      newWorkspace: async () => ({ workspaceId: 'w', dir: 'd' }),
-      unpin: async () => ({ workspaceId: 'w' }),
-    });
-    const r = await fetch(`${baseUrl}/workspace/list?terminal=s1`, { headers: authHeaders() });
-    expect(r.status).toBe(200);
-    const body = (await r.json()) as { items: unknown[] };
-    expect(body.items).toHaveLength(1);
-  });
-
-  it('POST /workspace/bind → created 结果;NameConflict → 409', async () => {
-    let forceNewSeen = false;
-    svc.attachWorkspaceOps({
-      getCurrentPath: () => null,
-      bind: async (_sid, _name, fn) => {
-        forceNewSeen = fn;
-        return { kind: 'created', workspaceId: 'w', dir: 'd' };
-      },
-      list: async () => [],
-      newWorkspace: async () => ({ workspaceId: 'w', dir: 'd' }),
-      unpin: async () => ({ workspaceId: 'w' }),
-    });
-    const r = await fetch(`${baseUrl}/workspace/bind`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ terminal: 's1', name: 'feat', new: true }),
-    });
-    expect(r.status).toBe(200);
-    expect(forceNewSeen).toBe(true);
-    expect((await r.json()) as { kind: string }).toEqual({ kind: 'created', workspaceId: 'w', dir: 'd' });
-  });
-
-  it('POST /workspace/bind 缺字段 → 400', async () => {
-    svc.attachWorkspaceOps({
-      getCurrentPath: () => null,
-      bind: async () => ({ kind: 'created', workspaceId: 'w', dir: 'd' }),
-      list: async () => [],
-      newWorkspace: async () => ({ workspaceId: 'w', dir: 'd' }),
-      unpin: async () => ({ workspaceId: 'w' }),
-    });
-    const r = await fetch(`${baseUrl}/workspace/bind`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ terminal: 's1' }),
-    });
-    expect(r.status).toBe(400);
-  });
-
-  it('POST /workspace/new → 新 workspace', async () => {
-    svc.attachWorkspaceOps({
-      getCurrentPath: () => null,
-      bind: async () => ({ kind: 'created', workspaceId: 'w', dir: 'd' }),
-      list: async () => [],
-      newWorkspace: async () => ({ workspaceId: 'nw', dir: 'nd' }),
-      unpin: async () => ({ workspaceId: 'w' }),
-    });
-    const r = await fetch(`${baseUrl}/workspace/new`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ terminal: 's1' }),
-    });
-    expect(r.status).toBe(200);
-    expect((await r.json()) as { workspaceId: string }).toEqual({ workspaceId: 'nw', dir: 'nd' });
-  });
-
-  it('POST /workspace/unpin → 结果;未找到 → 404', async () => {
-    let found = true;
-    svc.attachWorkspaceOps({
-      getCurrentPath: () => null,
-      bind: async () => ({ kind: 'created', workspaceId: 'w', dir: 'd' }),
-      list: async () => [],
-      newWorkspace: async () => ({ workspaceId: 'w', dir: 'd' }),
-      unpin: async () => (found ? { workspaceId: 'w' } : null),
-    });
-    const r = await fetch(`${baseUrl}/workspace/unpin`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ terminal: 's1', name: 'x' }),
-    });
-    expect(r.status).toBe(200);
-
-    found = false;
-    const r2 = await fetch(`${baseUrl}/workspace/unpin`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ terminal: 's1' }),
-    });
-    expect(r2.status).toBe(404);
-  });
-});
-
 describe('FilePanelService - 销毁清理与自动刷新', () => {
   let dir: string;
   let svc: FilePanelService;
@@ -715,7 +387,6 @@ describe('FilePanelService - 销毁清理与自动刷新', () => {
     dir = await mkdtemp(join(tmpdir(), 'marina-fp-watch-'));
     svc = new FilePanelService();
     svc.attachSessionLookup(makeLookup({ s1: { currentCwd: dir, ownerWindowId: 'w1' } }));
-    await svc.start({ enabled: true, port: 0 });
   });
 
   afterEach(async () => {
@@ -910,10 +581,7 @@ describe('FilePanelService - 批量 close (#4)', () => {
   it('closeMatchingFiles(stale) 关所有 missing(配合 refreshStale)', async () => {
     await seedStale();
     await svc.refreshStale('s1');
-    const { snapshot: snap, closedPaths } = svc.closeMatchingFiles(
-      's1',
-      (f) => f.missing === true,
-    );
+    const { snapshot: snap, closedPaths } = svc.closeMatchingFiles('s1', (f) => f.missing === true);
     expect(closedPaths).toEqual(expect.arrayContaining([expect.stringContaining('gone.md')]));
     expect(snap.files).toHaveLength(1);
     expect(snap.files[0]!.name).toBe('keep.md');
@@ -930,113 +598,6 @@ describe('FilePanelService - 批量 close (#4)', () => {
   });
 });
 
-describe('FilePanelService - HTTP /opening-files stale + /close-files (#3,#4)', () => {
-  let dir: string;
-  let svc: FilePanelService;
-  let baseUrl: string;
-  let token: string;
-
-  beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), 'marina-fp-http2-'));
-    svc = new FilePanelService();
-    svc.attachSessionLookup(makeLookup({ s1: { currentCwd: dir, ownerWindowId: 'w1' } }));
-    const url = await svc.start({ enabled: true, port: 0 });
-    baseUrl = url!.baseUrl;
-    token = url!.token;
-  });
-
-  afterEach(async () => {
-    await svc.stop();
-    await rm(dir, { recursive: true, force: true });
-  });
-
-  function authHeaders(): Record<string, string> {
-    return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
-  }
-
-  it('GET /opening-files 自动刷 stale:返回体里 missing 反映磁盘真值', async () => {
-    await writeFile(join(dir, 'gone.md'), 'x');
-    await svc.openFile('s1', 'gone.md');
-    await rm(join(dir, 'gone.md'));
-    const r = await fetch(`${baseUrl}/opening-files?terminal=s1`, { headers: authHeaders() });
-    const body = (await r.json()) as { files: { missing?: boolean; name: string }[] };
-    expect(body.files[0]!.missing).toBe(true);
-  });
-
-  it('POST /close-files mode=all 清空并返回 closed 列表', async () => {
-    await writeFile(join(dir, 'a.md'), '1');
-    await writeFile(join(dir, 'b.md'), '2');
-    await svc.openFile('s1', 'a.md');
-    await svc.openFile('s1', 'b.md');
-    const r = await fetch(`${baseUrl}/close-files`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ terminal: 's1', mode: 'all' }),
-    });
-    expect(r.status).toBe(200);
-    const body = (await r.json()) as { files: unknown[]; closed: string[] };
-    expect(body.files).toHaveLength(0);
-    expect(body.closed).toHaveLength(2);
-  });
-
-  it('POST /close-files mode=stale 先刷真值再关僵尸', async () => {
-    await writeFile(join(dir, 'keep.md'), 'k');
-    await writeFile(join(dir, 'gone.md'), 'g');
-    await svc.openFile('s1', 'keep.md');
-    await svc.openFile('s1', 'gone.md');
-    await rm(join(dir, 'gone.md'));
-    const r = await fetch(`${baseUrl}/close-files`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ terminal: 's1', mode: 'stale' }),
-    });
-    const body = (await r.json()) as { files: { name: string }[]; closed: string[] };
-    expect(body.closed).toHaveLength(1);
-    expect(body.files[0]!.name).toBe('keep.md');
-  });
-
-  it('POST /close-files mode=glob 按 basename 通配关', async () => {
-    await writeFile(join(dir, 'a.md'), '1');
-    await writeFile(join(dir, 'b.md'), '2');
-    await writeFile(join(dir, 'c.txt'), '3');
-    await svc.openFile('s1', 'a.md');
-    await svc.openFile('s1', 'b.md');
-    await svc.openFile('s1', 'c.txt');
-    const r = await fetch(`${baseUrl}/close-files`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ terminal: 's1', mode: 'glob', pattern: '*.md' }),
-    });
-    const body = (await r.json()) as { files: { name: string }[]; closed: string[] };
-    expect(body.closed).toHaveLength(2);
-    expect(body.files).toHaveLength(1);
-    expect(body.files[0]!.name).toBe('c.txt');
-  });
-
-  it('POST /close-files 非法 mode → 400', async () => {
-    const r = await fetch(`${baseUrl}/close-files`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ terminal: 's1', mode: 'bogus' }),
-    });
-    expect(r.status).toBe(400);
-  });
-
-  it('POST /close-files mode=glob 缺 pattern → 400', async () => {
-    const r = await fetch(`${baseUrl}/close-files`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ terminal: 's1', mode: 'glob' }),
-    });
-    expect(r.status).toBe(400);
-  });
-});
-
-// ──────────────────────────────────────────────────────────────────
-// v0.3.3 Feature A(ADR-026):gallery 图片表 —— resolveGalleryImage / openGalleryImage
-// 本地图复用 read-image 解析;网络图 daemon fetch 下载落盘 workspace 缓存。
-// fetch 用 vi.stubGlobal mock(不起真实 HTTP 服务,精确控制状态码/响应体/超时)。
-// ──────────────────────────────────────────────────────────────────
 describe('FilePanelService - gallery (Feature A)', () => {
   let dir: string;
   let svc: FilePanelService;
@@ -1112,7 +673,12 @@ describe('FilePanelService - gallery (Feature A)', () => {
   });
 
   it('网络图:HTTP 非 2xx → error', async () => {
-    vi.stubGlobal('fetch', async () => ({ ok: false, status: 404, headers: new Map(), body: null }));
+    vi.stubGlobal('fetch', async () => ({
+      ok: false,
+      status: 404,
+      headers: new Map(),
+      body: null,
+    }));
     const r = await svc.resolveGalleryImage('s1', join(dir, 'x.md'), 'https://e.com/a.png');
     expect('error' in r).toBe(true);
     if ('error' in r) expect(r.error).toMatch(/HTTP 404/);

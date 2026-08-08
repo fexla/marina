@@ -1,47 +1,43 @@
 /**
  * @file src/main/file-panel-service.ts
- * @purpose 终端侧边文件预览面板的"大脑":本机 HTTP 服务 + 每终端的已打开文件
- *   状态机 + 文件内容读取 + 变更自动刷新。
+ * @purpose 终端侧边文件预览面板的"大脑":每终端的已打开文件状态机 + 文件内容读取
+ *    + 变更自动刷新。本机 HTTP 传输层(M3)已拆到 src/main/http/local-http-gateway.ts。
  *
  * @工作原理:
  * 终端里跑的程序(agent / 脚本 / CLI)经注入的环境变量(MARINA_SERVICE /
- * MARINA_TOKEN / TERMINAL_ID)调本服务的 RESTful 接口,把文件"打开 / 切换 /
- * 关闭"到**绑定该终端**的侧边面板。本服务是这些状态的**唯一源**,任何变化
+ * MARINA_TOKEN / TERMINAL_ID)调 LocalHttpGateway 的 RESTful 接口,把文件"打开 /
+ * 切换 / 关闭"到**绑定该终端**的侧边面板。本服务是这些状态的**唯一源**,任何变化
  * emit 'filePanelUpdated',由 ipc 层路由给该 session 的 owner 窗口渲染。
  *
  * @关键设计:
  * - 唯一状态源:Map<sessionId, PanelState>。REST 只改面板视图(开/关/切),
  *   不在 HTTP 上提供"任意文件读"——读内容走 renderer→main 的 cmd:file-panel:read,
  *   且仅限已打开列表里的路径。安全面因此被压到最小。
- * - 安全面收口:
- *     * HTTP 只绑 127.0.0.1(loopback),本机其它用户进程也走不到别的登录会话
- *     * 每次 start 生成随机 Bearer token,注入 MARINA_TOKEN;请求必须带
- *       Authorization: Bearer <token>,否则 401
- *     * 路径经 normalizePath 规范化 + fs.stat 校验"存在且是文件",相对路径
- *       按 session.currentCwd 解析(防 ../../穿越到任意文件被打开预览)
  * - 自动刷新:每个已打开文件起 fs.watch,200ms 防抖;变更 → 重 stat 更新
  *   mtimeMs/size → emit。renderer 的 viewer 把 mtimeMs 列入 effect 依赖,
  *   变化即重新 read,实现"文件改了面板自动刷新"。
  * - 大小上限:text/markdown/diff 2MB(超出截断 + truncated 标记,镜像 scrollback
  *   ring 的尾部裁切哲学);image 10MB(超出拒绝,避免 base64 撑爆 IPC)。
+ * - HTTP 安全面(127.0.0.1 + Bearer token + /health 免鉴权)见 local-http-gateway.ts
+ *   文件头 —— M3 把传输层拆走后,service 不再持有 server/token。
  *
  * @SSH 限制:SSH 会话的 currentCwd 是远程路径,且远程进程根本到不了本机
  *   127.0.0.1(除非反向隧道,超出 v1)。所以本功能 v1 仅实质支持本地终端;
  *   即便 SSH 程序误调,fs.stat 远程路径会失败 → 返回错误,安全无副作用。
  *
  * @循环依赖破除:FilePanelService 需要 sessionManager.get() 拿 currentCwd/
- *   owner;SessionManager 需要 filePanelService.getUrl() 注入 env。解法是
- *   "组装顺序":index.ts 先 new FilePanelService → start() → new SessionManager
- *   (经 options 传 filePanelService)→ filePanelService.attachSessionLookup(sm)。
+ *   owner;SessionManager 需要 gateway.getUrl() 注入 env。解法是
+ *   "组装顺序":index.ts 先 new FilePanelService → new LocalHttpGateway(filePanelService)
+ *   → new SessionManager(经 options 传 gateway)→ filePanelService.attachSessionLookup(sm)。
  *   env 注入发生在 createSession(IPC 触发,必在组装完成之后),时序安全。
  *
  * @对应:docs/ipc-protocol.md(file-panel 域);src/shared/protocol.ts
  *   FILE_PANEL_* channel;src/main/session-manager.ts env 注入;
- *   src/main/ipc.ts wireEventBroadcasts 事件路由。
+ *   src/main/ipc.ts wireEventBroadcasts 事件路由;src/main/http/local-http-gateway.ts。
  */
 import { EventEmitter } from 'node:events';
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { randomBytes, createHash } from 'node:crypto';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { createHash } from 'node:crypto';
 import { promises as fs, watch, type FSWatcher, type Stats } from 'node:fs';
 import { basename, dirname, resolve, join, isAbsolute } from 'node:path';
 import type { OpenedFile } from '@shared/types';
@@ -54,8 +50,8 @@ import type {
 } from '@shared/protocol';
 import { isRemoteUrl } from '@shared/url-scheme';
 import { normalizePath } from './path-manager';
-import { isQuiescing } from './app-lifecycle';
 import { logger } from './logger';
+import { send, readBody } from './http/http-helpers';
 
 const MODULE = 'FilePanelService';
 
@@ -71,9 +67,6 @@ const NETWORK_IMAGE_TIMEOUT_MS = 10_000;
 const GALLERY_CACHE_DIR = '__marina_gallery__';
 /** fs.watch 防抖间隔(ms):编辑器连续保存时只触发一次刷新。 */
 const WATCH_DEBOUNCE_MS = 200;
-/** 绑定地址:仅回环,本机外部网络不可达。 */
-const HOST = '127.0.0.1';
-
 /** 扩展名 → mime(图片 dataUrl 用)。detectFileKind 已保证只对图片走到这里。 */
 const IMAGE_MIME: Record<string, string> = {
   png: 'image/png',
@@ -199,13 +192,7 @@ interface PanelState {
   watchTimers: Map<string, NodeJS.Timeout>;
 }
 
-/** start() 的注入参数。enabled=false → 不起服务,getUrl() 返回 null。 */
-export interface FilePanelServiceOptions {
-  enabled: boolean;
-  /** 0 = 让系统分配空闲端口;正整数 = 尝试固定端口(占用回退自动并 warn) */
-  port: number;
-}
-
+/** 注入终端 env 用(M3 后由 LocalHttpGateway.getUrl 承担,见 http/local-http-gateway.ts)。 */
 /**
  * 极简 glob 匹配(只支持 `*` 与 `?`,大小写不敏感)。用于 `close --glob '*.md'`。
  *
@@ -242,24 +229,8 @@ function snapshot(state: PanelState | undefined): FilePanelSnapshot {
 export class FilePanelService extends EventEmitter {
   private readonly panels = new Map<string, PanelState>();
   private lookup: FilePanelSessionLookup | null = null;
-  /** v0.3.3 T12:截图回调,由 index.ts 注入(不引 electron,保持服务可测)。null=未注入,/screenshot 503。 */
-  private windowCapture: WindowCaptureFn | null = null;
-  /** v0.3.3 ADR-024:workspace 操作回调(workspace HTTP 路由用)。 */
+  /** v0.3.3 ADR-024:workspace 操作回调(核心面板用,见 attachWorkspaceOps 注释)。 */
   private workspaceOps: WorkspaceOps | null = null;
-  /** v0.3.3 ADR-027:命令面板 /run 路由回调(转发给 CommandPanelService)。 */
-  private commandRunOps: CommandRunOps | null = null;
-  /** v0.3.3 ADR-028：pi package /pi-session-event 路由回调(转发给 SessionManager)。 */
-  private piEventOps: PiEventOps | null = null;
-  private server: Server | null = null;
-  private baseUrl: string | null = null;
-  private token: string | null = null;
-  /**
-   * enabled / wantPort 在 start() 时按"已加载的用户 settings"赋值,不在构造
-   * 期读 —— index.ts 里 SessionManager 构造先持有 service 引用,而 settings
-   * 要到 settingsManager.initialize() 之后才可用。构造无参,避免时序耦合。
-   */
-  private enabled = false;
-  private wantPort = 0;
 
   constructor() {
     super();
@@ -271,109 +242,21 @@ export class FilePanelService extends EventEmitter {
   }
 
   /**
-   * v0.3.3 T12:注入截图回调(/screenshot 路由用)。不引 electron,服务层保持可测:
-   * index.ts 闭合 sessionManager→ownerWindow→webContents.capturePage→toPNG。
-   * 未注入时 /screenshot 返 503(功能未启用),不崩。
+   * v0.3.3 ADR-024:注入 workspace 操作回调。
+   * 注意:M3 后 workspace HTTP 路由已迁到 LocalHttpGateway,这里保留 ops 是给
+   *   核心面板用 —— resolveGalleryImage 需要 getCurrentPath(gallery 缓存落盘)
+   *   和 onWorkspaceSwitched 需要 readSnapshotForSession/getCurrentPath(workspace
+   *   切换后重建面板)。网关侧的路由 ops 由 index.ts 注入 gateway。
    */
-  attachWindowCapture(capture: WindowCaptureFn): void {
-    this.windowCapture = capture;
-  }
-
-  /** v0.3.3 ADR-024:注入 workspace 操作回调(workspace HTTP 路由用)。 */
   attachWorkspaceOps(ops: WorkspaceOps): void {
     this.workspaceOps = ops;
   }
 
-  /** v0.3.3 ADR-027:注入命令面板 run 回调(HTTP /run 路由用)。 */
-  attachCommandRunOps(ops: CommandRunOps): void {
-    this.commandRunOps = ops;
-  }
-
-  /** v0.3.3 ADR-028：注入 pi 事件处理回调(HTTP /pi-session-event 路由用)。 */
-  attachPiEventOps(ops: PiEventOps): void {
-    this.piEventOps = ops;
-  }
-
-  /** 注入终端 env 用:返回服务地址 + token;未启动 / 被禁用时返回 null。 */
-  getUrl(): { baseUrl: string; token: string } | null {
-    if (!this.enabled || !this.baseUrl || !this.token) return null;
-    return { baseUrl: this.baseUrl, token: this.token };
-  }
-
-  /**
-   * 启动 HTTP 服务。enabled=false 时 no-op。端口优先用 wantPort,被占用
-   * 回退系统分配(0)并 log warn。失败抛错让上层决定(不静默吞,与项目惯例
-   * 一致——logger 文件头强调"出问题时开发者能调试")。
-   */
-  async start(opts: FilePanelServiceOptions): Promise<{ baseUrl: string; token: string } | null> {
-    this.enabled = opts.enabled;
-    this.wantPort = opts.port;
-    if (!this.enabled) {
-      logger.info(MODULE, 'start: disabled (settings.filePanel.enabled=false), skip');
-      return null;
-    }
-    if (this.server) return this.getUrl();
-
-    this.token = randomBytes(24).toString('hex');
-    this.server = createServer((req, res) => this.handle(req, res));
-
-    await this.listenWithFallback();
-    this.baseUrl = `http://${HOST}:${this.actualPort()}`;
-    logger.info(MODULE, `HTTP listening on ${this.baseUrl} (token len=${this.token.length})`);
-    return this.getUrl();
-  }
-
-  /** 尝试 wantPort,失败(EADDRINUSE)回退 0(系统分配)。 */
-  private async listenWithFallback(): Promise<void> {
-    const tryListen = (port: number): Promise<void> =>
-      new Promise((resolve, reject) => {
-        const srv = this.server!;
-        const onError = (err: NodeJS.ErrnoException): void => {
-          srv.off('listening', onListening);
-          reject(err);
-        };
-        const onListening = (): void => {
-          srv.off('error', onError);
-          resolve();
-        };
-        srv.once('error', onError);
-        srv.once('listening', onListening);
-        srv.listen(port, HOST);
-      });
-
-    try {
-      if (this.wantPort > 0) {
-        await tryListen(this.wantPort);
-      } else {
-        await tryListen(0);
-      }
-    } catch (err) {
-      if (this.wantPort > 0 && (err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
-        logger.warn(MODULE, `port ${this.wantPort} busy, falling back to auto-assigned port`);
-        await tryListen(0);
-      } else {
-        throw err;
-      }
-    }
-  }
-
-  private actualPort(): number {
-    const addr = this.server?.address();
-    return addr && typeof addr === 'object' ? addr.port : 0;
-  }
-
-  /** 关闭服务 + 清掉所有 watcher(应用退出 / 测试清理用)。 */
+  /** 清掉所有 watcher + 面板(应用退出 / 测试清理用)。HTTP server 由 gateway 关。 */
   stop(): Promise<void> {
     for (const [sid] of this.panels) this.clearPanel(sid);
     this.panels.clear();
-    return new Promise((resolve) => {
-      if (!this.server) return resolve();
-      this.server.close(() => {
-        this.server = null;
-        this.baseUrl = null;
-        resolve();
-      });
-    });
+    return Promise.resolve();
   }
 
   // ────────────────────────────────────────────────────────────────
@@ -1192,114 +1075,10 @@ export class FilePanelService extends EventEmitter {
   // HTTP 路由
   // ────────────────────────────────────────────────────────────────
 
-  private handle(req: IncomingMessage, res: ServerResponse): void {
-    const u = new URL(req.url ?? '/', this.baseUrl ?? `http://${HOST}`);
-    const method = req.method ?? 'GET';
-
-    // GET /health 是唯一的免鉴权端点:纯存活探测,给终端里跑的 agent 脚本
-    // (marina ping)用。必须放在 checkAuth 之前 —— 否则未注入 MARINA_TOKEN
-    // 的进程探不到活,无法和"Marina 没在跑"区分。返回体不含敏感信息;
-    // HTTP 只绑 127.0.0.1 已是第一道防线(见文件头"安全面收口")。
-    if (method === 'GET' && u.pathname === '/health') {
-      this.send(res, 200, { ok: true, marina: true });
-      return;
-    }
-
-    // 其余所有接口都要鉴权(包括 GET)。先校验 token,再路由。
-    if (!this.checkAuth(req)) {
-      this.send(res, 401, { error: 'unauthorized: invalid or missing token' });
-      return;
-    }
-
-    // 退出 quiesce gate(H4):进入退出流程后拒绝新的 HTTP 工作(agent 脚本在
-    // daemon 退出窗口内发来的请求不落 shutdown/flush 之后)。/health 在上面
-    // 已提前放行,存活探测不受影响。
-    if (isQuiescing()) {
-      this.send(res, 503, { error: 'shutting down' });
-      return;
-    }
-    const terminal = u.searchParams.get('terminal') ?? undefined;
-
-    // GET /opening-files?terminal=<id>
-    // 拉取前先 await refreshStale:让 CLI `list` 的「僵尸 tab」标记始终反映
-    // 磁盘真值(补 fs.watch 漏掉的事件:Marina 关闭期间被删、watcher error 已停)。
-    // 面板数小(N 个 stat),开销可忽。IPC 的 get-open-files 不走这条(保持同步快路径)。
-    if (method === 'GET' && u.pathname === '/opening-files') {
-      if (!terminal) return this.send(res, 400, { error: 'missing query: terminal' });
-      return void this.handleOpeningFiles(res, terminal);
-    }
-
-    // POST /open-file | /show-file | /close-file  body {terminal, path}
-    if (
-      method === 'POST' &&
-      (u.pathname === '/open-file' || u.pathname === '/show-file' || u.pathname === '/close-file')
-    ) {
-      void this.handlePost(req, res, u.pathname);
-      return;
-    }
-
-    // POST /close-files  body {terminal, mode, pattern?} —— 批量关:`all` / `stale` / `glob`
-    if (method === 'POST' && u.pathname === '/close-files') {
-      void this.handleCloseFiles(req, res);
-      return;
-    }
-
-    // v0.3.3 T12:GET /screenshot?terminal=<id> —— 截该 session owner window 的屏,返 image/png。
-    // 给 agent/CLI 自测 UI 用(消除人工截图)。鉴权同其他路由;capture 回调未注入返 503。
-    if (method === 'GET' && u.pathname === '/screenshot') {
-      if (!terminal) return this.send(res, 400, { error: 'missing query: terminal' });
-      return void this.handleScreenshot(res, terminal);
-    }
-
-    // v0.3.3 ADR-024 / Feature D:workspace HTTP 路由(CLI `marina workspace*` 用)。
-    // workspaceId 与 sessionId 解耦,CLI 一律查当前桌面 daemon(按 terminal→session→
-    // workspaceId→dir);main 是真值源,$env:MARINA_WORKSPACE 不可靠(退化为 spawn 时值)。
-    if (method === 'GET' && u.pathname === '/workspace') {
-      if (!terminal) return this.send(res, 400, { error: 'missing query: terminal' });
-      return void this.handleWorkspaceCurrent(res, terminal);
-    }
-    if (method === 'GET' && u.pathname === '/workspace/list') {
-      if (!terminal) return this.send(res, 400, { error: 'missing query: terminal' });
-      return void this.handleWorkspaceList(res, terminal);
-    }
-    if (method === 'POST' && u.pathname === '/workspace/bind') {
-      void this.handleWorkspaceBind(req, res);
-      return;
-    }
-    if (method === 'POST' && u.pathname === '/workspace/new') {
-      void this.handleWorkspaceNew(req, res);
-      return;
-    }
-    if (method === 'POST' && u.pathname === '/workspace/unpin') {
-      void this.handleWorkspaceUnpin(req, res);
-      return;
-    }
-
-    // v0.3.3 ADR-027:POST /run body {terminal, command, title?} —— AI 经
-    // `marina run "<cmd>"` 推送任意命令字符串,转发给 CommandPanelService。
-    // 鉴权同其他路由(Bearer)。owner 校验在 CommandPanelService 内(sessionLookup)。
-    if (method === 'POST' && u.pathname === '/run') {
-      void this.handleRun(req, res);
-      return;
-    }
-
-    // v0.3.3 ADR-028:POST /pi-session-event body {terminal, piSessionId, event, reason?, name?}
-    // —— pi package(@earendil-works/pi-coding-agent)订阅 pi 生命周期事件后转发到这里。
-    // Marina 作为决策者按 settings.piIntegration 决定做不做。鉴权同其他路由(Bearer)。
-    // fire-and-forget:响应与 pi 业务结果无关,Marina 处理失败不阻塞 pi。
-    if (method === 'POST' && u.pathname === '/pi-session-event') {
-      void this.handlePiSessionEvent(req, res);
-      return;
-    }
-
-    this.send(res, 404, { error: `not found: ${method} ${u.pathname}` });
-  }
-
-  /** GET /opening-files:先刷 missing 再返回快照。 */
-  private async handleOpeningFiles(res: ServerResponse, terminal: string): Promise<void> {
+  async handleOpeningFiles(res: ServerResponse, terminal: string): Promise<void> {
     try {
       const snap = await this.refreshStale(terminal);
-      this.send(res, 200, snap);
+      send(res, 200, snap);
     } catch (err) {
       this.sendError(res, err);
     }
@@ -1313,31 +1092,31 @@ export class FilePanelService extends EventEmitter {
    * - glob:按 basename glob(pattern 必填,支持 `*`/`?`)。
    * 返回 { files, activePath, closed } —— closed 是被关路径列表,供 CLI 输出。
    */
-  private async handleCloseFiles(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async handleCloseFiles(req: IncomingMessage, res: ServerResponse): Promise<void> {
     let body: { terminal?: string; mode?: string; pattern?: string };
     try {
-      body = JSON.parse(await this.readBody(req)) as {
+      body = JSON.parse(await readBody(req)) as {
         terminal?: string;
         mode?: string;
         pattern?: string;
       };
     } catch {
-      return this.send(res, 400, { error: 'invalid JSON body' });
+      return send(res, 400, { error: 'invalid JSON body' });
     }
     const { terminal, mode, pattern } = body;
-    if (!terminal) return this.send(res, 400, { error: 'body 需要 { terminal }' });
+    if (!terminal) return send(res, 400, { error: 'body 需要 { terminal }' });
     if (mode !== 'all' && mode !== 'stale' && mode !== 'glob') {
-      return this.send(res, 400, { error: "body.mode 必须是 'all' | 'stale' | 'glob'" });
+      return send(res, 400, { error: "body.mode 必须是 'all' | 'stale' | 'glob'" });
     }
     if (mode === 'glob' && !pattern) {
-      return this.send(res, 400, { error: "mode='glob' 需要 pattern" });
+      return send(res, 400, { error: "mode='glob' 需要 pattern" });
     }
     try {
       if (mode === 'all') {
         // 先抓当前列表再关(closeAllFiles 后 snap.files 已空),用于 closed 回包。
         const before = this.getOpenFiles(terminal);
         const snap = this.closeAllFiles(terminal);
-        this.send(res, 200, { ...snap, closed: before.files.map((f) => f.path) });
+        send(res, 200, { ...snap, closed: before.files.map((f) => f.path) });
         return;
       }
       if (mode === 'stale') {
@@ -1346,7 +1125,7 @@ export class FilePanelService extends EventEmitter {
           terminal,
           (f) => f.missing === true,
         );
-        this.send(res, 200, { ...snap, closed: closedPaths });
+        send(res, 200, { ...snap, closed: closedPaths });
         return;
       }
       // glob
@@ -1354,33 +1133,29 @@ export class FilePanelService extends EventEmitter {
       const { snapshot: snap, closedPaths } = this.closeMatchingFiles(terminal, (f) =>
         matchFileGlob(pat, f.name),
       );
-      this.send(res, 200, { ...snap, closed: closedPaths });
+      send(res, 200, { ...snap, closed: closedPaths });
     } catch (err) {
       this.sendError(res, err);
     }
   }
 
-  private async handlePost(
-    req: IncomingMessage,
-    res: ServerResponse,
-    pathname: string,
-  ): Promise<void> {
+  async handlePost(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<void> {
     let body: { terminal?: string; path?: string };
     try {
-      body = JSON.parse(await this.readBody(req)) as { terminal?: string; path?: string };
+      body = JSON.parse(await readBody(req)) as { terminal?: string; path?: string };
     } catch {
-      return this.send(res, 400, { error: 'invalid JSON body' });
+      return send(res, 400, { error: 'invalid JSON body' });
     }
     const { terminal, path } = body;
     if (!terminal || !path) {
-      return this.send(res, 400, { error: 'body 需要 { terminal, path }' });
+      return send(res, 400, { error: 'body 需要 { terminal, path }' });
     }
     try {
       let result: FilePanelSnapshot;
       if (pathname === '/open-file') result = await this.openFile(terminal, path);
       else if (pathname === '/show-file') result = this.showFile(terminal, path);
       else result = this.closeFile(terminal, path);
-      this.send(res, 200, result);
+      send(res, 200, result);
     } catch (err) {
       this.sendError(res, err);
     }
@@ -1391,276 +1166,14 @@ export class FilePanelService extends EventEmitter {
    * commandRunOps(CommandPanelService)。成功返命令面板快照;失败(SSH/shell/spawn/
    * session 缺失)返 400 + error。ops 未注入返 503。
    */
-  private async handleRun(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.commandRunOps) {
-      this.send(res, 503, { error: 'command-panel 未启用(commandRunOps 未注入)' });
-      return;
-    }
-    let body: { terminal?: string; command?: string; title?: string };
-    try {
-      body = JSON.parse(await this.readBody(req)) as {
-        terminal?: string;
-        command?: string;
-        title?: string;
-      };
-    } catch {
-      return this.send(res, 400, { error: 'invalid JSON body' });
-    }
-    const { terminal, command, title } = body;
-    if (!terminal) return this.send(res, 400, { error: 'body 需要 { terminal }' });
-    if (!command || !command.trim()) {
-      return this.send(res, 400, { error: 'body 需要 { command } 且非空' });
-    }
-    try {
-      const snapshot = await this.commandRunOps.runCommand(
-        terminal,
-        command,
-        title ?? null,
-        // HTTP 路由无明确发起 client;CommandPanelService 会用 session owner 作为
-        // 事件定向目标(owner 收到后更新面板)。传 null 让 service 兜底。
-        null,
-      );
-      this.send(res, 200, snapshot);
-    } catch (err) {
-      this.sendError(res, err);
-    }
-  }
-
-  /**
-   * v0.3.3 ADR-028:POST /pi-session-event。body {terminal, piSessionId, event, reason?, name?}。
-   * 解析 + 校验后转发给注入的 piEventOps(PiSessionCoordinator.handlePiSessionEvent)。
-   * fire-and-forget 语义：响应只表“已接收”，不保证 pi 业务结果(那由后续 evt 推送)。
-   * 处理失败返 500 + error，但 pi 不会因此卡住(它不等业务结果)。
-   */
-  private async handlePiSessionEvent(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.piEventOps) {
-      this.send(res, 503, { error: 'pi-event 未启用(piEventOps 未注入)' });
-      return;
-    }
-    let body: {
-      terminal?: string;
-      piSessionId?: string;
-      event?: string;
-      reason?: string;
-      name?: string | null;
-    };
-    try {
-      body = JSON.parse(await this.readBody(req)) as typeof body;
-    } catch {
-      return this.send(res, 400, { error: 'invalid JSON body' });
-    }
-    const { terminal, piSessionId, event, reason, name } = body;
-    if (!terminal) return this.send(res, 400, { error: 'body 需要 { terminal }' });
-    if (!piSessionId) return this.send(res, 400, { error: 'body 需要 { piSessionId }' });
-    const VALID_EVENTS = [
-      'session_start',
-      'session_shutdown',
-      'agent_working',
-      'agent_settled',
-      'name_changed',
-    ] as const;
-    if (!event || !(VALID_EVENTS as readonly string[]).includes(event)) {
-      return this.send(res, 400, { error: `body.event 必须是 ${VALID_EVENTS.join('|')} 之一` });
-    }
-    try {
-      const payload: {
-        piSessionId: string;
-        event: (typeof VALID_EVENTS)[number];
-        reason?: string;
-        name?: string | null;
-      } = { piSessionId, event: event as (typeof VALID_EVENTS)[number] };
-      if (reason !== undefined) payload.reason = reason;
-      if (name !== undefined && name !== null) payload.name = name;
-      await this.piEventOps.applyPiSessionEvent(terminal, payload);
-      this.send(res, 200, { ok: true });
-    } catch (err) {
-      this.sendError(res, err);
-    }
-  }
-
-  /**
-   * v0.3.3 T12:GET /screenshot?terminal=<id>。调注入的 windowCapture 回调截 owner window
-   * 的屏,成功返 image/png 二进制;失败(无 owner/窗口销毁/最小化/capture 抛错)返 JSON 错误。
-   * capture 回调未注入(旧启动/单测未设)→ 503 明确表示功能未启用,不崩。
-   */
-  private async handleScreenshot(res: ServerResponse, terminal: string): Promise<void> {
-    if (!this.windowCapture) {
-      this.send(res, 503, { error: 'screenshot 未启用(windowCapture 未注入)' });
-      return;
-    }
-    try {
-      const result = await this.windowCapture(terminal);
-      if ('error' in result) {
-        // 400 = 客户端可理解的原因(无 owner / 窗口已关 / 最小化),不是服务端 bug
-        this.send(res, 400, { error: result.error });
-        return;
-      }
-      this.sendPng(res, result.png);
-    } catch (err) {
-      logger.error(MODULE, 'screenshot failed', err);
-      this.send(res, 500, { error: 'screenshot internal error' });
-    }
-  }
-
-  // ── v0.3.3 ADR-024 / Feature D:workspace HTTP handlers ───────────
-
-  /** GET /workspace?terminal=<id> → 当前 session 绑定的 workspace 绝对路径。 */
-  private handleWorkspaceCurrent(res: ServerResponse, terminal: string): void {
-    if (!this.workspaceOps) {
-      this.send(res, 503, { error: 'workspace 未启用(workspaceOps 未注入)' });
-      return;
-    }
-    const dir = this.workspaceOps.getCurrentPath(terminal);
-    if (!dir) {
-      this.send(res, 404, { error: 'session 无绑定的 workspace' });
-      return;
-    }
-    this.send(res, 200, { path: dir });
-  }
-
-  /** GET /workspace/list?terminal=<id> → 当前 pathScope 下的命名 workspace 列表。 */
-  private async handleWorkspaceList(res: ServerResponse, terminal: string): Promise<void> {
-    if (!this.workspaceOps) {
-      this.send(res, 503, { error: 'workspace 未启用(workspaceOps 未注入)' });
-      return;
-    }
-    try {
-      const items = await this.workspaceOps.list(terminal);
-      this.send(res, 200, { items });
-    } catch (err) {
-      this.send(res, 400, { error: err instanceof Error ? err.message : String(err) });
-    }
-  }
-
-  /** POST /workspace/bind body {terminal, name, new?} → upsert。 */
-  private async handleWorkspaceBind(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.workspaceOps) {
-      this.send(res, 503, { error: 'workspace 未启用(workspaceOps 未注入)' });
-      return;
-    }
-    try {
-      const body = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
-      const terminal = body?.terminal;
-      const name = body?.name;
-      const forceNew = body?.new === true;
-      if (typeof terminal !== 'string' || typeof name !== 'string') {
-        this.send(res, 400, { error: 'missing fields: terminal, name' });
-        return;
-      }
-      const result = await this.workspaceOps.bind(terminal, name, forceNew);
-      // Feature D:切到已存在 workspace(switched)才需恢复快照;created(首次命名当前
-      // workspace)文件面板不变(同一个 workspace 只是加了名字)。
-      if (result.kind === 'switched') {
-        void this.onWorkspaceSwitched(terminal);
-      }
-      this.send(res, 200, result);
-    } catch (err) {
-      const code = (err as { code?: string })?.code;
-      const status = code === 'NameConflict' ? 409 : 400;
-      this.send(res, status, {
-        error: err instanceof Error ? err.message : String(err),
-        code,
-      });
-    }
-  }
-
-  /** POST /workspace/new body {terminal} → 切回新空临时 workspace。 */
-  private async handleWorkspaceNew(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.workspaceOps) {
-      this.send(res, 503, { error: 'workspace 未启用(workspaceOps 未注入)' });
-      return;
-    }
-    try {
-      const body = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
-      const terminal = body?.terminal;
-      if (typeof terminal !== 'string') {
-        this.send(res, 400, { error: 'missing field: terminal' });
-        return;
-      }
-      const result = await this.workspaceOps.newWorkspace(terminal);
-      // Feature D:切到新空 workspace,文件面板清空(新 workspace 无快照)。
-      void this.onWorkspaceSwitched(terminal);
-      this.send(res, 200, result);
-    } catch (err) {
-      this.send(res, 400, { error: err instanceof Error ? err.message : String(err) });
-    }
-  }
-
-  /** POST /workspace/unpin body {terminal, name?} → 剥 name+pinned。 */
-  private async handleWorkspaceUnpin(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (!this.workspaceOps) {
-      this.send(res, 503, { error: 'workspace 未启用(workspaceOps 未注入)' });
-      return;
-    }
-    try {
-      const body = JSON.parse(await this.readBody(req)) as Record<string, unknown>;
-      const terminal = body?.terminal;
-      const name = typeof body?.name === 'string' ? body.name : null;
-      if (typeof terminal !== 'string') {
-        this.send(res, 400, { error: 'missing field: terminal' });
-        return;
-      }
-      const result = await this.workspaceOps.unpin(terminal, name);
-      if (!result) {
-        this.send(res, 404, { error: 'workspace 未找到' });
-        return;
-      }
-      this.send(res, 200, result);
-    } catch (err) {
-      this.send(res, 400, { error: err instanceof Error ? err.message : String(err) });
-    }
-  }
-
   private sendError(res: ServerResponse, err: unknown): void {
     if (err instanceof FilePanelError) {
       const status = err.code === 'NotFound' ? 404 : err.code === 'SessionMissing' ? 404 : 400; // NotFile / ResolveFailed
-      this.send(res, status, { error: err.message, code: err.code });
+      send(res, status, { error: err.message, code: err.code });
       return;
     }
     logger.error(MODULE, 'unexpected error', err);
-    this.send(res, 500, { error: 'internal error' });
-  }
-
-  private checkAuth(req: IncomingMessage): boolean {
-    if (!this.token) return false;
-    const header = req.headers.authorization;
-    return typeof header === 'string' && header === `Bearer ${this.token}`;
-  }
-
-  private readBody(req: IncomingMessage): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const chunks: Buffer[] = [];
-      req.on('data', (c: Buffer) => {
-        chunks.push(c);
-        // 防恶意大 body:超过 64KB 直接拒
-        if (Buffer.concat(chunks).byteLength > 64 * 1024) {
-          reject(new Error('body too large'));
-          req.destroy();
-        }
-      });
-      req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-      req.on('error', reject);
-    });
-  }
-
-  private send(res: ServerResponse, status: number, body: unknown): void {
-    const json = JSON.stringify(body);
-    res.writeHead(status, {
-      'Content-Type': 'application/json; charset=utf-8',
-      // 禁用缓存:状态接口必须实时,客户端不该拿到旧快照
-      'Cache-Control': 'no-store',
-    });
-    res.end(json);
-  }
-
-  /** v0.3.3 T12:发 image/png 二进制(/screenshot 用)。同样 no-store,截图要实时。 */
-  private sendPng(res: ServerResponse, png: Buffer): void {
-    res.writeHead(200, {
-      'Content-Type': 'image/png',
-      'Content-Length': png.byteLength,
-      'Cache-Control': 'no-store',
-    });
-    res.end(png);
+    send(res, 500, { error: 'internal error' });
   }
 }
 
