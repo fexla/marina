@@ -856,7 +856,19 @@ export class SessionManager extends EventEmitter {
     const managed = this.sessions.get(sessionId);
     if (!managed) return;
     managed.piWorking = false;
-    this.markActive(managed);
+    // agent_settled 是 pi 明确的"这轮完成"信号,直接切 idle —— 不走 markActive
+    // 起字节流 idle 计时器。原设计(ADR-028)用 markActive 是怕 settled 后字节流
+    // 尾巴闪,但那要等 activeIdleThresholdSeconds(~3s)才 idle,package 明确说完成了
+    // 还延迟 3s 反直觉。代价:settled 后若有字节流尾巴,onData 会 markActive 短暂
+    // 闪一下 active 再回 idle(几百 ms),远好于固定 3s 延迟。
+    if (managed.idleTimer) {
+      clearTimeout(managed.idleTimer);
+      managed.idleTimer = null;
+    }
+    if (managed.info.state !== 'idle') {
+      managed.info.state = 'idle';
+      this.emitStateChanged(managed, { state: 'idle' });
+    }
     if (!this.isSessionCurrentlyViewed(sessionId) && !managed.info.hasUnviewedWork) {
       managed.info.hasUnviewedWork = true;
       this.emitStateChanged(managed, { hasUnviewedWork: true });

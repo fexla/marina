@@ -2914,8 +2914,9 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
       // 推进远超 idle 阈值（1s）→ 旧逻辑会转 idle，piWorking 抑制后应仍是 active。
       vi.advanceTimersByTime(5000);
       expect(mgr.get(sid)?.state).toBe('active');
-      // agent_settled 解锁 → 交还字节流检测，阈值后自然回 idle。
+      // agent_settled 是明确"完成"信号 → 立刻切 idle(不走字节流 idle 阈值)。
       await pi.handlePiSessionEvent(sid, { piSessionId: 'pi-1', event: 'agent_settled' });
+      expect(mgr.get(sid)?.state).toBe('idle'); // settled 后立刻 idle,不等 activeIdleThresholdSeconds
       vi.advanceTimersByTime(5000);
       expect(mgr.get(sid)?.state).toBe('idle');
     } finally {
