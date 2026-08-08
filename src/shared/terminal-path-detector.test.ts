@@ -109,6 +109,38 @@ describe('detectFileLinks — URL 排除(双保险,运行时 xterm 也会去重)
   });
 });
 
+describe('detectFileLinks — @ 歧义双候选 & ~ home (v0.3.x)', () => {
+  it('@ 开头 → 双候选 [剥@, 带@](AI 引用高频排首),path 保留 @', () => {
+    const r = detectFileLinks('see @src/x.ts:42');
+    expect(r).toHaveLength(1);
+    expect(r[0]!.raw).toBe('@src/x.ts:42');
+    expect(r[0]!.path).toBe('@src/x.ts'); // path = raw 主体,保留 @
+    expect(r[0]!.pathCandidates).toEqual(['src/x.ts', '@src/x.ts']); // 剥@优先
+    expect(r[0]!.line).toBe(42);
+  });
+
+  it('@ 在中间(Retina 图 logo@2x.png)→ 单候选,完整保留', () => {
+    const r = detectFileLinks('see assets/logo@2x.png');
+    expect(r).toHaveLength(1);
+    expect(r[0]!.path).toBe('assets/logo@2x.png');
+    expect(r[0]!.pathCandidates).toEqual(['assets/logo@2x.png']);
+  });
+
+  it('一行多个 @ 引用 → 各自双候选', () => {
+    const r = detectFileLinks('see @src/a.ts and @lib/b.go');
+    expect(r).toHaveLength(2);
+    expect(r[0]!.pathCandidates).toEqual(['src/a.ts', '@src/a.ts']);
+    expect(r[1]!.pathCandidates).toEqual(['lib/b.go', '@lib/b.go']);
+  });
+
+  it('~ home 路径 → 识别,单候选', () => {
+    const r = detectFileLinks('edit ~/projects/x.ts');
+    expect(r).toHaveLength(1);
+    expect(r[0]!.path).toBe('~/projects/x.ts');
+    expect(r[0]!.pathCandidates).toEqual(['~/projects/x.ts']);
+  });
+});
+
 describe('parsePathWithLineCol — 右键选区解析(B 部分,不要求斜杠)', () => {
   it('带行:列 → 全解析', () => {
     expect(parsePathWithLineCol('  src/x.ts:42:8  ')).toMatchObject({

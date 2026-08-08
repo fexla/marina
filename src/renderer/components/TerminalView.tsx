@@ -88,11 +88,7 @@ import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { Check, Maximize2, Minimize2, Plus, X } from 'lucide-react';
-import {
-  COMMAND_CHANNELS,
-  EVENT_CHANNELS,
-  type SessionOutputPayload,
-} from '@shared/protocol';
+import { COMMAND_CHANNELS, EVENT_CHANNELS, type SessionOutputPayload } from '@shared/protocol';
 import type { SessionInfo, ThemeId } from '@shared/types';
 import { attachImeCompositionEndCleaner } from '@shared/ime-textarea-workaround';
 import { attachImeCompositionPositionLock } from '@shared/ime-composition-position-lock';
@@ -782,27 +778,42 @@ export function TerminalView({
   // 解析 + 打开 + 自动切面板)。失败 → toast(IPC reject 丢 error.code 只留 message)。
   // 行号跳转走 pending-line-jump 缓存:先用相对 path 临时存,invoke 成功后用
   // snapshot.activePath(绝对路径)重写 key,TextViewer 消费时命中。
-  const openPathFromTerminalRef = useRef<((path: string, line?: number) => void) | null>(null);
+  const openPathFromTerminalRef = useRef<((candidates: string[], line?: number) => void) | null>(
+    null,
+  );
   const openPathFromTerminal = useCallback(
-    (path: string, line?: number) => {
-      const trimmed = path.trim();
-      if (!trimmed) return;
-      if (line !== undefined) setPendingLineJump(trimmed, line);
-      window.api
-        .invoke(COMMAND_CHANNELS.FILE_PANEL_OPEN, { sessionId: session.id, path: trimmed })
-        .then((snap) => {
-          if (line !== undefined && snap.activePath) {
-            movePendingLineJump(trimmed, snap.activePath);
-          }
-        })
-        .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn('[terminal] open path from terminal failed:', msg);
-          toastRef.current.push({
-            kind: 'error',
-            message: `文件不存在: ${trimmed}`,
+    (candidates: string[], line?: number) => {
+      // v0.3.x:接收候选 path 数组,逐个试 cmd:file-panel:open,首个成功(resolve 通过)
+      // 即止,全失败才 toast。典型场景:raw 以 @ 开头时 candidates=[剥@, 带@]
+      // (AI 引用标记 vs @ 开头的真实文件名,字面相同无法在 detect 阶段区分)。
+      // 安全性依据:main 端 openFile 失败在 resolveAndStat 即抛 NotFound,不会走到
+      // toOpenedFile/watcher/切面板 —— 失败的尝试零副作用,故串行重试无需新增探测 IPC。
+      const list = candidates.map((c) => c.trim()).filter((c) => c.length > 0);
+      if (list.length === 0) return;
+      const primary = list[0]!;
+      if (line !== undefined) setPendingLineJump(primary, line);
+
+      const tryOpen = (idx: number) => {
+        const p = list[idx]!;
+        window.api
+          .invoke(COMMAND_CHANNELS.FILE_PANEL_OPEN, { sessionId: session.id, path: p })
+          .then((snap) => {
+            if (line !== undefined && snap.activePath) {
+              movePendingLineJump(primary, snap.activePath);
+            }
+          })
+          .catch((err: unknown) => {
+            if (idx < list.length - 1) {
+              // 非最后候选失败:静默试下一个(不 warn / 不 toast,避免中间步骤刷屏)。
+              tryOpen(idx + 1);
+            } else {
+              const msg = err instanceof Error ? err.message : String(err);
+              console.warn('[terminal] open path from terminal failed:', msg);
+              toastRef.current.push({ kind: 'error', message: `文件不存在: ${p}` });
+            }
           });
-        });
+      };
+      tryOpen(0);
     },
     [session.id],
   );
@@ -1188,8 +1199,9 @@ export function TerminalView({
     // 接受。这里 provideLinks 只跑正则(零 IO),点击才发 IPC,失败 toast。
     //
     // 坐标:provideLinks 的 y 是 1-based buffer 行;translateToString(true) 拿 trimmed
-    // 文本;detectFileLinks 返回字符 index(0-based),+1 转 1-based cell x(单字节
-    // 路径近似相等;宽字符/emoji 误差罕见,v1 不处理)。
+    // 文本;detectFileLinks 返回字符 index(0-based)。字符 index 不能直接当 cell 列号 ——
+    // CJK 全角字符 / emoji 在终端占 2 cell、字符串里只算 1 字符,直接用会导致链接前有
+    // 中文时下划线/hover 框整体偏左。下方 charIdxToCellCol 逐 cell 走 getWidth() 换算修正。
     const isSshSession = session.pathId.startsWith('ssh:');
     const fileLinkDisposable = isSshSession
       ? undefined
@@ -1201,14 +1213,33 @@ export function TerminalView({
               return;
             }
             const text = line.translateToString(true);
+            // 复用一个 null cell 作 getCell 缓冲(xterm 约定,避免逐 cell alloc)。
+            const cell = term.buffer.active.getNullCell();
+            // 字符 index(0-based) → 0-based cell 列号:遍历 cell 累加"已消耗字符数",
+            // width 1/2 各贡献 1 字符,width 0(宽字符占位第二格)不贡献。宽字符占 2 cell,
+            // 其后 cell 列号 > 字符 index,正好修正 CJK 偏移。对齐官方 addon-web-links 的 _mapStrIdx。
+            const charIdxToCellCol = (charIdx: number): number => {
+              let col = 0;
+              let consumed = 0;
+              while (col < line.length && consumed < charIdx) {
+                line.getCell(col, cell);
+                if (cell.getWidth() > 0) consumed += 1;
+                col += 1;
+              }
+              return col;
+            };
             const links = detectFileLinks(text).map((det) => ({
               range: {
-                start: { x: det.start + 1, y },
-                end: { x: det.end + 1, y },
+                // xterm range 约定(对齐官方 addon-web-links):start.x = 首字符 cell +1
+                // (1-based,含);end.x = 末字符之后的 cell 列号(0-based,不含)。det.end 本就是
+                // exclusive 字符 index,换算后即 exclusive cell 列号,直接用(不再 +1,修掉旧版多一格)。
+                start: { x: charIdxToCellCol(det.start) + 1, y },
+                end: { x: charIdxToCellCol(det.end), y },
               },
               text: det.raw,
               activate: () => {
-                openPathFromTerminalRef.current?.(det.path, det.line);
+                // 传 pathCandidates:raw 以 @ 开头时为 [剥@, 带@],点击逐个试首个有效。
+                openPathFromTerminalRef.current?.(det.pathCandidates, det.line);
               },
             }));
             callback(links.length > 0 ? links : undefined);
@@ -1667,10 +1698,7 @@ export function TerminalView({
     );
 
     void window.api
-      .invoke(
-        COMMAND_CHANNELS.SESSION_GET_SCROLLBACK,
-        { sessionId: session.id },
-      )
+      .invoke(COMMAND_CHANNELS.SESSION_GET_SCROLLBACK, { sessionId: session.id })
       .then(async (res) => {
         if (disposed) return;
         if (res.data) {
@@ -1935,10 +1963,7 @@ export function TerminalView({
       }
       const base64 = encodeStringToBase64(data);
       void window.api
-        .invoke(
-          COMMAND_CHANNELS.SESSION_SEND_INPUT,
-          { sessionId: session.id, data: base64 },
-        )
+        .invoke(COMMAND_CHANNELS.SESSION_SEND_INPUT, { sessionId: session.id, data: base64 })
         .then((res) => {
           if (res.accepted) return;
           const now = Date.now();
@@ -2191,7 +2216,7 @@ export function TerminalView({
                   const sel = term?.getSelection();
                   if (!sel) return;
                   const { path, line } = parsePathWithLineCol(sel);
-                  openPathFromTerminalRef.current?.(path, line);
+                  openPathFromTerminalRef.current?.([path], line);
                 },
               } as ContextMenuItem,
             ]),
@@ -2547,17 +2572,14 @@ function ReconnectButton({ session }: { session: SessionInfo }): JSX.Element {
     try {
       const dims = state.lastTerminalDims;
       const templateId = session.templateId || state.defaultTemplateId || 'shell';
-      const res = await window.api.invoke(
-        COMMAND_CHANNELS.SESSION_CREATE,
-        {
-          pathId: session.pathId,
-          templateId,
-          cols: dims.cols,
-          rows: dims.rows,
-          // tmuxMode 不带 — 复用 profile 默认。reducer 会 select 新 session,
-          // exited tab 留在 TabBar 里给用户主动关闭。
-        },
-      );
+      const res = await window.api.invoke(COMMAND_CHANNELS.SESSION_CREATE, {
+        pathId: session.pathId,
+        templateId,
+        cols: dims.cols,
+        rows: dims.rows,
+        // tmuxMode 不带 — 复用 profile 默认。reducer 会 select 新 session,
+        // exited tab 留在 TabBar 里给用户主动关闭。
+      });
       dispatch({ type: 'view/select-session', sessionId: res.session.id });
       if (res.warning) {
         toast.push({ kind: 'warn', message: res.warning });

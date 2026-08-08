@@ -40,6 +40,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createHash } from 'node:crypto';
 import { promises as fs, watch, type FSWatcher, type Stats } from 'node:fs';
 import { basename, dirname, resolve, join, isAbsolute } from 'node:path';
+import { homedir } from 'node:os';
 import type { OpenedFile } from '@shared/types';
 import { detectFileKind } from '@shared/file-kind';
 import type {
@@ -809,11 +810,20 @@ export class FilePanelService extends EventEmitter {
     const info = this.lookup?.get(sessionId);
     if (!info) throw new FilePanelError('SessionMissing', `未知 terminal: ${sessionId}`);
     const base = info.currentCwd || process.cwd();
+    // v0.3.x:Shell home 展开。rawPath 以 ~ 开头(裸 ~、~/x、~\x)→ os.homedir() 替换。
+    // 仅作首字符(Shell 语义);中间的 ~ 是合法文件名字符,不动。展开后是绝对路径,
+    // resolve(base, ...) 会忽略 base,正确。
+    let p = rawPath;
+    if (p === '~') {
+      p = homedir();
+    } else if (p.startsWith('~/') || p.startsWith('~\\')) {
+      p = join(homedir(), p.slice(2));
+    }
     let abs: string;
     try {
-      // resolve(base, rawPath):rawPath 绝对则忽略 base;相对则拼到 session cwd 上。
+      // resolve(base, p):p 绝对(含 ~ 展开后的)则忽略 base;相对则拼到 session cwd 上。
       // 再过 normalizePath 规范化(卷符大写 / 去 trailing sep),与 path id 一致。
-      abs = normalizePath(resolve(base, rawPath));
+      abs = normalizePath(resolve(base, p));
     } catch (err) {
       throw new FilePanelError(
         'ResolveFailed',
