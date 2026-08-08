@@ -50,6 +50,7 @@ import { SessionWorkspaceManager } from './session-workspace-manager';
 // M2:workspace/pi coordinator(SessionManager 瘦身拆出;组装期 attach 到 sessionManager)。
 import { SessionWorkspaceCoordinator } from './coordinators/session-workspace-coordinator';
 import { PiSessionCoordinator } from './coordinators/pi-session-coordinator';
+import { RuntimeLifecycleCoordinator } from './coordinators/runtime-lifecycle-coordinator';
 import { SkillInstaller } from './skill-installer';
 import { PiBridgeInstaller } from './pi-bridge-installer';
 import { MarkdownThemeManager } from './markdown-theme-manager';
@@ -274,7 +275,6 @@ function bootstrap(): void {
   piSessionCoordinator.attachSessionLookup(sessionManager);
   piSessionCoordinator.attachHooks(sessionManager);
   sessionManager.attachWorkspaceCoordinator(sessionWorkspaceCoordinator);
-  sessionManager.attachPiCoordinator(piSessionCoordinator);
   // v0.3.3 ADR-028「查看语义精准化」:窗口重新获焦/从最小化恢复 → 用户回来了,
   // 清该窗口当前选中 session 的 hasUnviewedWork(红灯转正常)。窗口关闭 → 清映射
   // (防泄漏 + 防误判已销毁窗口为“在看”)。接线放在 SessionManager 创建后。
@@ -730,6 +730,40 @@ function bootstrap(): void {
           fileTreePollingService.removePollingConsumer(clientId);
           commandPanelService.removeDemandConsumer(clientId);
           terminalViewRegistry.removeClient(clientId);
+        },
+      });
+
+      // M1:RuntimeLifecycleCoordinator 统一分发 session 生命周期事件(ownerChanged/
+      // exited/destroyed)到各 service 的资源回收 —— 原散在 wireEventBroadcasts(IPC 层)
+      // 和 SessionManager.destroySession,现集中到独立可单测模块。注册式:新增
+      // service/coordinator 只在这里 register,不改 coordinator 核心。
+      const runtimeLifecycleCoordinator = new RuntimeLifecycleCoordinator(sessionManager);
+      runtimeLifecycleCoordinator.register({
+        // owner 切换:旧 renderer 可能保持 PanelStack mount,清旧 demand 让新 owner
+        // 按绝对 UI 状态重新上报 HOT/WARM。
+        onOwnerChanged: (sid) => {
+          gitService.onSessionOwnerChanged(sid);
+          fileTreePollingService.onSessionOwnerChanged(sid);
+          commandPanelService.onSessionOwnerChanged(sid);
+        },
+        // PTY 退出(ADR-008):exited 快照仍保留,只停后台扫描(git watcher 会永久
+        // spawn git.exe 造成 CPU/IO 尖峰;文件树轮询同理)。
+        onExited: (sid) => {
+          gitService.onSessionExited(sid);
+          fileTreePollingService.onSessionExited(sid);
+        },
+        // session 真销毁:释放全部资源(view lease / codeBlock / filePanel fs.watch /
+        // git watcher+防抖 / fileTree 轮询 / commandPanel 状态+后台 task / workspace
+        // 绑定+目录 / pi 映射)。顺序即注册顺序(与原 wireEventBroadcasts 内联一致)。
+        onDestroyed: (sid) => {
+          terminalViewRegistry.removeSession(sid);
+          codeBlockRunner.removeSession(sid);
+          filePanelService.onSessionDestroyed(sid);
+          gitService.onSessionDestroyed(sid);
+          fileTreePollingService.onSessionDestroyed(sid);
+          commandPanelService.onSessionDestroyed(sid);
+          sessionWorkspaceCoordinator.onSessionDestroyed(sid);
+          piSessionCoordinator.onSessionDestroyed(sid);
         },
       });
 

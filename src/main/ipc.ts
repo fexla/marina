@@ -2591,11 +2591,8 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   });
 
   sessionManager.on('sessionOwnerChanged', (e: SessionOwnerChangedPayload) => {
-    // owner 切换时旧 renderer 可能保持 PanelStack mount；先清旧 demand，新的 owner
-    // 收到事件后按绝对 UI 状态重新上报 HOT/WARM。
-    gitService.onSessionOwnerChanged(e.sessionId);
-    fileTreePollingService.onSessionOwnerChanged(e.sessionId);
-    commandPanelService.onSessionOwnerChanged(e.sessionId);
+    // service 清理(git/fileTree/commandPanel 的 demand 重报)由
+    // RuntimeLifecycleCoordinator 统一分发(M1),这里只广播给窗口。
     broadcastEvent<SessionOwnerChangedPayload>(EVENT_CHANNELS.SESSION_OWNER_CHANGED, e);
   });
 
@@ -2608,12 +2605,8 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   });
 
   sessionManager.on('sessionExited', (e: SessionExitedPayload) => {
-    // ADR-008 只保留 exited session 的 UI 快照/scrollback,不应继续每 3 秒扫描 Git。
-    // 显式停 watcher,否则用户在 shell 内 exit 后即使关掉所有窗口,main 进程仍会
-    // 永久 spawn git.exe,造成低平均 CPU 但明显 frametime / I/O 尖峰。
-    gitService.onSessionExited(e.sessionId);
-    // 文件树同理:exited 快照保留,但停止后台目录轮询。
-    fileTreePollingService.onSessionExited(e.sessionId);
+    // service 清理(停 git watcher / 文件树轮询,ADR-008 防 exited session 永久扫描)
+    // 由 RuntimeLifecycleCoordinator 统一分发(M1),这里只广播给窗口。
     broadcastEvent<SessionExitedPayload>(EVENT_CHANNELS.SESSION_EXITED, e);
   });
 
@@ -2626,19 +2619,9 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   );
 
   sessionManager.on('sessionDestroyed', (e: SessionDestroyedPayload) => {
-    // 终端视图租约随 session 销毁；renderer cleanup 随后再 detach 也幂等。
-    deps.terminalViewRegistry.removeSession(e.sessionId);
-    // Markdown 代码块运行在普通 terminal 切换时继续,但源 session 真销毁后已无
-    // 可恢复 UI / stop 入口,必须停止并让仍存活窗口收到 exited 收口缓存。
-    deps.codeBlockRunner.removeSession(e.sessionId);
-    // 文件面板:session 没了,清掉它的已打开文件 + fs.watch 句柄
-    filePanelService.onSessionDestroyed(e.sessionId);
-    // v0.3.0:Git 面板同理清掋 watcher + 防抖 timer。
-    gitService.onSessionDestroyed(e.sessionId);
-    // 文件树轮询:session 销毁,注销 task/demand/基线。
-    fileTreePollingService.onSessionDestroyed(e.sessionId);
-    // v0.3.3:命令面板同理清状态 + 停 run + 注销后台 task。
-    deps.commandPanelService.onSessionDestroyed(e.sessionId);
+    // service 清理(terminalView/codeBlock/filePanel/git/fileTree/commandPanel/
+    // workspace/pi 的资源回收)由 RuntimeLifecycleCoordinator 统一分发(M1),
+    // 这里只广播给窗口 + 刷 app state。
     broadcastEvent<SessionDestroyedPayload>(EVENT_CHANNELS.SESSION_DESTROYED, e);
     broadcastAppState(deps);
   });

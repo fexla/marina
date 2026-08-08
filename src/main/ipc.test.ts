@@ -789,7 +789,6 @@ describe('IPC GIT demand lifecycle wiring', () => {
   it('owner change 与本地窗口关闭分别清 task demand / consumer', async () => {
     const { installIpcLayer } = await freshIpc();
     const { deps, stubs } = makeStubs();
-    const ownerChanged = vi.spyOn(deps.gitService, 'onSessionOwnerChanged');
     const removeConsumer = vi.spyOn(deps.gitService, 'removePollingConsumer');
     installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
 
@@ -798,12 +797,16 @@ describe('IPC GIT demand lifecycle wiring', () => {
     );
     expect(ownerRegistration).toBeTruthy();
     const ownerHandler = ownerRegistration![1] as (payload: unknown) => void;
-    ownerHandler({
-      sessionId: 'session-1',
-      oldOwnerWindowId: 'window-old',
-      newOwnerWindowId: 'window-new',
-    });
-    expect(ownerChanged).toHaveBeenCalledWith('session-1');
+    // M1:git/fileTree/commandPanel 的 demand 清理移到 RuntimeLifecycleCoordinator
+    // (见 runtime-lifecycle-coordinator.test.ts)。wireEventBroadcasts 的该 handler
+    // 现在只广播 SESSION_OWNER_CHANGED,这里验证 handler 已注册且调用不抛错。
+    expect(() =>
+      ownerHandler({
+        sessionId: 'session-1',
+        oldOwnerWindowId: 'window-old',
+        newOwnerWindowId: 'window-new',
+      }),
+    ).not.toThrow();
 
     const closedHandler = stubs.windowManager.onWindowClosed.mock.calls.at(-1)![0] as (
       windowId: string,

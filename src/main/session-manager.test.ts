@@ -350,7 +350,6 @@ function makeManager(
   piCoordinator.attachSessionLookup(mgr);
   piCoordinator.attachHooks(mgr);
   mgr.attachWorkspaceCoordinator(workspaceCoordinator);
-  mgr.attachPiCoordinator(piCoordinator);
   return { mgr, win, path, workspaceCoordinator, piCoordinator };
 }
 
@@ -2456,8 +2455,12 @@ describe('SessionManager — file panel env 注入', () => {
     expect(env.MARINA_WORKSPACE).toBe(`C:\\marina-workspaces\\${WORKSPACE_ID}`);
     expect(calls).toContain(`create`);
 
+    // M1:workspace release 由 RuntimeLifecycleCoordinator 经 sessionDestroyed 事件统一
+    // 分发(destroySession 不再 inline 调),这里验证 closeSession 触发了事件。
+    const destroyedSpy = vi.fn();
+    mgr.on('sessionDestroyed', destroyedSpy);
     mgr.closeSession(info.id);
-    expect(calls).toContain(`release:${WORKSPACE_ID}`);
+    expect(destroyedSpy).toHaveBeenCalledWith(expect.objectContaining({ sessionId: info.id }));
   });
 
   it('enabled=false → 不注入服务地址/token,但仍注入 TERMINAL_ID', async () => {

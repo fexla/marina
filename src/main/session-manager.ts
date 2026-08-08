@@ -64,7 +64,6 @@ import type { AIClient } from './ai-client';
 // M2:coordinator 类型(仅类型导入,不产生运行时循环依赖 —— coordinator 反过来
 // 也只以接口依赖 SessionManager:SessionLookup / PiSessionHooks)。
 import type { SessionWorkspaceCoordinator } from './coordinators/session-workspace-coordinator';
-import type { PiSessionCoordinator } from './coordinators/pi-session-coordinator';
 // @xterm/headless 是纯 CommonJS(无 ESM exports 字段),Electron 主进程
 // ESM loader 不接受 named import — 必须 default import 拿整个 module 再
 // 解构。类型用 `InstanceType<typeof HeadlessTerminal>` 推,避免重复声明。
@@ -707,7 +706,6 @@ export class SessionManager extends EventEmitter {
    * M2:pi 集成业务协调器(ADR-028 的主锁 + pi↔workspace 映射已移入)。index.ts
    * 组装期 attach;pi 事件的状态副作用经本类实现的 PiSessionHooks 驱动。
    */
-  private piCoordinator: PiSessionCoordinator | null = null;
   /**
    * v0.3.3 ADR-028「查看语义精准化」:windowId → 该窗口当前选中的 session id。
    * renderer 选中 session 时通过 cmd:session:mark-viewed 上报(windowId 来自
@@ -787,11 +785,6 @@ export class SessionManager extends EventEmitter {
   /** 注入 workspace 资源协调器(index.ts 组装期调用)。 */
   attachWorkspaceCoordinator(coordinator: SessionWorkspaceCoordinator): void {
     this.workspaceCoordinator = coordinator;
-  }
-
-  /** 注入 pi 集成业务协调器(index.ts 组装期调用)。 */
-  attachPiCoordinator(coordinator: PiSessionCoordinator): void {
-    this.piCoordinator = coordinator;
   }
 
   // ──────────────────────────────────────────────────────────────
@@ -2111,11 +2104,9 @@ export class SessionManager extends EventEmitter {
     this.pathManager.detachSession(sid);
     // 目录保留期从 session 被销毁时开始，而不是 PTY exited 时开始：已退出 tab
     // 仍可在面板里查看生成文档，符合 exited 无时限保留的状态机语义。
-    // v0.3.3 ADR-024：workspace 资源回收(release 按绑定映射取 + 删绑定)；
-    // v0.3.3 ADR-028：清 pi 映射(终端关了，里面的 pi 对话也不复存在)。
-    // 两者委托 coordinator(各自持有映射/资源,失败只 warn 不阻塞销毁)。
-    this.workspaceCoordinator?.onSessionDestroyed(sid);
-    this.piCoordinator?.onSessionDestroyed(sid);
+    // v0.3.3 ADR-024/028:workspace/pi 资源回收 + 其他 service 清理,统一由
+    // RuntimeLifecycleCoordinator 经下面的 sessionDestroyed 事件分发(见
+    // index.ts 注册)。这里只 emit,不再 inline 调各 service(避免散落 + 可单测)。
     this.emit('sessionDestroyed', { sessionId: sid, reason });
   }
 
