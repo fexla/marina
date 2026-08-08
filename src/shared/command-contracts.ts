@@ -109,6 +109,10 @@ import type {
   ShowCommandPayload,
   UpdateCommandRefreshPolicyPayload,
   SetCommandDemandPayload,
+  SudoPasswordSetPayload,
+  SudoPasswordClearPayload,
+  SudoPasswordHasPayload,
+  SudoPasswordStatePayload,
   GetMdThemeCssPayload,
   CaptureCpuProfilePayload,
 } from './protocol';
@@ -578,7 +582,10 @@ export interface CommandContractMap {
     payload: SetGitPollingDemandPayload;
     response: void;
   };
-  [COMMAND_CHANNELS.GIT_GET_STATUS]: { payload: GetGitStatusPayload; response: GetGitStatusResponse };
+  [COMMAND_CHANNELS.GIT_GET_STATUS]: {
+    payload: GetGitStatusPayload;
+    response: GetGitStatusResponse;
+  };
   [COMMAND_CHANNELS.GIT_OPEN_DIFF]: { payload: OpenGitDiffPayload; response: FilePanelSnapshot };
   [COMMAND_CHANNELS.GIT_OPEN_FILE]: { payload: OpenGitFilePayload; response: FilePanelSnapshot };
   [COMMAND_CHANNELS.GIT_RESOLVE_PATH]: {
@@ -617,6 +624,20 @@ export interface CommandContractMap {
   [COMMAND_CHANNELS.COMMAND_PANEL_SET_DEMAND]: {
     payload: SetCommandDemandPayload;
     response: void;
+  };
+
+  // ── Sudo 密码(v0.3.3 远程 sudo)——内存态,密码本身只进 SET 入参,其余只回 boolean ──
+  [COMMAND_CHANNELS.SUDO_PASSWORD_SET]: {
+    payload: SudoPasswordSetPayload;
+    response: { ok: true };
+  };
+  [COMMAND_CHANNELS.SUDO_PASSWORD_CLEAR]: {
+    payload: SudoPasswordClearPayload;
+    response: { ok: true };
+  };
+  [COMMAND_CHANNELS.SUDO_PASSWORD_HAS]: {
+    payload: SudoPasswordHasPayload;
+    response: SudoPasswordStatePayload;
   };
 
   // ── Markdown theme ────────────────────────────────────────────────────────

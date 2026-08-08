@@ -15,11 +15,13 @@ import {
   CodeBlockRunner,
   CodeBlockError,
   buildSpawnArgs,
+  buildSshExecArgs,
   DetectingOutputDecoder,
   PS_UTF8_PREFIX,
   type SpawnFn,
   type CodeBlockOutputEvent,
   type CodeBlockExitedEvent,
+  type SshExecProfile,
 } from './code-block-runner';
 import type { SessionInfo } from '@shared/types';
 // ShellInfo 定义在 platform 适配器层,不在 shared(见 code-block-runner.ts 同款 import)。
@@ -251,7 +253,7 @@ describe('CodeBlockRunner', () => {
     ).rejects.toThrow(/不存在或已销毁/);
   });
 
-  it('SSH session 拒绝(命令需在远程主机跑,本进程无法 spawn)', async () => {
+  it('SSH session 未注入 sshDeps → SshUnsupported(优雅降级)', async () => {
     const runner = new CodeBlockRunner(
       (_id) => makeSession({ pathId: 'ssh:profile1:%2Fhome%2Fuser' }) as any,
       () => makeFakeChild().child,
@@ -259,6 +261,9 @@ describe('CodeBlockRunner', () => {
     await expect(
       runner.run({ sourceSessionId: 's1', language: 'bash', code: 'ls', requestingClientId: 'w1' }),
     ).rejects.toThrow(/SSH/);
+    await expect(
+      runner.run({ sourceSessionId: 's1', language: 'bash', code: 'ls', requestingClientId: 'w1' }),
+    ).rejects.toMatchObject({ code: 'SshUnsupported' });
   });
 
   it('code 超过上限 → CodeTooLarge', async () => {
@@ -450,5 +455,238 @@ describe('DetectingOutputDecoder', () => {
     // chunk2:剩余 5 字节 —— CE C4 = 文,B2 E2 = 测,CA D4 = 试
     expect(dec.write(bytes.subarray(3))).toBe('文测试');
     expect(dec.end()).toBe('');
+  });
+});
+
+/** 造一个带 stdin 捕获的 fake child(远程 sudo 路径需要写 stdin)。 */
+function makeFakeChildWithStdin(): {
+  child: any;
+  stdout: EventEmitter;
+  stderr: EventEmitter;
+  stdin: { written: string[]; ended: boolean };
+  emitClose: (exitCode: number | null, signal: string | null) => void;
+} {
+  const base = makeFakeChild();
+  const stdin = { written: [] as string[], ended: false };
+  base.child.stdin = {
+    write(data: string) {
+      stdin.written.push(data);
+      return true;
+    },
+    end() {
+      stdin.ended = true;
+    },
+  };
+  return { ...base, stdin };
+}
+
+const SSH_PROFILE_KEY: SshExecProfile = {
+  id: 'p1',
+  name: 'prod',
+  host: 'srv',
+  port: 22,
+  username: 'ops',
+  authType: 'keyFile',
+  keyFilePath: '/home/ops/.ssh/id_ed25519',
+  proxyJump: ['bastion', 'jump2'],
+};
+
+describe('buildSshExecArgs', () => {
+  it('key 认证 + 非 sudo:不加 -tt,加 -i/-J,remote 含 cd && <cmd>', () => {
+    const r = buildSshExecArgs(
+      SSH_PROFILE_KEY,
+      '/home/ops/app',
+      'ls -la',
+      false,
+      '/usr/bin/ssh',
+      null,
+    );
+    expect(r.spawnCommand).toBe('/usr/bin/ssh');
+    expect(r.useSshPasswordEnv).toBe(false);
+    expect(r.useSudoStdin).toBe(false);
+    // 不含 -tt(exec 走管道,强制 TTY 会报错且无法流式)
+    expect(r.spawnArgs).not.toContain('-tt');
+    expect(r.spawnArgs).toEqual([
+      '-p',
+      '22',
+      '-o',
+      'ServerAliveInterval=30',
+      '-i',
+      '/home/ops/.ssh/id_ed25519',
+      '-J',
+      'bastion,jump2',
+      'ops@srv',
+      `cd '/home/ops/app' && ls -la`,
+    ]);
+  });
+
+  it('sudo=true:remote 前缀 sudo -S -p \\"\\",useSudoStdin=true(调用方喂密码)', () => {
+    const r = buildSshExecArgs(
+      SSH_PROFILE_KEY,
+      '/srv',
+      'systemctl restart nginx',
+      true,
+      'ssh',
+      null,
+    );
+    expect(r.useSudoStdin).toBe(true);
+    expect(r.spawnArgs[r.spawnArgs.length - 1]).toBe(
+      `cd '/srv' && sudo -S -p '' systemctl restart nginx`,
+    );
+    // 密码不进 argv(env/stdin 由调用方处理)
+    expect(r.spawnArgs.some((a) => /password|SSHPASS/i.test(a))).toBe(false);
+  });
+
+  it('password 认证:spawnCommand=sshpass,首个 arg=-e,useSshPasswordEnv=true', () => {
+    const profile: SshExecProfile = { ...SSH_PROFILE_KEY, authType: 'password' };
+    const r = buildSshExecArgs(
+      profile,
+      '/srv',
+      'uptime',
+      false,
+      '/usr/bin/ssh',
+      '/usr/bin/sshpass',
+    );
+    expect(r.spawnCommand).toBe('/usr/bin/sshpass');
+    expect(r.spawnArgs[0]).toBe('-e');
+    expect(r.spawnArgs[1]).toBe('/usr/bin/ssh');
+    expect(r.useSshPasswordEnv).toBe(true);
+  });
+
+  it('remotePath 为空时不加 cd 段(用远端默认目录)', () => {
+    const r = buildSshExecArgs(SSH_PROFILE_KEY, '', 'whoami', false, 'ssh', null);
+    expect(r.spawnArgs[r.spawnArgs.length - 1]).toBe('whoami');
+  });
+});
+
+describe('CodeBlockRunner SSH exec + sudo', () => {
+  function makeSshRunner(opts: {
+    profile?: SshExecProfile | null;
+    sudoPassword?: string | null;
+    sshpassPath?: string | null;
+    spawnImpl?: (...args: Parameters<SpawnFn>) => any;
+  }) {
+    let capturedSpawn: any = null;
+    const fake = makeFakeChildWithStdin();
+    const sshDeps = {
+      sshProfileLookup: (_id: string) =>
+        opts.profile === undefined ? SSH_PROFILE_KEY : opts.profile,
+      sudoPasswordStore: { get: (_id: string) => opts.sudoPassword ?? null },
+      resolveExecutable: (name: string) =>
+        name === 'ssh'
+          ? '/usr/bin/ssh'
+          : opts.sshpassPath === undefined
+            ? '/usr/bin/sshpass'
+            : opts.sshpassPath,
+    };
+    const spawnFn = makeSpawnFnMock((...args: Parameters<SpawnFn>) => {
+      capturedSpawn = args;
+      return fake.child;
+    });
+    const runner = new CodeBlockRunner(
+      (_id) => makeSession({ pathId: 'ssh:p1:%2Fhome%2Fuser', currentCwd: '/home/user' }) as any,
+      spawnFn,
+      undefined,
+      sshDeps,
+    );
+    return { runner, fake, getSpawn: () => capturedSpawn };
+  }
+
+  it('远程非 sudo:stdio stdin=ignore,不写 stdin,remote 无 sudo 前缀', async () => {
+    const { runner, fake, getSpawn } = makeSshRunner({});
+    await runner.run({
+      sourceSessionId: 's1',
+      language: 'bash',
+      code: 'ls',
+      requestingClientId: 'w1',
+    });
+    const opts = getSpawn()![2];
+    expect(opts.stdio).toEqual(['ignore', 'pipe', 'pipe']);
+    expect(fake.stdin.written).toEqual([]);
+    expect(getSpawn()![1][getSpawn()![1].length - 1]).toBe(`cd '/home/user' && ls`);
+  });
+
+  it('远程 sudo + 已存密码:stdio stdin=pipe,写密码+\\n,remote 含 sudo -S -p \\"\\"', async () => {
+    const { runner, fake, getSpawn } = makeSshRunner({ sudoPassword: 's3cret' });
+    await runner.run({
+      sourceSessionId: 's1',
+      language: 'bash',
+      code: 'apt update',
+      requestingClientId: 'w1',
+      sudo: true,
+    });
+    const opts = getSpawn()![2];
+    expect(opts.stdio).toEqual(['pipe', 'pipe', 'pipe']);
+    expect(fake.stdin.written).toEqual(['s3cret\n']);
+    expect(fake.stdin.ended).toBe(true);
+    expect(getSpawn()![1][getSpawn()![1].length - 1]).toBe(
+      `cd '/home/user' && sudo -S -p '' apt update`,
+    );
+    // 密码不进 argv / env
+    expect(getSpawn()![1].some((a: string) => a.includes('s3cret'))).toBe(false);
+    expect(JSON.stringify(opts.env)).not.toContain('s3cret');
+  });
+
+  it('远程 sudo 但未录密码 → SudoPasswordRequired', async () => {
+    const { runner } = makeSshRunner({ sudoPassword: null });
+    await expect(
+      runner.run({
+        sourceSessionId: 's1',
+        language: 'bash',
+        code: 'apt update',
+        requestingClientId: 'w1',
+        sudo: true,
+      }),
+    ).rejects.toMatchObject({ code: 'SudoPasswordRequired' });
+  });
+
+  it('profile 找不到 → SshProfileMissing', async () => {
+    const { runner } = makeSshRunner({ profile: null });
+    await expect(
+      runner.run({ sourceSessionId: 's1', language: 'bash', code: 'ls', requestingClientId: 'w1' }),
+    ).rejects.toMatchObject({ code: 'SshProfileMissing' });
+  });
+
+  it('password 认证:spawnCommand=sshpass,env.SSHPASS=SSH 密码(非 sudo 密码)', async () => {
+    const profile: SshExecProfile = {
+      ...SSH_PROFILE_KEY,
+      authType: 'password',
+      password: 'sshpass-value',
+    };
+    const { runner, getSpawn } = makeSshRunner({ profile, sshpassPath: '/usr/bin/sshpass' });
+    await runner.run({
+      sourceSessionId: 's1',
+      language: 'bash',
+      code: 'ls',
+      requestingClientId: 'w1',
+    });
+    expect(getSpawn()![0]).toBe('/usr/bin/sshpass');
+    expect(getSpawn()![2].env.SSHPASS).toBe('sshpass-value');
+  });
+
+  it('password 认证但未装 sshpass → SshAuthUnavailable', async () => {
+    const profile: SshExecProfile = { ...SSH_PROFILE_KEY, authType: 'password' };
+    const { runner } = makeSshRunner({ profile, sshpassPath: null });
+    await expect(
+      runner.run({ sourceSessionId: 's1', language: 'bash', code: 'ls', requestingClientId: 'w1' }),
+    ).rejects.toMatchObject({ code: 'SshAuthUnavailable' });
+  });
+
+  it('ssh spawn 同步抛 → SshExecFailed', async () => {
+    const runner = new CodeBlockRunner(
+      (_id) => makeSession({ pathId: 'ssh:p1:%2Fhome%2Fu' }) as any,
+      () => {
+        throw new Error('spawn ssh ENOENT');
+      },
+      undefined,
+      {
+        sshProfileLookup: () => SSH_PROFILE_KEY,
+        sudoPasswordStore: { get: () => null },
+        resolveExecutable: () => '/usr/bin/ssh',
+      },
+    );
+    await expect(
+      runner.run({ sourceSessionId: 's1', language: 'bash', code: 'ls', requestingClientId: 'w1' }),
+    ).rejects.toMatchObject({ code: 'SshExecFailed' });
   });
 });

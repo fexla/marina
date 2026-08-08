@@ -151,12 +151,13 @@ export interface WorkspaceOps {
  * 转发给 CommandPanelService.runCommand。未注入时 /run 返 503。
  */
 export interface CommandRunOps {
-  /** 推送/重跑一条指令。返回命令面板快照。 */
+  /** 推送/重跑一条指令。sudo=true 时以远程 sudo 跑(仅 SSH session 生效)。返回命令面板快照。 */
   runCommand(
     sessionId: string,
     command: string,
     title: string | null,
     requestingClientId: string | null,
+    sudo?: boolean,
   ): Promise<{ commands: unknown[]; activeKey: string | null }>;
 }
 

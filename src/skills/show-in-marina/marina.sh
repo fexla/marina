@@ -589,13 +589,16 @@ cmd_run() {
   # Run an arbitrary shell command in Marina's command panel (ADR-027). All
   # args after `run` are joined into one command string (caller's shell does
   # the quoting). --title sets the tab title; --quiet suppresses output.
-  reject_unknown_options 'run' '--quiet' '-q' '--title'
-  local quiet=0 title='' cmd_parts=() i a
+  # --sudo: run with remote sudo on SSH sessions (password held in memory by
+  #         Marina; see ADR-028 remote sudo). No effect on local sessions.
+  reject_unknown_options 'run' '--quiet' '-q' '--title' '--sudo'
+  local quiet=0 sudo=0 title='' cmd_parts=() i a
   i=0
   while [ "$i" -lt "${#ARGS[@]}" ]; do
     a="${ARGS[$i]}"
     case "$a" in
       --quiet|-q) quiet=1 ;;
+      --sudo) sudo=1 ;;
       --title) i=$((i+1)); [ "$i" -lt "${#ARGS[@]}" ] || die "$EXIT_USAGE" 'run: --title requires a value'; title="${ARGS[$i]}" ;;
       *) cmd_parts+=("$a") ;;
     esac
@@ -606,6 +609,7 @@ cmd_run() {
   [ -n "$TERMINAL" ] || die "$EXIT_OFFLINE" 'TERMINAL_ID is unset'
   local body="{\"terminal\":\"$(json_escape "$TERMINAL")\",\"command\":\"$(json_escape "$command")\""
   [ -n "$title" ] && body+=",\"title\":\"$(json_escape "$title")\""
+  [ "$sudo" = "1" ] && body+=',"sudo":true'
   body+='}'
   do_http POST '/run' "$body" >/dev/null
   [ "$quiet" = "1" ] || printf 'ran: %s\n' "$command"
@@ -789,8 +793,11 @@ commands:
                     markdown output in the command panel (ADR-027)
                     all args after `run` are joined into one command string
                     --title "X"  set the tab display title
+                    --sudo       run with remote sudo (SSH sessions only;
+                                 password held in memory by Marina)
                     -q, --quiet  suppress success output
                     e.g. marina run "gh issue list --limit 5"
+                         marina run --sudo "apt update"
   close <PATH>      close one file (exact path, or just the file name)
   close --all       close every file in this terminal's panel
   close --stale     close only tabs whose file no longer exists on disk

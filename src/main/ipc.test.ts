@@ -32,6 +32,7 @@ import { FileTreePollingService } from './file-tree-polling-service';
 import { MarkdownThemeManager } from './markdown-theme-manager';
 import { CodeBlockRunner } from './code-block-runner';
 import { CommandPanelService } from './command-panel-service';
+import { SudoPasswordStore } from './sudo-password-store';
 import { ClientRegistry } from './client-registry';
 import { makePathId } from './path-manager';
 
@@ -328,6 +329,8 @@ function makeStubs() {
       codeBlockRunner: new CodeBlockRunner(() => null),
       // 命令面板:wireEventBroadcasts 用它的 on('commandPanelUpdated')。
       commandPanelService: new CommandPanelService(),
+      // v0.3.3 远程 sudo:registerSudoPasswordHandlers 用它的 on('changed') + set/has。
+      sudoPasswordStore: new SudoPasswordStore(),
       clientRegistry: new ClientRegistry(),
     },
     stubs: {

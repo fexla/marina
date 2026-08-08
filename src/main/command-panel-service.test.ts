@@ -147,6 +147,7 @@ describe('CommandPanelService', () => {
         language: 'bash',
         code: 'echo hello',
         requestingClientId: 'w1',
+        sudo: false,
       });
       // 新指令应请求激活(requestActivation)
       expect(events.length).toBeGreaterThanOrEqual(1);
@@ -215,6 +216,24 @@ describe('CommandPanelService', () => {
       const snap = svc.getSnapshot('s1');
       expect(snap.commands[0]!.status).toBe('error');
       expect(snap.commands[0]!.output).toContain('SshUnsupported');
+    });
+
+    it('远程 sudo 缺密码:SudoPasswordRequired → awaiting-sudo-password 态(非 error)', async () => {
+      runner.run.mockRejectedValueOnce(
+        new CodeBlockError('SudoPasswordRequired', 'SSH profile "prod" 尚未录入 sudo 密码'),
+      );
+      await svc.runCommand('s1', 'apt update', null, 'w1', true);
+      const snap = svc.getSnapshot('s1');
+      const entry = snap.commands[0]!;
+      expect(entry.status).toBe('awaiting-sudo-password');
+      expect(entry.sudo).toBe(true);
+      // 输出含密码提示,且不当作普通失败(无 ⚠ 执行失败 前缀)
+      expect(entry.output).toContain('sudo 密码');
+      expect(entry.output).not.toContain('执行失败');
+      // runner 收到 sudo:true
+      expect(runner.run).toHaveBeenCalledWith(
+        expect.objectContaining({ code: 'apt update', sudo: true }),
+      );
     });
   });
 

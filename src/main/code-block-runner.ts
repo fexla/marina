@@ -65,7 +65,7 @@ const OUTPUT_FLUSH_BYTES = 64 * 1024;
 /** 聚合 flush 的最大延迟,保证短输出也能及时看到(不等满 64KB)。 */
 const OUTPUT_FLUSH_MS = 100;
 
-/** IPC 可识别的代码块执行错误。详情足够诊断,但不回显命令正文。 */
+/** IPC 可识别的代码块执行错误。详情足够诊断,但不回显命令正文/密码。 */
 export class CodeBlockError extends Error {
   constructor(
     public readonly code:
@@ -73,7 +73,12 @@ export class CodeBlockError extends Error {
       | 'SshUnsupported'
       | 'ShellMissing'
       | 'CodeTooLarge'
-      | 'SpawnFailed',
+      | 'SpawnFailed'
+      // v0.3.3 远程 sudo(SSH exec)新增:
+      | 'SudoPasswordRequired' // sudo 命令但该 profile 未录 sudo 密码 → renderer 弹输入
+      | 'SshProfileMissing' // pathId 指向的 SSH profile 找不到(可能已删)
+      | 'SshAuthUnavailable' // password 认证但本机未装 sshpass
+      | 'SshExecFailed', // ssh spawn 同步失败(ENOENT 等)
     message: string,
   ) {
     super(message);
@@ -88,6 +93,45 @@ export interface RunInput {
   code: string;
   /** 发起 client(本地窗口 = windowId,远程 = WS clientId)。事件定向回它。 */
   requestingClientId: string;
+  /**
+   * v0.3.3 远程 sudo:仅 SSH session 生效。true 时远程命令以 `sudo -S -p '' <code>`
+   * 跑,密码从 sudoPasswordStore 读后经 stdin 喂入。密码缺失扌 SudoPasswordRequired。
+   * 本地 session 忽略此字段。
+   */
+  sudo?: boolean;
+}
+
+/**
+ * SSH exec 需要的 profile 子集(含 ipc 层解密后的明文 password)。
+ * 由 CodeBlockRunnerSshDeps.sshProfileLookup 返回;与 SshProfile 不同——这里是
+ * 「执行配置」语义,password 已解密就绪(或 undefined 表示 key/agent 认证)。
+ */
+export interface SshExecProfile {
+  id: string;
+  /** 展示名(来自 SshProfile.name,仅用于错误提示);可缺。 */
+  name?: string;
+  host: string;
+  port: number;
+  username: string;
+  authType: 'agent' | 'keyFile' | 'password';
+  keyFilePath?: string;
+  proxyJump?: string[];
+  /** password 认证时的明文 SSH 密码(ipc 从 safeStorage 解密传入)。key/agent 无。 */
+  password?: string;
+}
+
+/**
+ * 远程 exec 依赖(构造时注入;未注入则 SSH session 退化为 SshUnsupported)。
+ * 拆出来便于 main 装配 + 测试 mock,避免 CodeBlockRunner 直接依赖 SshProfileManager /
+ * SudoPasswordStore / PlatformAdapter 的具体类型。
+ */
+export interface CodeBlockRunnerSshDeps {
+  /** SSH profile 查询(返回含明文 password 的执行配置)。 */
+  sshProfileLookup: (profileId: string) => SshExecProfile | null;
+  /** sudo 密码内存仓库(get 返回明文或 null)。 */
+  sudoPasswordStore: { get(sshProfileId: string): string | null };
+  /** 解析 ssh/sshpass 可执行绝对路径(PlatformAdapter.resolveExecutable)。 */
+  resolveExecutable: (name: string, env: NodeJS.ProcessEnv) => string | null;
 }
 
 /** 服务发出的 'output' 事件。ipc 层映射成 evt:system:code-block-output。 */
@@ -114,16 +158,23 @@ export interface CodeBlockRunnerEvents {
 /**
  * 可注入的 spawn 函数签名。生产用 node:child_process.spawn;测试用 fake
  * 覆盖,避免真起系统进程(AGENTS.md 9.3:测试不许 spawn 真进程)。
+ * stdio 缺省 ['ignore','pipe','pipe'](本地 shell);远程 sudo 需 ['pipe','pipe','pipe']
+ * 以便向 stdin 喂 sudo 密码。
  */
 export type SpawnFn = (
   command: string,
   args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv; windowsHide: boolean },
+  options: {
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    windowsHide: boolean;
+    stdio?: Array<'ignore' | 'pipe'>;
+  },
 ) => ChildProcess;
 
 /** 真实 spawn。单独导出便于测试默认注入。 */
 export const defaultSpawn: SpawnFn = (command, args, options) =>
-  spawn(command, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'] });
+  spawn(command, args, { ...options, stdio: options.stdio ?? ['ignore', 'pipe', 'pipe'] });
 
 /**
  * 语言 → 优先使用的 detectShells shell id(按序尝试)。
@@ -207,6 +258,80 @@ export function buildSpawnArgs(
 }
 
 /**
+ * 单引号安全转义(POSIX shell)。与 session-manager.ts 的 shQuote 同实现;这里
+ * 不 import 以避免 CodeBlockRunner → session-manager 的耦合(后者体量大,且会
+ * 拉入 PTY 等无关依赖)。仅用于 SSH 远程命令里的路径 / 命令转义。
+ */
+function shQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * 构造 SSH 一次性 exec 的 spawn argv(远程 sudo / 远程普通命令)。
+ *
+ * 与交互终端的 buildSshLaunchParams 关键区别:**不加 `-tt`**。exec 走管道捕获
+ * stdout/stderr,强制 TTY 会导致 "Pseudo-terminal will not be allocated" 且无法
+ * 流式回捕。远程 cwd 由 `cd <path> &&` 前缀处理;sudo 用 `sudo -S -p '' <code>`
+ * 从 stdin 读密码(密码本身不进 argv/env,由调用方 spawnRemote 经 stdin 喂入)。
+ *
+ * **不返回任何密钥**(SSH password / sudo password 都不进返回值),只返回 argv +
+ * 两个布尔标志,调用方据此决定设 env.SSHPASS / 写 stdin。便于纯函数测试不碰密钥。
+ *
+ * 认证:
+ * - key/agent:`spawnCommand = sshPath`,无密码。
+ * - password:`spawnCommand = sshpassPath`,`spawnArgs[0]='-e'`,调用方设 env.SSHPASS
+ *   (调用方需先校验 sshpassPath 非空,否则应抛 SshAuthUnavailable 而不是调本函数)。
+ *
+ * @param remotePath 远程 cwd(session.currentCwd,绝对路径)。空则不 cd(用远端默认)。
+ * @param sudo true 时远程命令前缀 `sudo -S -p ''`(调用方负责喂密码)。
+ * @returns spawnCommand/spawnArgs + useSshPasswordEnv(设 SSHPASS)+ useSudoStdin(写 stdin)
+ */
+export function buildSshExecArgs(
+  profile: SshExecProfile,
+  remotePath: string,
+  command: string,
+  sudo: boolean,
+  sshPath: string,
+  sshpassPath: string | null,
+): {
+  spawnCommand: string;
+  spawnArgs: string[];
+  useSshPasswordEnv: boolean;
+  useSudoStdin: boolean;
+} {
+  const sshArgs: string[] = ['-p', String(profile.port), '-o', 'ServerAliveInterval=30'];
+  if (profile.authType === 'keyFile' && profile.keyFilePath) {
+    sshArgs.push('-i', profile.keyFilePath);
+  }
+  const proxyHops = (profile.proxyJump ?? []).map((s) => s.trim()).filter((s) => s.length > 0);
+  if (proxyHops.length > 0) {
+    sshArgs.push('-J', proxyHops.join(','));
+  }
+  // 远程命令:先 cd 到远程 cwd(绝对路径,shQuote 安全),再跑(可选 sudo -S 前缀)。
+  // sudo -S 从 stdin 读密码;-p '' 清空提示符避免 "[sudo] password for x:" 进 stderr。
+  const cdSegment = remotePath.trim() ? `cd ${shQuote(remotePath)} && ` : '';
+  const sudoSegment = sudo ? `sudo -S -p '' ` : '';
+  const remoteCommand = `${cdSegment}${sudoSegment}${command}`;
+  sshArgs.push(`${profile.username}@${profile.host}`, remoteCommand);
+
+  if (profile.authType === 'password') {
+    // 调用方已校验 sshpassPath 非空(否则应抛 SshAuthUnavailable)。这里假定可用。
+    return {
+      spawnCommand: sshpassPath ?? 'sshpass',
+      spawnArgs: ['-e', sshPath, ...sshArgs],
+      useSshPasswordEnv: true,
+      useSudoStdin: sudo,
+    };
+  }
+  return {
+    spawnCommand: sshPath,
+    spawnArgs: sshArgs,
+    useSshPasswordEnv: false,
+    useSudoStdin: sudo,
+  };
+}
+
+/**
  * @param sessionLookup 从 SessionManager 读真值;不持有 SessionManager 引用以
  *   保持与 git-service 一致的"每请求回查防陈旧授权"模式。
  * @param spawnFn 可注入的 spawn(测试覆盖);默认 node:child_process.spawn。
@@ -218,6 +343,12 @@ export class CodeBlockRunner extends EventEmitter {
   // 显式 | undefined(exactOptionalPropertyTypes 下,构造参数 getShells?: 的类型是
   // T | undefined,不能赋给 `field?: T` 这种"缺省即未定义"的可选属性)。
   private readonly getShells: (() => Promise<ShellInfo[]>) | undefined;
+  /**
+   * v0.3.3 远程 exec 依赖。未注入(或某项缺)时 SSH session 退化为 SshUnsupported;
+   * sudo 命令退化为 SudoPasswordRequired。便于 CodeBlockRunner 在未装 SSH / 测试
+   * 场景下仍能跑本地代码块。
+   */
+  private readonly sshDeps: CodeBlockRunnerSshDeps | undefined;
   /** runId → 运行记录。有界,溢出 FIFO 强杀最旧。 */
   private readonly runs = new Map<string, RunRecord>();
   /** 维护插入顺序用于 FIFO 淘汰(Map 迭代按插入序)。 */
@@ -227,18 +358,21 @@ export class CodeBlockRunner extends EventEmitter {
     sessionLookup: (id: string) => SessionInfo | null,
     spawnFn: SpawnFn = defaultSpawn,
     getShells?: () => Promise<ShellInfo[]>,
+    sshDeps?: CodeBlockRunnerSshDeps,
   ) {
     super();
     this.sessionLookup = sessionLookup;
     this.spawnFn = spawnFn;
     this.getShells = getShells;
+    this.sshDeps = sshDeps;
   }
 
   /**
    * 启动一次代码块执行。异步(需等待 detectShells 解析 shell 绝对路径);
    * 输出/退出经 'output' / 'exited' 事件回推。
    *
-   * @throws CodeBlockError SessionMissing / SshUnsupported / CodeTooLarge / SpawnFailed
+   * @throws CodeBlockError SessionMissing / SshUnsupported / CodeTooLarge / SpawnFailed /
+   *   SudoPasswordRequired / SshProfileMissing / SshAuthUnavailable / SshExecFailed(远程)
    */
   async run(input: RunInput): Promise<{ runId: string }> {
     const { sourceSessionId, language, code, requestingClientId } = input;
@@ -252,16 +386,7 @@ export class CodeBlockRunner extends EventEmitter {
       );
     }
 
-    // 2) SSH session 拒绝:currentCwd 在第三台机器,本进程无法在那 spawn。
-    //    与 file-tree / git-service 的 SSH 拒绝策略对称(不引入远程协议)。
-    if (session.pathId.startsWith('ssh:')) {
-      throw new CodeBlockError(
-        'SshUnsupported',
-        'SSH 终端的代码块执行暂不支持(命令需在远程主机上跑,当前服务只能在本机 spawn)。请在本地终端里运行。',
-      );
-    }
-
-    // 3) 代码长度上限:防 AI / 误粘巨型内容撑爆命令行参数缓冲。
+    // 2) 代码长度上限:防 AI / 误粘巨型内容撑爆命令行参数缓冲(本地/远程共用)。
     const codeBytes = Buffer.byteLength(code, 'utf8');
     if (codeBytes > MAX_CODE_BYTES) {
       throw new CodeBlockError(
@@ -270,31 +395,38 @@ export class CodeBlockRunner extends EventEmitter {
       );
     }
 
-    // 4) 解析 spawn argv + 启动。cwd = 服务端 currentCwd(renderer 不被信任)。
-    //    shell 绝对路径来自应用自身 detectShells(与 SessionManager 同源),
-    //    解决 Electron main 的 PATH 里没有 pwsh.exe / bash 导致的 ENOENT。
-    //    getShells 失败回退空列表(走 PATH 名),不阻塞执行。
-    const cwd = session.currentCwd || session.originalCwd;
-    const shells = this.getShells ? await this.safeGetShells() : [];
-    const { command, args } = buildSpawnArgs(language, code, process.platform === 'win32', shells);
-
+    // 3) 解析 argv + spawn。SSH session 走远程 exec(spawnRemote);本地 session
+    //    走 shell spawn(cwd = 服务端 currentCwd)。两者汇聚到同一 registerRun +
+    //    pipeOutput(远程 sudo 额外经 stdin 喂密码)。
     let child: ChildProcess;
-    try {
-      child = this.spawnFn(command, args, {
-        cwd,
-        // 继承父进程环境(PATU / 别名 / 用户装的 CLI 都在 PATH 里)。不注入
-        // MARINA_SERVICE / TERMINAL_ID —— 这是一次性命令,不是常驻终端。
-        env: { ...process.env },
-        windowsHide: true,
-      });
-    } catch (err) {
-      // spawn 同步抛(ENOENT 等)→ 转 ShellMissing,提示用户装对应 shell。
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn(MODULE, `spawn failed for language=${language}`, err);
-      throw new CodeBlockError(
-        'ShellMissing',
-        `启动 ${command} 失败:${msg}。可能该 shell 未安装或不在 PATH 里。`,
+    if (session.pathId.startsWith('ssh:')) {
+      child = this.spawnRemote(input, session);
+    } else {
+      const cwd = session.currentCwd || session.originalCwd;
+      const shells = this.getShells ? await this.safeGetShells() : [];
+      const { command, args } = buildSpawnArgs(
+        language,
+        code,
+        process.platform === 'win32',
+        shells,
       );
+      try {
+        child = this.spawnFn(command, args, {
+          cwd,
+          // 继承父进程环境(PATH / 别名 / 用户装的 CLI 都在 PATH 里)。不注入
+          // MARINA_SERVICE / TERMINAL_ID —— 这是一次性命令,不是常驻终端。
+          env: { ...process.env },
+          windowsHide: true,
+        });
+      } catch (err) {
+        // spawn 同步抛(ENOENT 等)→ 转 ShellMissing,提示用户装对应 shell。
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn(MODULE, `spawn failed for language=${language}`, err);
+        throw new CodeBlockError(
+          'ShellMissing',
+          `启动 ${command} 失败:${msg}。可能该 shell 未安装或不在 PATH 里。`,
+        );
+      }
     }
 
     // 5) 注册 run,溢出 FIFO 强杀最旧。
@@ -310,7 +442,9 @@ export class CodeBlockRunner extends EventEmitter {
 
     logger.info(
       MODULE,
-      `run: runId=${runId} lang=${language} sid=${sourceSessionId} client=${requestingClientId} pid=${child.pid ?? 'n/a'}`,
+      `run: runId=${runId} lang=${language} sid=${sourceSessionId} ssh=${session.pathId.startsWith(
+        'ssh:',
+      )} sudo=${!!input.sudo} client=${requestingClientId} pid=${child.pid ?? 'n/a'}`,
     );
 
     // 6) 接管 stdout/stderr 聚合输出 + 退出处理。child 的事件回调里 guard
@@ -318,6 +452,111 @@ export class CodeBlockRunner extends EventEmitter {
     this.pipeOutput(record);
 
     return { runId };
+  }
+
+  /**
+   * SSH session 的远程 exec spawn(2026-08-07 v0.3.3 远程 sudo)。构造 `ssh
+   * <profile> '<remote cmd>'` 一次性 exec(去 `-tt`),stdout/stderr 经管道回;sudo
+   * 命令前缀 `sudo -S -p ''`,密码从 sudoPasswordStore 读后经 stdin 喂入。
+   *
+   * 两个密钥,两个通道(都不进 argv/log/event):
+   * - **SSH 连接密码**(password 认证):env SSHPASS + sshpass -e(与 SessionManager
+   *   交互终端同源)。
+   * - **sudo 密码**:child.stdin(不进 env;子进程经 /proc/PID/environ 可读 env,stdin 不可)。
+   *
+   * @throws CodeBlockError SshUnsupported(未注入 sshDeps)/ SshProfileMissing /
+   *   SudoPasswordRequired / SshAuthUnavailable(需 sshpass 但未装)/ SshExecFailed(spawn 同步失败)
+   */
+  private spawnRemote(input: RunInput, session: SessionInfo): ChildProcess {
+    const { code, sudo } = input;
+    if (!this.sshDeps) {
+      // 未装配 SSH 依赖(如测试 / 未初始化):优雅降级,不裸抛。
+      throw new CodeBlockError(
+        'SshUnsupported',
+        'SSH 远程执行未配置(sshProfileLookup 未注入)。请升级或在本机终端运行。',
+      );
+    }
+    // pathId 形如 ssh:<encodeURIComponent(profileId)>:<encodeURIComponent(remotePath)>。
+    const profileId = decodeURIComponent(session.pathId.split(':')[1] ?? '');
+    if (!profileId) {
+      throw new CodeBlockError(
+        'SshProfileMissing',
+        `无法从 pathId 解析 SSH profile。pathId="${session.pathId}"。`,
+      );
+    }
+    const profile = this.sshDeps.sshProfileLookup(profileId);
+    if (!profile) {
+      throw new CodeBlockError(
+        'SshProfileMissing',
+        `SSH profile "${profileId}" 找不到(可能已被删除)。请在设置里重建连接。`,
+      );
+    }
+
+    // sudo 命令必须有密码;缺失扌 SudoPasswordRequired 让 renderer 弹输入框。
+    let sudoPassword: string | null = null;
+    if (sudo) {
+      sudoPassword = this.sshDeps.sudoPasswordStore.get(profileId);
+      if (!sudoPassword) {
+        throw new CodeBlockError(
+          'SudoPasswordRequired',
+          `该命令需要 sudo,但 SSH profile "${profile.name ?? profileId}" 尚未录入 sudo 密码。`,
+        );
+      }
+    }
+
+    // 解析 ssh / sshpass 绝对路径;未注入 resolveExecutable 时回退 PATH 名。
+    const env = { ...process.env };
+    const resolve = this.sshDeps.resolveExecutable ?? ((name: string) => name);
+    const sshPath = resolve('ssh', env) ?? 'ssh';
+    let sshpassPath: string | null = null;
+    if (profile.authType === 'password') {
+      // password 认证需 sshpass -e 把 SSHPASS 喂给 ssh(与 SessionManager 同源)。
+      // 缺 sshpass 不能裸走(ssh 会卡等 TTY 输入密码,stdin 已被 sudo/管道占用)。
+      sshpassPath = resolve('sshpass', env);
+      if (!sshpassPath) {
+        throw new CodeBlockError(
+          'SshAuthUnavailable',
+          `SSH profile "${profile.name ?? profileId}" 用密码认证,但本机未安装 sshpass。请装 sshpass,或改用密钥/agent 认证。`,
+        );
+      }
+    }
+
+    const cfg = buildSshExecArgs(profile, session.currentCwd, code, !!sudo, sshPath, sshpassPath);
+    // password 认证:env 注入 SSHPASS(sshpass -e 读)。sudo 密码不进 env,走 stdin。
+    if (cfg.useSshPasswordEnv && profile.password) {
+      env.SSHPASS = profile.password;
+    }
+
+    let child: ChildProcess;
+    try {
+      child = this.spawnFn(cfg.spawnCommand, cfg.spawnArgs, {
+        // ssh 不用本地 cwd(远程 cd 已在 remote command 里);给个无害本地值。
+        cwd: process.cwd(),
+        env,
+        windowsHide: true,
+        // sudo 需 stdin 管道喂密码;非 sudo 用 ignore(命令不读 stdin)。
+        stdio: cfg.useSudoStdin ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(MODULE, `ssh spawn failed for profile=${profileId}`, err);
+      throw new CodeBlockError(
+        'SshExecFailed',
+        `启动 ssh 失败:${msg}。可能 ssh 未安装或不在 PATH 里。`,
+      );
+    }
+
+    // sudo:立即把密码写进 stdin 管道(管道会缓冲到 ssh/sudo 读)。写完 end(),
+    // 命令本身的 stdin 随后是 EOF(绝大多数命令不读 stdin,无影响)。
+    if (cfg.useSudoStdin && sudoPassword) {
+      try {
+        child.stdin?.write(`${sudoPassword}\n`);
+        child.stdin?.end();
+      } catch {
+        // 子进程已退出 / stdin 不可写 → 静默;close 事件会处理。密码未泄露(只在内存 + 管道)。
+      }
+    }
+    return child;
   }
 
   /**

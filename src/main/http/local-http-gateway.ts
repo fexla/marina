@@ -432,17 +432,18 @@ export class LocalHttpGateway {
       send(res, 503, { error: 'command-panel 未启用(commandRunOps 未注入)' });
       return;
     }
-    let body: { terminal?: string; command?: string; title?: string };
+    let body: { terminal?: string; command?: string; title?: string; sudo?: boolean };
     try {
       body = JSON.parse(await readBody(req)) as {
         terminal?: string;
         command?: string;
         title?: string;
+        sudo?: boolean;
       };
     } catch {
       return send(res, 400, { error: 'invalid JSON body' });
     }
-    const { terminal, command, title } = body;
+    const { terminal, command, title, sudo } = body;
     if (!terminal) return send(res, 400, { error: 'body 需要 { terminal }' });
     if (!command || !command.trim()) {
       return send(res, 400, { error: 'body 需要 { command } 且非空' });
@@ -455,6 +456,7 @@ export class LocalHttpGateway {
         // HTTP 路由无明确发起 client;CommandPanelService 会用 session owner 作为
         // 事件定向目标(owner 收到后更新面板)。传 null 让 service 兜底。
         null,
+        !!sudo,
       );
       send(res, 200, snapshot);
     } catch (err) {

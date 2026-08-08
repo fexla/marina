@@ -32,9 +32,7 @@ import {
 } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import {
-  COMMAND_CHANNELS,
-} from '@shared/protocol';
+import { COMMAND_CHANNELS } from '@shared/protocol';
 import { isRemoteUrl } from '@shared/url-scheme';
 import { useDomTextHighlight } from '../../hooks/useDomTextHighlight';
 import { useAppState } from '../../store';
@@ -94,7 +92,12 @@ export function MarkdownDocument({
   const filePath = fileContext?.path;
   const fileMtimeMs = fileContext?.mtimeMs ?? null;
   // markdown 渲染风格(用户在设置页选):auto=Marina 主题样式;github-*=GitHub 官方。
-  const mdStyle = useAppState().settings.filePanel?.markdownStyle ?? 'auto';
+  const appState = useAppState();
+  const mdStyle = appState.settings.filePanel?.markdownStyle ?? 'auto';
+  // 远程 sudo 只对 SSH session 的代码块有意义(本地 session 无 sudo 语义)。
+  // 读一次 pathId 传给 MarkdownCodeBlock,避免每个代码块独立订阅 store。
+  const sessionPathId = appState.sessions.get(sessionId)?.pathId ?? '';
+  const allowSudo = sessionPathId.startsWith('ssh:');
 
   // 自定义 a/img/pre 组件。fileContext 的存在明确控制路径相关能力；
   // documentIdentity 则只给代码块缓存，二者不能混用。
@@ -142,13 +145,14 @@ export function MarkdownDocument({
               sourcePosition={sourcePosition}
               className={info.className}
               code={info.code}
+              allowSudo={allowSudo}
             />
           );
         }
         return <pre>{props.children}</pre>;
       },
     }),
-    [documentIdentity, fileMtimeMs, filePath, sessionId],
+    [documentIdentity, fileMtimeMs, filePath, sessionId, allowSudo],
   );
 
   // CommonMark 严格模式会截断带空格的裸本地图片 URL。统一预处理保证文件来源

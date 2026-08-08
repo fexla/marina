@@ -140,17 +140,13 @@ const DOCK_LAYOUT_RULES: Readonly<Record<string, { minWidth: number; maxWidth: n
  * Git tab。该值由 SessionManager 在 session 创建 + cwd 变更后调
  * gitAvailabilityProvider 异步评估,flip 时重建 tree 并 emit state-changed。
  */
-/** pathId 是否表示 SSH session(命令面板/Git 面板均拒 SSH,见 ADR-027 D7)。 */
-function isSshPathId(pathId: string): boolean {
-  return pathId.startsWith('ssh:');
-}
-
 function createSessionLayoutTree(gitAvailable: boolean, commandAvailable = true): LayoutNode {
   const stackChildren: LayoutNode[] = [{ kind: 'leaf', panelId: 'file-tree' }];
   if (gitAvailable) stackChildren.push({ kind: 'leaf', panelId: 'git' });
   stackChildren.push({ kind: 'leaf', panelId: 'file-panel' });
-  // v0.3.3 ADR-027:命令面板(第 4 dock 面板)。SSH session 不生成 command leaf
-  // (CodeBlockRunner 拒 SSH,leaf 出现也无意义,与 git 同款 availability 模式)。
+  // v0.3.3 ADR-027:命令面板(第 4 dock 面板)。自远程 sudo 起 SSH session 也生成
+  // command leaf(经 ssh exec 执行);仅 git leaf 受 gitAvailable 控制。
+  // commandAvailable 参数保留供未来「禁用命令面板」设置,当前恒 true。
   if (commandAvailable) stackChildren.push({ kind: 'leaf', panelId: 'command' });
   return {
     kind: 'split',
@@ -1175,7 +1171,7 @@ export class SessionManager extends EventEmitter {
       state: 'idle',
       createdAt: Date.now(),
       hasUnviewedWork: false,
-      uiLayout: createDefaultSessionUiLayout(!isSsh),
+      uiLayout: createDefaultSessionUiLayout(true),
     };
 
     const disposables: IDisposable[] = [];
@@ -1335,8 +1331,7 @@ export class SessionManager extends EventEmitter {
       );
     }
 
-    const current =
-      managed.info.uiLayout ?? createDefaultSessionUiLayout(!isSshPathId(managed.info.pathId));
+    const current = managed.info.uiLayout ?? createDefaultSessionUiLayout(true);
     const next: SessionUiLayout = {
       version: current.version,
       tree: current.tree,
@@ -2453,11 +2448,10 @@ export class SessionManager extends EventEmitter {
     const prev = this.gitAvailabilityBySession.get(managed.info.id) ?? false;
     if (prev === available) return; // 无变化,不 emit
     this.gitAvailabilityBySession.set(managed.info.id, available);
-    const current =
-      managed.info.uiLayout ?? createDefaultSessionUiLayout(!isSshPathId(managed.info.pathId));
+    const current = managed.info.uiLayout ?? createDefaultSessionUiLayout(true);
     const next: SessionUiLayout = {
       version: current.version,
-      tree: createSessionLayoutTree(available, !isSshPathId(managed.info.pathId)),
+      tree: createSessionLayoutTree(available, true),
       docks: current.docks, // 几何不变,只换 tree
     };
     managed.info.uiLayout = next;

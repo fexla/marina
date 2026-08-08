@@ -34,6 +34,7 @@ import type { PiBridgeInstaller } from './pi-bridge-installer';
 import type { MarkdownThemeManager } from './markdown-theme-manager';
 import type { CodeBlockRunner } from './code-block-runner';
 import type { CommandPanelService, CommandPanelUpdateEvent } from './command-panel-service';
+import type { SudoPasswordStore } from './sudo-password-store';
 import {
   getExplorerIntegrationStatus,
   setClassicIntegration,
@@ -214,6 +215,10 @@ import {
   type UpdateCommandRefreshPolicyPayload,
   type SetCommandDemandPayload,
   type GetCommandPanelStatePayload,
+  type SudoPasswordSetPayload,
+  type SudoPasswordClearPayload,
+  type SudoPasswordHasPayload,
+  type SudoPasswordStatePayload,
 } from '@shared/protocol';
 import type {
   CommandContractMap,
@@ -305,6 +310,12 @@ export interface IpcLayerDeps {
    * 生产必填;转发逻辑测在 command-panel-service(本层仅转发)。
    */
   commandPanelService: CommandPanelService;
+  /**
+   * v0.3.3 远程 sudo:内存态 sudo 密码仓库。ipc 据此注册 set/clear/has handler +
+   * 订阅 changed 广播 SUDO_PASSWORD_STATE(只含 boolean,不含密码)。密码本身永
+   * 不过 IPC 返回 renderer(附录 H)。
+   */
+  sudoPasswordStore: SudoPasswordStore;
   /** BETA-031:可选,未注入时 AI_TEST_CONNECTION 返回 ok:false */
   aiClient?: AIClient;
 }
@@ -360,6 +371,7 @@ export function installIpcLayer(deps: IpcLayerDeps): void {
   registerGitHandlers(deps);
   registerCodeBlockHandlers(deps);
   registerCommandPanelHandlers(deps);
+  registerSudoPasswordHandlers(deps);
   registerWorkspaceHandlers(deps);
   registerMdThemeHandlers(deps);
   wireEventBroadcasts(deps);
@@ -1597,10 +1609,8 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     }
   });
 
-  registerHandle(
-    COMMAND_CHANNELS.PERFORMANCE_CAPTURE_CPU_PROFILE,
-    async (_e, envelope) =>
-      performanceDiagnostics.captureCpuProfile(envelope.payload.durationSeconds ?? 15),
+  registerHandle(COMMAND_CHANNELS.PERFORMANCE_CAPTURE_CPU_PROFILE, async (_e, envelope) =>
+    performanceDiagnostics.captureCpuProfile(envelope.payload.durationSeconds ?? 15),
   );
 
   registerHandle(
@@ -2397,6 +2407,7 @@ function registerCodeBlockHandlers(deps: IpcLayerDeps): void {
         language: envelope.payload.language,
         code: envelope.payload.code,
         requestingClientId: envelope.windowId,
+        sudo: !!envelope.payload.sudo,
       });
     },
   );
@@ -2427,6 +2438,8 @@ function registerCommandPanelHandlers(deps: IpcLayerDeps): void {
 
   // 推送/重跑一条指令。envelope.windowId 即发起 client,output/exited 事件定向回它
   // (复用 code-block-output,runId 一致)。SSH/cwd/shell 失败透传 CodeBlockError。
+  // sudo:仅 SSH session 生效,renderer / HTTP /run 透传;sudo 密码缺失时 service 把
+  // entry 置 awaiting-sudo-password,不抛。
   registerHandle(
     COMMAND_CHANNELS.COMMAND_PANEL_RUN,
     async (_e, envelope: CommandEnvelope<RunCommandPayload>): Promise<CommandPanelSnapshot> =>
@@ -2435,6 +2448,7 @@ function registerCommandPanelHandlers(deps: IpcLayerDeps): void {
         envelope.payload.command,
         envelope.payload.title ?? null,
         envelope.windowId,
+        !!envelope.payload.sudo,
       ),
   );
 
@@ -2521,6 +2535,48 @@ function registerMdThemeHandlers(deps: IpcLayerDeps): void {
       await shell.openPath(markdownThemeManager.getDir());
     },
   );
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Sudo 密码域 (v0.3.3 远程 sudo)。
+// 内存态密钥托管(按 SSH profile 隔离)。set/clear/has IPC + changed 广播。
+// 密码本身永不过 IPC 返回;has/state 只回 boolean(附录 H 隐私红线)。
+// ──────────────────────────────────────────────────────────────────
+function registerSudoPasswordHandlers(deps: IpcLayerDeps): void {
+  const { sudoPasswordStore } = deps;
+
+  // 录入密码(masked 输入 → main 内存,绝不落盘)。空串=清除(与 store.set 语义一致)。
+  registerHandle(
+    COMMAND_CHANNELS.SUDO_PASSWORD_SET,
+    (_e, envelope: CommandEnvelope<SudoPasswordSetPayload>): { ok: true } => {
+      sudoPasswordStore.set(envelope.payload.sshProfileId, envelope.payload.password);
+      return { ok: true };
+    },
+  );
+
+  // 清除密码(「忘记密码」按钮 / 切换 profile 时主动失效)。
+  registerHandle(
+    COMMAND_CHANNELS.SUDO_PASSWORD_CLEAR,
+    (_e, envelope: CommandEnvelope<SudoPasswordClearPayload>): { ok: true } => {
+      sudoPasswordStore.clear(envelope.payload.sshProfileId);
+      return { ok: true };
+    },
+  );
+
+  // 查询是否已存密码(只回 boolean,renderer 据此显 🔑 按钮态)。
+  registerHandle(
+    COMMAND_CHANNELS.SUDO_PASSWORD_HAS,
+    (_e, envelope: CommandEnvelope<SudoPasswordHasPayload>): SudoPasswordStatePayload => ({
+      sshProfileId: envelope.payload.sshProfileId,
+      has: sudoPasswordStore.has(envelope.payload.sshProfileId),
+    }),
+  );
+
+  // 密码状态变化(录入/清除)→ 广播给所有 client(密码状态是 per-profile,任何窗口
+  // 可能显示该 profile 的 session,都需更新 🔑 按钮态)。payload 只含 boolean。
+  sudoPasswordStore.on('changed', (sshProfileId, has) => {
+    broadcastEvent(EVENT_CHANNELS.SUDO_PASSWORD_STATE, { sshProfileId, has });
+  });
 }
 
 function wireEventBroadcasts(deps: IpcLayerDeps): void {

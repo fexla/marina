@@ -7,6 +7,15 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+### Added
+
+- **命令面板支持远程 SSH session 的 sudo 执行**(反转 ADR-028 D7):SSH session 的命令现经
+  `ssh <profile> '<cmd>'` 一次性 exec 在远程跑(stdout/stderr 流式回捕,复用 CodeBlockRunner)。
+  `--sudo` / 🛡 toggle 让命令以 `sudo -S -p ''` 跑,sudo 密码由 main 内存仓库(sudo-password-store)
+  按 SSH profile 隔离托管,经 stdin 喂入——**绝不落盘 / 进日志 / 进 env / 进 event payload**。
+  CLI `marina run --sudo "<cmd>"`;AI 推送时缺密码则命令进入 `awaiting-sudo-password` 态,面板内联
+  弹 masked 输入,录入后重跑(每服务器只发生一次)。详见 `docs/方案-命令面板远程sudo-20260807.md`。
+
 ## [0.3.3-dev.3] — 2026-08-08
 
 > 0.3.3 系列第 3 个 dev 构建。汇总 `0.3.3-dev.2` 之后的 pi 集成打磨与架构复核修复,供本地/内测验证。
@@ -49,15 +58,18 @@
 > 0.3.3 系列首个 dev 构建(预发布)。汇总 `0.3.3-preview.2`(2026-08-05)之后的已提交积累,供本地/内测验证。正式发版时合并升格为 `0.3.3`。
 
 ### Added
+
 - **文件树按需轮询**:文件树面板改走 `BackgroundWorkScheduler` 的 demand 感知(HOT/WARM/NONE),切走不刷新、切回立拉,降低后台开销。
 - **右键菜单子菜单分层**:子菜单通过 `createPortal` 分层渲染,避免被父容器裁剪。
 - **Pi 集成(ADR-028)**:pi 对话绑定 workspace、终端活动状态精准化;新增 `pi-marina-bridge` 哑转发器 extension;命令面板(`marina run`)使用文档补齐。
 - **文件面板中键自动滚动**:中键改为浏览器风格自动滚动,替换原 hand-pan。
 
 ### Changed
+
 - 侧栏:remote 窗口默认到「本机」段;"SSH" 改名为 "Remote"。
 
 ### Fixed
+
 - 构建:恢复 preview2 的 release gates 与 `switch:*` npm 脚本(内部)。
 
 ## [0.3.3-preview.2] — 2026-08-05

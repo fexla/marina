@@ -33,7 +33,9 @@ import { JsonStore } from './persistence';
 import { installIpcLayer, dispatchCommand } from './ipc';
 import { ClientRegistry } from './client-registry';
 import { TerminalViewRegistry } from './terminal-view-registry';
-import { CodeBlockRunner } from './code-block-runner';
+import { CodeBlockRunner, type SshExecProfile } from './code-block-runner';
+import { SudoPasswordStore } from './sudo-password-store';
+import { decryptStoredPassword } from './ssh-credentials';
 import { CommandPanelService } from './command-panel-service';
 import { RemoteDaemonController } from './remote-daemon-controller';
 import {
@@ -327,6 +329,9 @@ function bootstrap(): void {
   );
   const trayManager = new TrayManager(windowManager, sessionManager, settingsManager);
   // v0.3.3:Markdown 代码块一键执行(ADR-023)。直接 spawn 系统命令,不经 PTY;
+  // v0.3.3 远程 sudo:内存态 sudo 密码仓库(按 SSH profile 隔离,绝不落盘)。
+  // CodeBlockRunner 经 sshDeps 拿密码喂 ssh stdin;ipc 层订阅 changed 广播状态。
+  const sudoPasswordStore = new SudoPasswordStore();
   // cwd 取自 session 服务端 currentCwd。sessionLookup 每请求回查,与 git/file-tree
   // 一致地防 cwd 变更/接管后的陈旧授权。
   const codeBlockRunner = new CodeBlockRunner(
@@ -335,6 +340,44 @@ function bootstrap(): void {
     // detectShells 绝对路径(与 SessionManager 同源缓存):解决 Electron main 的
     // PATH 里没有 pwsh.exe / bash 时 spawn ENOENT(-4058)的问题。
     () => sessionManager.listAvailableShells(),
+    // v0.3.3 远程 sudo(SSH exec):SSH session 的命令改走 `ssh <profile> '<cmd>'`
+    // 一次性 exec(见 code-block-runner.spawnRemote)。sshProfileLookup 由 pathId
+    // 还原 profile + 解密 SSH 密码(password 认证时);sudoPasswordStore 是内存态
+    // sudo 密码(绝不落盘);resolveExecutable 解析 ssh/sshpass 绝对路径。
+    // 这些都在命令运行时(非构造时)调用,safeStorage 那时已可用。
+    {
+      sshProfileLookup: (profileId: string): SshExecProfile | null => {
+        const p = sshProfileManager.getInternal(profileId);
+        if (!p) return null;
+        const password = p.passwordEncrypted
+          ? decryptStoredPassword(p.passwordEncrypted, safeStorage).password
+          : undefined;
+        return {
+          id: p.id,
+          name: p.name,
+          host: p.host,
+          port: p.port,
+          username: p.username,
+          authType: p.authType,
+          ...(p.keyFilePath ? { keyFilePath: p.keyFilePath } : {}),
+          ...(p.proxyJump ? { proxyJump: p.proxyJump } : {}),
+          ...(password ? { password } : {}),
+        };
+      },
+      sudoPasswordStore: sudoPasswordStore,
+      resolveExecutable: (name: string, env: NodeJS.ProcessEnv): string | null => {
+        try {
+          // process.env 含 undefined 值,resolveExecutable 要 Record<string,string>;过滤。
+          const cleanEnv: Record<string, string> = {};
+          for (const [k, v] of Object.entries(env)) {
+            if (typeof v === 'string') cleanEnv[k] = v;
+          }
+          return getPlatformAdapter().resolveExecutable(name, cleanEnv);
+        } catch {
+          return null;
+        }
+      },
+    },
   );
   // v0.3.3:命令面板后端(ADR-027 / Feature G)。复用 codeBlockRunner 执行 +
   // backgroundWorkScheduler 后台轮询。HTTP /run 路由在 file-panel-service(复用
@@ -672,8 +715,8 @@ function bootstrap(): void {
       commandPanelService.attachScheduler(backgroundWorkScheduler);
       // M3:/run 路由迁到 gateway,commandRunOps 注入目标是 localHttpGateway。
       localHttpGateway.attachCommandRunOps({
-        runCommand: (sid, command, title, clientId) =>
-          commandPanelService.runCommand(sid, command, title, clientId),
+        runCommand: (sid, command, title, clientId, sudo) =>
+          commandPanelService.runCommand(sid, command, title, clientId, sudo),
       });
       // v0.3.3 ADR-028：闭合 pi 事件处理(pi package POST /pi-session-event →
       // PiSessionCoordinator.handlePiSessionEvent)。pi package 是哑转发器，
@@ -806,6 +849,7 @@ function bootstrap(): void {
         markdownThemeManager,
         codeBlockRunner,
         commandPanelService,
+        sudoPasswordStore,
         aiClient,
         remoteDaemonController,
       });

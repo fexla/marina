@@ -21,7 +21,7 @@
  * - 不缓存指令列表到 localStorage(状态由 main 真值源推;切面板 <16ms 靠 store
  *   快照本身,LayoutHost 卸载组件但 store 不丢)。
  */
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import {
   COMMAND_CHANNELS,
   type CommandEntry,
@@ -161,18 +161,27 @@ export function CommandPanel({ sessionId, search }: CommandPanelProps): JSX.Elem
       );
   };
 
-  const rerun = (entry: CommandEntry): void => {
-    // 重跑 = 再推一次同 command(upsert 复用 key,立即跑一次)
+  const rerun = (entry: CommandEntry, sudoOverride?: boolean): void => {
+    // 重跑 = 再推一次同 command(upsert 复用 key,立即跑一次)。sudoOverride 用于「翻
+    // sudo toggle 后立即重跑」;缺省沿 entry.sudo(远程 sudo 状态保留在 entry 里)。
+    const sudo = sudoOverride ?? !!entry.sudo;
     window.api
       .invoke(COMMAND_CHANNELS.COMMAND_PANEL_RUN, {
         sessionId,
         command: entry.command,
         title: entry.title,
+        sudo,
       })
       .catch((err: unknown) =>
         toast.push({ kind: 'error', message: err instanceof Error ? err.message : String(err) }),
       );
   };
+
+  // 远程 sudo 仅对 SSH session 有意义:pathId = ssh:<profileId>:<remotePath>。
+  // 本地 session 不显 sudo 控件(命令在本机 bash 跑,无 sudo 语义)。
+  const sessionPathId = state.sessions.get(sessionId)?.pathId ?? '';
+  const isSsh = sessionPathId.startsWith('ssh:');
+  const sshProfileId = isSsh ? decodeURIComponent(sessionPathId.split(':')[1] ?? '') : '';
 
   return (
     <div className="command-panel-content">
@@ -262,6 +271,21 @@ export function CommandPanel({ sessionId, search }: CommandPanelProps): JSX.Elem
           >
             <Icon name="refresh" size={12} className="command-rerun-icon" />
           </button>
+          {isSsh && (
+            <button
+              className={'command-sudo-btn' + (activeEntry.sudo ? ' is-sudo' : '')}
+              onClick={() => rerun(activeEntry, !activeEntry.sudo)}
+              disabled={activeEntry.status === 'running'}
+              title={
+                activeEntry.sudo
+                  ? tx('下次以普通用户重跑', 'Re-run without sudo')
+                  : tx('下次以 sudo 重跑(会要求 sudo 密码)', 'Re-run with sudo (password required)')
+              }
+              aria-pressed={!!activeEntry.sudo}
+            >
+              🛡 sudo
+            </button>
+          )}
           {activeEntry.status === 'running' && (
             <span className="command-refreshing-indicator" role="status">
               {tx('刷新中', 'Refreshing')}
@@ -272,6 +296,9 @@ export function CommandPanel({ sessionId, search }: CommandPanelProps): JSX.Elem
 
       {/* 输出区(markdown 渲染) */}
       <div className="command-panel-body">
+        {activeEntry && activeEntry.status === 'awaiting-sudo-password' && isSsh ? (
+          <SudoPasswordBar sshProfileId={sshProfileId} onSubmit={() => rerun(activeEntry, true)} />
+        ) : null}
         {!activeEntry ? (
           <div className="command-panel-empty">
             <p>{tx('尚无命令', 'No commands yet')}</p>
@@ -322,6 +349,66 @@ function CommandOutput({
       ) : (
         <p className="command-output-empty">{tx('(无输出)', '(No output)')}</p>
       )}
+    </div>
+  );
+}
+
+/**
+ * sudo 密码录入条(SSH session 远程 sudo)。该命令进入 awaiting-sudo-password 态时出现:
+ * masked 输入 → SUDO_PASSWORD_SET(main 内存,绝不落盘)→ onSubmit 触发重跑。
+ * 也可主动调出改密(此版本仅在 awaiting 态出现,「忘记密码」走设置或重录覆盖)。
+ *
+ * 密码本身只从 renderer 发出(SET 入参),永不从 main 读回(has/state 只回 boolean)。
+ */
+function SudoPasswordBar({
+  sshProfileId,
+  onSubmit,
+}: {
+  sshProfileId: string;
+  onSubmit: () => void;
+}): JSX.Element {
+  const { tx } = useTranslation();
+  const toast = useToast();
+  const [password, setPassword] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const submit = (): void => {
+    if (!password) {
+      toast.push({ kind: 'error', message: tx('请输入 sudo 密码', 'Enter the sudo password') });
+      return;
+    }
+    setSaving(true);
+    window.api
+      .invoke(COMMAND_CHANNELS.SUDO_PASSWORD_SET, { sshProfileId, password })
+      .then(() => {
+        setPassword('');
+        onSubmit(); // 密码已入内存,重跑该 sudo 命令
+      })
+      .catch((err: unknown) =>
+        toast.push({ kind: 'error', message: err instanceof Error ? err.message : String(err) }),
+      )
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <div className="sudo-password-bar">
+      <input
+        className="sudo-password-input"
+        type="password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        placeholder={tx('输入 sudo 密码(仅存内存)', 'sudo password (memory only)')}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') submit();
+        }}
+        autoFocus
+        autoComplete="off"
+        spellCheck={false}
+        disabled={saving}
+      />
+      <button className="sudo-password-submit" onClick={submit} disabled={saving}>
+        {saving ? tx('提交中…', 'Submitting…') : tx('提交并重跑', 'Submit & re-run')}
+      </button>
     </div>
   );
 }

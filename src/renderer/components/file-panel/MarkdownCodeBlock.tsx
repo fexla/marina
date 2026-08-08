@@ -26,10 +26,7 @@
  * - 不经 PTY(sendInput 是终端交互的职责,代码块执行走独立 spawn)。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  COMMAND_CHANNELS,
-  type CodeBlockLanguage,
-} from '@shared/protocol';
+import { COMMAND_CHANNELS, type CodeBlockLanguage } from '@shared/protocol';
 import { isRunnable, resolveLanguage } from '@shared/markdown-command';
 import { Icon } from '../icons';
 import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
@@ -55,6 +52,8 @@ interface MarkdownCodeBlockProps {
   className: string | undefined;
   /** 代码块原文(react-markdown code 节点的 children 字符串)。 */
   code: string;
+  /** v0.3.3 远程 sudo:SSH session 时为 true,显示「🛡 sudo 运行」按钮(仅远程生效)。 */
+  allowSudo?: boolean;
 }
 
 /**
@@ -67,6 +66,7 @@ export function MarkdownCodeBlock({
   sourcePosition,
   className,
   code,
+  allowSudo,
 }: MarkdownCodeBlockProps): JSX.Element {
   const { tx } = useTranslation();
   const copyToClipboard = useCopyToClipboard();
@@ -238,7 +238,7 @@ export function MarkdownCodeBlock({
   }, []);
 
   const startRun = useCallback(
-    (codeToRun: string): void => {
+    (codeToRun: string, sudo = false): void => {
       if (state === 'running' || !language) return;
       // cache 先进入 running 并清空旧结果;事件桥在组件卸载后仍持续收输出。
       beginCodeBlockRun(cacheKey);
@@ -247,6 +247,9 @@ export function MarkdownCodeBlock({
           sourceSessionId: sessionId,
           language,
           code: codeToRun,
+          // 远程 sudo:仅 SSH session 生效;密码由 main 内存仓库喂 ssh stdin。
+          // sudo 命令缺密码时 main 扌 SudoPasswordRequired → reject,这里走 catch 提示。
+          sudo,
         })
         .then((res) => {
           attachCodeBlockRun(cacheKey, res.runId);
@@ -268,6 +271,12 @@ export function MarkdownCodeBlock({
   // 工具栏“运行”:始终跑整块(不读选区 —— 选中片段走悬浮按钮)。
   const handleRun = useCallback((): void => {
     startRun(code);
+  }, [startRun, code]);
+
+  // 工具栏“sudo 运行”:远程 SSH session 才有意义(allowSudo 由 MarkdownDocument
+  // 依 session.pathId 传入)。密码缺失时 main 扌 SudoPasswordRequired,reject 进 catch。
+  const handleRunSudo = useCallback((): void => {
+    startRun(code, true);
   }, [startRun, code]);
 
   // 悬浮“运行选中”:只跑选中片段。点击后隐藏悬浮 + 清选区。
@@ -316,6 +325,17 @@ export function MarkdownCodeBlock({
               aria-label={tx('运行', 'Run')}
             >
               <Icon name="play" size={12} />
+            </button>
+          )}
+          {allowSudo && runnable && state !== 'running' && (
+            <button
+              type="button"
+              className="md-code-block-btn md-code-block-sudo"
+              onClick={handleRunSudo}
+              title={tx('以 sudo 运行(会要求 sudo 密码)', 'Run with sudo (password required)')}
+              aria-label={tx('以 sudo 运行', 'Run with sudo')}
+            >
+              🛡
             </button>
           )}
           {runnable && state === 'running' && (

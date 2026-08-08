@@ -280,6 +280,16 @@ export const COMMAND_CHANNELS = {
   /** renderer 上报面板 demand(可见性/聚焦 → HOT/WARM/NONE,仿 git:set-polling-demand) */
   COMMAND_PANEL_SET_DEMAND: 'cmd:command-panel:set-demand',
 
+  // Sudo 密码域(v0.3.3 远程 sudo)—— main 内存态密钥托管,绝不落盘。
+  // 密码本身永不过 IPC 返回 renderer;has/state 只回 boolean。set 经 masked 输入传入,
+  // main 存内存 Map<sshProfileId,string>,app 退出即清。
+  /** 设置某 SSH profile 的 sudo 密码(masked 输入 → main 内存)。 */
+  SUDO_PASSWORD_SET: 'cmd:sudo-password:set',
+  /** 清除某 SSH profile 的 sudo 密码(「忘记密码」按钮)。 */
+  SUDO_PASSWORD_CLEAR: 'cmd:sudo-password:clear',
+  /** 查询某 SSH profile 是否已存 sudo 密码(只回 boolean)。 */
+  SUDO_PASSWORD_HAS: 'cmd:sudo-password:has',
+
   // File tree 域 —— active owner session 的受限双根只读导航(ADR-016)
   /** 获取 currentCwd / MARINA_WORKSPACE 两个逻辑根的可用性；不返回绝对路径。 */
   FILE_TREE_GET_ROOTS: 'cmd:file-tree:get-roots',
@@ -542,6 +552,14 @@ export const EVENT_CHANNELS = {
    * 按各自 runId 订阅即可,不重复造事件)。
    */
   COMMAND_PANEL_UPDATED: 'evt:command-panel:updated',
+
+  /**
+   * v0.3.3 远程 sudo:某 SSH profile 的 sudo 密码状态变化(录入/清除)。
+   * payload = SudoPasswordStatePayload(只含 profileId + has:boolean,不含密码)。
+   * 广播给所有窗口——renderer 据此更新 🔑 按钮态(哪个服务器存了密码)。密码
+   * 本身永不出现在事件里(附录 H 隐私红线)。
+   */
+  SUDO_PASSWORD_STATE: 'evt:sudo-password:state',
 
   /**
    * Git 面板仓库变更状态更新。main 预取或 ADR-021 demand-aware task 已附带脱敏
@@ -1428,6 +1446,12 @@ export interface RunCodeBlockPayload {
   language: CodeBlockLanguage;
   /** 代码块原文(已 trim 尾部空白)。main 端做长度上限校验。 */
   code: string;
+  /**
+   * v0.3.3 远程 sudo:仅 SSH session 生效。true 时命令以 `sudo -S` 在远程跑,
+   * 密码由 main 端 sudo-password-store(内存)经 stdin 喂入。密码缺失时抛
+   * SudoPasswordRequired,renderer 弹输入框,录入后重跑。本地 session 忽略此字段。
+   */
+  sudo?: boolean;
 }
 
 /** cmd:system:run-code-block 返回。runId 用于后续 output/exited 事件匹配与 stop。 */
@@ -1455,6 +1479,35 @@ export interface CodeBlockExitedPayload {
   runId: string;
   exitCode: number | null;
   signal: string | null;
+}
+
+// ── Sudo 密码(v0.3.3 远程 sudo)────────────────────────────────────────
+// main 内存态密钥托管的 payload。密码本身只在 SET 的入参出现(main 不回传);
+// has/state 只回 boolean。详见 sudo-password-store.ts。
+
+/** cmd:sudo-password:set payload。password 是明文(经 masked 输入),main 存内存。 */
+export interface SudoPasswordSetPayload {
+  /** SSH profile id(密码按 profile = host+user 隔离)。 */
+  sshProfileId: string;
+  /** 明文 sudo 密码。main 不回传、不落盘、不进日志/perf/event payload。 */
+  password: string;
+}
+
+/** cmd:sudo-password:clear payload。 */
+export interface SudoPasswordClearPayload {
+  sshProfileId: string;
+}
+
+/** cmd:sudo-password:has payload。 */
+export interface SudoPasswordHasPayload {
+  sshProfileId: string;
+}
+
+/** cmd:sudo-password:has 返回 + evt:sudo-password:state 广播 payload(只含 boolean)。 */
+export interface SudoPasswordStatePayload {
+  sshProfileId: string;
+  /** true = main 内存里该 profile 已存 sudo 密码。 */
+  has: boolean;
 }
 
 export type BuildType = 'dev' | 'portable' | 'installed';
@@ -1696,7 +1749,14 @@ export interface CommandRefreshPolicy {
 }
 
 /** 单条命令的运行状态机(D4)。 */
-export type CommandRunStatus = 'idle' | 'running' | 'exited' | 'error';
+export type CommandRunStatus =
+  | 'idle'
+  | 'running'
+  | 'exited'
+  | 'error'
+  // v0.3.3 远程 sudo:sudo 命令到达但该 SSH profile 尚未录入 sudo 密码。
+  // renderer 渲染内联密码输入框,录入后重跑。仅 SSH session 的 sudo 命令可达此态。
+  | 'awaiting-sudo-password';
 
 /**
  * 命令面板里的一条指令(program-push,AI 经 marina run / HTTP /run 推送)。
@@ -1727,6 +1787,12 @@ export interface CommandEntry {
   output: string;
   /** 最近一次运行结束时间(epoch ms),用于展示。 */
   lastRunAt: number | null;
+  /**
+   * v0.3.3 远程 sudo:该命令是否以 sudo 跑(仅 SSH session 生效)。
+   * 持久化进 command-panel.json(与 refreshPolicy 同隐私级别——仅布尔标志,不含密码)。
+   * 可选以兼容旧快照(缺省 = false)。
+   */
+  sudo?: boolean;
 }
 
 /** 命令面板快照(与 FilePanelSnapshot 对称)。 */
@@ -1758,6 +1824,8 @@ export interface RunCommandPayload {
   command: string;
   /** 可选展示标题。 */
   title?: string | null;
+  /** v0.3.3 远程 sudo:仅 SSH session 生效,经 stdin 喂 sudo-password-store 的密码。 */
+  sudo?: boolean;
 }
 
 /** cmd:command-panel:close payload。 */

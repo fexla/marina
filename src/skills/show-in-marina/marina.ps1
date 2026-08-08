@@ -353,20 +353,24 @@ function Invoke-CmdRun {
     in session.currentCwd) and its markdown output renders in the 4th dock
     panel. All remaining args after `run` are joined into one command string
     (so quoting is handled by the caller's shell). Optional --title sets the
-    tab display title; --quiet suppresses the success line.
+    tab display title; --quiet suppresses the success line. --sudo runs the
+    command with remote sudo on SSH sessions (password held in memory by Marina,
+    see ADR-028 remote sudo).
 
     Examples:
       marina run "gh issue list --limit 5"
       marina run --title issues "gh issue list"
       marina run git status --short
+      marina run --sudo "apt update"
   #>
   param($Config, [string[]]$CmdArgs)
-  Assert-NoUnknownOptions -CmdArgs $CmdArgs -Allowed @('--quiet', '-q', '--title') -CmdName 'run'
-  $quiet = $false; $title = $null; $commandParts = @()
+  Assert-NoUnknownOptions -CmdArgs $CmdArgs -Allowed @('--quiet', '-q', '--title', '--sudo') -CmdName 'run'
+  $quiet = $false; $sudo = $false; $title = $null; $commandParts = @()
   $i = 0
   while ($i -lt $CmdArgs.Count) {
     $a = [string]$CmdArgs[$i]
     if ($a -eq '--quiet' -or $a -eq '-q') { $quiet = $true; $i++ }
+    elseif ($a -eq '--sudo') { $sudo = $true; $i++ }
     elseif ($a -eq '--title') {
       $i++
       if ($i -ge $CmdArgs.Count) { Die $script:EXIT_USAGE 'run: --title requires a value' }
@@ -381,6 +385,7 @@ function Invoke-CmdRun {
   if (-not $Config.Terminal) { Die $script:EXIT_OFFLINE 'TERMINAL_ID is unset' }
   $body = @{ terminal = $Config.Terminal; command = $command }
   if ($title) { $body['title'] = $title }
+  if ($sudo) { $body['sudo'] = $true }
   Send-MarinaRequest -Config $Config -Method 'POST' -Path '/run' -Body $body | Out-Null
   if (-not $quiet) { [Console]::Out.WriteLine("ran: $command") }
   return $script:EXIT_OK

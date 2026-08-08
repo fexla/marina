@@ -267,14 +267,16 @@ export class CommandPanelService extends EventEmitter {
    *
    * @throws 'SessionMissing' session 不存在
    * @throws 'CommandEmpty' command 为空
-   * @throws CodeBlockError('SshUnsupported'|'ShellMissing'|'SpawnFailed'|'CodeTooLarge')
-   *   透传自 CodeBlockRunner(SSH/cwd/shell 失败)。
+   * @throws CodeBlockError(SshProfileMissing|ShellMissing|SpawnFailed|CodeTooLarge|
+   *   SudoPasswordRequired|SshAuthUnavailable|SshExecFailed)透传自 CodeBlockRunner。
+   *   注:SudoPasswordRequired 在 spawnRun 内被拦为 awaiting-sudo-password 态,不抛到这里。
    */
   async runCommand(
     sessionId: string,
     command: string,
     title: string | null = null,
     requestingClientId: string | null = null,
+    sudo: boolean = false,
   ): Promise<CommandPanelSnapshot> {
     const cmd = command.trim();
     if (!cmd) throw new CommandPanelError('CommandEmpty', 'command 不能为空');
@@ -292,7 +294,7 @@ export class CommandPanelService extends EventEmitter {
     const existingIdx = state.commands.findIndex((c) => c.key === key);
     const isNew = existingIdx < 0;
 
-    // upsert entry
+    // upsert entry。sudo 是参数权威(刷新走 spawnRun 直读 entry.sudo,不经这里)。
     const entry: CommandEntry =
       existingIdx >= 0
         ? {
@@ -300,6 +302,7 @@ export class CommandPanelService extends EventEmitter {
             command: cmd,
             title: title ?? state.commands[existingIdx]!.title,
             refreshPolicy: normalizeRefreshPolicy(state.commands[existingIdx]!),
+            sudo,
           }
         : {
             key,
@@ -311,6 +314,7 @@ export class CommandPanelService extends EventEmitter {
             status: 'idle',
             output: '',
             lastRunAt: null,
+            sudo,
           };
     if (existingIdx >= 0) state.commands[existingIdx] = entry;
     else {
@@ -610,6 +614,8 @@ export class CommandPanelService extends EventEmitter {
         language: 'bash',
         code: entry.command,
         requestingClientId: originClientId,
+        // v0.3.3 远程 sudo:仅 SSH session 生效;runner 据此走 ssh exec + sudo -S。
+        sudo: !!entry.sudo,
       });
       if (this.runGenerations.get(runKey) !== generation) {
         this.rememberCommandRunId(runId);
@@ -624,10 +630,21 @@ export class CommandPanelService extends EventEmitter {
       this.runGenerations.delete(runKey);
       this.runOrigins.delete(runKey);
       this.pendingRunOutputs.delete(runKey);
-      // SSH/Shell/Spawn/CodeTooLarge —— 到失败确定时才替换旧结果；运行开始到这里
+      const code = (err as CodeBlockError)?.code ?? 'SpawnFailed';
+      // SSH session 的 sudo 命令但未录密码 → 转为 awaiting-sudo-password 态,让 renderer
+      // 渲染内联密码输入框;录入后重跑。旧输出保留可见(与 running 同理)。
+      if (code === 'SudoPasswordRequired') {
+        entry.status = 'awaiting-sudo-password';
+        const profileHint = err instanceof Error ? err.message : '';
+        entry.output = `🔑 ${profileHint}\n\n在上方输入框录入 sudo 密码后重试。密码仅存在内存,绝不落盘。`;
+        entry.lastExitCode = null;
+        this.emitUpdated(sessionId, { requestActivation: false, commandKey: entry.key });
+        logger.info(MODULE, `spawnRun awaiting-sudo-password: sid=${sessionId} key=${entry.key}`);
+        return;
+      }
+      // SSH/Shell/Spawn/CodeTooLarge —— 到失败确定时才替换旧结果;运行开始到这里
       // 之间旧 Markdown 始终可见，不会因 pending spawn 闪空。
       entry.status = 'error';
-      const code = (err as CodeBlockError)?.code ?? 'SpawnFailed';
       entry.output = `⚠ 执行失败(${code}): ${err instanceof Error ? err.message : String(err)}`;
       entry.lastExitCode = null;
       this.emitUpdated(sessionId, { requestActivation: false, commandKey: entry.key });
@@ -809,7 +826,9 @@ export class CommandPanelService extends EventEmitter {
           // 不能把已等待 29s 的 30s WARM timer 再推迟完整 30s。
           if (Date.now() - directRunAt <= DIRECT_RUN_DEDUPE_MS) return;
         }
-        if (entry.status === 'running') return;
+        // running 不重复跑;awaiting-sudo-password 也不自动刷新(等用户录密码手动重跑,
+        // 否则每 interval 重复 SudoPasswordRequired,扰民)。
+        if (entry.status === 'running' || entry.status === 'awaiting-sudo-password') return;
         await this.spawnRun(sessionId, entry, session.ownerWindowId ?? sessionId);
       },
       onError: (e) => logger.warn(MODULE, `scheduler task error: ${taskKey}`, e),
