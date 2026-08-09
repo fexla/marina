@@ -392,13 +392,34 @@ describe('SessionWorkspaceManager', () => {
       version: 1,
       openedFiles: [
         { path: 'review.md', kind: 'markdown', external: false },
+        {
+          path: 'change.diff',
+          kind: 'diff',
+          external: false,
+          origin: {
+            kind: 'git-diff',
+            relativePath: '目录/中文.ts',
+            repoIdentity: 'opaque-repo-id',
+            sourceMissing: false,
+          },
+        },
         { path: 'C:\\abs\\user.md', kind: 'markdown', external: true },
       ],
       activeFilePath: 'review.md',
       scroll: { 'review.md': { scrollTop: 240, scrollLeft: 0 } },
       runs: [
-        { key: ["k1","doc","pos","1:42"].join(String.fromCharCode(0)), state: "exited", output: "hello", exitCode: 0 },
-        { key: ["k2","doc","pos","21:0"].join(String.fromCharCode(0)), state: "running", output: "", exitCode: null },
+        {
+          key: ['k1', 'doc', 'pos', '1:42'].join(String.fromCharCode(0)),
+          state: 'exited',
+          output: 'hello',
+          exitCode: 0,
+        },
+        {
+          key: ['k2', 'doc', 'pos', '21:0'].join(String.fromCharCode(0)),
+          state: 'running',
+          output: '',
+          exitCode: null,
+        },
       ],
     };
     await manager.writeSnapshot(WS_A, snap);

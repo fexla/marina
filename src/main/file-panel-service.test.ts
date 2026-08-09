@@ -55,6 +55,48 @@ describe('FilePanelService - 状态机', () => {
     expect(r2.files).toHaveLength(1);
   });
 
+  it('openFile 保存来源元数据，普通重复打开不会丢失', async () => {
+    await writeFile(join(dir, 'change.diff'), 'diff');
+    const origin = {
+      kind: 'git-diff' as const,
+      relativePath: '中文.ts',
+      repoIdentity: 'opaque-repo-id',
+      sourceMissing: false,
+    };
+    const opened = await svc.openFile('s1', 'change.diff', { origin });
+    expect(opened.files[0]?.origin).toEqual(origin);
+
+    const reopened = await svc.openFile('s1', 'change.diff');
+    expect(reopened.files[0]?.origin).toEqual(origin);
+  });
+
+  it('onWorkspaceSwitched 从快照恢复 Git diff 来源元数据', async () => {
+    await writeFile(join(dir, 'change.diff'), 'diff');
+    const origin = {
+      kind: 'git-diff' as const,
+      relativePath: '目录/中文.ts',
+      repoIdentity: 'opaque-repo-id',
+      sourceMissing: false,
+    };
+    svc.attachWorkspaceOps({
+      getCurrentPath: () => dir,
+      bind: async () => ({ kind: 'created', workspaceId: 'w1', dir }),
+      list: async () => [],
+      newWorkspace: async () => ({ workspaceId: 'w1', dir }),
+      unpin: async () => ({ workspaceId: 'w1' }),
+      readSnapshotForSession: async () => ({
+        openedFiles: [{ path: 'change.diff', kind: 'diff', external: false, origin }],
+        activeFilePath: 'change.diff',
+        scroll: {},
+        runs: [],
+      }),
+    });
+
+    await svc.onWorkspaceSwitched('s1');
+
+    expect(svc.getOpenFiles('s1').files[0]?.origin).toEqual(origin);
+  });
+
   it('showFile 切 active;不在列表抛 NotFound', async () => {
     await writeFile(join(dir, 'a.txt'), '1');
     await writeFile(join(dir, 'b.txt'), '2');

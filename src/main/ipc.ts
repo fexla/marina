@@ -2372,6 +2372,7 @@ function registerGitHandlers(deps: IpcLayerDeps): void {
         envelope.payload.sessionId,
         envelope.windowId,
         envelope.payload.relativePath,
+        envelope.payload.repoIdentity,
       ),
   );
 

@@ -139,7 +139,14 @@ async function doWriteSnapshot(
     const external = !wsDir || isAbsoluteOutside(f.path, wsDir);
     // workspace 内文件存相对路径(让 main 拼根;换机器/换根仍有效);外存绝对。
     const path = !external && wsDir ? (toRelative(f.path, wsDir) ?? f.path) : f.path;
-    return { path, kind: String(f.kind), external };
+    return {
+      path,
+      kind: String(f.kind),
+      external,
+      // Git diff 的 relativePath + repoIdentity 是「打开源文件」的导航真值；若快照
+      // 丢掉它，bind 切走再切回后会退化成解析展示文本并绕过跨仓库身份校验。
+      ...(f.origin ? { origin: f.origin } : {}),
+    };
   });
   const scrollRaw = state.fileViewerScroll.get(sessionId);
   const scroll: Record<string, { scrollTop: number; scrollLeft: number }> = {};
@@ -160,10 +167,7 @@ async function doWriteSnapshot(
     runs,
   };
   try {
-    await window.api.invoke(
-      COMMAND_CHANNELS.WORKSPACE_WRITE_SNAPSHOT,
-      { sessionId, snapshot },
-    );
+    await window.api.invoke(COMMAND_CHANNELS.WORKSPACE_WRITE_SNAPSHOT, { sessionId, snapshot });
   } catch (err) {
     console.warn('[workspace-snapshot] write failed:', err);
   }

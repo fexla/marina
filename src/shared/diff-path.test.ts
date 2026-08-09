@@ -1,12 +1,17 @@
 /**
  * @file src/shared/diff-path.test.ts
  * @purpose 单测 resolveDiffOpenFileState / parseDiffFileHeader,覆盖 Feature C
- *   「打开源文件」按钮的启用态判定(normal/added/deleted/renamed/multi-file/畸形)。
+ *   「打开源文件」按钮的降级判定(normal/added/deleted/renamed/multi-file/畸形)，
+ *   以及 Git core.quotePath 对中文 UTF-8 的 C 风格八进制引用。
  *
  * @对应文档:docs/规划-v0.3.3-AI交互丰富度-20260801.md Feature C;AGENTS.md §5.3 解析类必测。
  */
 import { describe, expect, it } from 'vitest';
-import { parseDiffFileHeader, resolveDiffOpenFileState } from './diff-path';
+import {
+  parseDiffFileHeader,
+  resolveDiffOpenFileState,
+  resolveOpenedDiffSourceState,
+} from './diff-path';
 
 describe('parseDiffFileHeader', () => {
   it('解析 +++ b/ 新侧路径', () => {
@@ -138,6 +143,22 @@ diff --git a/b.ts b/b.ts
     expect(state.deleted).toBe(false);
   });
 
+  it('Git C 风格引用的中文路径还原为真实 relativePath', () => {
+    // core.quotePath=true(默认)时，Git 会把 UTF-8 路径按字节写成八进制转义，
+    // 并把完整的 a/... / b/... 路径包在双引号里。按钮必须回传真实中文路径，
+    // 不能把展示层的 `b/\\344...` 原样交给 cmd:git:open-file。
+    const diff = String.raw`diff --git "a/\344\270\255\346\226\207.ts" "b/\344\270\255\346\226\207.ts"
+index 1111111..2222222 100644
+--- "a/\344\270\255\346\226\207.ts"
++++ "b/\344\270\255\346\226\207.ts"
+@@ -1 +1 @@
+-old
++new`;
+    const state = resolveDiffOpenFileState(diff);
+    expect(state.relativePath).toBe('中文.ts');
+    expect(state.deleted).toBe(false);
+  });
+
   it('只有 hunk 无文件头的裸 diff:无 +++ 头 → relativePath=null', () => {
     const diff = `@@ -1,3 +1,4 @@
  const x = 1;
@@ -162,5 +183,54 @@ Binary files a/bin.dat and b/bin.dat differ
     const state = resolveDiffOpenFileState(diff);
     expect(state.relativePath).toBe('bin.dat');
     expect(state.deleted).toBe(false);
+  });
+});
+
+describe('resolveOpenedDiffSourceState', () => {
+  it('优先使用 GitService origin，不解析展示文本', () => {
+    const state = resolveOpenedDiffSourceState(
+      {
+        path: 'C:\\workspace\\__marina_diff__\\escaped.diff',
+        origin: {
+          kind: 'git-diff',
+          relativePath: '目录/中文.ts',
+          repoIdentity: 'opaque-repo-id',
+          sourceMissing: false,
+        },
+      },
+      '+++ "b/\\344\\270\\255.diff"',
+    );
+    expect(state).toEqual({
+      relativePath: '目录/中文.ts',
+      deleted: false,
+      repoIdentity: 'opaque-repo-id',
+      requiresReopen: false,
+    });
+  });
+
+  it('旧受管 Git diff 缺 origin 时禁用打开源文件，避免绕过 repo 身份校验', () => {
+    const state = resolveOpenedDiffSourceState(
+      { path: 'C:\\workspace\\__marina_diff__\\legacy.diff' },
+      '--- a/same.ts\n+++ b/same.ts\n',
+    );
+    expect(state).toEqual({
+      relativePath: null,
+      deleted: false,
+      repoIdentity: null,
+      requiresReopen: true,
+    });
+  });
+
+  it('普通外部 .diff 无 origin 时保留文本解析降级', () => {
+    const state = resolveOpenedDiffSourceState(
+      { path: 'C:\\downloads\\review.diff' },
+      '--- a/src/foo.ts\n+++ b/src/foo.ts\n',
+    );
+    expect(state).toEqual({
+      relativePath: 'src/foo.ts',
+      deleted: false,
+      repoIdentity: null,
+      requiresReopen: false,
+    });
   });
 });

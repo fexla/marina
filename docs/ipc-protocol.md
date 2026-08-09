@@ -959,7 +959,14 @@ type GetGitStatusResponse =
   | { unavailable: GitUnavailableReason };                        // 不可用(Git tab 不出现)
 
 interface OpenGitDiffPayload { sessionId: string; relativePath: string }
+interface OpenGitFilePayload {
+  sessionId: string;
+  relativePath: string;
+  repoIdentity?: string; // 从 Git diff origin 回传；GitPanel 直接打开时不传
+}
 // open-diff response: FilePanelSnapshot(复用既有)
+// 其中本次打开的 OpenedFile 带可选来源真值：
+// origin = { kind:'git-diff', relativePath, repoIdentity, sourceMissing }
 ```
 
 #### `cmd:git:set-polling-demand`（v0.3.2，ADR-021）
@@ -979,7 +986,8 @@ Demand 只影响周期刷新；用户显式 `get-status` 仍立即返回。
 - Git 命令均为 backend-data，远程窗口请求由 daemon 主机执行。
 - 每次请求验证 `ownerWindowId === envelope.windowId`；接管后旧 owner 立即失权。
 - SSH session 一律拒绝(不引入远端 git 协议)，返回 `unavailable: 'ssh-unsupported'`。
-- `relativePath` 拒绝 `..` / 绝对路径 / NUL；main 端 realpath 后再次验证 repoRoot 包含。
+- `relativePath` 拒绝 `..` / 绝对路径 / NUL。任何会读取 worktree 内容的 `open-diff` / `open-file` / `resolve-path` 都在词法校验后做 `realpath` + 路径段包含校验，拒绝 symlink / Windows junction 逃逸。`open-diff` 仅在 porcelain 已确认 deleted/conflict 且目标为 ENOENT 时允许缺失路径，此时 Git 只从 HEAD/index 生成删除 diff，不读取根外工作区内容。
+- DiffViewer 从 `OpenedFile.origin` 回传 `repoIdentity` 时，main 必须确认 session 当前 repo 指纹仍一致；不一致说明终端已 cd 到别的仓库，拒绝把旧 relativePath 解析到新仓库的同名文件。指纹是规范化 repoRoot 的 SHA-256，不暴露绝对路径。
 - `runGit` spawn 限 5s 超时 + 8MB stdout 上限防恶意大输出。
 
 **Side Effects**:
@@ -988,7 +996,13 @@ Demand 只影响周期刷新；用户显式 `get-status` 仍立即返回。
 - `open-diff` 产 unified diff 写入 session 的
   `MARINA_WORKSPACE/__marina_diff__/<sanitized>__<sha8>.diff`，再调既有
   FilePanelService.openFile → emit `evt:file-panel:updated`(requestActivation=true)
-  → LayoutHost 自动切到「已打开」面板。diff 临时文件随 session 回收。
+  → LayoutHost 自动切到「已打开」面板。打开项同时携带可选
+  `origin:{kind:'git-diff',relativePath,repoIdentity,sourceMissing}`；这是 Main 已知的导航真值，
+  DiffViewer 的「打开源文件」必须优先使用它，不得从可能含 Git C 风格转义的展示
+  文本反推中文路径。origin 随 workspace 文件面板快照持久化并在 bind 恢复时重新
+  注入 `OpenedFile`；旧版 `__marina_diff__` 快照若没有 origin，按钮必须禁用并提示
+  从 Git 面板重新打开，不能退化后绕过 repoIdentity 校验。只有普通外部 `.diff`
+  才走文本解析降级。diff 临时文件随 session 回收。
 
 **动态 LayoutNode**(评审裁决 2026-07-19)：`git` leaf 是否出现在 session 的
 `uiLayout.tree` 由 main 端 SessionManager 按 cwd 是否在仓库内动态决定。

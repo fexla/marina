@@ -20,6 +20,7 @@ import type {
   FileTreeRootId,
   MdTheme,
   OpenedFile,
+  OpenedFileOrigin,
   PathKind,
   PathTree,
   PersistedGroup,
@@ -1973,7 +1974,13 @@ export interface WorkspaceRunEntry {
 /** bind 切换后推给 renderer 恢复的快照(<workspace>/__marina_state__/file-panel.json)。 */
 export interface WorkspaceFilePanelSnapshot {
   version: 1;
-  openedFiles: Array<{ path: string; kind: string; external: boolean }>;
+  openedFiles: Array<{
+    path: string;
+    kind: string;
+    external: boolean;
+    /** Git diff 的导航真值；可选以兼容既有 version=1 快照。 */
+    origin?: OpenedFileOrigin;
+  }>;
   activeFilePath: string | null;
   scroll: Record<string, { scrollTop: number; scrollLeft: number }>;
   runs: WorkspaceRunEntry[];
@@ -2164,6 +2171,11 @@ export interface OpenGitDiffPayload {
 export interface OpenGitFilePayload {
   sessionId: string;
   relativePath: string;
+  /**
+   * 从 Git diff 的 OpenedFile.origin 回传的不透明 repo 指纹。GitPanel 直接打开文件
+   * 时不传；传入后 main 必须确认 session 仍在同一 repo，防 cwd 变化后错开同名文件。
+   */
+  repoIdentity?: string;
 }
 
 /** v0.3.1 cmd:git:resolve-path 返回。 */

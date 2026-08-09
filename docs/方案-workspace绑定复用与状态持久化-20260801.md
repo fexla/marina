@@ -54,7 +54,7 @@
 ### 2.6 文件面板状态快照
 - **位置**：独立文件 `<workspace>/__marina_state__/file-panel.json`，**不并入 manifest**（manifest 低频写、快照滚动高频写，分开避免 churn）。
 - **粒度**：
-  - `openedFiles:[{path,kind}]` + `activeFilePath`
+  - `openedFiles:[{path,kind,origin?}]` + `activeFilePath`。`origin` 仅 Git 生成的 diff 使用，保存 `{kind:'git-diff',relativePath,repoIdentity,sourceMissing}`，确保 bind 切走再切回后「打开源文件」仍使用原仓库导航真值；旧快照无该可选字段仍兼容。
   - `scroll:{<filePath>:{scrollTop,scrollLeft}}`
   - **代码块运行结果**（C2，用户明确要）：`runs:[{key, state, output, exitCode}]`，key = `createCodeBlockKey(sessionId, documentPath, sourcePosition, code)`。⚠️ 运行输出**可能含敏感信息**，已接受该 tradeoff（与远程 gallery 同类顾虑）；落盘在本地 daemon 的受管目录，不外传。
 - **路径形式**：workspace 内文件存**相对 workspace 根**；workspace 外文件（如 md-link 打开的用户磁盘文件）存**绝对路径 + 标记**。恢复时相对路径拼当前 workspace 根。
@@ -94,7 +94,20 @@
 // <workspace>/__marina_state__/file-panel.json
 {
   "version": 1,
-  "openedFiles": [{ "path": "review.md", "kind": "markdown", "external": false }],
+  "openedFiles": [
+    { "path": "review.md", "kind": "markdown", "external": false },
+    {
+      "path": "__marina_diff__/change.diff",
+      "kind": "diff",
+      "external": false,
+      "origin": {
+        "kind": "git-diff",
+        "relativePath": "src/change.ts",
+        "repoIdentity": "<opaque sha256>",
+        "sourceMissing": false
+      }
+    }
+  ],
   "activeFilePath": "review.md",
   "scroll": { "review.md": { "scrollTop": 240, "scrollLeft": 0 } },
   "runs": [

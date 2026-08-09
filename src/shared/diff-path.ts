@@ -3,11 +3,11 @@
  * @purpose 从 unified diff 文本里解析「打开源文件」所需的路径信息,
  *   供 DiffViewer 的工具栏按钮(Feature C / v0.3.3)决定启用态与点击行为。
  *
- * @背景:Marina 的 diff 由 GitService.openDiff 产出(单文件 `git diff HEAD -- <path>`
- *   或 untracked 的 `git diff --no-index /dev/null <path>`),写进 session 的
- *   MARINA_WORKSPACE/__marina_diff__/<sha>.diff 临时文件。DiffViewer 只拿到这段
- *   文本,需要自己反推出「这是哪个文件、是否已删除」,才能决定「打开源文件」按钮
- *   点下去该走 cmd:git:open-file 的哪个 relativePath、以及是否该禁用。
+ * @背景:GitService.openDiff 现在会把原始 relativePath 作为 OpenedFile.origin
+ *   透传，Marina 自产 diff 不再依赖文本反解析。这里保留两类降级能力：用户直接
+ *   打开的普通 `.diff`，以及旧 workspace 快照恢复后尚无 origin 的临时 diff。
+ *   Git 默认 core.quotePath=true，会把中文 UTF-8 字节写成 C 风格八进制转义，
+ *   因此降级解析也必须完整解码，不能只剥双引号。
  *
  * @为什么放 shared:纯字符串解析、无 DOM/React/Electron 依赖,可在 src/shared 下
  *   单测覆盖(对齐 AGENTS.md §5.1「renderer UI 不测,纯逻辑测」纪律)。DiffViewer
@@ -15,6 +15,75 @@
  *
  * @对应文档:docs/规划-v0.3.3-AI交互丰富度-20260801.md Feature C(决策 #5 图标=file-text)
  */
+import type { OpenedFile } from './types';
+
+/** Git C 风格路径中的文本片段编码/解码器；浏览器与 Node 均原生可用。 */
+const UTF8_ENCODER = new TextEncoder();
+const UTF8_DECODER = new TextDecoder('utf-8');
+
+/**
+ * 解码 Git 双引号路径。core.quotePath=true(默认)会把非 ASCII UTF-8 字节写成
+ * `\\344\\270...` 八进制序列；直接去双引号会把展示串误当成真实文件名。
+ *
+ * Git 的 quoted.c 语法还会产生 `\\\\` / `\\"` / `\\t` 等 C 转义。这里按字节
+ * 还原后统一 UTF-8 decode，既能正确组合中文的多字节序列，也保留普通 Unicode。
+ * 非双引号 token 返回 null，由调用方按原文本处理。
+ */
+function decodeGitQuotedPath(value: string): string | null {
+  if (!value.startsWith('"') || !value.endsWith('"') || value.length < 2) return null;
+  const inner = value.slice(1, -1);
+  const bytes: number[] = [];
+  const simpleEscapes: Record<string, number> = {
+    a: 0x07,
+    b: 0x08,
+    t: 0x09,
+    n: 0x0a,
+    v: 0x0b,
+    f: 0x0c,
+    r: 0x0d,
+    '"': 0x22,
+    '\\': 0x5c,
+  };
+
+  for (let index = 0; index < inner.length; ) {
+    const char = inner[index]!;
+    if (char !== '\\') {
+      const codePoint = inner.codePointAt(index)!;
+      const literal = String.fromCodePoint(codePoint);
+      bytes.push(...UTF8_ENCODER.encode(literal));
+      index += literal.length;
+      continue;
+    }
+
+    index += 1;
+    if (index >= inner.length) {
+      // 畸形尾反斜杠：保留字面量，让降级路径可见而不是静默吞字符。
+      bytes.push(0x5c);
+      break;
+    }
+    const escaped = inner[index]!;
+    if (/[0-7]/.test(escaped)) {
+      let octal = escaped;
+      index += 1;
+      while (octal.length < 3 && index < inner.length && /[0-7]/.test(inner[index]!)) {
+        octal += inner[index]!;
+        index += 1;
+      }
+      bytes.push(Number.parseInt(octal, 8));
+      continue;
+    }
+    const simple = simpleEscapes[escaped];
+    if (simple !== undefined) {
+      bytes.push(simple);
+    } else {
+      // Git 当前不会产生其它 escape；防御性按被转义字符本身保留。
+      bytes.push(...UTF8_ENCODER.encode(escaped));
+    }
+    index += 1;
+  }
+
+  return UTF8_DECODER.decode(Uint8Array.from(bytes));
+}
 
 /**
  * 解析单条 `--- ` / `+++ ` 文件头行,提取去掉 `a/` / `b/` 前缀与引号后的纯路径。
@@ -32,21 +101,17 @@
  *   parseDiffFileHeader('+++ b/"weird name.ts"')   → { path: 'weird name.ts' }
  *   parseDiffFileHeader('not a header')            → null             ← 不是文件头行
  */
-export function parseDiffFileHeader(
-  line: string,
-): { path: string | null } | null {
+export function parseDiffFileHeader(line: string): { path: string | null } | null {
   // 形如 `+++ b/<rest>` 或 `--- a/<rest>`。git 对含空格/特殊字符的路径加引号。
   const m = /^(?:\+\+\+|---)\s+(.*)$/.exec(line);
   if (!m || m[1] === undefined) return null; // 不是文件头行
   let rest = m[1].trim();
-  // 先去 a/ b/ 前缀(git 默认头格式 +++ b/<path> / --- a/<path>)。注意:含空格/特殊字符
-  // 的路径会被 git 整体加引号,如 b/"my file.ts"——引号包住的是 b/ 之后的部分,所以
-  // 必须先剥前缀再剥引号,顺序不能反。
+  // Git 的真实输出对中文路径会把**完整** token 引用："b/\\344..."；历史测试里的
+  // b/"my file.ts" 则只引用前缀后的部分。先尝试整 token 解码，再剥 a/b 前缀，
+  // 最后再尝试一次后半 token，兼容两种形态且不依赖 quotePath 配置。
+  rest = decodeGitQuotedPath(rest) ?? rest;
   rest = rest.replace(/^[ab]\//, '');
-  // 再去引号(git 对含空格的路径加引号,如 "my file.ts")
-  if (rest.startsWith('"') && rest.endsWith('"') && rest.length >= 2) {
-    rest = rest.slice(1, -1);
-  }
+  rest = decodeGitQuotedPath(rest) ?? rest;
   // /dev/null 是 git 的「该侧文件不存在」标记(新增文件的 --- 侧 / 删除文件的 +++ 侧)。
   // 放在剥前缀/剥引号之后判断,以便 "/dev/null" 带引号写法也能识别。
   if (rest === '/dev/null') return { path: null };
@@ -66,6 +131,51 @@ export interface DiffOpenFileState {
    * (来自 --- a/),便于将来若要扩展「恢复」类操作时有目标,但当前按钮禁用不触发。
    */
   deleted: boolean;
+}
+
+/** 已打开 diff 的完整来源判定；renderer 据此决定 payload 与 legacy 提示。 */
+export interface OpenedDiffSourceState extends DiffOpenFileState {
+  /** GitService 生成时绑定的 repo 指纹；普通外部 .diff 为 null。 */
+  repoIdentity: string | null;
+  /** true = 旧受管 Git diff 快照缺少 origin，为避免跨仓库误开必须要求重新打开。 */
+  requiresReopen: boolean;
+}
+
+/**
+ * 组合 OpenedFile 元数据与文本降级，得到「打开源文件」的唯一判定入口。
+ *
+ * 优先级:
+ * 1. GitService origin 是导航真值（中文路径不解析展示文本，且带 repoIdentity）。
+ * 2. `__marina_diff__` 下却无 origin = 旧快照。它本应有仓库身份；继续按当前 repo
+ *    解析会绕过跨仓库保护，因此禁用并要求从 Git 面板重新打开。
+ * 3. 用户直接打开的普通 .diff 没有 origin，保留文本解析能力。
+ */
+export function resolveOpenedDiffSourceState(
+  file: Pick<OpenedFile, 'path' | 'origin'>,
+  text: string,
+): OpenedDiffSourceState {
+  if (file.origin?.kind === 'git-diff') {
+    return {
+      relativePath: file.origin.relativePath,
+      deleted: file.origin.sourceMissing,
+      repoIdentity: file.origin.repoIdentity,
+      requiresReopen: false,
+    };
+  }
+  const isManagedGitDiff = file.path.split(/[\\/]+/).includes('__marina_diff__');
+  if (isManagedGitDiff) {
+    return {
+      relativePath: null,
+      deleted: false,
+      repoIdentity: null,
+      requiresReopen: true,
+    };
+  }
+  return {
+    ...resolveDiffOpenFileState(text),
+    repoIdentity: null,
+    requiresReopen: false,
+  };
 }
 
 /**
@@ -118,7 +228,7 @@ export function resolveDiffOpenFileState(text: string): DiffOpenFileState {
       }
     }
     // 遇到下一个块的 hunk 就停(防止多块边界情况下读到错的头;上面已挡多块,这里防御)。
-    if ((sawOld && sawNew) && line.startsWith('@@')) break;
+    if (sawOld && sawNew && line.startsWith('@@')) break;
   }
 
   // 删除文件:新侧 = /dev/null(newPath===null 且确实看到 +++ /dev/null)。

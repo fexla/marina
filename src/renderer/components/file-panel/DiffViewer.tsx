@@ -48,7 +48,7 @@ import {
 import type { OpenedFile } from '@shared/types';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { COMMAND_CHANNELS } from '@shared/protocol';
-import { resolveDiffOpenFileState } from '@shared/diff-path';
+import { resolveOpenedDiffSourceState } from '@shared/diff-path';
 import { useFileContent } from './useFileContent';
 import { useDomTextHighlight } from '../../hooks/useDomTextHighlight';
 import { useFileViewerScroll } from '../../hooks/useFileViewerScroll';
@@ -240,23 +240,25 @@ export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
     const visibleLines = content.text.split('\n', MAX_RENDER_ROWS + 1);
     const truncatedClient = visibleLines.length > MAX_RENDER_ROWS;
     return {
-      rows: buildRows(
-        truncatedClient ? visibleLines.slice(0, MAX_RENDER_ROWS) : visibleLines,
-      ),
+      rows: buildRows(truncatedClient ? visibleLines.slice(0, MAX_RENDER_ROWS) : visibleLines),
       truncatedClient,
     };
   }, [content]);
 
-  // v0.3.3 Feature C:从 diff 文本反推「打开源文件」按钮的 relativePath + deleted 态。
-  // 只在拿到 diff 文本后算(纯字符串解析,见 src/shared/diff-path.ts)。
-  // 单文件 diff → 给出路径;多文件/畸形 → relativePath=null(按钮禁用);
-  // 删除文件(+++ /dev/null)→ deleted=true(按钮禁用 + tooltip)。
+  // 统一来源判定优先用 main 透传的 origin；普通外部 .diff 才解析文本。旧版受管
+  // __marina_diff__ 快照若没有 origin，会明确要求重新从 Git 面板打开，不能在
+  // session 已 cd 到其它 repo 后用当前仓库解释旧 relativePath。
   const openFileState = useMemo(() => {
     if (!content || content.kind !== 'diff') {
-      return { relativePath: null, deleted: false } as const;
+      return {
+        relativePath: null,
+        deleted: false,
+        repoIdentity: null,
+        requiresReopen: false,
+      } as const;
     }
-    return resolveDiffOpenFileState(content.text);
-  }, [content]);
+    return resolveOpenedDiffSourceState(file, content.text);
+  }, [content, file]);
 
   // 点「打开源文件」:走 GIT_OPEN_FILE(与 GitPanel 右键 openFile 同通道),main 端
   // GitService.openFile 读工作区当前内容进面板只读查看。删除/多文件态已在 UI 禁用,
@@ -265,7 +267,13 @@ export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
     const { relativePath } = openFileState;
     if (!relativePath) return; // 防御:disabled 态不应触发,但仍 guard
     window.api
-      .invoke(COMMAND_CHANNELS.GIT_OPEN_FILE, { sessionId, relativePath })
+      .invoke(COMMAND_CHANNELS.GIT_OPEN_FILE, {
+        sessionId,
+        relativePath,
+        // 只有 GitService 生成的 diff 才有 repoIdentity。指纹让 main 检查 session
+        // 是否仍位于生成该 diff 的仓库；普通外部 .diff 仍按当前 repo 的文本路径打开。
+        ...(openFileState.repoIdentity ? { repoIdentity: openFileState.repoIdentity } : {}),
+      })
       .catch((err: unknown) => {
         console.warn('[DiffViewer] open-file failed', err);
         toast.push({
@@ -348,11 +356,13 @@ export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
   // deleted → 禁用 + tooltip「文件已删除」;relativePath=null(多文件/畸形)→ 禁用 +
   // tooltip「无法确定文件」。
   const openFileDisabled = !openFileState.relativePath || openFileState.deleted;
-  const openFileTooltip = openFileState.deleted
-    ? tx('文件已删除', 'File has been deleted')
-    : !openFileState.relativePath
-      ? tx('无法确定文件', 'Cannot determine file')
-      : tx('打开源文件', 'Open source file');
+  const openFileTooltip = openFileState.requiresReopen
+    ? tx('来源信息已过期，请从 Git 面板重新打开 diff', 'Source expired; reopen from Git')
+    : openFileState.deleted
+      ? tx('文件已删除', 'File has been deleted')
+      : !openFileState.relativePath
+        ? tx('无法确定文件', 'Cannot determine file')
+        : tx('打开源文件', 'Open source file');
 
   return (
     <div className="diff-viewer">
@@ -369,9 +379,7 @@ export function DiffViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
           aria-label={openFileTooltip}
         >
           <Icon name="fileText" size={14} />
-          <span className="diff-viewer-toolbar-label">
-            {tx('打开源文件', 'Open source file')}
-          </span>
+          <span className="diff-viewer-toolbar-label">{tx('打开源文件', 'Open source file')}</span>
         </button>
       </div>
       {/* gutter 与正文是物理分离的 sibling pane。gutter 不参与正文的横向滚动,

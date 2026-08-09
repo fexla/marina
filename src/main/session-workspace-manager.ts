@@ -27,6 +27,7 @@
 import { promises as fs } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import type { OpenedFileOrigin } from '@shared/types';
 import { JsonStore } from './persistence';
 import { logger } from './logger';
 
@@ -64,7 +65,13 @@ interface WorkspaceManifest {
 /** 文件面板快照（<workspace>/__marina_state__/file-panel.json）。 */
 export interface FilePanelSnapshotData {
   version: 1;
-  openedFiles: Array<{ path: string; kind: string; external: boolean }>;
+  openedFiles: Array<{
+    path: string;
+    kind: string;
+    external: boolean;
+    /** 可选以兼容旧 version=1 快照；新 Git diff 必须持久化其导航来源。 */
+    origin?: OpenedFileOrigin;
+  }>;
   activeFilePath: string | null;
   scroll: Record<string, { scrollTop: number; scrollLeft: number }>;
   runs: Array<{ key: string; state: string; output: string; exitCode: number | null }>;
@@ -165,10 +172,7 @@ export class SessionWorkspaceManager {
     }
     if (recoveredActive || migrated) {
       if (recoveredActive) {
-        logger.info(
-          MODULE,
-          `initialize: marked recovered workspace record(s) closed`,
-        );
+        logger.info(MODULE, `initialize: marked recovered workspace record(s) closed`);
       }
       if (migrated) {
         logger.info(MODULE, `initialize: migrated manifest v1→v2`);
@@ -610,7 +614,10 @@ export class SessionWorkspaceManager {
    * sessionId 命名）；每条补 name=null, createdAt=closedAt ?? now, pinned=false, pathScope=null。
    * 已是 v2 的直接校验；损坏/未知 version 从空开始。
    */
-  private migrateManifest(raw: unknown): { records: Map<string, WorkspaceRecord>; migrated: boolean } {
+  private migrateManifest(raw: unknown): {
+    records: Map<string, WorkspaceRecord>;
+    migrated: boolean;
+  } {
     const result = new Map<string, WorkspaceRecord>();
     if (!raw || typeof raw !== 'object') {
       return { records: result, migrated: false };
@@ -650,7 +657,8 @@ export class SessionWorkspaceManager {
         const v2 = rec as Partial<WorkspaceRecord>;
         const closedAt = this.coerceClosedAt(v2.closedAt);
         const name = typeof v2.name === 'string' ? v2.name : null;
-        const createdAt = typeof v2.createdAt === 'number' ? v2.createdAt : closedAt ?? this.now();
+        const createdAt =
+          typeof v2.createdAt === 'number' ? v2.createdAt : (closedAt ?? this.now());
         result.set(id, {
           name,
           createdAt,
@@ -673,16 +681,44 @@ export class SessionWorkspaceManager {
     return null;
   }
 
+  /**
+   * 校验快照里的可选来源元数据。快照文件可被旧版本或外部工具修改，不能把任意
+   * JSON 强转后发给 renderer；只有完整 git-diff 形态才保留，否则按 legacy 无来源处理。
+   */
+  private sanitizeOpenedFileOrigin(value: unknown): OpenedFileOrigin | undefined {
+    if (!value || typeof value !== 'object') return undefined;
+    const candidate = value as Record<string, unknown>;
+    if (
+      candidate.kind !== 'git-diff' ||
+      typeof candidate.relativePath !== 'string' ||
+      typeof candidate.repoIdentity !== 'string' ||
+      candidate.repoIdentity.length === 0 ||
+      typeof candidate.sourceMissing !== 'boolean'
+    ) {
+      return undefined;
+    }
+    return {
+      kind: 'git-diff',
+      relativePath: candidate.relativePath,
+      repoIdentity: candidate.repoIdentity,
+      sourceMissing: candidate.sourceMissing,
+    };
+  }
+
   /** 快照字段归一（防损坏文件导致 renderer 崩）。 */
   private sanitizeSnapshot(parsed: FilePanelSnapshotData): FilePanelSnapshotData {
     const openedFiles = Array.isArray(parsed.openedFiles)
       ? parsed.openedFiles
           .filter((f) => f && typeof f.path === 'string' && typeof f.kind === 'string')
-          .map((f) => ({
-            path: f.path,
-            kind: f.kind,
-            external: f.external === true,
-          }))
+          .map((f) => {
+            const origin = this.sanitizeOpenedFileOrigin(f.origin);
+            return {
+              path: f.path,
+              kind: f.kind,
+              external: f.external === true,
+              ...(origin ? { origin } : {}),
+            };
+          })
       : [];
     const scroll: Record<string, { scrollTop: number; scrollLeft: number }> = {};
     if (parsed.scroll && typeof parsed.scroll === 'object') {

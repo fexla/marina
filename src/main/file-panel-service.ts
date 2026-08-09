@@ -41,7 +41,7 @@ import { createHash } from 'node:crypto';
 import { promises as fs, watch, type FSWatcher, type Stats } from 'node:fs';
 import { basename, dirname, resolve, join, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
-import type { OpenedFile } from '@shared/types';
+import type { OpenedFile, OpenedFileOrigin } from '@shared/types';
 import { detectFileKind } from '@shared/file-kind';
 import type {
   FilePanelSnapshot,
@@ -92,6 +92,14 @@ export interface FilePanelSessionLookup {
 }
 
 /**
+ * 打开文件时由上游附带的可选语义。FilePanelService 负责随 OpenedFile 状态保存并
+ * 广播，但不解释来源内容；导航规则仍由对应 viewer / source module 决定。
+ */
+export interface OpenFileOptions {
+  origin?: OpenedFileOrigin;
+}
+
+/**
  * v0.3.3 T12(testability enabler):按 sessionId 截其 owner window 的屏。
  * 注入式回调(FilePanelService 不引 electron,保持可测)—— index.ts 闭合
  * sessionManager.get → ownerWindowId → windowManager.getById → webContents.capturePage
@@ -139,7 +147,12 @@ export interface WorkspaceOps {
    * + renderer 恢复 scroll/runs。无绑定/无快照返 null。
    */
   readSnapshotForSession?(sessionId: string): Promise<{
-    openedFiles: Array<{ path: string; kind: string; external: boolean }>;
+    openedFiles: Array<{
+      path: string;
+      kind: string;
+      external: boolean;
+      origin?: OpenedFileOrigin;
+    }>;
     activeFilePath: string | null;
     scroll: Record<string, { scrollTop: number; scrollLeft: number }>;
     runs: unknown;
@@ -273,12 +286,20 @@ export class FilePanelService extends EventEmitter {
   /**
    * 打开文件并切为 active。已存在则等价 show(更新 mtime + 重置 watcher)。
    * 路径相对 session.currentCwd 解析;校验存在且是文件。
+   *
+   * @param options.origin 真正掌握来源的上游可附带语义元数据；重复普通打开同一路径
+   *   时保留已有 origin，避免一次 show/open 刷新把 Git diff 的导航真值抹掉。
    * @throws FilePanelError NotFound / NotFile / SessionMissing / ResolveFailed
    */
-  async openFile(sessionId: string, rawPath: string): Promise<FilePanelSnapshot> {
+  async openFile(
+    sessionId: string,
+    rawPath: string,
+    options: OpenFileOptions = {},
+  ): Promise<FilePanelSnapshot> {
     const abs = await this.resolveAndStat(sessionId, rawPath);
-    const opened = await this.toOpenedFile(abs);
     let state = this.panels.get(sessionId);
+    const existingOrigin = state?.files.find((file) => file.path === abs)?.origin;
+    const opened = await this.toOpenedFile(abs, options.origin ?? existingOrigin);
     if (!state) {
       state = { files: [], activePath: null, watchers: new Map(), watchTimers: new Map() };
       this.panels.set(sessionId, state);
@@ -891,7 +912,7 @@ export class FilePanelService extends EventEmitter {
     }
   }
 
-  private async toOpenedFile(abs: string): Promise<OpenedFile> {
+  private async toOpenedFile(abs: string, origin?: OpenedFileOrigin): Promise<OpenedFile> {
     const stat = await fs.stat(abs);
     return {
       path: abs,
@@ -899,6 +920,7 @@ export class FilePanelService extends EventEmitter {
       kind: detectFileKind(basename(abs)),
       size: stat.size,
       mtimeMs: stat.mtimeMs,
+      ...(origin ? { origin } : {}),
     };
   }
 
@@ -1041,6 +1063,7 @@ export class FilePanelService extends EventEmitter {
                 kind: f.kind as OpenedFile['kind'],
                 size: st.size,
                 mtimeMs: st.mtimeMs,
+                ...(f.origin ? { origin: f.origin } : {}),
               };
             } catch {
               return {
@@ -1050,6 +1073,7 @@ export class FilePanelService extends EventEmitter {
                 size: 0,
                 mtimeMs: 0,
                 missing: true,
+                ...(f.origin ? { origin: f.origin } : {}),
               };
             }
           }),

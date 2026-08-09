@@ -11,7 +11,7 @@
  * - 所有 fs 操作走临时目录(对齐 file-tree-service.test.ts 模式)。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, mkdir, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { BackgroundWorkScheduler } from './background-work-scheduler';
@@ -283,6 +283,7 @@ describe('GitService', () => {
 
   // ── openDiff:写临时文件 + 走 FilePanelService ─────────────────────
   it('openDiff:把 diff 写入 workspace/__marina_diff__ 并交给 FilePanelService', async () => {
+    await writeFile(join(repoDir, 'modified.txt'), 'source\n');
     // 让单文件 status 查询返回 modified,走 git diff HEAD 分支(不再触发 --no-index)
     const statusSample = '1 .M N... 100644 100644 100644 aaaa bbbb modified.txt\0';
     const diffText = 'diff --git a/modified.txt b/modified.txt\n+hello\n';
@@ -301,6 +302,123 @@ describe('GitService', () => {
     expect(opened.path).toContain('__marina_diff__');
     expect(opened.path.endsWith('.diff')).toBe(true);
     expect(opened.name.endsWith('.diff')).toBe(true);
+    // 导航目标由 GitService 的原始请求透传，DiffViewer 不应从展示文本反推。
+    expect(opened.origin).toEqual({
+      kind: 'git-diff',
+      relativePath: 'modified.txt',
+      repoIdentity: expect.any(String),
+      sourceMissing: false,
+    });
+  });
+
+  it('openDiff:中文 relativePath 作为来源元数据原样透传，不依赖 Git 引号文本', async () => {
+    const relativePath = '目录/中文.ts';
+    await mkdir(join(repoDir, '目录'));
+    await writeFile(join(repoDir, relativePath), 'source\n');
+    const statusSample = `1 .M N... 100644 100644 100644 aaaa bbbb ${relativePath}\0`;
+    const diffText = String.raw`diff --git "a/\347\233\256\345\275\225/\344\270\255\346\226\207.ts" "b/\347\233\256\345\275\225/\344\270\255\346\226\207.ts"
+--- "a/\347\233\256\345\275\225/\344\270\255\346\226\207.ts"
++++ "b/\347\233\256\345\275\225/\344\270\255\346\226\207.ts"`;
+    vi.spyOn(service as unknown as { runGit: (...a: never[]) => Promise<unknown> }, 'runGit')
+      .mockResolvedValueOnce({ stdout: Buffer.from(statusSample, 'utf8'), stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: Buffer.from(diffText, 'utf8'), stderr: '', exitCode: 0 });
+
+    const snap = await service.openDiff('s1', 'owner-1', relativePath);
+
+    expect(snap.files[0]?.origin).toEqual({
+      kind: 'git-diff',
+      relativePath,
+      repoIdentity: expect.any(String),
+      sourceMissing: false,
+    });
+  });
+
+  it('openDiff:来源 repo 变化后拒绝把旧 diff 路径解析到新仓库', async () => {
+    const relativePath = 'same-name.ts';
+    await writeFile(join(repoDir, relativePath), 'original repository\n');
+    const statusSample = `1 .M N... 100644 100644 100644 aaaa bbbb ${relativePath}\0`;
+    const diffText = `diff --git a/${relativePath} b/${relativePath}\n+changed\n`;
+    vi.spyOn(service as unknown as { runGit: (...a: never[]) => Promise<unknown> }, 'runGit')
+      .mockResolvedValueOnce({ stdout: Buffer.from(statusSample, 'utf8'), stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: Buffer.from(diffText, 'utf8'), stderr: '', exitCode: 0 });
+    const diff = await service.openDiff('s1', 'owner-1', relativePath);
+    const repoIdentity = diff.files[0]?.origin?.repoIdentity;
+    expect(repoIdentity).toEqual(expect.any(String));
+
+    const otherRepo = join(baseDir, 'other-repo');
+    await mkdir(join(otherRepo, '.git'), { recursive: true });
+    await writeFile(join(otherRepo, relativePath), 'wrong repository\n');
+    sessions.s1!.currentCwd = otherRepo;
+
+    await expect(
+      service.openFile('s1', 'owner-1', relativePath, repoIdentity),
+    ).rejects.toMatchObject({ code: 'NotARepo' });
+  });
+
+  it('openDiff:deleted 变更把 sourceMissing 写入来源元数据', async () => {
+    const relativePath = 'gone.ts';
+    const statusSample = `1 .D N... 100644 000000 000000 aaaa 0000 ${relativePath}\0`;
+    const diffText = `diff --git a/gone.ts b/gone.ts\n--- a/gone.ts\n+++ /dev/null\n`;
+    vi.spyOn(service as unknown as { runGit: (...a: never[]) => Promise<unknown> }, 'runGit')
+      .mockResolvedValueOnce({ stdout: Buffer.from(statusSample, 'utf8'), stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: Buffer.from(diffText, 'utf8'), stderr: '', exitCode: 0 });
+
+    const snap = await service.openDiff('s1', 'owner-1', relativePath);
+
+    expect(snap.files[0]?.origin).toEqual({
+      kind: 'git-diff',
+      relativePath,
+      repoIdentity: expect.any(String),
+      sourceMissing: true,
+    });
+  });
+
+  it('openDiff:冲突删除也把 sourceMissing 标为 true', async () => {
+    const relativePath = 'conflicted-delete.ts';
+    const statusSample = `u DU N... 100644 000000 000000 000000 aaaa bbbb cccc ${relativePath}\0`;
+    const diffText =
+      `diff --git a/${relativePath} b/${relativePath}\n` +
+      `deleted file mode 100644\n--- a/${relativePath}\n+++ /dev/null\n`;
+    vi.spyOn(service as unknown as { runGit: (...a: never[]) => Promise<unknown> }, 'runGit')
+      .mockResolvedValueOnce({ stdout: Buffer.from(statusSample, 'utf8'), stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: Buffer.from(diffText, 'utf8'), stderr: '', exitCode: 0 });
+
+    const snap = await service.openDiff('s1', 'owner-1', relativePath);
+
+    expect(snap.files[0]?.origin?.sourceMissing).toBe(true);
+  });
+
+  it('openDiff:拒绝经 symlink/junction 读取仓库外未跟踪文件内容', async () => {
+    await writeFile(join(nonRepoDir, 'secret.txt'), 'TOP_SECRET_OUTSIDE');
+    const escapedLink = join(repoDir, 'escaped-link');
+    try {
+      await symlink(nonRepoDir, escapedLink, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') return;
+      throw err;
+    }
+    const relativePath = 'escaped-link/secret.txt';
+    vi.spyOn(
+      service as unknown as { runGit: (...a: never[]) => Promise<unknown> },
+      'runGit',
+    ).mockResolvedValueOnce({
+      stdout: Buffer.from(`? ${relativePath}\0`, 'utf8'),
+      stderr: '',
+      exitCode: 0,
+    });
+    const noIndex = vi
+      .spyOn(
+        service as unknown as {
+          runGitNoIndex: (...a: never[]) => Promise<Buffer>;
+        },
+        'runGitNoIndex',
+      )
+      .mockResolvedValue(Buffer.from('+TOP_SECRET_OUTSIDE\n'));
+
+    await expect(service.openDiff('s1', 'owner-1', relativePath)).rejects.toMatchObject({
+      code: 'OutsideRepoRoot',
+    });
+    expect(noIndex).not.toHaveBeenCalled();
   });
 
   it('openDiff:拒绝 .. 路径(防越界读仓库外文件)', async () => {
@@ -345,6 +463,24 @@ describe('GitService', () => {
         code: 'OutsideRepoRoot',
       },
     );
+  });
+
+  it('openFile:拒绝经 symlink/junction 逃逸到仓库外', async () => {
+    await writeFile(join(nonRepoDir, 'secret.txt'), 'outside');
+    const escapedLink = join(repoDir, 'escaped-link');
+    try {
+      await symlink(nonRepoDir, escapedLink, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') return;
+      throw err;
+    }
+
+    await expect(
+      service.openFile('s1', 'owner-1', 'escaped-link/secret.txt'),
+    ).rejects.toMatchObject({ code: 'OutsideRepoRoot' });
+    await expect(
+      service.resolvePath('s1', 'owner-1', 'escaped-link/secret.txt'),
+    ).rejects.toMatchObject({ code: 'OutsideRepoRoot' });
   });
 
   it('openFile:SSH 拒绝', async () => {

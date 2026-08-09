@@ -84,6 +84,7 @@ import type {
   SshProfilesFile,
   RemoteDaemonProfilesFile,
   TemplatesFile,
+  OpenedFileOrigin,
 } from '@shared/types';
 
 async function scanInvalidPathsAsync(pathManager: PathManager): Promise<void> {
@@ -697,7 +698,12 @@ function bootstrap(): void {
         unpin: (sid, name) => sessionWorkspaceCoordinator.unpinWorkspace(sid, name),
         readSnapshotForSession: (sid) =>
           sessionWorkspaceCoordinator.readWorkspaceSnapshot(sid) as Promise<{
-            openedFiles: Array<{ path: string; kind: string; external: boolean }>;
+            openedFiles: Array<{
+              path: string;
+              kind: string;
+              external: boolean;
+              origin?: OpenedFileOrigin;
+            }>;
             activeFilePath: string | null;
             scroll: Record<string, { scrollTop: number; scrollLeft: number }>;
             runs: unknown;

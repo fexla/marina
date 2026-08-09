@@ -11,7 +11,12 @@
  *   的产品边界 —— Git 面板是"只读变更浏览器",不是 Git GUI。
  * - diff 产出策略:不引入新 FileKind / 新 IPC。diff 文本写入 session 的
  *   MARINA_WORKSPACE/__marina_diff__/<sha>.diff 受管临时文件,再交给既有
- *   FilePanelService.openFile,享受 watcher/tab/close/上限全套既有机制
+ *   FilePanelService.openFile,享受 watcher/tab/close/上限全套既有机制。
+ *   OpenedFile.origin 另存原始 relativePath + 不透明 repoIdentity，避免中文路径
+ *   展示转义和 session cd 跨仓库后误开同名文件。
+ * - 路径安全:所有会读取 worktree 内容的 diff/open/resolve 都先 realpath，再做
+ *   repoRoot 路径段包含校验，阻断 symlink/junction 逃逸。仅 confirmed deleted /
+ *   conflict 且目标 ENOENT 时允许 Git 从 HEAD/index 生成删除 diff。
  *   (见 docs/方案-Git面板与文件条目统一-20260718.md §6.2)。
  * - 动态 LayoutNode:evaluateAvailability 是 Git tab 出现/消失的判定函数,
  *   SessionManager cwd 变更时防抖调用它重算 tree(见 §6.7)。它只做 realpath +
@@ -37,6 +42,7 @@ import { createHash } from 'node:crypto';
 import { promises as fs, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { BackgroundDemandLevel, FilePanelSnapshot } from '@shared/protocol';
+import { resolveDiffOpenFileState } from '@shared/diff-path';
 import type { PathKind, SessionState } from '@shared/types';
 import type { FilePanelService } from './file-panel-service';
 import { BackgroundWorkScheduler } from './background-work-scheduler';
@@ -491,41 +497,52 @@ export class GitService extends EventEmitter {
     if (!repoRoot) {
       throw new GitError('NotARepo', '当前目录不在 Git 仓库内,无法生成 diff。');
     }
-    const target = await this.resolveInsideRepo(repoRoot, relativePath);
-    // target 在此仅用于越界校验(resolveInsideRepo 内部 realpath + isWithinRoot);
-    // 实际 diff 调用走 relativePath(git -C repoRoot 自行解析)。保留调用以触发校验。
-    void target;
+    // 先做不触碰文件系统的词法校验；produceDiff 查明 status tone 后，会在任何
+    // worktree 内容读取前 realpath + 包含校验。只有 confirmed deleted/conflict 且
+    // 目标确实不存在时允许跳过 realpath，以保留删除文件 diff。
+    this.resolveLexicallyInsideRepo(repoRoot, relativePath);
 
     // diff 策略:对工作区文件统一用 `git diff -- <path>`,它会覆盖:
     // - 已跟踪文件的 unstaged 改动
     // - 已 staged 的改动用 `git diff --cached`(下面分情况)
     // 为保持简单:先尝试 unstaged diff;若文件是新增(untracked 或 added),用
     // `git diff --no-index /dev/null <path>` 产生"全增"diff。
-    // porcelain v2 的 status letter 在 getStatus 时已知,但这里重新判定以避免
+    // porcelain v2 的 status tone 在 getStatus 时已知,但这里重新判定以避免
     // renderer 传错的 relativePath 与状态不匹配。最稳的做法:先看 `git status`
     // 单文件判定,再选 diff 子命令。
-    const diffText = await this.produceDiff(repoRoot, relativePath);
+    const produced = await this.produceDiff(repoRoot, relativePath);
 
-    const tempPath = await this.writeDiffTemp(sessionId, relativePath, diffText);
-    // FilePanelService.openFile:target 是 canonical path,加入已打开列表并切 active。
-    // detectFileKind('.diff') 会归类(本期先归 text,DiffViewer 落地时改 'diff')。
-    return this.filePanelService.openFile(sessionId, tempPath);
+    const tempPath = await this.writeDiffTemp(sessionId, relativePath, produced.text);
+    // GitService 是 repo-relative path 的真值源。把原始路径作为 OpenedFile origin
+    // 交给 FilePanelService 保存；DiffViewer 不再从 Git 的展示文本反推导航目标
+    // （中文路径默认会被 core.quotePath 写成 C 风格八进制转义）。
+    return this.filePanelService.openFile(sessionId, tempPath, {
+      origin: {
+        kind: 'git-diff',
+        relativePath,
+        repoIdentity: repoIdentityOf(repoRoot),
+        sourceMissing: produced.sourceMissing,
+      },
+    });
   }
 
   /**
    * v0.3.1 勘误:直接打开文件本身(相对仓库根的路径 → 绝对路径 → FilePanelService)。
    *
    * 与 openDiff 的区别:不走 git diff,直接读工作区当前内容(用户要"看文件本身"而非
-   * "看改了什么")。复用 resolveInsideRepo 的越界校验(防 ../ 逃逸),复用
-   * FilePanelService.openFile 的 tab/watcher/close 机制。
+   * "看改了什么")。现存目标在词法校验后还会 realpath，再按路径段验证 canonical
+   * target 仍在 repoRoot 内，阻断 symlink / Windows junction 逃逸。
    *
    * @param relativePath 相对 repoRoot
-   * @throws GitError NotARepo / 越界 / SSH / disabled;fs 读失败由 FilePanelService 抛
+   * @param expectedRepoIdentity DiffViewer 从 OpenedFile.origin 回传的不透明 repo 指纹；
+   *   给定时要求 session 当前仍在生成该 diff 的仓库。GitPanel 直接打开时不传。
+   * @throws GitError NotARepo / InvalidPath / OutsideRepoRoot / SSH / disabled
    */
   async openFile(
     sessionId: string,
     requesterId: string,
     relativePath: string,
+    expectedRepoIdentity?: string,
   ): Promise<FilePanelSnapshot> {
     const session = this.requireOwnerSession(sessionId, requesterId);
     if (pathKindFromPathId(session.pathId) === 'ssh') {
@@ -539,8 +556,14 @@ export class GitService extends EventEmitter {
     if (!repoRoot) {
       throw new GitError('NotARepo', '当前目录不在 Git 仓库内。');
     }
-    // resolveInsideRepo:realpath + isWithinRoot 越界校验,返回 canonical 绝对路径。
-    const absolutePath = await this.resolveInsideRepo(repoRoot, relativePath);
+    if (expectedRepoIdentity !== undefined && expectedRepoIdentity !== repoIdentityOf(repoRoot)) {
+      throw new GitError(
+        'NotARepo',
+        '打开 diff 源文件失败：该终端已离开生成此 diff 的仓库。可能原因：(1)终端 cd 到了另一个仓库，' +
+          '(2)原仓库目录被移动或替换。请切回原仓库后重新打开 diff，避免误开新仓库中的同名文件。',
+      );
+    }
+    const absolutePath = await this.resolveExistingInsideRepo(repoRoot, relativePath);
     return this.filePanelService.openFile(sessionId, absolutePath);
   }
 
@@ -562,7 +585,7 @@ export class GitService extends EventEmitter {
     if (!repoRoot) {
       throw new GitError('NotARepo', '当前目录不在 Git 仓库内。');
     }
-    return this.resolveInsideRepo(repoRoot, relativePath);
+    return this.resolveExistingInsideRepo(repoRoot, relativePath);
   }
 
   /**
@@ -742,8 +765,13 @@ export class GitService extends EventEmitter {
     }
   }
 
-  /** 验证 renderer 传入的 relativePath,并在 realpath 后再次验证 repoRoot 包含关系。 */
-  private async resolveInsideRepo(repoRoot: string, rawRelativePath: string): Promise<string> {
+  /**
+   * 验证 renderer 传入的 relativePath，只做词法解析与路径段包含校验。
+   * openDiff 用它做第一层校验，但任何 worktree 内容读取前还必须继续调用
+   * assertDiffWorktreeTargetSafe；open/resolve 则调用 resolveExistingInsideRepo。
+   * 不能把这个词法结果直接交给 fs、Git worktree diff 或 FilePanelService。
+   */
+  private resolveLexicallyInsideRepo(repoRoot: string, rawRelativePath: string): string {
     if (
       typeof rawRelativePath !== 'string' ||
       rawRelativePath.includes('\0') ||
@@ -762,6 +790,72 @@ export class GitService extends EventEmitter {
       throw new GitError('OutsideRepoRoot', '请求路径位于仓库根目录之外,已拒绝。');
     }
     return lexicalTarget;
+  }
+
+  /**
+   * 在 Git 读取 worktree 内容之前验证真实目标仍位于 repo 内。
+   *
+   * deleted/conflict 的文件可能已不存在，此时 Git 只需读取 HEAD/index 就能生成删除
+   * diff，可安全放行 ENOENT。其它 tone（含 status 查询失败后的 modified 兜底）必须
+   * 有可 realpath 的现存目标。若目标存在，任何 symlink/junction 根外跳转都拒绝。
+   */
+  private async assertDiffWorktreeTargetSafe(
+    repoRoot: string,
+    rawRelativePath: string,
+    statusTone: GitStatusTone,
+  ): Promise<void> {
+    const lexicalTarget = this.resolveLexicallyInsideRepo(repoRoot, rawRelativePath);
+    try {
+      const canonicalTarget = await fs.realpath(lexicalTarget);
+      if (!isWithinRoot(repoRoot, canonicalTarget)) {
+        throw new GitError(
+          'OutsideRepoRoot',
+          'Git diff 目标通过 symlink 或 junction 指向仓库根之外，已拒绝读取，防止外部文件内容进入 diff。',
+        );
+      }
+    } catch (err) {
+      if (err instanceof GitError) throw err;
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' && (statusTone === 'deleted' || statusTone === 'conflict')) return;
+      throw new GitError(
+        'InvalidPath',
+        `生成 Git diff 前无法验证工作区文件。可能原因：(1)文件在状态读取后被删除或重命名，` +
+          `(2)无读取权限，(3)symlink/junction 目标已失效。请刷新 Git 面板后重试。原始错误：${
+            err instanceof Error ? err.message : String(err)
+          }`,
+      );
+    }
+  }
+
+  /**
+   * 解析一个现存 repo path，并在 fs.realpath 后再次校验 canonical target。
+   * 词法包含只能挡 `..`，挡不住 repo 内 symlink / Windows junction 指向根外；
+   * 因此 openFile / resolvePath 必须统一走这个深模块接口。
+   */
+  private async resolveExistingInsideRepo(
+    repoRoot: string,
+    rawRelativePath: string,
+  ): Promise<string> {
+    const lexicalTarget = this.resolveLexicallyInsideRepo(repoRoot, rawRelativePath);
+    let canonicalTarget: string;
+    try {
+      canonicalTarget = await fs.realpath(lexicalTarget);
+    } catch (err) {
+      throw new GitError(
+        'InvalidPath',
+        `Git 文件路径不可访问。可能原因：(1)文件已删除或重命名，(2)无读取权限，` +
+          `(3)symlink/junction 目标已失效。请刷新 Git 面板后重试。原始错误：${
+            err instanceof Error ? err.message : String(err)
+          }`,
+      );
+    }
+    if (!isWithinRoot(repoRoot, canonicalTarget)) {
+      throw new GitError(
+        'OutsideRepoRoot',
+        'Git 文件通过 symlink 或 junction 指向仓库根之外，已拒绝打开。请直接在外部工具中查看该目标。',
+      );
+    }
+    return canonicalTarget;
   }
 
   // ────────────────────────────────────────────────────────────────
@@ -889,15 +983,18 @@ export class GitService extends EventEmitter {
    * 为单个文件产生 unified diff。
    *
    * 策略:
-   * 1. 先查 status 决定 diff 子命令(untracked/add 用 --no-index vs /dev/null;
-   *    tracked 改动用 `git diff -- <path>` 含 unstaged + 已 staged 部分)。
+   * 1. 先查 status 决定 diff 子命令(untracked 用 --no-index vs /dev/null；
+   *    tracked / staged-added 用 `git diff HEAD -- <path>`)。
    * 2. 截断 MAX_DIFF_TEXT_BYTES(尾部裁切 + 标记,对齐 file-panel text 上限)。
    */
-  private async produceDiff(repoRoot: string, relativePath: string): Promise<string> {
+  private async produceDiff(
+    repoRoot: string,
+    relativePath: string,
+  ): Promise<{ text: string; sourceMissing: boolean }> {
     // 用 porcelain v2 单文件查状态(比 `git status` 文本解析稳)。
     // 注意:对 untracked 文件 porcelain v2 仍会列出 `? <path>`。
     // index.lock 防护:同 getStatus(runGit 统一注入 env GIT_OPTIONAL_LOCKS=0)。
-    let statusLetter = 'M'; // 兜底按 modified 处理
+    let statusTone: GitStatusTone = 'modified'; // 查询失败时按 modified 兜底
     try {
       const { stdout } = await this.runGit(repoRoot, [
         'status',
@@ -908,21 +1005,26 @@ export class GitService extends EventEmitter {
       ]);
       const parsed = parsePorcelainV2(stdout.toString('utf8'));
       // 找到该文件的状态;renamed 取新路径匹配。
-      for (const g of parsed) {
-        for (const e of g.entries) {
-          if (e.relativePath === relativePath || e.oldPath === relativePath) {
-            statusLetter = toneToLetter(g.tone);
+      for (const group of parsed) {
+        for (const entry of group.entries) {
+          if (entry.relativePath === relativePath || entry.oldPath === relativePath) {
+            statusTone = group.tone;
           }
         }
       }
     } catch {
-      // status 查询失败不阻断 diff;按 modified 兜底重试。
-      statusLetter = 'M';
+      // status 查询失败不阻断 diff;按 modified 兜底重试。安全校验仍要求目标现存且
+      // canonical path 在 repo 内，因此失败查询不能把 missing/越界目标放行。
+      statusTone = 'modified';
     }
+
+    // `git diff HEAD` 与 `git diff --no-index` 都会读取 worktree 内容；即使 pathspec
+    // 词法上在 repo 内，父目录 junction / symlink 也可能把真实文件指向根外。
+    await this.assertDiffWorktreeTargetSafe(repoRoot, relativePath, statusTone);
 
     let diffBuffer: Buffer;
     try {
-      if (statusLetter === '?') {
+      if (statusTone === 'untracked') {
         // 未跟踪文件:用 --no-index /dev/null <path> 产生"全增"diff。
         // --no-index 在仓库外也能用,exit code 1 = 有差异(正常),0 = 无差异。
         const r = await this.runGitNoIndex(repoRoot, relativePath);
@@ -930,8 +1032,8 @@ export class GitService extends EventEmitter {
       } else {
         // 已跟踪:unstaged + staged 都看(用户期望"工作区现在与 HEAD 差多少")。
         // git diff HEAD -- <path> 同时含 staged+unstaged vs 最近 commit。
-        // 但对新增但已 add 的文件,status letter 是 A,HEAD 可能不存在该文件 →
-        // git diff HEAD 会输出全增,与 --no-index 等价,所以 A 也走 HEAD 分支。
+        // 但对新增但已 add 的文件,status tone 是 added,HEAD 可能不存在该文件 →
+        // git diff HEAD 会输出全增,与 --no-index 等价,所以 added 也走 HEAD 分支。
         const r = await this.runGit(repoRoot, ['diff', 'HEAD', '--no-color', '--', relativePath]);
         diffBuffer = r.stdout;
       }
@@ -943,11 +1045,19 @@ export class GitService extends EventEmitter {
       );
     }
     const text = diffBuffer.toString('utf8');
-    if (text.length <= MAX_DIFF_TEXT_BYTES) return text;
-    // 尾部裁切 + 标记(对齐 file-panel-service 的 text 截断哲学)。
-    return (
-      text.slice(0, MAX_DIFF_TEXT_BYTES) + '\n\n... diff 过大已截断,请用外部工具查看完整差异 ...\n'
-    );
+    const renderedText =
+      text.length <= MAX_DIFF_TEXT_BYTES
+        ? text
+        : text.slice(0, MAX_DIFF_TEXT_BYTES) +
+          '\n\n... diff 过大已截断,请用外部工具查看完整差异 ...\n';
+    // status tone 是首要真值；冲突删除或 status 查询失败时，diff 的 +++ /dev/null /
+    // deleted file mode 仍能确认源文件不存在。这里只解析 missing 状态，不反推导航路径。
+    const sourceMissing =
+      statusTone === 'deleted' ||
+      resolveDiffOpenFileState(text).deleted ||
+      /^deleted file mode\b/m.test(text) ||
+      /Binary files .+ and \/dev\/null differ/m.test(text);
+    return { text: renderedText, sourceMissing };
   }
 
   /** `git diff --no-index /dev/null <path>` 包装(exit 1 是正常的"有差异")。 */
@@ -1253,6 +1363,14 @@ function repoKeyOf(repoRoot: string): string {
 }
 
 /**
+ * 生成可安全暴露给 renderer 的 repo 身份。它只用于相等性校验，不可反解绝对路径；
+ * 取完整 SHA-256 避免不同仓库误碰撞。输入先走 repoKeyOf，吸收 Windows 大小写差异。
+ */
+function repoIdentityOf(repoRoot: string): string {
+  return createHash('sha256').update(repoKeyOf(repoRoot)).digest('hex');
+}
+
+/**
  * 解析 `git status --porcelain=v2 -z` 输出为分组列表。
  *
  * porcelain v2 行格式(简化):
@@ -1347,21 +1465,4 @@ function trackedTone(xy: string): GitStatusTone {
 function parseTrackedPath(pathPart: string, _xy: string): GitStatusEntry {
   // 1 行的 path 不含 tab(renamed 在 2 行)。直接返回。
   return { relativePath: pathPart };
-}
-
-function toneToLetter(tone: GitStatusTone): string {
-  switch (tone) {
-    case 'conflict':
-      return 'U';
-    case 'modified':
-      return 'M';
-    case 'added':
-      return 'A';
-    case 'deleted':
-      return 'D';
-    case 'renamed':
-      return 'R';
-    case 'untracked':
-      return '?';
-  }
 }

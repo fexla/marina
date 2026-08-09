@@ -919,6 +919,27 @@ export interface SessionRuntimeShape {
 export type FileKind = 'text' | 'markdown' | 'image' | 'diff' | 'unknown';
 
 /**
+ * 已打开文件的来源语义。来源由真正掌握导航目标的 main 模块写入，renderer 只消费，
+ * 不应再从展示内容或临时文件名反推业务路径。
+ *
+ * `git-diff` 保留 GitService 收到的原始 repo-relative path。Git 默认会把中文路径
+ * 在 diff 文本中写成 C 风格八进制转义；若丢掉这里的真值，DiffViewer 只能解析
+ * 展示文本，最终会把 `\\344...` 之类的字符串误当成磁盘路径。
+ */
+export type OpenedFileOrigin = {
+  readonly kind: 'git-diff';
+  /** 相对 repoRoot 的原始路径，可原样回传 cmd:git:open-file。 */
+  readonly relativePath: string;
+  /**
+   * repoRoot 的不透明稳定指纹。Diff 打开后 session 可能 cd 到另一个仓库；回传此值
+   * 让 main 拒绝把旧 relativePath 错解到新仓库，同时不向 renderer 暴露 repo 绝对路径。
+   */
+  readonly repoIdentity: string;
+  /** 生成 diff 时工作区源文件已不存在（典型为 deleted 变更）。 */
+  readonly sourceMissing: boolean;
+};
+
+/**
  * 一个"已打开"文件的元数据。**不含文件内容** —— 内容按需由 renderer 通过
  * cmd:file-panel:read 拉取(text/markdown 返回字符串,image 返回 base64 dataUrl)。
  * 这样切换 tab / 关闭文件时不浪费 IPC 带宽,也避免大文件一次性塞进 store。
@@ -944,6 +965,8 @@ export interface OpenedFile {
   mtimeMs: number;
   /** 磁盘上文件已不存在(僵尸 tab)。undefined/false = 存在。见类型注释。 */
   missing?: boolean;
+  /** 可选来源语义；普通文件没有。用于保留跨模块导航所需的原始真值。 */
+  origin?: OpenedFileOrigin;
 }
 
 /** FileTreePanel 可访问的 session 局部逻辑根；绝不是产品 Project / Workspace。 */
