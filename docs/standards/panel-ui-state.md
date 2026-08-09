@@ -31,9 +31,12 @@
 
 ### G.2 树形缩进:单一真相源(必选)
 
-- 所有树形层级缩进**只能**用 `<FileListRow depth={n}>`(唯一渲染入口),内部 `calc(var(--tree-indent-unit, 14px) * depth)`。
-- 递归组件把 `depth` 往下传(根 0,每层 +1)。
-- **不许**:自建 CSS 层叠缩进(`.x .x { margin-left }`)、自写 `depth * <硬编码>` inline style、改 `--tree-indent-unit` 的值(要改全局只改 `:root` 一处)。
+- 所有树行**只能**用 `<FileListRow treeNode={...}>`(唯一渲染入口)。`treeNode` 是不可拆接口:
+  - 叶子:`{ kind:'leaf', depth:n }`
+  - 目录:`{ kind:'branch', depth:n, expanded:boolean }`
+- `FileListRow` 内部一次性负责三件事:用 `calc(var(--tree-indent-unit, 14px) * depth)` 缩进、给 branch/leaf 保留同宽 disclosure gutter、按 expanded 渲染 chevron + `aria-expanded`。
+- 递归组件只把 `depth` 往下传(根 0,每层 +1),不得自己画 chevron 或 leaf spacer。这样不会再出现「目录有箭头槽、文件没占位，层级缩进被抵消」的问题。
+- **不许**:自建 CSS 层叠缩进(`.x .x { margin-left }`)、自写 `depth * <硬编码>` inline style、给 `FileListRow` 另塞手工 leading/spacer、改 `--tree-indent-unit` 的值(要改全局只改 `:root` 一处)。
 
 ### G.3 文件 icon:单一数据源(必选)
 

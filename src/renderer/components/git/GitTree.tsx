@@ -5,8 +5,9 @@
  * @关键设计:
  * - 复用 <FileListRow>(variant=list) 渲染每个节点,与 file-tree 视觉一致:
  *   目录=folder icon + depth 缩进 + 展开箭头;文件=file icon + tone badge。
- * - 展开态:本地 useState<Set<string>> 存「收起的目录」(默认全展开 — 用户看变更
- *   要一眼看到全部,收起是主动操作)。Set 存 dirPath,toggle 时增删。
+ * - 展开态:usePanelUiState<Set<string>> 存「收起的目录」(默认全展开 — 用户看变更
+ *   要一眼看到全部,收起是主动操作)。L1 组件外缓存让面板卸载后仍保留；Set 存
+ *   dirPath,toggle 时增删。
  * - 目录 tone 继承:buildGitTree 已算好「子树最严重 tone」赋给目录,这里用 toneBadge
  *   显示在目录行(让用户知道这个目录里有哪种变更)。
  * - 点击文件 → openDiff(relativePath)(与 flat 模式同回调,行为一致)。
@@ -24,7 +25,6 @@ import { usePanelUiState } from '../../hooks/usePanelUiState';
 import { FileListRow, type StatusBadge, type StatusTone } from '../common/FileListRow';
 import { HighlightedText } from '../common/HighlightedText';
 import type { ContextMenuItem } from '../ContextMenu';
-import { Icon } from '../icons';
 import type { GitTreeNode } from '@shared/build-git-tree';
 
 interface GitTreeProps {
@@ -38,11 +38,7 @@ interface GitTreeProps {
   /** v0.3.2 B1:目录节点右键菜单构建器。onToggle 由 GitTree 传入(访问内部 collapsed
    * state),其余能力(relativePath/resolveAbsolutePath/reveal/openExternal)由
    * GitPanel 注入 —— 与 file-tree 目录菜单对称。 */
-  buildDirMenu: (
-    dirPath: string,
-    tone: GitStatusTone,
-    onToggle: () => void,
-  ) => ContextMenuItem[];
+  buildDirMenu: (dirPath: string, tone: GitStatusTone, onToggle: () => void) => ContextMenuItem[];
   /** v0.3.1:搜索高亮查询(空串 = 不高亮)。 */
   highlightQuery?: string;
   /** v0.3.1:搜索高亮大小写敏感。 */
@@ -113,7 +109,7 @@ export function GitTree({
             />
           }
           title={label}
-          depth={depth}
+          treeNode={{ kind: 'leaf', depth }}
           statusBadge={badgeFor(node.tone)}
           onClick={() => onOpenDiff(node.relativePath)}
           buildContextMenu={() => buildEntryMenu(node.relativePath, node.tone)}
@@ -131,17 +127,12 @@ export function GitTree({
           icon="folder"
           label={`${node.name} (${childCount})`}
           title={node.dirPath}
-          depth={depth}
+          treeNode={{ kind: 'branch', depth, expanded: !isCollapsed }}
           statusBadge={badgeFor(node.tone)}
-          ariaExpanded={!isCollapsed}
-          leading={<Icon name={isCollapsed ? 'chevronRight' : 'chevronDown'} size={12} />}
           onClick={() => toggle(node.dirPath)}
-          buildContextMenu={() =>
-            buildDirMenu(node.dirPath, node.tone, () => toggle(node.dirPath))
-          }
+          buildContextMenu={() => buildDirMenu(node.dirPath, node.tone, () => toggle(node.dirPath))}
         />
-        {!isCollapsed &&
-          node.children.map((child) => renderNode(child, depth + 1))}
+        {!isCollapsed && node.children.map((child) => renderNode(child, depth + 1))}
       </div>
     );
   };

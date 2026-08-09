@@ -154,8 +154,9 @@
 
   /* —— 布局度量(主题无关,所有主题共享) ——
    * ADR-019:树形缩进单一真相源。所有树形面板(file-tree / git-tree / 未来新面板)
-   * 的层级缩进都必须经此变量,不许硬编码 px。消费入口统一是 FileListRow 的 depth
-   * prop:calc(var(--tree-indent-unit) * depth);不另设 CSS 层叠缩进规则。 */
+   * 的层级缩进都必须经此变量,不许硬编码 px。消费入口统一是 FileListRow 的
+   * treeNode.depth:calc(var(--tree-indent-unit) * depth)；treeNode 同时统一 disclosure
+   * gutter，避免调用方漏掉叶子占位；不另设 CSS 层叠缩进规则。 */
   --tree-indent-unit: 14px;
 }
 
@@ -2671,21 +2672,14 @@ html[data-maximized='true'] .app-root.with-shell {
   background-color: var(--color-bg-elevated, #f0f);
 }
 
-/* ADR-019:层级缩进改由 FileListRow 的 depth prop 提供(calc(var(--tree-indent-unit) * depth))。
- * 原先的 .file-tree-entry .file-tree-entry { margin-left:14px } CSS 层叠规则已移除 ——
- * 它与 Git 面板的 depth inline style 机制不一致;统一到 depth prop 后,file-tree / git-tree
- * / 未来新面板视觉一致,且新面板用 FileListRow 即得正确缩进,不需自建层叠规则。 */
+/* ADR-019:层级缩进由 FileListRow.treeNode 提供。treeNode 把 depth、branch/leaf、
+ * expanded 合为一个接口，FileListRow 内部统一 margin + disclosure gutter；原先的
+ * CSS 层叠缩进与 file-tree 专属 leaf spacer 均已移除。 */
 
 .file-tree-entry-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.file-tree-leaf-spacer {
-  display: inline-block;
-  width: 12px;
-  flex: 0 0 12px;
 }
 
 .file-tree-indent,
@@ -2754,6 +2748,24 @@ html[data-maximized='true'] .app-root.with-shell {
   font: inherit;
   text-align: left;
   padding: 3px 8px;
+}
+
+/* ADR-019:所有树行(branch 与 leaf)都有同一个 12px disclosure gutter。
+ * leaf 留空但保留宽度；branch 由 FileListRow 根据 expanded 自动画 chevron。
+ * 与 depth margin 绑定在 treeNode 接口后，子文件 icon 必然比父目录深一单位。 */
+.file-list-row-tree-disclosure {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+}
+
+.file-list-row-tree-disclosure > svg {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
 }
 
 /* Lucide <svg> 默认是 flex-shrink:1；长文件名会把 14px icon 横向压扁到约 4px。

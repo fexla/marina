@@ -9,12 +9,16 @@
  *   tab(file-panel 的横向标签页)。两者天然有不同视觉语言(VS Code 的
  *   explorer 与 tab 也是两套样式),强行合并会牺牲表达力;variant 是对
  *   "统一抽象"的正确切片 —— 统一的是逻辑,不是像素。
+ * - 树结构是一个不可拆接口:`treeNode` 同时携带 depth、branch/leaf 与展开态。
+ *   本组件统一渲染 disclosure gutter + 层级 margin + aria-expanded，调用方不能
+ *   再出现「目录手拼 chevron、叶子漏 spacer，14px 缩进被 16px gutter 抵消」。
  * - 右键菜单统一走既有 ContextMenu(useContextMenuApi),不重复造菜单基础设施。
  *   buildContextMenu 返回 ContextMenuItem[],由本组件 onContextMenu 触发。
  * - 焦点归还:ContextMenu 的 previousActiveElementRef 机制(CP-4 勘误 FOC-5)
  *   已处理菜单关闭后的焦点回收,本组件无需重复。
  *
- * @对应文档章节: docs/方案-Git面板与文件条目统一-20260718.md §5.2;ADR-016。
+ * @对应文档章节: docs/方案-Git面板与文件条目统一-20260718.md §5.2;
+ *   docs/standards/panel-ui-state.md ADR-019。
  *
  * @不要在这里做的事:
  * - 不决定条目数据来源(由各 Panel 注入)。
@@ -26,19 +30,21 @@ import { Icon, type IconName } from '../icons';
 import { useContextMenuApi, type ContextMenuItem } from '../ContextMenu';
 
 /** Git 变更状态徽标的语义色映射。null = 无徽标(file-tree / file-panel 条目)。 */
-export type StatusTone =
-  | 'modified'
-  | 'added'
-  | 'deleted'
-  | 'renamed'
-  | 'untracked'
-  | 'conflict';
+export type StatusTone = 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' | 'conflict';
 
 /** 徽标字母(M/A/D/R/?/C)与 tone 的组合;statusBadge=null 时不渲染徽标。 */
 export interface StatusBadge {
   letter: string;
   tone: StatusTone;
 }
+
+/**
+ * list 行的树结构语义。depth 与 disclosure role 必须一起提交，防止调用方只缩进
+ * 或只画箭头；branch 的 expanded 同时驱动图标和 aria-expanded。
+ */
+export type FileListTreeNode =
+  | { kind: 'leaf'; depth: number }
+  | { kind: 'branch'; depth: number; expanded: boolean };
 
 export interface FileListRowProps {
   /**
@@ -55,8 +61,11 @@ export interface FileListRowProps {
   label: ReactNode;
   /** tooltip(完整路径等)。 */
   title?: string;
-  /** 缩进层级(list variant 专用;tab 忽略)。每层 14px,对齐既有 file-tree 视觉。 */
-  depth?: number;
+  /**
+   * 树节点语义(list variant 专用)。不传表示普通平铺列表；传入后统一获得层级缩进、
+   * 12px disclosure gutter 与 branch 展开 ARIA，叶子也保留等宽空 gutter。
+   */
+  treeNode?: FileListTreeNode;
   /** 状态徽标(Git 面板的 M/A/D 等)。null = 不渲染。 */
   statusBadge?: StatusBadge | null;
   /** 选中 / active 态(tab 的 active 或 list 的 hover-selected)。 */
@@ -72,12 +81,8 @@ export interface FileListRowProps {
   buildContextMenu?: () => ContextMenuItem[];
   /** 右侧附加槽(tab 的 × 关闭按钮 / 列表项的活跃点)。 */
   trailing?: ReactNode;
-  /** 左侧二级槽(chevron 展开箭头等,置于 icon 之前)。 */
-  leading?: ReactNode;
   /** 禁用交互(不响应 click / contextmenu,视觉灰显)。 */
   disabled?: boolean;
-  /** 可访问性:目录展开态(list variant 专用)。未传则不渲染 aria-expanded。 */
-  ariaExpanded?: boolean | undefined;
   /** 可访问性:条目的 ARIA role 描述。默认由 variant 决定。 */
   ariaLabel?: string | undefined;
 }
@@ -96,16 +101,14 @@ export function FileListRow({
   iconCornerBadge,
   label,
   title,
-  depth = 0,
+  treeNode,
   statusBadge,
   selected = false,
   dimmed = false,
   onClick,
   buildContextMenu,
   trailing,
-  leading,
   disabled = false,
-  ariaExpanded,
   ariaLabel,
 }: FileListRowProps): JSX.Element {
   const ctxMenu = useContextMenuApi();
@@ -159,15 +162,30 @@ export function FileListRow({
     );
   }
 
-  // variant === 'list'
+  // variant === 'list'。树层级、disclosure gutter 与 ARIA 必须在同一模块内生成：
+  // 过去 depth 在这里、chevron/spacer 却由各 caller 手拼，Git 叶子漏 spacer 后
+  // 14px depth 被父目录的 12px chevron + 4px gap 抵消，图标看起来同级。
+  const treeDepth = treeNode ? Math.max(0, Math.trunc(treeNode.depth)) : 0;
+  const treeDisclosure = treeNode ? (
+    <span className="file-list-row-tree-disclosure" aria-hidden="true">
+      {treeNode.kind === 'branch' && (
+        <Icon name={treeNode.expanded ? 'chevronDown' : 'chevronRight'} size={12} />
+      )}
+    </span>
+  ) : null;
+  const treeExpanded = treeNode?.kind === 'branch' ? treeNode.expanded : undefined;
+
   return (
     <div
       className={`file-list-row file-list-row-list${selected ? ' selected' : ''}${
         dimmed ? ' dimmed' : ''
       }${disabled ? ' disabled' : ''}`}
-      // ADR-019:缩进走 --tree-indent-unit(树形缩进单一真相源),与 file-tree / git-tree
-      // 统一。depth=0 不加 margin(根层贴左),>0 时按 depth 倍数缩进。
-      style={depth > 0 ? { marginLeft: `calc(var(--tree-indent-unit, 14px) * ${depth})` } : undefined}
+      // ADR-019:缩进只走 --tree-indent-unit；treeNode 把 depth 与 gutter 绑定为一个接口。
+      style={
+        treeDepth > 0
+          ? { marginLeft: `calc(var(--tree-indent-unit, 14px) * ${treeDepth})` }
+          : undefined
+      }
     >
       <button
         type="button"
@@ -176,10 +194,10 @@ export function FileListRow({
         disabled={disabled}
         title={title}
         onContextMenu={handleContextMenu}
-        aria-expanded={ariaExpanded}
+        aria-expanded={treeExpanded}
         aria-label={ariaLabel}
       >
-        {leading}
+        {treeDisclosure}
         {renderedIcon}
         <span className="file-list-row-label-text">{label}</span>
         {statusBadge && (

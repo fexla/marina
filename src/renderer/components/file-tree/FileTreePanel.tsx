@@ -136,7 +136,11 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
         return { ...current, [key]: next };
       });
       try {
-        const snapshot = await window.api.invoke(COMMAND_CHANNELS.FILE_TREE_LIST_DIRECTORY, { sessionId, rootId, relativePath });
+        const snapshot = await window.api.invoke(COMMAND_CHANNELS.FILE_TREE_LIST_DIRECTORY, {
+          sessionId,
+          rootId,
+          relativePath,
+        });
         // 大目录返回最多 500 项；标记为 transition 让 React concurrent renderer
         // 可在构建大量行时主动让出主线程，避免一次同步更新冻结整个窗口。
         startTransition(() => {
@@ -247,12 +251,9 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
     void waitForClaim(sessionId).then((outcome) => {
       if (cancelled || !outcome.ok) return;
       window.api
-        .invoke(
-          COMMAND_CHANNELS.FILE_TREE_GET_ROOTS,
-          {
-            sessionId,
-          },
-        )
+        .invoke(COMMAND_CHANNELS.FILE_TREE_GET_ROOTS, {
+          sessionId,
+        })
         .then((response) => {
           if (cancelled) return;
           setRoots(response.roots);
@@ -283,10 +284,7 @@ export function FileTreePanel({ sessionId, search }: FileTreePanelProps): JSX.El
     Promise.all(
       missing.map((r) =>
         window.api
-          .invoke(
-            COMMAND_CHANNELS.FILE_TREE_LIST_RECURSIVE,
-            { sessionId, rootId: r.id },
-          )
+          .invoke(COMMAND_CHANNELS.FILE_TREE_LIST_RECURSIVE, { sessionId, rootId: r.id })
           .then((res) => [r.id, res] as const)
           .catch((err: unknown) => {
             console.warn('[FileTreePanel] list-recursive failed', r.id, err);
@@ -768,12 +766,19 @@ function FileTreeEntryRow({
 
   return (
     <div className="file-tree-entry">
-      {/* 重构后:条目本体走统一的 FileListRow(variant=list),为后续右键菜单与
-          git/file-panel 三面板一致化打基础。leading 槽放 chevron/filler 以保留
-          原视觉对齐。目录展开的子树仍在本组件内递归渲染(不变)。 */}
+      {/* ADR-019:treeNode 把 depth + branch/leaf + expanded 一次性交给 FileListRow；
+          disclosure gutter / chevron / leaf spacer 都由共享行模块渲染，调用方不拼像素。 */}
       <FileListRow
         variant="list"
-        depth={depth}
+        treeNode={
+          isDirectory
+            ? {
+                kind: 'branch',
+                depth,
+                expanded: !!state?.expanded || isSearching,
+              }
+            : { kind: 'leaf', depth }
+        }
         icon={isDirectory ? 'folder' : fileIconFor(entry.name)}
         label={
           <HighlightedText
@@ -786,18 +791,7 @@ function FileTreeEntryRow({
         onClick={() =>
           isDirectory ? onToggle(rootId, entry.relativePath) : onOpen(rootId, entry.relativePath)
         }
-        ariaExpanded={isDirectory ? !!state?.expanded || isSearching : undefined}
         buildContextMenu={buildContextMenu}
-        leading={
-          isDirectory ? (
-            <Icon
-              name={state?.expanded || isSearching ? 'chevronDown' : 'chevronRight'}
-              size={12}
-            />
-          ) : (
-            <span className="file-tree-leaf-spacer" />
-          )
-        }
       />
       {isDirectory && (
         <DirectoryChildren
