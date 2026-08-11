@@ -2894,30 +2894,29 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
     expect(created.length).toBe(base + 1); // pi new 多建一个
   });
 
-  it('resume 切回仍活着的 workspace（不新建）', async () => {
+  it('resume 带 workspaceId 且活 → 切回不新建(新机制:绑定存 pi 对话 entry)', async () => {
     const { mgr, created, pi } = makePiManager();
     const { sid } = await makeSession(mgr);
-    await pi.handlePiSessionEvent(sid, {
+    // new 先建一个 workspace(返回 id,模拟 bridge 存进 entry)
+    const r = await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'new',
     });
-    await pi.handlePiSessionEvent(sid, {
-      piSessionId: 'pi-2',
-      event: 'session_start',
-      reason: 'new',
-    });
+    const wsId = r?.workspaceId;
+    expect(wsId).toBeDefined();
     const beforeResume = created.length;
-    // resume pi-1：映射活(ws-对应 getRecord truthy) → 切回，不新建
+    // resume:bridge 从 entry 读出 workspaceId 带上 → 切回,不新建
     await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'resume',
+      workspaceId: wsId ?? null,
     });
     expect(created.length).toBe(beforeResume); // 没新建
   });
 
-  it('resume 时目标 workspace 已被回收 → 新建并更新映射', async () => {
+  it('resume 时目标 workspace 已被回收 → 新建并返回新 id', async () => {
     const { mgr, created, pi } = makePiManager({ getRecord: () => undefined });
     const { sid } = await makeSession(mgr);
     await pi.handlePiSessionEvent(sid, {
@@ -2926,12 +2925,14 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
       reason: 'new',
     });
     const beforeResume = created.length;
-    await pi.handlePiSessionEvent(sid, {
+    const r = await pi.handlePiSessionEvent(sid, {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'resume',
+      workspaceId: 'ws-reclaimed', // entry 里的 id,但 workspace 已被回收
     });
     expect(created.length).toBe(beforeResume + 1); // 回收 → 重建
+    expect(r?.workspaceId).toBeDefined(); // 返回新 id 让 bridge 更新 entry
   });
 
   it('agent_settled 设 hasUnviewedWork=true；agent_working 清除', async () => {

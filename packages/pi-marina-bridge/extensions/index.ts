@@ -34,6 +34,32 @@ const ENV_TERMINAL = 'TERMINAL_ID';
 /** HTTP 端点路径（见 Marina file-panel-service.ts handle()）。 */
 const ENDPOINT_PATH = '/pi-session-event';
 
+/**
+ * pi.appendEntry 的 customType:存当前对话绑定的 Marina workspaceId。
+ * 存进 pi 对话文件(跨重启稳定),resume 同一对话时 bridge 读出随 session_start
+ * 带上 → Marina 切回原 workspace + 恢复打开的文件。
+ * (之前靠 Marina 内存映射 piSessionId→workspaceId,但 pi resume 时 piSessionId 会变,
+ *  映射永远 miss。改存对话本身,跟对话走。)
+ */
+const MARINA_WORKSPACE_CUSTOM_TYPE = 'marina-workspace';
+
+/** 从 ctx.sessionManager.getEntries() 找出本对话绑定的 Marina workspaceId(若有)。 */
+function readMarinaWorkspaceId(ctx: {
+  sessionManager: { getEntries(): Array<{ type: string; customType?: string; data?: unknown }> };
+}): string | null {
+  for (const entry of ctx.sessionManager.getEntries()) {
+    if (
+      entry.type === 'custom' &&
+      entry.customType === MARINA_WORKSPACE_CUSTOM_TYPE &&
+      entry.data &&
+      typeof (entry.data as { workspaceId?: unknown }).workspaceId === 'string'
+    ) {
+      return (entry.data as { workspaceId: string }).workspaceId;
+    }
+  }
+  return null;
+}
+
 /** 转发的事件类型（与 Marina PiEventOps.applyPiSessionEvent 对齐）。 */
 type PiBridgeEvent =
   | 'session_start'
@@ -58,16 +84,19 @@ function readMarinaEnv(): { baseUrl: string; token: string; terminal: string } |
  * 单次 fire-and-forget POST。失败只 log，不抛——pi 对话流转不能被 Marina 的
  * workspace/状态操作阻塞，Marina 处理失败也不该让 pi 卡住（ADR-028 fire-and-forget）。
  */
+/** 单次 POST。返回解析后的响应 body(session_start 用它拿 workspaceId),失败返 null。 */
 async function postEvent(
   env: { baseUrl: string; token: string; terminal: string },
   piSessionId: string,
   event: PiBridgeEvent,
-  extra: { reason?: string; name?: string | null } = {},
-): Promise<void> {
+  extra: { reason?: string; name?: string | null; workspaceId?: string | null } = {},
+): Promise<{ workspaceId?: string } | null> {
   const url = `${env.baseUrl}${ENDPOINT_PATH}`;
   const body: Record<string, unknown> = { terminal: env.terminal, piSessionId, event };
   if (extra.reason !== undefined) body.reason = extra.reason;
   if (extra.name !== undefined) body.name = extra.name;
+  if (extra.workspaceId !== undefined && extra.workspaceId !== null)
+    body.workspaceId = extra.workspaceId;
   try {
     const resp = await fetch(url, {
       method: 'POST',
@@ -83,7 +112,9 @@ async function postEvent(
       console.warn(
         `[marina-bridge] /pi-session-event ${event} → HTTP ${resp.status} ${resp.statusText}`,
       );
+      return null;
     }
+    return (await resp.json().catch(() => null)) as { workspaceId?: string } | null;
   } catch (err) {
     // 离线 / Marina 未运行 / 端点不存在（旧版 Marina）→ 静默降级，pi 继续正常工作。
     console.warn(
@@ -91,6 +122,7 @@ async function postEvent(
         err instanceof Error ? err.message : String(err)
       }`,
     );
+    return null;
   }
 }
 
@@ -105,7 +137,25 @@ export default function (pi: ExtensionAPI): void {
   pi.on('session_start', async (event, ctx) => {
     const piSessionId = ctx.sessionManager.getSessionId();
     if (!piSessionId) return; // 内存对话（无文件）→ 无法稳定标识，跳过。
-    await postEvent(env, piSessionId, 'session_start', { reason: event.reason });
+    // 从本对话 entry 恢复上次绑定的 workspaceId(resume 同一对话时这里读得到)。
+    const knownWorkspaceId = readMarinaWorkspaceId(ctx);
+    const resp = await postEvent(env, piSessionId, 'session_start', {
+      reason: event.reason,
+      workspaceId: knownWorkspaceId,
+    });
+    // Marina 新建了 workspace(返回 workspaceId)→ 存进对话 entry,下次 resume 能切回。
+    // 切回已有(resp 无 workspaceId)不重写(entry 里已是同一个)。
+    if (resp?.workspaceId && resp.workspaceId !== knownWorkspaceId) {
+      try {
+        pi.appendEntry(MARINA_WORKSPACE_CUSTOM_TYPE, { workspaceId: resp.workspaceId });
+      } catch (err) {
+        console.warn(
+          `[marina-bridge] appendEntry(${MARINA_WORKSPACE_CUSTOM_TYPE}) failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
   });
 
   pi.on('session_shutdown', async (event, ctx) => {

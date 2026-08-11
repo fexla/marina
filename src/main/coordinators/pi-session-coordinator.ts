@@ -57,12 +57,6 @@ export class PiSessionCoordinator {
    * 用于 session 销毁 / pi 退出时清理 piSessionToWorkspace。
    */
   private readonly sessionToPiSession = new Map<string, string>();
-  /**
-   * v0.3.3 ADR-028：pi 对话 ↔ workspace 运行时映射(路径 B)。key=piSessionId，
-   * value=workspaceId。用于 pi resume 时切回对应 workspace(还活着则切回、被回收则新建)。
-   * **内存态，不持久化**。
-   */
-  private readonly piSessionToWorkspace = new Map<string, string>();
   private hooks: PiSessionHooks | null = null;
   private lookup: SessionLookup | null = null;
   /**
@@ -122,8 +116,14 @@ export class PiSessionCoordinator {
         | 'name_changed';
       reason?: string;
       name?: string | null;
+      /**
+       * v0.3.3 ADR-028:bridge 从 pi 对话的 marina-workspace entry 恢复出的
+       * workspaceId(resume 时带上)。Marina 据此切回原 workspace;缺失/已回收则新建,
+       * 新建的 workspaceId 经返回值交回 bridge 存入 entry(跨重启稳定)。
+       */
+      workspaceId?: string | null;
     },
-  ): Promise<void> {
+  ): Promise<{ workspaceId?: string } | void> {
     if (!this.lookup?.hasSession(sessionId)) {
       // 竞态：session 刚销毁或 terminal id 伪造。静默丢弃(pi 不该被卡)。
       logger.warn(
@@ -167,23 +167,20 @@ export class PiSessionCoordinator {
         const agentGetter = new AgentStateGetter();
         this.agentGetters.set(sessionId, agentGetter);
         this.hooks?.bindAgent(sessionId, agentGetter);
-        await this.handlePiConversationSwitch(
+        // 返回 { workspaceId }：新建的 workspace id 交回 bridge 存进对话 entry
+        // (appendEntry),下次 resume 同一对话时 bridge 读出随事件带上 → Marina 切回。
+        return await this.handlePiConversationSwitch(
           sessionId,
-          payload.piSessionId,
           payload.reason ?? 'startup',
           settings,
+          payload.workspaceId ?? null,
         );
-        break;
       }
 
       case 'session_shutdown':
         // pi 进程要退出了。workspace 按现有生命周期(Marina session 销毁时 release)；
         // 这里不提前 release(与销毁路径竞争)。
         this.sessionToPiSession.delete(sessionId);
-        // reason=quit 时 pi 对话彻底结束，其 workspace 映射随之失效。
-        if (payload.reason === 'quit') {
-          this.piSessionToWorkspace.delete(payload.piSessionId);
-        }
         this.hooks?.onPiAgentChanged(sessionId, false);
         // 终端状态分层:unbind agent getter → stateGetter 回退到 byteStream fallback,
         // 字节流检测恢复(接管终态判断)。
@@ -217,70 +214,71 @@ export class PiSessionCoordinator {
   }
 
   /**
-   * pi 对话切换的核心：按 piSessionId 绑定/切回 workspace。
-   * - new/fork → 建新 workspace + 记映射(用户意图：创建新 workspace)。
-   * - resume/startup → 查映射：目标 workspace 还活着(getRecord≠null)就切回；
-   *   被回收/首访则新建 + 记映射。
+   * pi 对话切换的核心。workspace 绑定**存在 pi 对话的 entry 里**(bridge 用
+   * pi.appendEntry 存,跨重启稳定),Marina 侧不再持有 piSession→workspace 映射。
    *
-   * workspace 不命名/不 pin，切走的旧 pi 对话 workspace 不在这里 release
-   * (它仍由 piSessionToWorkspace 持有引用，等 pi shutdown quit 或终端销毁才释放)。
-   * 这与 ADR-024 的 switchToNewWorkspace 不同——那里是 CLI 主动切临时。
+   * - new/fork → 建新 workspace,返回 workspaceId(交回 bridge 存进 entry)。
+   * - resume/startup → bridge 从 entry 读出 workspaceId 随事件带上(payloadWorkspaceId):
+   *   还活着(getRecord≠null)就切回 + 重建面板;被回收/首访/缺失则新建,返回新 id。
+   *
+   * 之前用 piSessionId 当内存映射 key,但实测 pi resume 同一对话时 piSessionId 会变
+   * (见日志:019fefb0→010fdf2e),映射永远 miss → 每次都建新空 workspace → 文件不恢复。
+   * 改用 pi 对话 entry 存绑定,resume 天然恢复(跟对话文件走)。
    */
   private async handlePiConversationSwitch(
     sessionId: string,
-    piSessionId: string,
     reason: string,
     settings: Settings['piIntegration'],
-  ): Promise<void> {
+    payloadWorkspaceId: string | null,
+  ): Promise<{ workspaceId?: string } | void> {
     if (!this.workspaceCoordinator.isWorkspaceEnabled()) return; // 未启用 workspace(测试/禁用)→ 跳过
     const wantsNew = reason === 'new' || reason === 'fork';
     const wantsResume = reason === 'resume' || reason === 'startup';
 
     if (wantsNew && settings.enabled && settings.newConversationCreatesWorkspace) {
-      await this.createAndBindPiWorkspace(sessionId, piSessionId);
-      return;
+      return await this.createAndBindPiWorkspace(sessionId);
     }
     if (wantsResume && settings.enabled && settings.resumeSwitchesWorkspace) {
-      const existingWs = this.piSessionToWorkspace.get(piSessionId);
-      // workspace “还活着”判定：manifest 里有 record(未被 cleanupExpired 回收)。
-      if (existingWs && this.workspaceCoordinator.getRecord(existingWs)) {
-        // 切回：把当前 session 的 workspace 绑定指向它。
-        this.workspaceCoordinator.switchSessionToWorkspace(sessionId, existingWs);
+      // bridge 从对话 entry 恢复的 workspaceId。还活着就切回;被回收/首访/缺失则新建。
+      if (payloadWorkspaceId && this.workspaceCoordinator.getRecord(payloadWorkspaceId)) {
+        this.workspaceCoordinator.switchSessionToWorkspace(sessionId, payloadWorkspaceId);
         // 触发文件面板重建 + 快照恢复(否则 resume 后原打开文件不恢复)。
         this.workspaceSwitchedNotify?.(sessionId);
         logger.info(
           'PiSessionCoordinator',
-          `pi-resume: switch back piSid=${piSessionId} ws=${existingWs}`,
+          `pi-resume: switch back sid=${sessionId} ws=${payloadWorkspaceId}`,
         );
-      } else {
-        // 被回收或首访 → 新建。映射覆盖(若是首访则新增，若是回收则替换陈旧值)。
-        await this.createAndBindPiWorkspace(sessionId, piSessionId);
+        return; // 切回已有,不返回 workspaceId(bridge entry 里已有同一个)
       }
-      return;
+      // 被回收 / 首访 / entry 缺失 → 新建,返回新 id 让 bridge 更新 entry。
+      return await this.createAndBindPiWorkspace(sessionId);
     }
     // reload / 未知 reason / 开关关闭 → 不动 workspace。
   }
 
   /**
-   * 建新 workspace 并绑定到 session(pi 对话)，同时记入 piSessionToWorkspace 映射。
-   * workspace 创建失败不阻塞 pi；当前 session 继续用旧 workspace(若有)。
+   * 建新 workspace 并绑定到 session(pi 对话)。返回 workspaceId——交回 bridge 存进
+   * pi 对话的 marina-workspace entry,下次 resume 同一对话时 bridge 读出带上 → 切回。
+   * workspace 创建失败不阻塞 pi;返回 void(bridge 不更新 entry,下次 resume 会重试)。
    */
-  private async createAndBindPiWorkspace(sessionId: string, piSessionId: string): Promise<void> {
+  private async createAndBindPiWorkspace(
+    sessionId: string,
+  ): Promise<{ workspaceId: string } | void> {
     if (!this.workspaceCoordinator.isWorkspaceEnabled()) return;
     try {
       const created = await this.workspaceCoordinator.createForSession(sessionId);
-      this.piSessionToWorkspace.set(piSessionId, created.workspaceId);
       // 触发文件面板重建(新 workspace 无快照 → onWorkspaceSwitched 清空 files,
       // 符合 new 语义)。
       this.workspaceSwitchedNotify?.(sessionId);
       logger.info(
         'PiSessionCoordinator',
-        `pi-new-workspace: sid=${sessionId} piSid=${piSessionId} ws=${created.workspaceId}`,
+        `pi-new-workspace: sid=${sessionId} ws=${created.workspaceId}`,
       );
+      return { workspaceId: created.workspaceId };
     } catch (err) {
       logger.warn(
         'PiSessionCoordinator',
-        `pi workspace create failed sid=${sessionId} piSid=${piSessionId}: ${
+        `pi workspace create failed sid=${sessionId}: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
@@ -292,11 +290,7 @@ export class PiSessionCoordinator {
    * SessionManager.destroySession 同步调用。
    */
   onSessionDestroyed(sessionId: string): void {
-    const piSid = this.sessionToPiSession.get(sessionId);
-    if (piSid) {
-      this.sessionToPiSession.delete(sessionId);
-      this.piSessionToWorkspace.delete(piSid);
-    }
+    this.sessionToPiSession.delete(sessionId);
     // 终端状态分层:防御性 unbind(session 销毁时若 pi 仍在 bind,回退 getter)。
     // SessionManager.destroySession 会清 managed,unbind 无害(session 不存在则 no-op)。
     if (this.agentGetters.has(sessionId)) {

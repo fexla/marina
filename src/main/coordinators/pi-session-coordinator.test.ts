@@ -90,24 +90,16 @@ function makePi(
 }
 
 describe('PiSessionCoordinator — session_start(reason 分发)', () => {
-  it('reason=new + 开关开 → 建 workspace + 记映射 + onPiAgentChanged(true)', async () => {
+  it('reason=new + 开关开 → 建 workspace + 返回 workspaceId(交回 bridge 存 entry)', async () => {
     const { pi, hooks, ws } = makePi();
-    await pi.handlePiSessionEvent('s1', {
+    const r = await pi.handlePiSessionEvent('s1', {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'new',
     });
     expect(ws.createForSession).toHaveBeenCalledWith('s1');
     expect(hooks.onPiAgentChanged).toHaveBeenCalledWith('s1', true);
-    // resume 同一 pi 对话 → 映射活 → 切回不新建
-    ws.getRecord.mockReturnValueOnce({ name: null });
-    await pi.handlePiSessionEvent('s1', {
-      piSessionId: 'pi-1',
-      event: 'session_start',
-      reason: 'resume',
-    });
-    expect(ws.switchSessionToWorkspace).toHaveBeenCalledWith('s1', 'ws-pi');
-    expect(ws.createForSession).toHaveBeenCalledTimes(1); // 没新建
+    expect(r).toEqual({ workspaceId: 'ws-pi' }); // 新建 id 交回 bridge 存 entry
   });
 
   it('reason=new + settings.enabled=false → 不建 workspace,但 onPiAgentChanged 仍调', async () => {
@@ -121,19 +113,29 @@ describe('PiSessionCoordinator — session_start(reason 分发)', () => {
     expect(hooks.onPiAgentChanged).toHaveBeenCalledWith('s1', true);
   });
 
-  it('reason=resume + 目标 workspace 被回收 → 重建并更新映射', async () => {
-    const { pi, ws } = makePi({ getRecord: () => null }); // 全部判定被回收
-    await pi.handlePiSessionEvent('s1', {
-      piSessionId: 'pi-1',
-      event: 'session_start',
-      reason: 'new',
-    });
-    await pi.handlePiSessionEvent('s1', {
+  it('reason=resume + payload 带 workspaceId 且活 → 切回不新建(不返回 id)', async () => {
+    const { pi, ws } = makePi({ getRecord: () => ({ name: null }) }); // workspace 活
+    const r = await pi.handlePiSessionEvent('s1', {
       piSessionId: 'pi-1',
       event: 'session_start',
       reason: 'resume',
+      workspaceId: 'ws-from-entry', // bridge 从对话 entry 读出带上
     });
-    expect(ws.createForSession).toHaveBeenCalledTimes(2); // resume 时重建
+    expect(ws.switchSessionToWorkspace).toHaveBeenCalledWith('s1', 'ws-from-entry');
+    expect(ws.createForSession).not.toHaveBeenCalled(); // 没新建
+    expect(r).toBeUndefined(); // 切回已有,不返回 id(entry 里已是同一个)
+  });
+
+  it('reason=resume + payload workspaceId 被回收 → 重建并返回新 id', async () => {
+    const { pi, ws } = makePi({ getRecord: () => null }); // 全部判定被回收
+    const r = await pi.handlePiSessionEvent('s1', {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'resume',
+      workspaceId: 'ws-reclaimed',
+    });
+    expect(ws.createForSession).toHaveBeenCalledWith('s1'); // 重建
+    expect(r).toEqual({ workspaceId: 'ws-pi' }); // 返回新 id 让 bridge 更新 entry
   });
 
   it('workspace 未启用 → 不建不切(hooks 仍调)', async () => {
@@ -160,22 +162,15 @@ describe('PiSessionCoordinator — session_start(reason 分发)', () => {
   });
 
   it('reason=resume 切回活 workspace 后触发 onWorkspaceSwitched(文件面板恢复)', async () => {
-    // 先 new 建主(pi-1),workspace 活着(getRecord 返非 null)
+    // bridge 从 entry 读出 workspaceId 带上 → Marina 切回活 workspace
     const { pi, onWorkspaceSwitched, ws } = makePi({ getRecord: () => ({ name: null }) });
     await pi.handlePiSessionEvent('s1', {
       piSessionId: 'pi-1',
       event: 'session_start',
-      reason: 'new',
-    });
-    onWorkspaceSwitched.mockClear();
-    // shutdown 旧主(主锁释放)→ resume pi-1 切回活 workspace
-    await pi.handlePiSessionEvent('s1', { piSessionId: 'pi-1', event: 'session_shutdown' });
-    await pi.handlePiSessionEvent('s1', {
-      piSessionId: 'pi-1',
-      event: 'session_start',
       reason: 'resume',
+      workspaceId: 'ws-from-entry',
     });
-    expect(ws.switchSessionToWorkspace).toHaveBeenCalledWith('s1', expect.any(String));
+    expect(ws.switchSessionToWorkspace).toHaveBeenCalledWith('s1', 'ws-from-entry');
     // 核心:切回后必须触发 notify,否则文件面板不重建、原打开文件不恢复
     expect(onWorkspaceSwitched).toHaveBeenCalledWith('s1');
   });
@@ -185,14 +180,8 @@ describe('PiSessionCoordinator — session_start(reason 分发)', () => {
     await pi.handlePiSessionEvent('s1', {
       piSessionId: 'pi-1',
       event: 'session_start',
-      reason: 'new',
-    });
-    onWorkspaceSwitched.mockClear();
-    await pi.handlePiSessionEvent('s1', { piSessionId: 'pi-1', event: 'session_shutdown' });
-    await pi.handlePiSessionEvent('s1', {
-      piSessionId: 'pi-1',
-      event: 'session_start',
       reason: 'resume',
+      workspaceId: 'ws-reclaimed',
     });
     expect(onWorkspaceSwitched).toHaveBeenCalledWith('s1');
   });

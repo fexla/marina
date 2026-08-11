@@ -181,7 +181,11 @@ export interface CommandRunOps {
  * FilePanelService 不持 SessionManager(保持可测)，只拿这个 op 供 HTTP 路由用。
  */
 export interface PiEventOps {
-  /** 处理 pi package 转发的事件。sessionId=terminal(Marina session)。fire-and-forget。 */
+  /**
+   * 处理 pi package 转发的事件。sessionId=terminal(Marina session)。
+   * 返回 { workspaceId? }：session_start 新建 workspace 后返回 id,gateway 作为 HTTP
+   * 响应体交回 bridge,bridge 用 pi.appendEntry 存进对话(下次 resume 读出带上)。
+   */
   applyPiSessionEvent(
     sessionId: string,
     payload: {
@@ -194,8 +198,10 @@ export interface PiEventOps {
         | 'name_changed';
       reason?: string;
       name?: string | null;
+      /** bridge 从对话 entry 恢复的 workspaceId(resume 时带上,Marina 据此切回)。 */
+      workspaceId?: string | null;
     },
-  ): Promise<void>;
+  ): Promise<{ workspaceId?: string } | void>;
 }
 
 interface PanelState {
