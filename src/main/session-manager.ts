@@ -137,7 +137,7 @@ const DOCK_LAYOUT_RULES: Readonly<Record<string, { minWidth: number; maxWidth: n
  * (ADR-016)。
  *
  * gitAvailable=true 时在 file-tree 与 file-panel 之间插入 git leaf;否则不出现
- * Git tab。该值由 SessionManager 在 session 创建 + cwd 变更后调
+ * Git tab。该值由 SessionManager 在 session 创建 + 每次 shell prompt / cwd 变更后调
  * gitAvailabilityProvider 异步评估,flip 时重建 tree 并 emit state-changed。
  */
 function createSessionLayoutTree(gitAvailable: boolean, commandAvailable = true): LayoutNode {
@@ -718,8 +718,15 @@ export class SessionManager extends EventEmitter {
    * 默认 false(createSession 同步路径用保守 tree)。
    */
   private readonly gitAvailabilityBySession = new Map<string, boolean>();
-  /** cwd 变更 → git 重算的防抖 timer(对齐 PRD §6.7 的 200ms 防抖)。 */
+  /** prompt / cwd 变更 → git 重算的防抖 timer(对齐 PRD §6.7 的 200ms 防抖)。 */
   private readonly gitRecomputeTimers = new Map<string, NodeJS.Timeout>();
+  /**
+   * 每次调度递增的代次。realpath/provider 都是异步的，旧重算可能晚于新 prompt
+   * 返回；只允许最新代次改 LayoutNode，避免仓库状态被过期结果反向覆盖。
+   */
+  private readonly gitRecomputeEpochBySession = new Map<string, number>();
+  /** 全局单调代次，避免 session 退出时删 key、随后重算又从 1 开始造成 ABA 命中。 */
+  private gitRecomputeEpoch = 0;
   /**
    * 最近一次 createSession 的非阻塞警告(例如保存了密码但缺 sshpass)。
    * ipc 层在 createSession resolve 后立即读取并清空,传给 renderer 弹 toast。
@@ -2265,11 +2272,13 @@ export class SessionManager extends EventEmitter {
       }
     }
     const next = normalizeCwd(rawCwd);
-    if (next === managed.info.currentCwd) return; // 无变化
+    // 每次 prompt 都防抖重评估 Git 可用性，而不只在 cwd 改变时评估。
+    // `git init` / 删除 `.git` 会改变当前目录的仓库能力，却不会改变 cwd；shell
+    // 回到同一目录的 prompt 时，这个 OSC 事件就是低成本、无需常驻 watcher 的失效源。
+    void this.scheduleGitRecompute(managed.info.id);
+    if (next === managed.info.currentCwd) return; // cwd 无变化，但上面的 Git 重评估仍需执行
     managed.info.currentCwd = next;
     this.emitStateChanged(managed, { currentCwd: next });
-    // v0.3.0:cwd 变了 → 防抖重评估 Git 可用性(cd 进/出仓库 → Git tab 出现/消失)。
-    void this.scheduleGitRecompute(managed.info.id);
   }
 
   /**
@@ -2326,14 +2335,24 @@ export class SessionManager extends EventEmitter {
     }
     try {
       const cwd = await this.platformAdapter.getProcessCwd(managed.pty.pid);
-      if (cwd && !managed.oscReceived) {
-        const next = normalizeCwd(cwd);
-        if (next !== managed.info.currentCwd) {
-          managed.info.currentCwd = next;
-          this.emitStateChanged(managed, { currentCwd: next });
-          // v0.3.0:同 OSC 路径,触发 Git 可用性重评估。
-          void this.scheduleGitRecompute(managed.info.id);
-        }
+      // getProcessCwd 是异步边界：等待期间可能收到 OSC、PTY 退出，或 session 被
+      // 销毁。恢复后必须重新核对生命周期；否则晚到结果会改已退出 session 的 cwd，
+      // 甚至为它重新调度 Git epoch，使 clearTimers 的失效保护被绕过。
+      if (
+        !cwd ||
+        managed.oscReceived ||
+        !managed.pty ||
+        managed.info.state === 'exited' ||
+        this.sessions.get(managed.info.id) !== managed
+      ) {
+        return;
+      }
+      const next = normalizeCwd(cwd);
+      if (next !== managed.info.currentCwd) {
+        managed.info.currentCwd = next;
+        this.emitStateChanged(managed, { currentCwd: next });
+        // v0.3.0:同 OSC 路径,触发 Git 可用性重评估。
+        void this.scheduleGitRecompute(managed.info.id);
       }
     } catch (err) {
       // 兜底失败属正常 (V1 WindowsAdapter 一直返回 null),不刷屏
@@ -2369,6 +2388,9 @@ export class SessionManager extends EventEmitter {
       this.gitRecomputeTimers.delete(managed.info.id);
     }
     this.gitAvailabilityBySession.delete(managed.info.id);
+    // 删除 epoch 会让已进入 realpath/provider await 的旧重算在恢复后失效，
+    // 防止 exited / destroyed session 被晚到结果重新写入 LayoutNode。
+    this.gitRecomputeEpochBySession.delete(managed.info.id);
   }
 
   private emitStateChanged(managed: ManagedSession, changes: Partial<SessionInfo>): void {
@@ -2385,23 +2407,29 @@ export class SessionManager extends EventEmitter {
   // ──────────────────────────────────────────────────────────────────
 
   /**
-   * 防抖调度 Git 可用性重算。cwd 变更走默认 200ms 防抖(OSC 频繁触发时不会
-   * 产生 realpath 风暴);attach / settings 翻转走 immediate=true 立即评估。
+   * 防抖调度 Git 可用性重算。每次 OSC prompt / cwd 变更走默认 200ms 防抖
+   * (OSC 频繁触发时不会产生 realpath 风暴);attach / settings 翻转走
+   * immediate=true 立即评估。
    */
   private async scheduleGitRecompute(
     sessionId: string,
     opts: { immediate?: boolean } = {},
   ): Promise<void> {
     if (!this.gitAvailabilityProvider) return; // 未注入 → 行为与 v0.2.x 一致
+    const epoch = ++this.gitRecomputeEpoch;
+    this.gitRecomputeEpochBySession.set(sessionId, epoch);
     const existing = this.gitRecomputeTimers.get(sessionId);
-    if (existing) clearTimeout(existing);
+    if (existing) {
+      clearTimeout(existing);
+      this.gitRecomputeTimers.delete(sessionId);
+    }
     if (opts.immediate) {
-      await this.recomputeGitAvailability(sessionId);
+      await this.recomputeGitAvailability(sessionId, epoch);
       return;
     }
     const timer = setTimeout(() => {
       this.gitRecomputeTimers.delete(sessionId);
-      void this.recomputeGitAvailability(sessionId);
+      void this.recomputeGitAvailability(sessionId, epoch);
     }, GIT_RECOMPUTE_DEBOUNCE_MS);
     this.gitRecomputeTimers.set(sessionId, timer);
   }
@@ -2409,29 +2437,40 @@ export class SessionManager extends EventEmitter {
   /**
    * 实际评估 + flip 时重建 tree + emit。不做 realpath 之外的 fs 操作,
    * 因此即使每个 session 都跑一次也轻(provider 内部只 stat .git)。
+   *
+   * 每个 await 后都校验 epoch + cwd + session 生命周期。否则旧 prompt 的慢结果
+   * 可能覆盖新结果，或在 session 已 exited / destroyed 后重新写入布局缓存。
    */
-  private async recomputeGitAvailability(sessionId: string): Promise<void> {
-    if (!this.gitAvailabilityProvider) return;
+  private async recomputeGitAvailability(sessionId: string, epoch: number): Promise<void> {
+    const provider = this.gitAvailabilityProvider;
+    if (!provider) return;
     const managed = this.sessions.get(sessionId);
     if (!managed) return; // session 已销毁,静默
+    const cwdAtStart = managed.info.currentCwd;
+    const isCurrent = (): boolean =>
+      this.gitRecomputeEpochBySession.get(sessionId) === epoch &&
+      this.sessions.get(sessionId) === managed &&
+      managed.info.currentCwd === cwdAtStart;
     const pathKind: 'local' | 'ssh' = managed.info.pathId.startsWith('ssh:') ? 'ssh' : 'local';
     if (pathKind === 'ssh') {
       // SSH 永远不可用;直接确保 git leaf 不在(provider 也会判,这里提前短路)。
-      this.applyGitAvailability(managed, false);
+      if (isCurrent()) this.applyGitAvailability(managed, false);
       return;
     }
     let cwdReal: string;
     try {
       const { realpath } = await import('node:fs/promises');
-      cwdReal = await realpath(managed.info.currentCwd);
+      cwdReal = await realpath(cwdAtStart);
     } catch {
-      this.applyGitAvailability(managed, false);
+      if (isCurrent()) this.applyGitAvailability(managed, false);
       return;
     }
+    if (!isCurrent()) return;
     try {
-      const result = await this.gitAvailabilityProvider(cwdReal, pathKind);
-      this.applyGitAvailability(managed, result.available);
+      const result = await provider(cwdReal, pathKind);
+      if (isCurrent()) this.applyGitAvailability(managed, result.available);
     } catch (err) {
+      if (!isCurrent()) return;
       // provider 抛错不致命:保守认为不可用,与 createSession 初值一致。
       logger.warn(
         'SessionManager',

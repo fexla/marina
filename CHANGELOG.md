@@ -7,6 +7,10 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+## [0.3.3-dev.5] — 2026-08-11
+
+> 0.3.3 系列第 5 个 dev 构建。汇总 `0.3.3-dev.3` 之后的远程命令、终端链接、Git 面板、pi 集成与架构稳定性修复,供本地/内测验证。(dev.4 号未实际构建,合并升格为 dev.5)
+
 ### Added
 
 - **命令面板支持远程 SSH session 的 sudo 执行**(反转 ADR-028 D7):SSH session 的命令现经
@@ -15,6 +19,23 @@
   按 SSH profile 隔离托管,经 stdin 喂入——**绝不落盘 / 进日志 / 进 env / 进 event payload**。
   CLI `marina run --sudo "<cmd>"`;AI 推送时缺密码则命令进入 `awaiting-sudo-password` 态,面板内联
   弹 masked 输入,录入后重跑(每服务器只发生一次)。详见 `docs/方案-命令面板远程sudo-20260807.md`。
+
+### Changed
+
+- **主进程边界收敛**:session workspace / pi / 生命周期职责拆入 coordinator，本地 HTTP API 收敛到
+  `LocalHttpGateway`，IPC 新增 `CommandContractMap` 穷尽路由约束；保持现有产品行为不变，同时降低
+  退出、远程路由和后续协议演进的回归面。
+
+### Fixed
+
+- **Git 面板动态出现/消失**:同一 cwd 中途执行 `git init` 或移除 `.git` 后，下一次 shell prompt
+  会重评估仓库能力并更新 Git tab；异步结果加代次与生命周期保护，避免慢结果覆盖新状态或修改
+  已退出 / 已销毁 session。
+- **终端文件链接定位**:修正 CJK 宽字符、`@` 双候选和 `~` home 展开场景下的文件链接识别与定位。
+- **Git diff 预览来源保持**:修复打开 diff 后来源身份丢失，确保同名文件与刷新路径仍指向正确变更。
+- **文件树层级缩进统一**:目录与文件行统一使用共享树行缩进规则，避免 disclosure gutter 抵消层级。
+- **pi settled 状态及时回落**:`agent_settled` 后立即切回 idle，不再等待字节流 idle 阈值。
+- **pi resume 切回 workspace 后文件面板恢复**:此前 `/resume` 一个之前的 pi 对话后,该对话原打开的文件不恢复——根因是 resume 走的 `switchSessionToWorkspace` 只改了 workspace 绑定映射,绕过了 `FilePanelService.onWorkspaceSwitched`(正常 workspace 切换会调它重建面板 + 恢复快照)。pi resume/new 切换 workspace 后现统一触发该重建路径。
 
 ## [0.3.3-dev.3] — 2026-08-08
 

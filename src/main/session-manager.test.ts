@@ -1422,6 +1422,50 @@ describe('SessionManager — OSC 1337 cwd 跟踪 (ADR-008)', () => {
     expect(after.currentCwd.toLowerCase()).toBe('c:\\polled');
   });
 
+  it.each(['exit', 'destroy'] as const)(
+    'cwd 轮询 await 期间 session %s → 晚到结果不得改 cwd 或重启 Git 重算',
+    async (action) => {
+      let resolveCwd: ((cwd: string) => void) | undefined;
+      const cwdImpl = vi.fn(
+        () =>
+          new Promise<string>((resolve) => {
+            resolveCwd = resolve;
+          }),
+      );
+      const adapter = makeFakeAdapter({ getProcessCwdImpl: cwdImpl });
+      const { mgr } = makeManager({ adapter });
+      const info = await mgr.createSession({
+        pathId: 'C:\\original',
+        templateId: 'shell',
+        ownerWindowId: 'w',
+        cols: 80,
+        rows: 24,
+      });
+      const cwdChanges: string[] = [];
+      mgr.on('sessionStateChanged', (event: { changes: { currentCwd?: string } }) => {
+        if (event.changes.currentCwd) cwdChanges.push(event.changes.currentCwd);
+      });
+
+      await vi.advanceTimersByTimeAsync(5_000); // grace 到点，启动 interval
+      vi.advanceTimersByTime(5_000); // 触发 tick，但保留未 resolve 的 getProcessCwd
+      expect(resolveCwd).toBeTypeOf('function');
+      if (action === 'exit') FakePty.instances[0]!.emitExit(0);
+      else mgr.closeSession(info.id);
+
+      resolveCwd!('C:\\late');
+      await Promise.resolve();
+      await Promise.resolve();
+
+      if (action === 'exit') {
+        expect(mgr.get(info.id)?.state).toBe('exited');
+        expect(mgr.get(info.id)?.currentCwd).toBe('C:\\original');
+      } else {
+        expect(mgr.get(info.id)).toBeNull();
+      }
+      expect(cwdChanges).toEqual([]);
+    },
+  );
+
   // Git Bash 通过 OSC 1337 在 cygpath 不可用 / 首 prompt 之前发的 POSIX 风格
   // cwd(`/c/Users/foo`),Windows 上 path.resolve 会错解成 `<drive>:\c\Users\foo`
   // 让 cwdDrifted 一直亮 ⚠️ 警告。归一逻辑应该把它转回 `C:\Users\foo` 与
@@ -2584,6 +2628,124 @@ describe('SessionManager — dynamic Git LayoutNode (v0.3.0)', () => {
       expect(stack.children.map((c) => c.panelId)).toEqual(['file-tree', 'file-panel', 'command']);
     });
   });
+
+  it('同 cwd 中途创建/移除 .git 后,下一次 OSC prompt 让 git leaf 自动出现/消失', async () => {
+    const { mgr } = makeManager({});
+    const evaluateAvailability = vi.fn(async (cwdReal: string) => {
+      try {
+        await realpath(join(cwdReal, '.git'));
+        return { available: true };
+      } catch {
+        return { available: false };
+      }
+    });
+    mgr.attachGitAvailabilityProvider(evaluateAvailability);
+    const info = await mgr.createSession({
+      pathId: nonRepoDir,
+      templateId: 'shell',
+      ownerWindowId: 'w1',
+      cols: 80,
+      rows: 24,
+    });
+    await vi.waitFor(() => expect(evaluateAvailability).toHaveBeenCalledTimes(1));
+
+    await mkdir(join(nonRepoDir, '.git'));
+    // `git init` 不改变 cwd；shell 回到 prompt 时仍会报告同一个 OSC 1337 cwd。
+    FakePty.instances[0]!.emitData(`\x1b]1337;CurrentDir=${nonRepoDir}\x07`);
+
+    await vi.waitFor(() => {
+      const tree = mgr.get(info.id)?.uiLayout?.tree;
+      const stack = (tree as { children: unknown[] }).children?.[1] as {
+        children: { panelId: string }[];
+      };
+      expect(stack.children.map((c) => c.panelId)).toContain('git');
+    });
+
+    await rm(join(nonRepoDir, '.git'), { recursive: true, force: true });
+    FakePty.instances[0]!.emitData(`\x1b]1337;CurrentDir=${nonRepoDir}\x07`);
+    await vi.waitFor(() => {
+      const tree = mgr.get(info.id)?.uiLayout?.tree;
+      const stack = (tree as { children: unknown[] }).children?.[1] as {
+        children: { panelId: string }[];
+      };
+      expect(stack.children.map((c) => c.panelId)).not.toContain('git');
+    });
+  });
+
+  it('较旧的慢 Git 可用性结果不能覆盖较新的 prompt 结果', async () => {
+    const { mgr } = makeManager({});
+    const resolvers: Array<(value: { available: boolean }) => void> = [];
+    mgr.attachGitAvailabilityProvider(
+      () =>
+        new Promise((resolve) => {
+          resolvers.push(resolve);
+        }),
+    );
+    const info = await mgr.createSession({
+      pathId: nonRepoDir,
+      templateId: 'shell',
+      ownerWindowId: 'w1',
+      cols: 80,
+      rows: 24,
+    });
+    await vi.waitFor(() => expect(resolvers).toHaveLength(1));
+
+    FakePty.instances[0]!.emitData(`\x1b]1337;CurrentDir=${nonRepoDir}\x07`);
+    await vi.waitFor(() => expect(resolvers).toHaveLength(2));
+    resolvers[1]!({ available: true });
+    await vi.waitFor(() => {
+      const tree = mgr.get(info.id)?.uiLayout?.tree;
+      const stack = (tree as { children: unknown[] }).children?.[1] as {
+        children: { panelId: string }[];
+      };
+      expect(stack.children.map((c) => c.panelId)).toContain('git');
+    });
+
+    // 初次评估最后才返回 false；epoch guard 必须丢弃这个过期结果。
+    resolvers[0]!({ available: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const tree = mgr.get(info.id)?.uiLayout?.tree;
+    const stack = (tree as { children: unknown[] }).children?.[1] as {
+      children: { panelId: string }[];
+    };
+    expect(stack.children.map((c) => c.panelId)).toContain('git');
+  });
+
+  it.each(['exit', 'destroy'] as const)(
+    'session %s 后忽略仍在等待的 Git 可用性结果',
+    async (action) => {
+      const { mgr } = makeManager({});
+      let resolveAvailability: ((value: { available: boolean }) => void) | undefined;
+      mgr.attachGitAvailabilityProvider(
+        () =>
+          new Promise((resolve) => {
+            resolveAvailability = resolve;
+          }),
+      );
+      const info = await mgr.createSession({
+        pathId: nonRepoDir,
+        templateId: 'shell',
+        ownerWindowId: 'w1',
+        cols: 80,
+        rows: 24,
+      });
+      await vi.waitFor(() => expect(resolveAvailability).toBeTypeOf('function'));
+      const layoutChanges: unknown[] = [];
+      mgr.on('sessionStateChanged', (event: { changes: { uiLayout?: unknown } }) => {
+        if (event.changes.uiLayout) layoutChanges.push(event.changes.uiLayout);
+      });
+
+      if (action === 'exit') FakePty.instances[0]!.emitExit(0);
+      else mgr.closeSession(info.id);
+      const countAfterLifecycleChange = layoutChanges.length;
+      resolveAvailability!({ available: true });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      if (action === 'exit') expect(mgr.get(info.id)?.state).toBe('exited');
+      else expect(mgr.get(info.id)).toBeNull();
+      expect(layoutChanges).toHaveLength(countAfterLifecycleChange);
+    },
+  );
 
   it('flip 时 emit sessionStateChanged 带 uiLayout 变化', async () => {
     const { mgr } = makeManager({});
