@@ -284,6 +284,11 @@ function bootstrap(): void {
   sessionWorkspaceCoordinator.attachSessionLookup(sessionManager);
   piSessionCoordinator.attachSessionLookup(sessionManager);
   piSessionCoordinator.attachHooks(sessionManager);
+  // pi 切换 workspace(resume 切回 / new 新建)后触发文件面板重建 + 快照恢复。
+  // filePanelService 在上面已创建(221),这里闭合 coordinator ↔ file-panel-service。
+  piSessionCoordinator.attachWorkspaceSwitchNotify(
+    (sid) => void filePanelService.onWorkspaceSwitched(sid),
+  );
   sessionManager.attachWorkspaceCoordinator(sessionWorkspaceCoordinator);
   // v0.3.3 ADR-028「查看语义精准化」:窗口重新获焦/从最小化恢复 → 用户回来了,
   // 清该窗口当前选中 session 的 hasUnviewedWork(红灯转正常)。窗口关闭 → 清映射

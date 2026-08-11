@@ -66,6 +66,13 @@ export class PiSessionCoordinator {
   private hooks: PiSessionHooks | null = null;
   private lookup: SessionLookup | null = null;
   /**
+   * workspace 切换完成后的 notify 回调(由 index.ts 闭合为 filePanelService
+   * .onWorkspaceSwitched)。pi resume 切回 / new/fork 新建 workspace 后调它,触发
+   * 文件面板重建 + 快照恢复(否则 resume 后原打开文件不恢复)。null = 未注入(测试)→
+   * 跳过,workspace 映射仍正确,只是文件面板不同步重建。
+   */
+  private workspaceSwitchedNotify: ((sessionId: string) => void) | null = null;
+  /**
    * 每个 pi 会话的 AgentStateGetter(session_start 创建,session_shutdown/销毁删除)。
    * PiCoordinator 持有引用以调 onWorking/onSettled(更新 getter),状态应用经
    * SessionManager 的 notifyAgentWorking/notifyAgentSettled(applyState)。
@@ -85,6 +92,14 @@ export class PiSessionCoordinator {
   /** 注入 SessionManager 的只读 session 查询(session 不存在守卫)。 */
   attachSessionLookup(lookup: SessionLookup): void {
     this.lookup = lookup;
+  }
+
+  /**
+   * 注入 workspace 切换 notify 回调(index.ts 闭合为 filePanelService.onWorkspaceSwitched)。
+   * pi 切换 workspace(resume 切回 / new 新建)后调它,触发文件面板重建 + 快照恢复。
+   */
+  attachWorkspaceSwitchNotify(cb: (sessionId: string) => void): void {
+    this.workspaceSwitchedNotify = cb;
   }
 
   /**
@@ -231,6 +246,8 @@ export class PiSessionCoordinator {
       if (existingWs && this.workspaceCoordinator.getRecord(existingWs)) {
         // 切回：把当前 session 的 workspace 绑定指向它。
         this.workspaceCoordinator.switchSessionToWorkspace(sessionId, existingWs);
+        // 触发文件面板重建 + 快照恢复(否则 resume 后原打开文件不恢复)。
+        this.workspaceSwitchedNotify?.(sessionId);
         logger.info(
           'PiSessionCoordinator',
           `pi-resume: switch back piSid=${piSessionId} ws=${existingWs}`,
@@ -253,6 +270,9 @@ export class PiSessionCoordinator {
     try {
       const created = await this.workspaceCoordinator.createForSession(sessionId);
       this.piSessionToWorkspace.set(piSessionId, created.workspaceId);
+      // 触发文件面板重建(新 workspace 无快照 → onWorkspaceSwitched 清空 files,
+      // 符合 new 语义)。
+      this.workspaceSwitchedNotify?.(sessionId);
       logger.info(
         'PiSessionCoordinator',
         `pi-new-workspace: sid=${sessionId} piSid=${piSessionId} ws=${created.workspaceId}`,

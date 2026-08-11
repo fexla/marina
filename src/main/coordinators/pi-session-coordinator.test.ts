@@ -52,6 +52,8 @@ interface PiHarness {
     getRecord: ReturnType<typeof vi.fn>;
     switchSessionToWorkspace: ReturnType<typeof vi.fn>;
   };
+  /** workspace 切换 notify 回调(pi resume/new 后触发文件面板重建)。 */
+  onWorkspaceSwitched: ReturnType<typeof vi.fn>;
 }
 function makePi(
   overrides: {
@@ -82,7 +84,9 @@ function makePi(
   );
   pi.attachHooks(hooks);
   pi.attachSessionLookup(overrides.lookup ?? makeLookup());
-  return { pi, hooks, ws };
+  const onWorkspaceSwitched = vi.fn();
+  pi.attachWorkspaceSwitchNotify(onWorkspaceSwitched);
+  return { pi, hooks, ws, onWorkspaceSwitched };
 }
 
 describe('PiSessionCoordinator — session_start(reason 分发)', () => {
@@ -141,6 +145,56 @@ describe('PiSessionCoordinator — session_start(reason 分发)', () => {
     });
     expect(ws.createForSession).not.toHaveBeenCalled();
     expect(hooks.onPiAgentChanged).toHaveBeenCalledWith('s1', true);
+  });
+
+  // ── resume/new 后触发文件面板重建 notify(修 resume 文件不恢复)──
+
+  it('reason=new 新建 workspace 后触发 onWorkspaceSwitched(文件面板重建)', async () => {
+    const { pi, onWorkspaceSwitched } = makePi();
+    await pi.handlePiSessionEvent('s1', {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'new',
+    });
+    expect(onWorkspaceSwitched).toHaveBeenCalledWith('s1');
+  });
+
+  it('reason=resume 切回活 workspace 后触发 onWorkspaceSwitched(文件面板恢复)', async () => {
+    // 先 new 建主(pi-1),workspace 活着(getRecord 返非 null)
+    const { pi, onWorkspaceSwitched, ws } = makePi({ getRecord: () => ({ name: null }) });
+    await pi.handlePiSessionEvent('s1', {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'new',
+    });
+    onWorkspaceSwitched.mockClear();
+    // shutdown 旧主(主锁释放)→ resume pi-1 切回活 workspace
+    await pi.handlePiSessionEvent('s1', { piSessionId: 'pi-1', event: 'session_shutdown' });
+    await pi.handlePiSessionEvent('s1', {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'resume',
+    });
+    expect(ws.switchSessionToWorkspace).toHaveBeenCalledWith('s1', expect.any(String));
+    // 核心:切回后必须触发 notify,否则文件面板不重建、原打开文件不恢复
+    expect(onWorkspaceSwitched).toHaveBeenCalledWith('s1');
+  });
+
+  it('resume 时 workspace 被回收 → 重建并触发 onWorkspaceSwitched', async () => {
+    const { pi, onWorkspaceSwitched } = makePi({ getRecord: () => null });
+    await pi.handlePiSessionEvent('s1', {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'new',
+    });
+    onWorkspaceSwitched.mockClear();
+    await pi.handlePiSessionEvent('s1', { piSessionId: 'pi-1', event: 'session_shutdown' });
+    await pi.handlePiSessionEvent('s1', {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'resume',
+    });
+    expect(onWorkspaceSwitched).toHaveBeenCalledWith('s1');
   });
 });
 
