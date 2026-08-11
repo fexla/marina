@@ -35,7 +35,7 @@
 - **Git diff 预览来源保持**:修复打开 diff 后来源身份丢失，确保同名文件与刷新路径仍指向正确变更。
 - **文件树层级缩进统一**:目录与文件行统一使用共享树行缩进规则，避免 disclosure gutter 抵消层级。
 - **pi settled 状态及时回落**:`agent_settled` 后立即切回 idle，不再等待字节流 idle 阈值。
-- **pi resume 切回 workspace 后文件面板恢复**:此前 `/resume` 一个之前的 pi 对话后,该对话原打开的文件不恢复——根因是 resume 走的 `switchSessionToWorkspace` 只改了 workspace 绑定映射,绕过了 `FilePanelService.onWorkspaceSwitched`(正常 workspace 切换会调它重建面板 + 恢复快照)。pi resume/new 切换 workspace 后现统一触发该重建路径。
+- **pi resume 切回 workspace 后文件面板恢复(根治)**:此前 `/resume` 一个之前的 pi 对话后,该对话原打开的文件不恢复。根因(日志实证):pi resume 同一对话时 piSessionId 会变,Marina 内存映射 `piSessionId→workspaceId` 永远 miss → 每次新建空 workspace。改为把 workspace 绑定**存进 pi 对话本身**(`pi.appendEntry`,跨重启跟对话走):bridge 从对话 entry 读出 workspaceId 随 session_start 带上 → Marina 切回原 workspace + 重建面板恢复快照;新建 workspace 后返回 id 交回 bridge 存 entry。删掉了旧的内存映射,不依赖易变的 piSessionId。
 
 ## [0.3.3-dev.3] — 2026-08-08
 
