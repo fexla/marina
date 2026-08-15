@@ -338,10 +338,14 @@ do_http() {
   local delim=$'\n__MARINA_HTTP_CODE__'
   local resp curl_rc
   if [ -n "$body" ]; then
-    resp=$(curl -sS -m "$timeout" -X "$method" \
+    # Feed JSON through stdin instead of curl's argv. Git Bash launches a native
+    # Windows curl.exe whose MSYS argv bridge transcodes UTF-8 through the active
+    # ANSI code page (for example Chinese becomes CP936 bytes). --data-binary @-
+    # preserves the exact bytes produced by json_escape on every platform.
+    resp=$(printf '%s' "$body" | curl -sS -m "$timeout" -X "$method" \
         -H "Authorization: Bearer ${TOKEN}" \
         -H 'Content-Type: application/json' \
-        -d "$body" \
+        --data-binary @- \
         -w "$delim%{http_code}" "$url" 2>/dev/null); curl_rc=$?
   else
     resp=$(curl -sS -m "$timeout" -X "$method" \
@@ -565,13 +569,26 @@ cmd_workspace() {
 
 cmd_show() {
   # Path mode only (no stdin, no --as -- see marina.ps1 header for why).
-  reject_unknown_options 'show' '--quiet' '-q'
-  local quiet=0 path='' i a
+  # --heading is visible Markdown title text; main turns it into one transient
+  # navigation request after the file has been opened and activated.
+  reject_unknown_options 'show' '--quiet' '-q' '--heading'
+  local quiet=0 path='' heading='' heading_seen=0 i a
   i=0
   while [ "$i" -lt "${#ARGS[@]}" ]; do
     a="${ARGS[$i]}"
     case "$a" in
       --quiet|-q) quiet=1 ;;
+      --heading)
+        [ "$heading_seen" = "0" ] || die "$EXIT_USAGE" 'show: --heading may only be provided once'
+        i=$((i+1))
+        [ "$i" -lt "${#ARGS[@]}" ] || die "$EXIT_USAGE" 'show: --heading requires visible heading text'
+        case "${ARGS[$i]}" in
+          --quiet|-q|--heading) die "$EXIT_USAGE" 'show: --heading requires visible heading text' ;;
+        esac
+        heading="${ARGS[$i]}"
+        [ -n "${heading//[[:space:]]/}" ] || die "$EXIT_USAGE" 'show: --heading cannot be blank'
+        heading_seen=1
+        ;;
       *) path="$a" ;;
     esac
     i=$((i+1))
@@ -580,7 +597,10 @@ cmd_show() {
   local p; p=$(resolve_abs "$path")
   [ -f "$p" ] || die "$EXIT_REJECTED" "not a file: ${p}"
   [ -n "$TERMINAL" ] || die "$EXIT_OFFLINE" 'TERMINAL_ID is unset'
-  do_http POST '/open-file' "{\"terminal\":\"$(json_escape "$TERMINAL")\",\"path\":\"$(json_escape "$p")\"}" >/dev/null
+  local body="{\"terminal\":\"$(json_escape "$TERMINAL")\",\"path\":\"$(json_escape "$p")\""
+  [ -n "$heading" ] && body+=",\"heading\":\"$(json_escape "$heading")\""
+  body+='}'
+  do_http POST '/open-file' "$body" >/dev/null
   [ "$quiet" = "1" ] || printf 'shown: %s\n' "$p"
   return "$EXIT_OK"
 }
@@ -589,13 +609,16 @@ cmd_run() {
   # Run an arbitrary shell command in Marina's command panel (ADR-027). All
   # args after `run` are joined into one command string (caller's shell does
   # the quoting). --title sets the tab title; --quiet suppresses output.
-  reject_unknown_options 'run' '--quiet' '-q' '--title'
-  local quiet=0 title='' cmd_parts=() i a
+  # --sudo: run with remote sudo on SSH sessions (password held in memory by
+  #         Marina; see ADR-028 remote sudo). No effect on local sessions.
+  reject_unknown_options 'run' '--quiet' '-q' '--title' '--sudo'
+  local quiet=0 sudo=0 title='' cmd_parts=() i a
   i=0
   while [ "$i" -lt "${#ARGS[@]}" ]; do
     a="${ARGS[$i]}"
     case "$a" in
       --quiet|-q) quiet=1 ;;
+      --sudo) sudo=1 ;;
       --title) i=$((i+1)); [ "$i" -lt "${#ARGS[@]}" ] || die "$EXIT_USAGE" 'run: --title requires a value'; title="${ARGS[$i]}" ;;
       *) cmd_parts+=("$a") ;;
     esac
@@ -606,6 +629,7 @@ cmd_run() {
   [ -n "$TERMINAL" ] || die "$EXIT_OFFLINE" 'TERMINAL_ID is unset'
   local body="{\"terminal\":\"$(json_escape "$TERMINAL")\",\"command\":\"$(json_escape "$command")\""
   [ -n "$title" ] && body+=",\"title\":\"$(json_escape "$title")\""
+  [ "$sudo" = "1" ] && body+=',"sudo":true'
   body+='}'
   do_http POST '/run' "$body" >/dev/null
   [ "$quiet" = "1" ] || printf 'ran: %s\n' "$command"
@@ -784,13 +808,17 @@ commands:
                     strip name+pinned; the workspace becomes reclaimable
                     (no `remove` command -- unpin is the safe exit)
   show <PATH>       open an existing file in the panel
+                    --heading <TEXT> jump to the first matching Markdown heading
                     -q, --quiet suppress success output
   run <COMMAND>     run an arbitrary shell command (bash) and render its
                     markdown output in the command panel (ADR-027)
                     all args after `run` are joined into one command string
                     --title "X"  set the tab display title
+                    --sudo       run with remote sudo (SSH sessions only;
+                                 password held in memory by Marina)
                     -q, --quiet  suppress success output
                     e.g. marina run "gh issue list --limit 5"
+                         marina run --sudo "apt update"
   close <PATH>      close one file (exact path, or just the file name)
   close --all       close every file in this terminal's panel
   close --stale     close only tabs whose file no longer exists on disk

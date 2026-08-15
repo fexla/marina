@@ -322,15 +322,30 @@ function Invoke-CmdShow {
   <#
     Path mode only. The agent must pass an existing file path -- there is no
     stdin/staging mode (see file header for why). Quiet mode suppresses the
-    success line. Any other --foo is a usage error, not a silent ignore.
+    success line. --heading carries visible Markdown heading text as a one-shot
+    navigation intent. Any other --foo is a usage error, not a silent ignore.
   #>
   param($Config, [string[]]$CmdArgs)
-  Assert-NoUnknownOptions -CmdArgs $CmdArgs -Allowed @('--quiet', '-q') -CmdName 'show'
-  $quiet = $false; $path = $null
+  Assert-NoUnknownOptions -CmdArgs $CmdArgs -Allowed @('--quiet', '-q', '--heading') -CmdName 'show'
+  $quiet = $false; $path = $null; $heading = $null; $headingSeen = $false
   $i = 0
   while ($i -lt $CmdArgs.Count) {
     $a = [string]$CmdArgs[$i]
     if ($a -eq '--quiet' -or $a -eq '-q') { $quiet = $true; $i++ }
+    elseif ($a -eq '--heading') {
+      if ($headingSeen) { Die $script:EXIT_USAGE 'show: --heading may only be provided once' }
+      $i++
+      if (
+        $i -ge $CmdArgs.Count -or
+        @('--quiet', '-q', '--heading') -contains [string]$CmdArgs[$i]
+      ) {
+        Die $script:EXIT_USAGE 'show: --heading requires visible heading text'
+      }
+      $heading = [string]$CmdArgs[$i]
+      if ([string]::IsNullOrWhiteSpace($heading)) { Die $script:EXIT_USAGE 'show: --heading cannot be blank' }
+      $headingSeen = $true
+      $i++
+    }
     else { $path = $a; $i++ }
   }
   if (-not $path) {
@@ -341,7 +356,9 @@ function Invoke-CmdShow {
     Die $script:EXIT_REJECTED "not a file: $p"
   }
   if (-not $Config.Terminal) { Die $script:EXIT_OFFLINE 'TERMINAL_ID is unset' }
-  Send-MarinaRequest -Config $Config -Method 'POST' -Path '/open-file' -Body @{ terminal = $Config.Terminal; path = $p } | Out-Null
+  $body = @{ terminal = $Config.Terminal; path = $p }
+  if ($null -ne $heading) { $body['heading'] = $heading }
+  Send-MarinaRequest -Config $Config -Method 'POST' -Path '/open-file' -Body $body | Out-Null
   if (-not $quiet) { [Console]::Out.WriteLine("shown: $p") }
   return $script:EXIT_OK
 }
@@ -593,6 +610,7 @@ commands:
                     strip name+pinned; the workspace becomes reclaimable
                     (no `remove` command -- unpin is the safe exit)
   show <PATH>       open an existing file in the panel
+                    --heading <TEXT> jump to the first matching Markdown heading
                     -q, --quiet suppress success output
   run <COMMAND>     run an arbitrary shell command (bash) and render its
                     markdown output in the command panel (ADR-027)

@@ -125,6 +125,23 @@ Instead:
    (no BOM).
 2. Show that file's path.
 
+For Markdown, optionally request a one-time jump to a visible heading:
+
+```bash
+./marina show report.md --heading "Verification"
+```
+
+PowerShell / cmd launcher:
+
+```powershell
+.\marina.cmd show report.md --heading "Verification"
+```
+
+`--heading` matches visible heading text after trimming/folding whitespace and ignoring case;
+if the document repeats the same title, the first one wins. The request is transient: every
+`show --heading` call navigates again, while later file-watch refreshes do not replay it. A
+missing title still opens the file and Marina reports the navigation miss in the panel.
+
 ### Where to write the artifact: resolve the managed workspace first
 
 Marina maintains a per-terminal managed scratch directory. Throwaway
@@ -373,8 +390,8 @@ their **scheme** — use the right form so the click does what you intend:
   ```markdown
   Docs: <https://react.dev/learn> · contact [me](mailto:me@example.com)
   ```
-- **In-page anchor**: `#section-id` scrolls within the current document
-  (React-markdown renders heading ids).
+- **In-page anchor**: `#section-id` scrolls within the current document.
+  Marina assigns stable Unicode-aware heading ids and `-1`, `-2`, ... suffixes to duplicates.
 
 Rules of thumb:
 - **Anything that is not a full `http(s)://` / `mailto:` URL and not a `#`
