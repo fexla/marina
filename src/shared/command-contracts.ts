@@ -84,6 +84,7 @@ import type {
   SetDefaultTemplatePayload,
   GetOpenFilesPayload,
   FilePanelActionPayload,
+  OpenFilePanelPayload,
   OpenPathFromMarkdownPayload,
   ReadFilePayload,
   ReadImagePayload,
@@ -517,7 +518,7 @@ export interface CommandContractMap {
     response: FilePanelSnapshot;
   };
   [COMMAND_CHANNELS.FILE_PANEL_OPEN]: {
-    payload: FilePanelActionPayload;
+    payload: OpenFilePanelPayload;
     response: FilePanelSnapshot;
   };
   [COMMAND_CHANNELS.FILE_PANEL_OPEN_PATH]: {

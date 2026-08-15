@@ -535,6 +535,11 @@ export const EVENT_CHANNELS = {
    * 同策略),renderer 收到后更新 filePanels Map。
    */
   FILE_PANEL_UPDATED: 'evt:file-panel:updated',
+  /**
+   * 一次性 Markdown 标题跳转意图。只定向给请求发生时的 session owner；不进入
+   * FilePanelSnapshot / OpenedFile / workspace 快照，避免 watcher 或重挂重放旧跳转。
+   */
+  FILE_PANEL_HEADING_NAVIGATION_REQUESTED: 'evt:file-panel:heading-navigation-requested',
 
   /**
    * v0.3.3 ADR-024 / Feature D:workspace 切换完成(bind/new/unpin 后)。
@@ -1868,10 +1873,18 @@ export interface CommandExitedPayload {
 // 注:命令面板的流式 output/exited 复用 CodeBlockOutputPayload / CodeBlockExitedPayload
 // + evt:system:code-block-output / exited(执行内核同为 CodeBlockRunner,runId 一致)。
 
-/** cmd:file-panel:open / close / show payload。path 可相对 session.currentCwd。 */
+/** cmd:file-panel:close / show payload。path 可相对 session.currentCwd。 */
 export interface FilePanelActionPayload {
   sessionId: string;
   path: string;
+}
+
+/**
+ * cmd:file-panel:open payload。`heading` 是可选的可见标题文字；Main 打开文件后只把
+ * 它作为一次性导航意图定向发送，不写入文件状态。旧调用只传 sessionId/path 仍有效。
+ */
+export interface OpenFilePanelPayload extends FilePanelActionPayload {
+  heading?: string;
 }
 
 /** v0.3.3 Feature B cmd:file-panel:open-path payload。markdown 文档里的本地文件
@@ -1959,6 +1972,19 @@ export interface FilePanelUpdatedPayload {
   activePath: string | null;
   /** 仅 openFile 成功时为 true，请求 renderer 激活「已打开」面板。 */
   requestActivation?: boolean;
+}
+
+/**
+ * evt:file-panel:heading-navigation-requested payload。
+ *
+ * requestId 让同一路径/同一标题的连续调用仍会触发两次；renderer 成功或失败处理后
+ * 立即消费。该 payload 只发给当前 owner，永不进入持久/可重放快照。
+ */
+export interface FilePanelHeadingNavigationPayload {
+  sessionId: string;
+  path: string;
+  heading: string;
+  requestId: string;
 }
 
 // ── v0.3.3 ADR-024 / Feature D:workspace 域 payload ──────────────────
