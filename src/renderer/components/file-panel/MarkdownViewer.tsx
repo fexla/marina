@@ -20,8 +20,13 @@
  * - 不给根节点自建滚动；文档级滚动由 .file-panel-body 统一持有并缓存。
  */
 import { useRef, type RefObject } from 'react';
+import type { FilePanelHeadingNavigationPayload } from '@shared/protocol';
 import type { OpenedFile } from '@shared/types';
-import { useFileViewerScroll } from '../../hooks/useFileViewerScroll';
+import {
+  useFileViewerScroll,
+  type FileViewerNavigationResult,
+} from '../../hooks/useFileViewerScroll';
+import { useAppDispatch } from '../../store';
 import { useTranslation } from '../LanguageProvider';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { MarkdownDocument } from './MarkdownDocument';
@@ -34,6 +39,8 @@ interface ViewerProps {
   search: PanelSearchProps;
   /** Markdown 文档真正的纵向滚动容器（.file-panel-body）。 */
   scrollRef: RefObject<HTMLElement | null>;
+  /** Main 定向发送、消费后即删除的一次性标题跳转。 */
+  headingNavigation?: FilePanelHeadingNavigationPayload;
 }
 
 /**
@@ -42,9 +49,23 @@ interface ViewerProps {
  * 状态流：OpenedFile mtime 变化 → useFileContent 重新 IPC read → loading →
  * MarkdownDocument；滚动状态机参见 useFileViewerScroll 的文件头说明。
  */
-export function MarkdownViewer({ sessionId, file, search, scrollRef }: ViewerProps): JSX.Element {
+export function MarkdownViewer({
+  sessionId,
+  file,
+  search,
+  scrollRef,
+  headingNavigation,
+}: ViewerProps): JSX.Element {
   const { tx } = useTranslation();
+  const dispatch = useAppDispatch();
   const containerRef = useRef<HTMLDivElement>(null);
+  const headingNavigationResultRef = useRef<FileViewerNavigationResult | null>(null);
+  const headingSearchSuppressionRef = useRef<{ query: string; mtimeMs: number } | null>(null);
+  if (!search.visible) headingSearchSuppressionRef.current = null;
+  const headingSuppressesCurrentSearch =
+    headingNavigation !== undefined ||
+    (headingSearchSuppressionRef.current?.query === search.query &&
+      headingSearchSuppressionRef.current.mtimeMs === file.mtimeMs);
   const content = useFileContent(sessionId, file.path, file.mtimeMs);
 
   useFileViewerScroll({
@@ -55,7 +76,9 @@ export function MarkdownViewer({ sessionId, file, search, scrollRef }: ViewerPro
     layoutRef: containerRef,
     ready: content?.kind === 'markdown',
     restoreVersion: file.mtimeMs,
-    searchActive: search.visible && search.query.length > 0,
+    searchActive: search.visible && search.query.length > 0 && !headingSuppressesCurrentSearch,
+    navigationResultRef: headingNavigationResultRef,
+    ...(headingNavigation ? { navigationRequestId: headingNavigation.requestId } : {}),
   });
 
   // Markdown 根本身不滚动；文档级中键自动滚动作用于外层 file-panel-body。
@@ -77,12 +100,23 @@ export function MarkdownViewer({ sessionId, file, search, scrollRef }: ViewerPro
 
   return (
     <MarkdownDocument
+      key={file.path}
       sessionId={sessionId}
       markdown={content.text}
       documentIdentity={file.path}
       fileContext={{ path: file.path, mtimeMs: file.mtimeMs }}
       search={search}
       rootRef={containerRef}
+      {...(headingNavigation ? { headingNavigation } : {})}
+      onHeadingNavigationHandled={(requestId, found) => {
+        headingNavigationResultRef.current = { requestId, found };
+        headingSearchSuppressionRef.current = { query: search.query, mtimeMs: file.mtimeMs };
+        dispatch({
+          type: 'file-panel/heading-navigation-consumed',
+          sessionId,
+          requestId,
+        });
+      }}
       trailingContent={
         content.truncated ? (
           <div className="file-truncated-mark">

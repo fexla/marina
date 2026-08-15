@@ -46,6 +46,11 @@ interface UseDomTextHighlightParams {
   /** 容器内容变化的「版本号」(内容重渲染时变,触发重算匹配)。 */
   contentVersion: unknown;
   /**
+   * 当前 render 有更高优先级的程序化导航。把本 query/content 记为已抑制，导航请求
+   * 随后被消费也不会补做“首个搜索匹配”滚动；用户点上下一个仍可直接导航。
+   */
+  suppressAutoScroll?: boolean;
+  /**
    * 跳过搜索的元素选择器:这些元素内的文本不参与查找(如行号槽、diff 行首 +/- 符号)。
    * TreeWalker 遇到其子节点时 REJECT。undefined = 只跳 script/style。
    */
@@ -59,6 +64,7 @@ export function useDomTextHighlight({
   caseSensitive,
   active,
   contentVersion,
+  suppressAutoScroll = false,
   skipSelector,
 }: UseDomTextHighlightParams): void {
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -66,6 +72,12 @@ export function useDomTextHighlight({
   const rangesRef = useRef<Range[]>([]);
 
   const effectiveQuery = active && query.length > 0 ? query : '';
+  const suppressedAutoScrollRef = useRef<{ query: string; contentVersion: unknown } | null>(null);
+  if (!effectiveQuery) {
+    suppressedAutoScrollRef.current = null;
+  } else if (suppressAutoScroll) {
+    suppressedAutoScrollRef.current = { query: effectiveQuery, contentVersion };
+  }
 
   // 算匹配 Range(query / caseSensitive / 内容 / skipSelector 变化时重算)。
   useEffect(() => {
@@ -142,10 +154,17 @@ export function useDomTextHighlight({
   // current 变化 → scrollIntoView(初次算匹配时也滚到第一个)。
   useEffect(() => {
     if (!effectiveQuery) return;
+    const suppressed = suppressedAutoScrollRef.current;
+    if (
+      suppressed?.query === effectiveQuery &&
+      Object.is(suppressed.contentVersion, contentVersion)
+    ) {
+      return;
+    }
     const ranges = rangesRef.current;
     if (ranges.length === 0) return;
     scrollToRange(ranges[currentIndex] ?? ranges[0]);
-  }, [currentIndex, effectiveQuery]);
+  }, [contentVersion, currentIndex, effectiveQuery]);
 
   // 卸载时清理高亮,避免泄漏。
   useEffect(() => {

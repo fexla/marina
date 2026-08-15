@@ -3694,6 +3694,8 @@ html[data-maximized='true'] .app-root.with-shell {
   --fgColor-default: #1f2328;
   --fgColor-muted: #59636e;
   --fgColor-accent: #0969da;
+  --markdown-heading-rail-surface: #ffffff;
+  --markdown-heading-rail-text: #1f2328;
 }
 
 .panel-dock .markdown-body.md-github-dark {
@@ -3707,9 +3709,449 @@ html[data-maximized='true'] .app-root.with-shell {
   --fgColor-default: #f0f6fc;
   --fgColor-muted: #9198a1;
   --fgColor-accent: #4493f8;
+  --markdown-heading-rail-surface: #0d1117;
+  --markdown-heading-rail-text: #f0f6fc;
 }
 
 /* stylelint-enable custom-property-pattern, custom-property-empty-line-before */
+
+/* Markdown H1-H6 章节折叠（全层级递归）。结构由 remarkMarinaHeadingSections
+ * 生成（单调栈），只有真实 fileContext 会启用；命令面板共用 MarkdownDocument
+ * 但不会命中这些类。summary 使用原生 details 语义/键盘操作，只替换浏览器
+ * marker 以统一主题。嵌套深度由 details 原生承载，不做逐级缩进——层级由标题
+ * 字号与 chevron 自身表达，与正文排印一致。 */
+.markdown-heading-section {
+  display: block;
+  min-width: 0;
+}
+
+.markdown-heading-summary {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.markdown-heading-summary::-webkit-details-marker {
+  display: none;
+}
+
+.markdown-heading-summary-chevron {
+  flex: 0 0 16px;
+  width: 16px;
+  color: currentcolor;
+  opacity: 0.45;
+  transform: translateY(1px);
+  transition:
+    transform 120ms ease,
+    opacity 120ms ease;
+}
+
+.markdown-heading-summary:hover .markdown-heading-summary-chevron {
+  opacity: 0.9;
+}
+
+.markdown-heading-section[open] > .markdown-heading-summary > .markdown-heading-summary-chevron {
+  transform: translateY(1px) rotate(90deg);
+}
+
+.markdown-heading-summary > h1,
+.markdown-heading-summary > h2,
+.markdown-heading-summary > h3,
+.markdown-heading-summary > h4,
+.markdown-heading-summary > h5,
+.markdown-heading-summary > h6 {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.markdown-heading-summary:focus-visible {
+  outline: 1px solid currentcolor;
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* Markdown 目录始终悬浮在正文左侧，不参与正文宽度计算。rail 自身保持零高度，
+ * sticky 只负责跟随滚动；按钮和目录面板从这个锚点向下绘制，因此展开前后正文
+ * 的尺寸与换行都完全不变。 */
+.markdown-heading-layout {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.markdown-heading-content {
+  width: 100%;
+  min-width: 0;
+}
+
+.markdown-heading-rail {
+  --markdown-heading-rail-fg: var(
+    --markdown-heading-rail-text,
+    var(--color-text-primary, currentcolor)
+  );
+  --markdown-heading-rail-bg: var(
+    --markdown-heading-rail-surface,
+    var(--color-bg-elevated, Canvas)
+  );
+  --markdown-heading-rail-compact-width: 18px;
+
+  /* 静止轨的层级圆点:所有圆点同尺寸,层级只由横向位置表达。
+   * base/step 的静态值仅供 JS 像素吸附(markdown-rail-pixel-snap.ts)读取后
+   * 按实际 dpr 取整到物理像素;步进 5.5px≈8物理px,列间距足够眼睛分列。 */
+  --markdown-heading-rail-marker-base: 8px;
+  --markdown-heading-rail-marker-step: 4px;
+
+  position: sticky;
+  top: 4px;
+  z-index: 4;
+  width: var(--markdown-heading-rail-compact-width, 18px);
+  height: 0;
+  margin-left: 2px;
+  overflow: visible;
+  color: var(--markdown-heading-rail-fg, #f0f);
+
+  /* 展开与收起都走同一条 width 动画:过渡定义在基类上,
+   * 手动开关节点类、hover 进出全部对称动画。 */
+  transition: width 150ms ease;
+}
+
+.markdown-heading-rail[data-markdown-heading-max-level='2'] {
+  --markdown-heading-rail-compact-width: 22px;
+  --markdown-heading-rail-marker-base: 5px;
+  --markdown-heading-rail-marker-step: 5.5px;
+}
+
+.markdown-heading-rail[data-markdown-heading-max-level='3'] {
+  --markdown-heading-rail-compact-width: 27px;
+  --markdown-heading-rail-marker-base: 5px;
+  --markdown-heading-rail-marker-step: 5.5px;
+}
+
+.markdown-heading-rail[data-markdown-heading-max-level='4'] {
+  --markdown-heading-rail-compact-width: 33px;
+  --markdown-heading-rail-marker-base: 5px;
+  --markdown-heading-rail-marker-step: 5.5px;
+}
+
+.markdown-heading-rail[data-markdown-heading-max-level='5'] {
+  --markdown-heading-rail-compact-width: 38px;
+  --markdown-heading-rail-marker-base: 5px;
+  --markdown-heading-rail-marker-step: 5.5px;
+}
+
+.markdown-heading-rail[data-markdown-heading-max-level='6'] {
+  --markdown-heading-rail-compact-width: 44px;
+  --markdown-heading-rail-marker-base: 5px;
+  --markdown-heading-rail-marker-step: 5.5px;
+}
+
+.markdown-heading-rail-expanded {
+  width: var(--markdown-heading-rail-compact-width, 18px);
+}
+
+.markdown-heading-rail-expanded:hover,
+.markdown-heading-rail-expanded:has(:focus-visible) {
+  width: min(220px, calc(100% - 24px));
+}
+
+.markdown-heading-rail-toggle {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--markdown-heading-rail-fg, #f0f) 22%, transparent);
+  border-radius: 4px;
+  background-color: color-mix(in srgb, var(--markdown-heading-rail-bg, #f0f) 74%, transparent);
+  color: var(--markdown-heading-rail-fg, #f0f);
+  opacity: 0.68;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  transition:
+    opacity 150ms ease,
+    background-color 150ms ease;
+}
+
+.markdown-heading-rail-toggle:hover,
+.markdown-heading-rail-toggle:focus-visible,
+.markdown-heading-rail-expanded:hover .markdown-heading-rail-toggle,
+.markdown-heading-rail-expanded:has(:focus-visible) .markdown-heading-rail-toggle {
+  opacity: 1;
+  background-color: color-mix(in srgb, var(--markdown-heading-rail-bg, #f0f) 94%, transparent);
+}
+
+.markdown-heading-rail-toggle:focus-visible {
+  outline: 1px solid var(--markdown-heading-rail-fg, #f0f);
+  outline-offset: 1px;
+}
+
+.markdown-heading-rail-expanded .markdown-heading-rail-toggle svg {
+  transform: rotate(90deg);
+}
+
+/* 收起态:隐藏整个目录面板,只留左上角小按钮(aria-expanded=false)。
+ * 可见态性挂 -expanded 类(hover 浮动展开的 CSS 开关),两类互斥。 */
+.markdown-heading-rail-hidden .markdown-heading-rail-items {
+  display: none;
+}
+
+.markdown-heading-rail-items {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+
+  /* gap 必须为 0:1px 间隙既破坏像素吸附的整数物理网格(1px=1.4375物理px),
+   * 又会在裁剪行(height:0)之间每行漏出 1px 缝。行间节奏由行高+分组空隙设计。 */
+  gap: 0;
+  min-width: 0;
+  width: 100%;
+  margin-top: 5px;
+  pointer-events: auto;
+
+  /* 面板壳(内边距/底色/描边/阴影)在静止轨与展开面板之间平滑过渡。
+   * 宽度不在这里过渡——它跟随外层 nav 的 width 动画同步缩放,
+   * 否则收起时 items 会先跳到窄宽、nav 才慢慢缩,动画就只剩单边。 */
+  transition:
+    padding 150ms ease,
+    background-color 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.markdown-heading-rail-expanded:hover .markdown-heading-rail-items,
+.markdown-heading-rail-expanded:has(:focus-visible) .markdown-heading-rail-items {
+  box-sizing: border-box;
+  width: 100%;
+  max-height: min(340px, 50vh);
+  padding: 5px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 1px solid color-mix(in srgb, var(--markdown-heading-rail-fg, #f0f) 24%, transparent);
+  border-radius: 6px;
+  background-color: color-mix(in srgb, var(--markdown-heading-rail-bg, #f0f) 94%, transparent);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 24%);
+  backdrop-filter: blur(12px);
+
+  /* hover 展开面板保留细滚动条供手动浏览长目录。 */
+  scrollbar-width: thin;
+}
+
+.markdown-heading-rail .markdown-heading-rail-link {
+  /* 层级序号(0-5):静止轨圆点的横向位置 = marker-base + 序号 × marker-step,
+   * 所有层级共用同一几何,只是位置不同——这是"统一风格"的根源。 */
+  --markdown-heading-level-index: 0;
+
+  /* 一级标题的吸附 x 偏移(2-6 级在下方的 level 覆盖块里;不写这条 L1 会
+   * 落回 calc fallback 的静态 4px,dpr 非整数时又是亚像素相位)。 */
+  --md-rail-dot-x: var(--md-rail-dot-x-0, 5px);
+
+  display: block;
+
+  /* 容器是 flex column。长文档(如 AGENTS.md 67 个标题)总高远超面板时,
+   * flex 子项默认 shrink 会把每行压扁到 ~4px,链接 overflow:hidden 使自动
+   * 最小尺寸失效,文字被裁成横条(实测行高 3.9px,面板里什么都看不清)。
+   * 禁止收缩,超出部分交给容器滚动。 */
+  flex-shrink: 0;
+  min-width: 0;
+
+  /* 行高读像素吸附变量(dpr 非整数时 18px×dpr 带亚像素相位,上下行的点
+   * 抗锯齿不一致);JS 在渲染前写入,静止轨与 hover 面板共用同一行高。 */
+  height: var(--md-rail-row, 18px);
+  padding: 0 4px;
+  border-radius: 3px;
+  color: var(--markdown-heading-rail-fg, #f0f);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: var(--md-rail-row, 18px);
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+
+  /* height/opacity/visibility 服务于聚焦裁剪的“章节切换”动画:链外条目收成 0 高,
+   * 容器(flex column)高度随子项联动收缩,静止点阵与展开面板共用同一批条目,
+   * 高度天然同步。visibility 无延迟:从裁剪恢复时立即可见。 */
+  transition:
+    color 120ms ease,
+    background-color 120ms ease,
+    padding-left 150ms ease,
+    height 180ms ease,
+    margin-top 180ms ease,
+    opacity 180ms ease,
+    visibility 0s linear 0s;
+}
+
+/* 分组节奏(2026-08 设计):深一层内容刚结束、回到浅层的条目前空半行
+ * (JS 在 applyFocusPrune 里标记 group-start)。紧贴=同族,空半行=一个
+ * 范围刚关闭;叶子兄弟连续排列。这是文档顺序列表表达分组的排版惯例。 */
+.markdown-heading-rail .markdown-heading-rail-link[data-markdown-heading-group-start='true'] {
+  margin-top: var(--md-rail-group-gap, 9px);
+}
+
+/* 聚焦裁剪:祖先链规则(见 MarkdownDocument.tsx applyFocusPrune)标记的链外条目。
+ * height 18px→0 过渡即手风琴动画;visibility 延迟到动画结束才 hidden,
+ * 避免收起过程中闪现空白;同时 hidden 会把条目移出 a11y 树和 Tab 序。 */
+.markdown-heading-rail .markdown-heading-rail-link[data-markdown-heading-pruned='true'] {
+  height: 0;
+  margin-top: 0;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    color 120ms ease,
+    background-color 120ms ease,
+    padding-left 150ms ease,
+    height 180ms ease,
+    margin-top 180ms ease,
+    opacity 180ms ease,
+    visibility 0s linear 180ms;
+}
+
+.markdown-heading-rail-link[data-markdown-heading-level='2'] {
+  --markdown-heading-level-index: 1;
+
+  /* 吸附后的圆点 x 偏移(JS 按实际 dpr 写在 rail 上);fallback = 旧静态几何 */
+  --md-rail-dot-x: var(--md-rail-dot-x-1, 10.5px);
+
+  padding-left: 14px;
+}
+
+.markdown-heading-rail-link[data-markdown-heading-level='3'] {
+  --markdown-heading-level-index: 2;
+  --md-rail-dot-x: var(--md-rail-dot-x-2, 16px);
+
+  padding-left: 24px;
+}
+
+.markdown-heading-rail-link[data-markdown-heading-level='4'] {
+  --markdown-heading-level-index: 3;
+  --md-rail-dot-x: var(--md-rail-dot-x-3, 21.5px);
+
+  padding-left: 34px;
+}
+
+.markdown-heading-rail-link[data-markdown-heading-level='5'] {
+  --markdown-heading-level-index: 4;
+  --md-rail-dot-x: var(--md-rail-dot-x-4, 27px);
+
+  padding-left: 44px;
+}
+
+.markdown-heading-rail-link[data-markdown-heading-level='6'] {
+  --markdown-heading-level-index: 5;
+  --md-rail-dot-x: var(--md-rail-dot-x-5, 32.5px);
+
+  padding-left: 54px;
+}
+
+.markdown-heading-rail .markdown-heading-rail-link:hover,
+.markdown-heading-rail .markdown-heading-rail-link:focus-visible {
+  color: var(--markdown-heading-rail-fg, #f0f);
+  background-color: color-mix(in srgb, var(--markdown-heading-rail-fg, #f0f) 12%, transparent);
+}
+
+.markdown-heading-rail .markdown-heading-rail-link:focus-visible {
+  outline: 1px solid var(--markdown-heading-rail-fg, #f0f);
+  outline-offset: 1px;
+}
+
+.markdown-heading-rail-expanded:hover
+  .markdown-heading-rail-link[data-markdown-heading-current='true'],
+.markdown-heading-rail-expanded:has(:focus-visible)
+  .markdown-heading-rail-link[data-markdown-heading-current='true'] {
+  background-color: color-mix(in srgb, var(--markdown-heading-rail-fg, #f0f) 18%, transparent);
+  box-shadow: inset 2px 0 0 var(--markdown-heading-rail-fg, #f0f);
+  font-weight: 700;
+}
+
+/* 静止态是按文档最大标题深度自适应的纯色位置轨:每个圆点代表一个 H1-H6,
+ * 横向位置表达层级,当前标题的圆点纵向拉长成胶囊并发光。启用自动展开后,
+ * 只有 hover 或键盘 focus-visible 才恢复完整文字面板;鼠标离开平滑收回。
+ * 静止轨与展开面板共用同一 max-height / 上下内边距 / 描边——高度恒等,
+ * 收起时面板高度不跳变;更长的目录在轨内滚动(见下一条 overflow 规则)。 */
+.markdown-heading-rail:not(.markdown-heading-rail-expanded) .markdown-heading-rail-items,
+.markdown-heading-rail-expanded:not(:hover, :has(:focus-visible)) .markdown-heading-rail-items {
+  max-height: min(340px, 50vh);
+  padding: 5px 3px;
+  border: 1px solid color-mix(in srgb, var(--markdown-heading-rail-fg, #f0f) 24%, transparent);
+  border-radius: 6px;
+  background-color: var(--markdown-heading-rail-bg, #f0f);
+  box-shadow: 0 3px 10px rgb(0 0 0 / 20%);
+}
+
+/* 目录条目超过面板高度时,由 renderer 的追踪 effect 打上
+ * data-markdown-heading-overflow,静止轨才真正滚动;
+ * 未溢出时保持 overflow: visible——手动模式的标题 tooltip(::after)
+ * 要画到轨道外,一旦设了 overflow 就会被裁掉。 */
+.markdown-heading-rail[data-markdown-heading-overflow='true'] .markdown-heading-rail-items {
+  overflow-x: hidden;
+  overflow-y: auto;
+
+  /* 静止轨只有 18-32px 宽,细滚动条的 gutter 会吃掉近半宽度、直接盖住
+   * 右侧几级的圆点(AGENTS.md 实测 clientWidth 从 30 掉到 17)。静止轨隐藏
+   * 滚动条:当前位置胶囊本来就由 JS 自动滚进视野,手动浏览走 hover 展开。 */
+  scrollbar-width: none;
+}
+
+.markdown-heading-rail:not(.markdown-heading-rail-expanded) .markdown-heading-rail-link,
+.markdown-heading-rail-expanded:not(:hover, :has(:focus-visible)) .markdown-heading-rail-link {
+  position: relative;
+  padding: 0;
+  overflow: visible;
+  color: transparent;
+  font-size: 0;
+}
+
+.markdown-heading-rail:not(.markdown-heading-rail-expanded) .markdown-heading-rail-link::before,
+.markdown-heading-rail-expanded:not(:hover, :has(:focus-visible))
+  .markdown-heading-rail-link::before {
+  content: '';
+  position: absolute;
+
+  /* 几何全部读像素吸附变量(dpr=1.4375 等非整数缩放下,静态 3px/7.5px 会落
+   * 在亚像素相位上,逐点抗锯齿结果粗细不一;见 markdown-rail-pixel-snap.ts)。
+   * fallback = 旧静态几何。 */
+  left: var(
+    --md-rail-dot-x,
+    calc(
+      var(--markdown-heading-rail-marker-base, 8px) + var(--markdown-heading-level-index, 0) *
+        var(--markdown-heading-rail-marker-step, 4px)
+    )
+  );
+  top: var(--md-rail-dot-top, 7.5px);
+  width: var(--md-rail-dot-size, 3px);
+  height: var(--md-rail-dot-size, 3px);
+  border-radius: 50%;
+  background-color: currentcolor;
+  color: var(--markdown-heading-rail-fg, #f0f);
+  opacity: 0.45;
+  transition:
+    left 120ms ease,
+    top 120ms ease,
+    width 120ms ease,
+    height 120ms ease,
+    opacity 120ms ease;
+}
+
+.markdown-heading-rail:not(.markdown-heading-rail-expanded)
+  .markdown-heading-rail-link[data-markdown-heading-current='true']::before,
+.markdown-heading-rail-expanded:not(:hover, :has(:focus-visible))
+  .markdown-heading-rail-link[data-markdown-heading-current='true']::before {
+  /* 当前标题:同一个圆点纵向拉长成胶囊(横向位置不变),
+   * 亮度和发光区分于其余圆点。几何同样读吸附变量。 */
+  top: var(--md-rail-pill-top, 4px);
+  height: var(--md-rail-pill-h, 10px);
+  opacity: 1;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--markdown-heading-rail-fg, #f0f) 60%, transparent);
+}
+
+/* (历史遗留已删除)曾经的"手动缩略模式"下圆点 hover 会弹单个标题 tooltip;
+ * 现在可见态恒为 hover 浮动展开面板,收起态 items 整体 display:none,
+ * 该模式不复存在,tooltip 规则随之移除。 */
 
 .file-markdown-viewer {
   font-size: 13px;

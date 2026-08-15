@@ -18,7 +18,11 @@
  * - 不保存 width/collapsed 等布局状态。
  */
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
-import { COMMAND_CHANNELS, type FilePanelSnapshot } from '@shared/protocol';
+import {
+  COMMAND_CHANNELS,
+  type FilePanelSnapshot,
+  type FilePanelHeadingNavigationPayload,
+} from '@shared/protocol';
 import type { OpenedFile } from '@shared/types';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { matchText } from '@shared/text-search';
@@ -93,6 +97,36 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
 
   const activeFile: OpenedFile | null =
     snapshot.files.find((file) => file.path === snapshot.activePath) ?? null;
+  const pendingHeadingNavigation: FilePanelHeadingNavigationPayload | undefined =
+    state.filePanelHeadingNavigations.get(sessionId)?.[0];
+
+  // 同一 loading 窗口内可能排入多个不同文件的导航。严格按 FIFO 先 show 对应文件，
+  // 文件内容挂载后再由 MarkdownDocument 消费；这样后来的 open 不会吞掉前一个 requestId。
+  useEffect(() => {
+    if (!pendingHeadingNavigation || pendingHeadingNavigation.path === activeFile?.path) return;
+    if (!snapshot.files.some((file) => file.path === pendingHeadingNavigation.path)) {
+      dispatch({
+        type: 'file-panel/heading-navigation-consumed',
+        sessionId,
+        requestId: pendingHeadingNavigation.requestId,
+      });
+      return;
+    }
+    window.api
+      .invoke(COMMAND_CHANNELS.FILE_PANEL_SHOW, {
+        sessionId,
+        path: pendingHeadingNavigation.path,
+      })
+      .catch((error: unknown) => {
+        console.warn('[FilePanel] queued heading navigation show failed', error);
+        dispatch({
+          type: 'file-panel/heading-navigation-consumed',
+          sessionId,
+          requestId: pendingHeadingNavigation.requestId,
+        });
+      });
+  }, [activeFile?.path, dispatch, pendingHeadingNavigation, sessionId, snapshot.files]);
+
   const preloadSurfaceClass =
     activeFile?.kind === 'markdown' ? markdownSurfaceClass(markdownStyle) : '';
 
@@ -269,6 +303,9 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
             file={activeFile}
             search={search}
             outerScrollRef={bodyScrollRef}
+            {...(pendingHeadingNavigation?.path === activeFile.path
+              ? { headingNavigation: pendingHeadingNavigation }
+              : {})}
           />
         ) : (
           <div className="file-panel-placeholder">

@@ -7,6 +7,7 @@
  *   不返回 'web',所以不会有文件走到那里。
  */
 import { useRef, type RefObject } from 'react';
+import type { FilePanelHeadingNavigationPayload } from '@shared/protocol';
 import type { OpenedFile } from '@shared/types';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { useTranslation } from '../LanguageProvider';
@@ -23,6 +24,8 @@ interface FileViewerProps {
   search: PanelSearchProps;
   /** Markdown/Image/Unknown 的真实文档滚动容器(.file-panel-body)。 */
   outerScrollRef: RefObject<HTMLDivElement | null>;
+  /** 仅 Markdown 可消费的一次性可见标题跳转。 */
+  headingNavigation?: FilePanelHeadingNavigationPayload;
 }
 
 export function FileViewer({
@@ -30,6 +33,7 @@ export function FileViewer({
   file,
   search,
   outerScrollRef,
+  headingNavigation,
 }: FileViewerProps): JSX.Element {
   switch (file.kind) {
     case 'text':
@@ -41,6 +45,7 @@ export function FileViewer({
           file={file}
           search={search}
           scrollRef={outerScrollRef}
+          {...(headingNavigation ? { headingNavigation } : {})}
         />
       );
     case 'image':

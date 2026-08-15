@@ -7,7 +7,8 @@
  * - identity = sessionId + OpenedFile.path + kind。切文件/面板/session remount 后恢复。
  * - scroll 事件 120ms trailing debounce,unmount/identity 变化立即 flush。
  * - 异步内容用双 RAF + ResizeObserver fence；当前内容太短时等待布局增长(最多 4s)。
- * - wheel/mouse/touch/key 或非空搜索出现后取消待恢复，绝不和用户/搜索 scrollIntoView 抢。
+ * - wheel/mouse/touch/key、非空搜索或标题导航出现后取消待恢复，绝不和新的
+ *   scrollIntoView 抢；标题跳转在下一帧反写当前位置，watcher 刷新也不会回到旧位置。
  *
  * @不要在这里做的事:
  * - 不持久化到 localStorage/main；这是重启可丢的 L1 工作态。
@@ -20,6 +21,15 @@ import { useAppDispatch, useAppStateRef } from '../store';
 
 const SAVE_DEBOUNCE_MS = 120;
 const RESTORE_DEADLINE_MS = 4000;
+
+/** Markdown 外部标题跳转在 scrollIntoView 前发出，显式取消仍在等待布局的旧位置恢复。 */
+export const FILE_VIEWER_PROGRAMMATIC_NAVIGATION_EVENT =
+  'marina:file-viewer-programmatic-navigation';
+
+export interface FileViewerNavigationResult {
+  requestId: string;
+  found: boolean;
+}
 
 interface UseFileViewerScrollOptions {
   sessionId: string;
@@ -35,6 +45,10 @@ interface UseFileViewerScrollOptions {
   restoreVersion: unknown;
   /** 非空搜索正在主导 scrollIntoView 时不恢复旧位置。 */
   searchActive?: boolean;
+  /** 当前一次性标题请求。只有 resultRef 确认命中后才可压制旧位置恢复。 */
+  navigationRequestId?: string;
+  /** 子 MarkdownDocument 在自己的 layout effect 中同步写入命中结果。 */
+  navigationResultRef?: RefObject<FileViewerNavigationResult | null>;
   /** Diff 用于把 gutter.scrollTop 同步到恢复后的 body。 */
   onApply?: (scrollTop: number, scrollLeft: number) => void;
 }
@@ -48,12 +62,30 @@ export function useFileViewerScroll({
   ready,
   restoreVersion,
   searchActive = false,
+  navigationRequestId,
+  navigationResultRef,
   onApply,
 }: UseFileViewerScrollOptions): void {
   const dispatch = useAppDispatch();
   const stateRef = useAppStateRef();
   const onApplyRef = useRef(onApply);
   onApplyRef.current = onApply;
+  const navigationRestoreBlockRef = useRef<{
+    sessionId: string;
+    path: string;
+    kind: FileKind;
+    restoreVersion: unknown;
+  } | null>(null);
+  const existingBlock = navigationRestoreBlockRef.current;
+  if (
+    existingBlock &&
+    (existingBlock.sessionId !== sessionId ||
+      existingBlock.path !== path ||
+      existingBlock.kind !== kind ||
+      !Object.is(existingBlock.restoreVersion, restoreVersion))
+  ) {
+    navigationRestoreBlockRef.current = null;
+  }
 
   useLayoutEffect(() => {
     const element = scrollRef.current;
@@ -65,6 +97,18 @@ export function useFileViewerScroll({
       element.scrollTo({ top: 0, left: 0, behavior: 'auto' });
       return undefined;
     }
+
+    const navigationResult = navigationResultRef?.current;
+    if (navigationRequestId !== undefined && navigationResult?.requestId === navigationRequestId) {
+      navigationRestoreBlockRef.current = navigationResult.found
+        ? { sessionId, path, kind, restoreVersion }
+        : null;
+    }
+    const navigationOwnsInitialScroll =
+      navigationRestoreBlockRef.current?.sessionId === sessionId &&
+      navigationRestoreBlockRef.current.path === path &&
+      navigationRestoreBlockRef.current.kind === kind &&
+      Object.is(navigationRestoreBlockRef.current.restoreVersion, restoreVersion);
 
     let disposed = false;
     let userIntervened = false;
@@ -129,7 +173,7 @@ export function useFileViewerScroll({
       }
     };
 
-    const releaseAutomaticScrollSuppression = (): void => {
+    const releaseAutomaticScrollSuppression = (captureCurrent = false): void => {
       if (settleFrame !== null) cancelAnimationFrame(settleFrame);
       // scrollTo 的原生 scroll 事件在下一 animation frame 前派发；再开放 capture
       // 可避免 A 的尾部事件被复用同一 outer element 的 B effect 当成用户滚动。
@@ -137,6 +181,15 @@ export function useFileViewerScroll({
         settleFrame = null;
         suppressAutomaticScroll = false;
         programmaticRestore = null;
+        if (captureCurrent) {
+          // 初次 mount 时子组件的标题 layout effect 早于本 hook，事件监听尚未安装。
+          // 下一帧直接采样最终坐标并同步 L1，后续 watcher generation 只会恢复这里。
+          latest = {
+            scrollTop: Math.max(0, element.scrollTop),
+            scrollLeft: Math.max(0, element.scrollLeft),
+          };
+          flush();
+        }
       });
     };
 
@@ -144,11 +197,12 @@ export function useFileViewerScroll({
     for (const eventName of ['wheel', 'mousedown', 'touchstart', 'keydown'] as const) {
       element.addEventListener(eventName, cancelPendingRestore, { passive: true });
     }
+    element.addEventListener(FILE_VIEWER_PROGRAMMATIC_NAVIGATION_EVENT, cancelPendingRestore);
 
-    if (searchActive) {
-      // 搜索的 smooth scroll 在 passive effect 后跨多帧发生。先挡掉 identity 切换
-      // 遗留的旧 scroll 事件，再于下一帧开放 capture；后续搜索滚动仍会被保存。
-      releaseAutomaticScrollSuppression();
+    if (searchActive || navigationOwnsInitialScroll) {
+      // 搜索的 smooth scroll 在 passive effect 后跨多帧发生。标题导航则可能在本
+      // parent layout effect 安装监听前已完成，因此下一帧主动采样其最终位置。
+      releaseAutomaticScrollSuppression(navigationOwnsInitialScroll);
     } else {
       const deadline = Date.now() + RESTORE_DEADLINE_MS;
       const apply = (): void => {
@@ -199,6 +253,7 @@ export function useFileViewerScroll({
       for (const eventName of ['wheel', 'mousedown', 'touchstart', 'keydown'] as const) {
         element.removeEventListener(eventName, cancelPendingRestore);
       }
+      element.removeEventListener(FILE_VIEWER_PROGRAMMATIC_NAVIGATION_EVENT, cancelPendingRestore);
       observer?.disconnect();
       if (restoreFrame1 !== null) cancelAnimationFrame(restoreFrame1);
       if (restoreFrame2 !== null) cancelAnimationFrame(restoreFrame2);
@@ -213,6 +268,8 @@ export function useFileViewerScroll({
     dispatch,
     kind,
     layoutRef,
+    navigationRequestId,
+    navigationResultRef,
     path,
     ready,
     restoreVersion,

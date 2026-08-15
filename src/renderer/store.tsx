@@ -33,6 +33,7 @@ import {
   type BookmarksUpdatedPayload,
   type FilePanelSnapshot,
   type FilePanelUpdatedPayload,
+  type FilePanelHeadingNavigationPayload,
   type CommandPanelSnapshot,
   type CommandPanelUpdatedPayload,
   type MdThemeListUpdatedPayload,
@@ -136,6 +137,12 @@ export interface AppState {
    * 按需 cmd:file-panel:read,不存进 state(避免大文件占内存 + 切 tab 浪费)。
    */
   filePanels: Map<string, FilePanelSnapshot>;
+
+  /**
+   * Main 定向推来的未消费 Markdown 标题跳转 FIFO。它是一次性 view intent，不进入
+   * FilePanelSnapshot/workspace 持久化；同 session 快速重复请求也必须逐个消费。
+   */
+  filePanelHeadingNavigations: Map<string, FilePanelHeadingNavigationPayload[]>;
 
   /**
    * 命令面板(v0.3.3 ADR-027):每个 session 独立的指令列表快照。evt:command-panel
@@ -258,6 +265,15 @@ export type AppAction =
       activePath: string | null;
       /** openFile 成功时为 true，请求 LayoutHost 激活「已打开」面板。 */
       requestActivation: boolean;
+    }
+  | {
+      type: 'file-panel/heading-navigation-requested';
+      request: FilePanelHeadingNavigationPayload;
+    }
+  | {
+      type: 'file-panel/heading-navigation-consumed';
+      sessionId: string;
+      requestId: string;
     }
   | {
       type: 'command-panel/updated';
@@ -434,6 +450,8 @@ function reducer(state: AppState, action: AppAction): AppState {
       // 文件面板:session 没了,清掉快照、预览滚动位置与活动面板记录。
       const filePanels = new Map(state.filePanels);
       filePanels.delete(action.sessionId);
+      const filePanelHeadingNavigations = new Map(state.filePanelHeadingNavigations);
+      filePanelHeadingNavigations.delete(action.sessionId);
       // 命令面板:同理清掋指令列表快照。
       const commandPanels = new Map(state.commandPanels);
       commandPanels.delete(action.sessionId);
@@ -449,6 +467,7 @@ function reducer(state: AppState, action: AppAction): AppState {
         ...state,
         sessions,
         filePanels,
+        filePanelHeadingNavigations,
         commandPanels,
         fileViewerScroll,
         activePanels,
@@ -485,6 +504,19 @@ function reducer(state: AppState, action: AppAction): AppState {
           else fileViewerScroll.delete(action.sessionId);
         }
       }
+      // 文件已关闭时同步丢弃该路径尚未执行的目标，避免以后同 session 同路径重开
+      // 时错误重放。正常 watcher 更新 files 仍含目标路径，不影响 pending FIFO。
+      let filePanelHeadingNavigations = state.filePanelHeadingNavigations;
+      const pendingNavigations = state.filePanelHeadingNavigations.get(action.sessionId);
+      if (pendingNavigations) {
+        const openPaths = new Set(action.files.map((file) => file.path));
+        const kept = pendingNavigations.filter((request) => openPaths.has(request.path));
+        if (kept.length !== pendingNavigations.length) {
+          filePanelHeadingNavigations = new Map(state.filePanelHeadingNavigations);
+          if (kept.length > 0) filePanelHeadingNavigations.set(action.sessionId, kept);
+          else filePanelHeadingNavigations.delete(action.sessionId);
+        }
+      }
       // requestActivation=true(openFile 成功)时把活动面板设为「已打开」。reducer
       // 在事件到达时即写 activePanels,无论 PanelStack 是否挂载:remount 后从 store
       // 读到正确值(不抢用户手动切回的焦点),PanelStack 卸载期间(设置页/简易模式)
@@ -493,9 +525,31 @@ function reducer(state: AppState, action: AppAction): AppState {
       if (action.requestActivation && state.activePanels.get(action.sessionId) !== 'file-panel') {
         const activePanels = new Map(state.activePanels);
         activePanels.set(action.sessionId, 'file-panel');
-        return { ...state, filePanels, fileViewerScroll, activePanels };
+        return {
+          ...state,
+          filePanels,
+          fileViewerScroll,
+          filePanelHeadingNavigations,
+          activePanels,
+        };
       }
-      return { ...state, filePanels, fileViewerScroll };
+      return { ...state, filePanels, fileViewerScroll, filePanelHeadingNavigations };
+    }
+    case 'file-panel/heading-navigation-requested': {
+      const current = state.filePanelHeadingNavigations.get(action.request.sessionId) ?? [];
+      if (current.some((request) => request.requestId === action.request.requestId)) return state;
+      const filePanelHeadingNavigations = new Map(state.filePanelHeadingNavigations);
+      filePanelHeadingNavigations.set(action.request.sessionId, [...current, action.request]);
+      return { ...state, filePanelHeadingNavigations };
+    }
+    case 'file-panel/heading-navigation-consumed': {
+      const current = state.filePanelHeadingNavigations.get(action.sessionId);
+      if (!current?.some((request) => request.requestId === action.requestId)) return state;
+      const remaining = current.filter((request) => request.requestId !== action.requestId);
+      const filePanelHeadingNavigations = new Map(state.filePanelHeadingNavigations);
+      if (remaining.length > 0) filePanelHeadingNavigations.set(action.sessionId, remaining);
+      else filePanelHeadingNavigations.delete(action.sessionId);
+      return { ...state, filePanelHeadingNavigations };
     }
     case 'command-panel/updated': {
       const commandPanels = new Map(state.commandPanels);
@@ -529,9 +583,10 @@ function reducer(state: AppState, action: AppAction): AppState {
       return { ...state, fileViewerScroll };
     }
     case 'file-panel/clear': {
-      // 快照、viewer scroll、active panel 任一有记录都统一清理。
+      // 快照、导航、viewer scroll、active panel 任一有记录都统一清理。
       if (
         !state.filePanels.has(action.sessionId) &&
+        !state.filePanelHeadingNavigations.has(action.sessionId) &&
         !state.fileViewerScroll.has(action.sessionId) &&
         !state.activePanels.has(action.sessionId)
       ) {
@@ -539,11 +594,19 @@ function reducer(state: AppState, action: AppAction): AppState {
       }
       const filePanels = new Map(state.filePanels);
       filePanels.delete(action.sessionId);
+      const filePanelHeadingNavigations = new Map(state.filePanelHeadingNavigations);
+      filePanelHeadingNavigations.delete(action.sessionId);
       const fileViewerScroll = new Map(state.fileViewerScroll);
       fileViewerScroll.delete(action.sessionId);
       const activePanels = new Map(state.activePanels);
       activePanels.delete(action.sessionId);
-      return { ...state, filePanels, fileViewerScroll, activePanels };
+      return {
+        ...state,
+        filePanels,
+        filePanelHeadingNavigations,
+        fileViewerScroll,
+        activePanels,
+      };
     }
 
     case 'view/set-active-panel': {
@@ -771,6 +834,7 @@ export function makeDefaultState(myWindowId: string, myWindowNumber: number): Ap
     // BETA-027:默认普通页面;Explorer 简易模式打开时在 startup 显式 dispatch set
     simpleMode: false,
     filePanels: new Map(),
+    filePanelHeadingNavigations: new Map(),
     commandPanels: new Map(),
     fileViewerScroll: new Map(),
     activePanels: new Map(),
@@ -980,6 +1044,14 @@ export function useIpcSync(): {
               () => null,
             );
           }),
+          window.api.on<FilePanelHeadingNavigationPayload>(
+            EVENT_CHANNELS.FILE_PANEL_HEADING_NAVIGATION_REQUESTED,
+            (request) =>
+              dispatch({
+                type: 'file-panel/heading-navigation-requested',
+                request,
+              }),
+          ),
           // v0.3.3 Feature D:workspace 切换完成。main 已重建 PanelState 并发了
           // filePanelUpdated(上面已同步 openedFiles/activePath);这里读新 workspace
           // 快照恢复 scroll/runs(workspace-snapshot.ts 已实现)。dispatch 闭包可拿。

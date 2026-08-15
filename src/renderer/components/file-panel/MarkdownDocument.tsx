@@ -21,7 +21,9 @@
  * - 不为无 fileContext 的内容猜 cwd / MARINA_WORKSPACE 路径。
  */
 import {
+  useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -32,15 +34,25 @@ import {
 } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { COMMAND_CHANNELS } from '@shared/protocol';
+import { COMMAND_CHANNELS, type FilePanelHeadingNavigationPayload } from '@shared/protocol';
+import {
+  createMarkdownHeadingIdFactory,
+  resolveMarkdownHeadingTarget,
+} from '@shared/markdown-heading';
 import { isRemoteUrl } from '@shared/url-scheme';
+import { getPanelUiState, setPanelUiState } from '@shared/panel-ui-cache';
+import { readPanelPreference, writePanelPreference } from '@shared/panel-preferences';
 import { useDomTextHighlight } from '../../hooks/useDomTextHighlight';
+import { FILE_VIEWER_PROGRAMMATIC_NAVIGATION_EVENT } from '../../hooks/useFileViewerScroll';
 import { useAppState } from '../../store';
+import { Icon } from '../icons';
 import { useTranslation } from '../LanguageProvider';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { useToast } from '../Toast';
 import { GalleryViewer } from './GalleryViewer';
 import { MarkdownCodeBlock, extractCodeBlockInfo } from './MarkdownCodeBlock';
+import { remarkMarinaHeadingSections } from './markdown-heading-sections';
+import { applyMarkdownRailPixelSnap } from './markdown-rail-pixel-snap';
 import { markdownSurfaceClass } from './markdown-surface';
 
 /** 只有真实“已打开”Markdown 文件才具备的路径相关能力。 */
@@ -64,6 +76,10 @@ export interface MarkdownDocumentProps {
   search: PanelSearchProps;
   /** 文件 adapter 传入根 ref，供其在同一 DOM 上恢复外层滚动位置。 */
   rootRef?: RefObject<HTMLDivElement>;
+  /** show --heading 产生的一次性 owner 定向请求；命令面板永远不传。 */
+  headingNavigation?: FilePanelHeadingNavigationPayload;
+  /** 请求无论命中与否都必须消费；found 同步交给父级滚动恢复仲裁。 */
+  onHeadingNavigationHandled?: (requestId: string, found: boolean) => void;
   /** 需要留在同一主题内容面内的来源提示（例如文件截断标记）。 */
   trailingContent?: ReactNode;
 }
@@ -82,6 +98,8 @@ export function MarkdownDocument({
   fileContext,
   search,
   rootRef,
+  headingNavigation,
+  onHeadingNavigationHandled,
   trailingContent,
 }: MarkdownDocumentProps): JSX.Element {
   const internalRootRef = useRef<HTMLDivElement>(null);
@@ -98,12 +116,200 @@ export function MarkdownDocument({
   // 读一次 pathId 传给 MarkdownCodeBlock,避免每个代码块独立订阅 store。
   const sessionPathId = appState.sessions.get(sessionId)?.pathId ?? '';
   const allowSudo = sessionPathId.startsWith('ssh:');
+  const { tx } = useTranslation();
+  const toast = useToast();
+  const handledNavigationRequestRef = useRef<string | null>(null);
+  const handledNavigationCallbackRef = useRef(onHeadingNavigationHandled);
+  handledNavigationCallbackRef.current = onHeadingNavigationHandled;
+  const headingUiCacheKey = `markdown-headings:${documentIdentity}`;
+  const [collapsedHeadingIds, setCollapsedHeadingIds] = useState<Set<string>>(
+    () => new Set(getPanelUiState<string[]>(sessionId, headingUiCacheKey) ?? []),
+  );
+  const collapsedHeadingIdsRef = useRef(collapsedHeadingIds);
+  collapsedHeadingIdsRef.current = collapsedHeadingIds;
+  // 目录整体显示/隐藏（L2 偏好，跨文档）。可见态：缩略轨 + hover 浮动展开；
+  // 隐藏态：只留右上角小按钮。旧键 markdownOutlineExpanded（缩略/自动展开两档）
+  // 已废弃，新键默认 true。
+  const [outlineVisible, setOutlineVisible] = useState(() =>
+    readPanelPreference<boolean>('file-panel', 'markdownOutlineVisible', true),
+  );
+
+  /**
+   * 同步提交 L1，而不是把 cache 写藏进 React state updater。否则用户点击 summary 后
+   * 立即切面板时，组件可能先 unmount、updater 尚未执行，折叠工作态就会丢失。
+   */
+  const commitCollapsedHeadingIds = useCallback(
+    (next: Set<string>): void => {
+      collapsedHeadingIdsRef.current = next;
+      setPanelUiState(sessionId, headingUiCacheKey, [...next]);
+      setCollapsedHeadingIds(next);
+    },
+    [headingUiCacheKey, sessionId],
+  );
+
+  /** summary click 提前记录意图，details toggle 作为键盘/程序化变化的兜底真值。 */
+  const setHeadingCollapsed = useCallback(
+    (headingId: string, collapsed: boolean): void => {
+      const previous = collapsedHeadingIdsRef.current;
+      if (previous.has(headingId) === collapsed) return;
+      const next = new Set(previous);
+      if (collapsed) next.add(headingId);
+      else next.delete(headingId);
+      commitCollapsedHeadingIds(next);
+    },
+    [commitCollapsedHeadingIds],
+  );
+
+  /** 目录按钮是跨文档的显示偏好，写 L2；收起 = 隐藏整个目录，只留按钮本身。 */
+  const toggleOutlineVisible = useCallback((): void => {
+    setOutlineVisible((previous) => {
+      const next = !previous;
+      writePanelPreference('file-panel', 'markdownOutlineVisible', next);
+      return next;
+    });
+  }, []);
+
+  /**
+   * 目标 heading 可能藏在自己或父级 details 内。先同步打开真实 DOM，再同步 L1，
+   * 这样本次 scrollIntoView 已有正确布局，不等下一帧，也不会被 React 重新合上。
+   */
+  const expandHeadingSections = useCallback(
+    (heading: HTMLElement): void => {
+      const sections: HTMLDetailsElement[] = [];
+      let section = heading.closest<HTMLDetailsElement>('details.markdown-heading-section');
+      while (section) {
+        sections.push(section);
+        section =
+          section.parentElement?.closest<HTMLDetailsElement>('details.markdown-heading-section') ??
+          null;
+      }
+      const ids = sections
+        .map((item) => item.dataset.markdownHeadingId)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
+      if (ids.length === 0) return;
+      for (const item of sections) item.open = true;
+      const previous = collapsedHeadingIdsRef.current;
+      if (!ids.some((id) => previous.has(id))) return;
+      const next = new Set(previous);
+      for (const id of ids) next.delete(id);
+      commitCollapsedHeadingIds(next);
+    },
+    [commitCollapsedHeadingIds],
+  );
+
+  /**
+   * 内页 #anchor 与外部可见标题最终都走同一个 DOM seam，确保 id、滚动恢复仲裁和
+   * 折叠祖先展开逻辑不会分叉成两套。
+   */
+  const navigateToHeading = useCallback(
+    (target: string, mode: 'id' | 'text'): boolean => {
+      const root = containerRef.current;
+      if (!root) return false;
+      const headings = ensureMarkdownHeadingIds(root);
+      const id =
+        mode === 'id'
+          ? target
+          : resolveMarkdownHeadingTarget(
+              headings.map((heading) => ({ id: heading.id, text: markdownHeadingText(heading) })),
+              target,
+            );
+      if (!id) return false;
+      const heading = headings.find((candidate) => candidate.id === id);
+      if (!heading) return false;
+      expandHeadingSections(heading);
+      const scrollOwner = root.closest('.file-panel-body');
+      scrollOwner?.dispatchEvent(new Event(FILE_VIEWER_PROGRAMMATIC_NAVIGATION_EVENT));
+      heading.scrollIntoView({ block: 'start' });
+      return true;
+    },
+    [containerRef, expandHeadingSections],
+  );
 
   // 自定义 a/img/pre 组件。fileContext 的存在明确控制路径相关能力；
   // documentIdentity 则只给代码块缓存，二者不能混用。
   const components = useMemo<Components>(
     () => ({
-      a: (props) => <MdLink {...props} sessionId={sessionId} mdPath={filePath} />,
+      a: ({ node, ...props }) => {
+        // react-markdown 的 AST node 不是 DOM attribute；必须在 spread 前剥离。
+        void node;
+        return (
+          <MdLink
+            {...props}
+            sessionId={sessionId}
+            mdPath={filePath}
+            onNavigateAnchor={(id) => navigateToHeading(id, 'id')}
+          />
+        );
+      },
+      details: ({ node, ...props }) => {
+        const headingId = readNodeStringProperty(node, 'data-markdown-heading-id');
+        if (!headingId) return <details {...props} />;
+        return (
+          <details
+            {...props}
+            open={!collapsedHeadingIds.has(headingId)}
+            onToggle={(event) => {
+              // 嵌套 H2 的 toggle 不应被 H1 handler 二次处理。
+              if (event.target !== event.currentTarget) return;
+              setHeadingCollapsed(headingId, !event.currentTarget.open);
+            }}
+          />
+        );
+      },
+      summary: ({ node, children, ...props }) => {
+        const headingId = readNodeStringProperty(node, 'data-markdown-heading-id');
+        return (
+          <summary
+            {...props}
+            onClick={(event) => {
+              props.onClick?.(event);
+              if (event.defaultPrevented || !headingId) return;
+              const section = event.currentTarget.parentElement;
+              if (section instanceof HTMLDetailsElement) {
+                // click default action 尚未执行：当前 open=true 表示这次意图是折叠。
+                setHeadingCollapsed(headingId, section.open);
+              }
+            }}
+          >
+            <span className="markdown-heading-summary-chevron" aria-hidden="true">
+              <Icon name="chevronRight" size={13} />
+            </span>
+            {children}
+          </summary>
+        );
+      },
+      nav: ({ node, children, ...props }) => {
+        const isHeadingRail = readNodeStringProperty(node, 'data-marina-heading-rail') === 'true';
+        if (!isHeadingRail) return <nav {...props}>{children}</nav>;
+        // -expanded 在可见态恒挂：它是 hover/focus 浮动展开的 CSS 开关（不再有
+        // "手动缩略模式"）。-hidden 收起整个目录，只保留小按钮。
+        const railClass = `${props.className ?? ''}${
+          outlineVisible ? ' markdown-heading-rail-expanded' : ' markdown-heading-rail-hidden'
+        }`.trim();
+        return (
+          <nav {...props} className={railClass}>
+            <button
+              type="button"
+              className="markdown-heading-rail-toggle"
+              aria-expanded={outlineVisible}
+              aria-label={
+                outlineVisible
+                  ? tx('收起 Markdown 目录', 'Collapse Markdown outline')
+                  : tx('展开 Markdown 目录', 'Expand Markdown outline')
+              }
+              title={
+                outlineVisible
+                  ? tx('收起 Markdown 目录', 'Collapse Markdown outline')
+                  : tx('展开 Markdown 目录', 'Expand Markdown outline')
+              }
+              onClick={toggleOutlineVisible}
+            >
+              <Icon name="chevronRight" size={13} />
+            </button>
+            <div className="markdown-heading-rail-items">{children}</div>
+          </nav>
+        );
+      },
       img: (props: ImgHTMLAttributes<HTMLImageElement>) => (
         <MdImage
           src={props.src}
@@ -152,12 +358,247 @@ export function MarkdownDocument({
         return <pre>{props.children}</pre>;
       },
     }),
-    [documentIdentity, fileMtimeMs, filePath, sessionId, allowSudo],
+    [
+      allowSudo,
+      collapsedHeadingIds,
+      documentIdentity,
+      fileMtimeMs,
+      filePath,
+      navigateToHeading,
+      outlineVisible,
+      sessionId,
+      setHeadingCollapsed,
+      toggleOutlineVisible,
+      tx,
+    ],
+  );
+
+  const remarkPlugins = useMemo(
+    () => (filePath === undefined ? [remarkGfm] : [remarkGfm, remarkMarinaHeadingSections]),
+    [filePath],
   );
 
   // CommonMark 严格模式会截断带空格的裸本地图片 URL。统一预处理保证文件来源
   // 与命令来源经过同一 parser；无 fileContext 时本地图片随后会安全显示占位。
   const normalizedText = useMemo(() => normalizeMdImageSources(markdown), [markdown]);
+
+  // 每次正文变化后给 h1-h6 分配稳定且去重的真实 DOM id；命令面板也因此获得
+  // 正确的内页 anchor，但目录/折叠能力仍由 fileContext gate，后续不会泄漏过去。
+  useLayoutEffect(() => {
+    if (containerRef.current) ensureMarkdownHeadingIds(containerRef.current);
+  }, [containerRef, normalizedText]);
+
+  /**
+   * 点阵像素吸附:按实际 devicePixelRatio 把点/行距/胶囊几何取整到物理像素,
+   * 写入 rail 的 custom properties(见 markdown-rail-pixel-snap.ts)。
+   * 必须是 layout effect:首次绘制前就要生效,否则先闪一帧未对齐的旧几何。
+   */
+  useLayoutEffect(() => {
+    const rail = containerRef.current?.querySelector<HTMLElement>('.markdown-heading-rail');
+    if (!rail) return undefined;
+    return applyMarkdownRailPixelSnap(rail);
+  }, [containerRef, filePath, normalizedText]);
+
+  /**
+   * 文件目录的窄轨是当前位置指示器，不是第二套持久状态。滚动时直接标记对应 anchor，
+   * 避免每跨过一个标题都让整棵 ReactMarkdown 重渲染；details 折叠和内容尺寸变化会
+   * 重新计算可见标题。目录自身需要滚动时，只调整它自己的 scrollTop，绝不调用
+   * scrollIntoView 与正文滚动争抢。
+   */
+  useLayoutEffect(() => {
+    if (filePath === undefined) return undefined;
+    const root = containerRef.current;
+    const scrollOwner = root?.closest<HTMLElement>('.file-panel-body');
+    const rail = root?.querySelector<HTMLElement>('.markdown-heading-rail');
+    if (!root || !scrollOwner || !rail) return undefined;
+
+    const links = Array.from(
+      rail.querySelectorAll<HTMLAnchorElement>('.markdown-heading-rail-link'),
+    );
+    const entries = links
+      .map((link) => {
+        const id = link.dataset.markdownHeadingId;
+        const heading = id ? root.querySelector<HTMLElement>(`#${CSS.escape(id)}`) : null;
+        return id && heading ? { id, heading, link } : null;
+      })
+      .filter(
+        (entry): entry is { id: string; heading: HTMLElement; link: HTMLAnchorElement } =>
+          entry !== null,
+      );
+    if (entries.length === 0) return undefined;
+
+    /* 聚焦裁剪(2026-08 用户需求):目录是“你在哪”的指示器,不是全文索引。
+     * 规则(由用户三例归纳):一个标题可见 ⟺ 它在当前标题的祖先链上(含当前),
+     * 或其父在链上(链上节点的直接子级全亮,含当前标题自己的子级),或它是顶层
+     * 标题(父为根,永逖可见)。远处章节的深层条目对“定位自己”是噪音,收起。
+     * 点阵轨与展开面板是同一批 DOM 条目的两种形态,裁剪同时作用于两者。 */
+    const entryLevels = entries.map(
+      (entry) => Number(entry.link.dataset.markdownHeadingLevel) || 1,
+    );
+    // parentIndex[i] = 文档序中 i 之前最近的、层级更浅的标题下标(无则为 -1,即顶层)。
+    // 单调栈一次构建;entries 在本 effect 生命周期内不变,无需每次滚动重算。
+    const parentIndex: number[] = [];
+    const levelStack: number[] = [];
+    for (let i = 0; i < entryLevels.length; i++) {
+      const level = entryLevels[i] ?? 1;
+      while (levelStack.length > 0) {
+        const top = levelStack[levelStack.length - 1];
+        if (top === undefined || (entryLevels[top] ?? 1) < level) break;
+        levelStack.pop();
+      }
+      const parent = levelStack[levelStack.length - 1];
+      parentIndex[i] = parent === undefined ? -1 : parent;
+      levelStack.push(i);
+    }
+    const applyFocusPrune = (currentIndex: number): void => {
+      const chain = new Set<number>();
+      for (let i = currentIndex; i >= 0; ) {
+        chain.add(i);
+        const parent = parentIndex[i];
+        i = parent === undefined || parent < 0 ? -1 : parent;
+      }
+      entries.forEach((entry, i) => {
+        const parent = parentIndex[i] ?? -1;
+        const inChain = chain.has(i);
+        const childOfChain = parent >= 0 && chain.has(parent);
+        // 顶层(parent === -1)永逖可见:当前在“2”下时,“1”仍需在场,
+        // 否则跨章导航入口就没了。
+        const pruned = !(inChain || childOfChain || parent === -1);
+        // 写前先比:滚动每帧都过这里,同值重复写 dataset 会触发无谓的样式失效。
+        if (pruned !== (entry.link.dataset.markdownHeadingPruned === 'true')) {
+          if (pruned) entry.link.dataset.markdownHeadingPruned = 'true';
+          else delete entry.link.dataset.markdownHeadingPruned;
+        }
+      });
+      /* 分组节奏:深一层内容刚结束、回到浅层(或同级但前面出现过更深可见行)
+       * 的条目前空半行。只看可见序列——隐藏结构不产生节奏,规则单一且稳定:
+       * 父→首子紧贴(归属),叶子兄弟连续(同级列表),子树收尾空半行(范围关闭)。 */
+      let prevVisibleLevel: number | null = null;
+      entries.forEach((entry, i) => {
+        const level = entryLevels[i] ?? 1;
+        const pruned = entry.link.dataset.markdownHeadingPruned === 'true';
+        if (pruned) {
+          if (entry.link.dataset.markdownHeadingGroupStart !== undefined) {
+            delete entry.link.dataset.markdownHeadingGroupStart;
+          }
+          return;
+        }
+        const groupStart = prevVisibleLevel !== null && prevVisibleLevel > level;
+        if (groupStart !== (entry.link.dataset.markdownHeadingGroupStart === 'true')) {
+          if (groupStart) entry.link.dataset.markdownHeadingGroupStart = 'true';
+          else delete entry.link.dataset.markdownHeadingGroupStart;
+        }
+        prevVisibleLevel = level;
+      });
+    };
+
+    let frame: number | null = null;
+
+    const markCurrent = (currentId: string): void => {
+      let currentLink: HTMLAnchorElement | null = null;
+      for (const link of links) {
+        const current = link.dataset.markdownHeadingId === currentId;
+        if (current) {
+          link.dataset.markdownHeadingCurrent = 'true';
+          link.setAttribute('aria-current', 'location');
+          currentLink = link;
+        } else {
+          delete link.dataset.markdownHeadingCurrent;
+          link.removeAttribute('aria-current');
+        }
+      }
+
+      const items = currentLink?.closest<HTMLElement>('.markdown-heading-rail-items');
+      if (!currentLink || !items || items.scrollHeight <= items.clientHeight) return;
+      const itemRect = currentLink.getBoundingClientRect();
+      const itemsRect = items.getBoundingClientRect();
+      if (itemRect.top < itemsRect.top) items.scrollTop -= itemsRect.top - itemRect.top;
+      else if (itemRect.bottom > itemsRect.bottom) {
+        items.scrollTop += itemRect.bottom - itemsRect.bottom;
+      }
+    };
+
+    /**
+     * 静止轨与展开面板共用同一 CSS max-height(高度恒等,收起不跳变)。
+     * 目录条目超过这个高度时打上 data-markdown-heading-overflow,
+     * CSS 才让轨道自身 overflow-y: auto(当前位置标记才能滚进视野);
+     * 未溢出时保持 overflow: visible——手动模式的标题 tooltip(::after)
+     * 要画到轨道外,一旦设了 overflow 就会被裁掉。
+     */
+    const syncOverflowFlag = (): void => {
+      const items = rail.querySelector<HTMLElement>('.markdown-heading-rail-items');
+      if (!items) return;
+      if (items.scrollHeight > items.clientHeight + 1) {
+        rail.dataset.markdownHeadingOverflow = 'true';
+      } else {
+        delete rail.dataset.markdownHeadingOverflow;
+      }
+    };
+
+    const update = (): void => {
+      frame = null;
+      const visible = entries.filter((entry) => entry.heading.getClientRects().length > 0);
+      if (visible.length === 0) return;
+      const ownerRect = scrollOwner.getBoundingClientRect();
+      const activationLine = ownerRect.top + Math.min(32, scrollOwner.clientHeight * 0.12);
+      let current = visible[0];
+      if (!current) return;
+      for (const entry of visible) {
+        if (entry.heading.getBoundingClientRect().top > activationLine) break;
+        current = entry;
+      }
+      markCurrent(current.id);
+      const currentIndex = entries.findIndex((entry) => entry.id === current.id);
+      if (currentIndex >= 0) applyFocusPrune(currentIndex);
+      syncOverflowFlag();
+    };
+
+    const scheduleUpdate = (): void => {
+      if (frame !== null) return;
+      frame = requestAnimationFrame(update);
+    };
+
+    update();
+    scrollOwner.addEventListener('scroll', scheduleUpdate, { passive: true });
+    rail.addEventListener('pointerenter', scheduleUpdate);
+    rail.addEventListener('focusin', scheduleUpdate);
+    root.addEventListener('toggle', scheduleUpdate, true);
+    const resizeObserver = new ResizeObserver(scheduleUpdate);
+    resizeObserver.observe(root);
+
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      resizeObserver.disconnect();
+      scrollOwner.removeEventListener('scroll', scheduleUpdate);
+      rail.removeEventListener('pointerenter', scheduleUpdate);
+      rail.removeEventListener('focusin', scheduleUpdate);
+      root.removeEventListener('toggle', scheduleUpdate, true);
+      for (const link of links) {
+        delete link.dataset.markdownHeadingCurrent;
+        delete link.dataset.markdownHeadingPruned;
+        delete link.dataset.markdownHeadingGroupStart;
+        link.removeAttribute('aria-current');
+      }
+      delete rail.dataset.markdownHeadingOverflow;
+    };
+  }, [collapsedHeadingIds, containerRef, filePath, normalizedText, outlineVisible]);
+
+  // 外部标题请求只处理一次。使用 layout effect 保证文件激活后首帧就落到目标，且
+  // 在 scrollIntoView 前显式取消 useFileViewerScroll 仍等待布局的旧位置恢复。
+  useLayoutEffect(() => {
+    if (!headingNavigation || handledNavigationRequestRef.current === headingNavigation.requestId) {
+      return;
+    }
+    handledNavigationRequestRef.current = headingNavigation.requestId;
+    const found = navigateToHeading(headingNavigation.heading, 'text');
+    if (!found) {
+      toast.push({
+        kind: 'error',
+        message: `${tx('未找到 Markdown 标题:', 'Markdown heading not found: ')}${headingNavigation.heading}`,
+      });
+    }
+    handledNavigationCallbackRef.current?.(headingNavigation.requestId, found);
+  }, [headingNavigation, navigateToHeading, toast, tx, normalizedText]);
 
   // Markdown 文件内查找：DOM 文本节点 + CSS Custom Highlight，不改 react-markdown DOM。
   useDomTextHighlight({
@@ -167,11 +608,12 @@ export function MarkdownDocument({
     caseSensitive: search.caseSensitive,
     active: search.visible,
     contentVersion: normalizedText,
+    suppressAutoScroll: headingNavigation !== undefined,
   });
 
   return (
     <div className={markdownSurfaceClass(mdStyle)} ref={containerRef}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>
         {normalizedText}
       </ReactMarkdown>
       {trailingContent}
@@ -183,6 +625,8 @@ interface MdLinkProps extends AnchorHTMLAttributes<HTMLAnchorElement> {
   sessionId: string;
   /** 真实 Markdown 文件路径；缺省表示来源没有本地路径能力。 */
   mdPath: string | undefined;
+  /** 已解码 anchor id 交给文档统一导航 seam。 */
+  onNavigateAnchor: (id: string) => boolean;
 }
 
 /**
@@ -194,14 +638,27 @@ interface MdLinkProps extends AnchorHTMLAttributes<HTMLAnchorElement> {
  * 命令输出没有文档路径，本地链接会被阻止而不是猜 cwd。这样既保持 Electron SPA
  * 不导航，也不把 command key 伪装成受 main 信任的文件成员。
  */
-function MdLink({ href, children, sessionId, mdPath }: MdLinkProps): JSX.Element {
+function MdLink({
+  href,
+  children,
+  sessionId,
+  mdPath,
+  onNavigateAnchor,
+  ...anchorProps
+}: MdLinkProps): JSX.Element {
   const { tx } = useTranslation();
   const toast = useToast();
   const handle = (event: React.MouseEvent<HTMLAnchorElement>): void => {
     if (!href) return;
     if (href.startsWith('#')) {
       event.preventDefault();
-      scrollToMarkdownAnchor(event.currentTarget, href);
+      let id = href.slice(1);
+      try {
+        id = decodeURIComponent(id);
+      } catch {
+        // 畸形 percent-encoding 保留原串；找不到目标时安全 no-op。
+      }
+      onNavigateAnchor(id);
       return;
     }
     event.preventDefault();
@@ -232,7 +689,13 @@ function MdLink({ href, children, sessionId, mdPath }: MdLinkProps): JSX.Element
       });
   };
   return (
-    <a href={href} onClick={handle} target="_blank" rel="noopener noreferrer">
+    <a
+      {...anchorProps}
+      href={href}
+      onClick={handle}
+      target={isExternalLink(href ?? '') ? '_blank' : undefined}
+      rel={isExternalLink(href ?? '') ? 'noopener noreferrer' : undefined}
+    >
       {children}
     </a>
   );
@@ -243,30 +706,34 @@ function isExternalLink(href: string): boolean {
   return /^(?:https?:|mailto:)/i.test(href);
 }
 
-/** 在当前 Markdown 容器内定位 `#slug` 对应 heading。 */
-function scrollToMarkdownAnchor(anchor: HTMLAnchorElement, href: string): void {
-  let wanted = href.slice(1);
-  try {
-    wanted = decodeURIComponent(wanted);
-  } catch {
-    // 畸形 percent-encoding 保留原串；找不到目标时安全 no-op。
-  }
-  const root = anchor.closest('.markdown-body');
-  if (!root) return;
-  const target = Array.from(root.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6')).find(
-    (heading) => markdownHeadingSlug(heading.textContent ?? '') === wanted,
-  );
-  target?.scrollIntoView({ block: 'start' });
+/** 从 react-markdown HAST node 安全读取 data-*；不同 pipeline 版本可能保留两种 key。 */
+function readNodeStringProperty(
+  node: { properties?: Record<string, unknown> } | undefined,
+  key: string,
+): string | null {
+  const properties = node?.properties;
+  if (!properties) return null;
+  const camelKey = key.replace(/-([a-z])/g, (_whole, letter: string) => letter.toUpperCase());
+  const value = properties[key] ?? properties[camelKey];
+  return typeof value === 'string' ? value : value === true ? 'true' : null;
 }
 
-/** GitHub 风格 heading slug 的最小实现；保持中文等 Unicode 字母。 */
-function markdownHeadingSlug(text: string): string {
-  return text
-    .trim()
-    .toLocaleLowerCase()
-    .replace(/[^\p{L}\p{N}\s-]/gu, '')
-    .replace(/[\s-]+/g, '-')
-    .replace(/^-|-$/g, '');
+/** AST 插件写入的 identity 文字是文件 Markdown 的真值；命令来源才回退 DOM 文本。 */
+function markdownHeadingText(heading: HTMLElement): string {
+  return heading.dataset.markdownHeadingText ?? heading.textContent ?? '';
+}
+
+/**
+ * 给没有 AST identity 的标题补 id。已有 id 绝不覆盖，但仍推进同一 slugger，确保
+ * 混合来源下后续 fallback 的重复后缀与文档顺序一致。
+ */
+function ensureMarkdownHeadingIds(root: HTMLElement): HTMLElement[] {
+  const nextId = createMarkdownHeadingIdFactory();
+  return Array.from(root.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6')).map((heading) => {
+    const generatedId = nextId(markdownHeadingText(heading));
+    if (!heading.id) heading.id = generatedId;
+    return heading;
+  });
 }
 
 interface ImgProps {
