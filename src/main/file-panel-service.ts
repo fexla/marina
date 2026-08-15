@@ -37,7 +37,7 @@
  */
 import { EventEmitter } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs, watch, type FSWatcher, type Stats } from 'node:fs';
 import { basename, dirname, resolve, join, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
@@ -68,6 +68,8 @@ const NETWORK_IMAGE_TIMEOUT_MS = 10_000;
 const GALLERY_CACHE_DIR = '__marina_gallery__';
 /** fs.watch 防抖间隔(ms):编辑器连续保存时只触发一次刷新。 */
 const WATCH_DEBOUNCE_MS = 200;
+/** 外部 heading 属于不可信 HTTP 输入；限制长度避免把超大字符串广播进每个 renderer。 */
+const MAX_HEADING_TARGET_LENGTH = 512;
 /** 扩展名 → mime(图片 dataUrl 用)。detectFileKind 已保证只对图片走到这里。 */
 const IMAGE_MIME: Record<string, string> = {
   png: 'image/png',
@@ -97,6 +99,13 @@ export interface FilePanelSessionLookup {
  */
 export interface OpenFileOptions {
   origin?: OpenedFileOrigin;
+  /** 可见 Markdown 标题文字；只触发一次性 owner 定向导航，不进入 OpenedFile。 */
+  heading?: string;
+  /**
+   * IPC 发起者在请求开始时的 owner id。文件系统 await 完成后、修改 PanelState 前
+   * 必须再校验一次，防止旧窗口的迟到请求污染新 owner。HTTP program-push 省略。
+   */
+  expectedOwnerWindowId?: string;
 }
 
 /**
@@ -244,8 +253,9 @@ function snapshot(state: PanelState | undefined): FilePanelSnapshot {
 
 /**
  * 终端侧边文件预览面板服务。EventEmitter(沿用 SessionManager 模式):
- * emit 'filePanelUpdated' = { sessionId, files, activePath, requestActivation }
- * (requestActivation 仅 openFile 成功时为 true,见 emitUpdated)。
+ * - `filePanelUpdated` = 可重放的文件列表/active 状态；
+ * - `filePanelNavigationRequested` = 仅一次的标题跳转意图，必须定向给当前 owner。
+ * requestActivation 仅 openFile 成功时为 true(见 emitUpdated)。
  */
 export class FilePanelService extends EventEmitter {
   private readonly panels = new Map<string, PanelState>();
@@ -295,7 +305,10 @@ export class FilePanelService extends EventEmitter {
    *
    * @param options.origin 真正掌握来源的上游可附带语义元数据；重复普通打开同一路径
    *   时保留已有 origin，避免一次 show/open 刷新把 Git diff 的导航真值抹掉。
-   * @throws FilePanelError NotFound / NotFile / SessionMissing / ResolveFailed
+   * @param options.heading 可选可见标题文字；打开状态发出后再单独发一次导航请求。
+   * @param options.expectedOwnerWindowId IPC 请求开始时的 owner；异步解析后原子重验。
+   * @throws FilePanelError NotFound / NotFile / SessionMissing / ResolveFailed /
+   *   InvalidHeadingTarget / NotOwner
    */
   async openFile(
     sessionId: string,
@@ -306,6 +319,19 @@ export class FilePanelService extends EventEmitter {
     let state = this.panels.get(sessionId);
     const existingOrigin = state?.files.find((file) => file.path === abs)?.origin;
     const opened = await this.toOpenedFile(abs, options.origin ?? existingOrigin);
+    // resolveAndStat/toOpenedFile 都跨异步文件系统边界。此后到 emit 之间没有 await，
+    // 因而这里重验后，同一 event-loop turn 内的状态修改与事件发送对 owner 是原子的。
+    this.requireExpectedOwner(sessionId, options.expectedOwnerWindowId);
+    const heading = this.normalizeHeadingTarget(options.heading);
+    if (heading && opened.kind !== 'markdown') {
+      throw new FilePanelError(
+        'InvalidHeadingTarget',
+        `[FilePanelService] openFile heading navigation rejected for path="${abs}" kind="${opened.kind}". ` +
+          'Possible causes: (1) --heading was used with a non-Markdown file, ' +
+          '(2) the file extension is not recognized as Markdown. ' +
+          'Open a .md/.markdown file or omit --heading, then retry.',
+      );
+    }
     if (!state) {
       state = { files: [], activePath: null, watchers: new Map(), watchTimers: new Map() };
       this.panels.set(sessionId, state);
@@ -323,6 +349,15 @@ export class FilePanelService extends EventEmitter {
     // 用户已手动切回「文件」的焦点。统一在此发出，HTTP /open-file、IPC
     // cmd:file-panel:open、文件树点击三条入口都覆盖(它们最终都进 openFile)。
     this.emitUpdated(sessionId, state, true);
+    if (heading) {
+      this.emit('filePanelNavigationRequested', {
+        sessionId,
+        path: abs,
+        heading,
+        // 相同 path + heading 连续请求仍需让 renderer 的 effect 再执行一次。
+        requestId: randomUUID(),
+      });
+    }
     return snapshot(state);
   }
 
@@ -1028,6 +1063,58 @@ export class FilePanelService extends EventEmitter {
   }
 
   /**
+   * 校验并规范化外部可见标题文字。这里只做边界校验，不读/解析 Markdown；实际匹配
+   * 在 renderer 已有 AST/DOM 上完成，避免 Main 为一次 view intent 重读文件。
+   */
+  private requireExpectedOwner(sessionId: string, expectedOwnerWindowId: string | undefined): void {
+    if (expectedOwnerWindowId === undefined) return;
+    const session = this.lookup?.get(sessionId) ?? null;
+    if (!session) {
+      throw new FilePanelError(
+        'SessionMissing',
+        `[FilePanelService] openFile owner revalidation failed for sessionId="${sessionId}". ` +
+          'Possible causes: (1) the session was destroyed while resolving the path, ' +
+          '(2) renderer state is stale. Refresh application state and retry.',
+      );
+    }
+    if (session.ownerWindowId !== expectedOwnerWindowId) {
+      throw new FilePanelError(
+        'NotOwner',
+        `[FilePanelService] openFile owner changed while resolving sessionId="${sessionId}" ` +
+          `expectedOwner="${expectedOwnerWindowId}" actualOwner="${session.ownerWindowId}". ` +
+          'Possible causes: (1) another window claimed the session, (2) the initiating window closed. ' +
+          'Retry from the current owner window.',
+      );
+    }
+  }
+
+  private normalizeHeadingTarget(raw: string | undefined): string | undefined {
+    if (raw === undefined) return undefined;
+    if (typeof raw !== 'string') {
+      throw new FilePanelError(
+        'InvalidHeadingTarget',
+        `[FilePanelService] openFile received a non-string heading target (type="${typeof raw}"). ` +
+          'Possible causes: (1) a malformed HTTP client body, (2) an outdated custom client. ' +
+          'Send heading as a UTF-8 string or omit the field.',
+      );
+    }
+    const heading = raw.trim();
+    const hasControlCharacter = [...heading].some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint <= 0x1f || codePoint === 0x7f;
+    });
+    if (!heading || heading.length > MAX_HEADING_TARGET_LENGTH || hasControlCharacter) {
+      throw new FilePanelError(
+        'InvalidHeadingTarget',
+        `[FilePanelService] openFile received an invalid heading target (length=${heading.length}). ` +
+          `Possible causes: (1) the heading is blank, (2) it exceeds ${MAX_HEADING_TARGET_LENGTH} characters, ` +
+          '(3) it contains control characters. Pass the visible Markdown heading text and retry.',
+      );
+    }
+    return heading;
+  }
+
+  /**
    * v0.3.3 Feature D 接线:workspace 切换完成后(bind/new/unpin 后,由 SessionManager
    * 通过注入的 notify 回调调本方法)重建该 session 的文件面板状态。
    *
@@ -1181,20 +1268,28 @@ export class FilePanelService extends EventEmitter {
   }
 
   async handlePost(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<void> {
-    let body: { terminal?: string; path?: string };
+    let body: { terminal?: string; path?: string; heading?: unknown };
     try {
-      body = JSON.parse(await readBody(req)) as { terminal?: string; path?: string };
+      body = JSON.parse(await readBody(req)) as {
+        terminal?: string;
+        path?: string;
+        heading?: unknown;
+      };
     } catch {
       return send(res, 400, { error: 'invalid JSON body' });
     }
-    const { terminal, path } = body;
+    const { terminal, path, heading } = body;
     if (!terminal || !path) {
       return send(res, 400, { error: 'body 需要 { terminal, path }' });
     }
+    if (heading !== undefined && typeof heading !== 'string') {
+      return send(res, 400, { error: 'body.heading 必须是 string' });
+    }
     try {
       let result: FilePanelSnapshot;
-      if (pathname === '/open-file') result = await this.openFile(terminal, path);
-      else if (pathname === '/show-file') result = this.showFile(terminal, path);
+      if (pathname === '/open-file') {
+        result = await this.openFile(terminal, path, heading === undefined ? {} : { heading });
+      } else if (pathname === '/show-file') result = this.showFile(terminal, path);
       else result = this.closeFile(terminal, path);
       send(res, 200, result);
     } catch (err) {
@@ -1221,7 +1316,13 @@ export class FilePanelService extends EventEmitter {
 /** FilePanelService 抛的业务错误,带 code 供 HTTP 层映射状态码。 */
 export class FilePanelError extends Error {
   constructor(
-    readonly code: 'NotFound' | 'NotFile' | 'SessionMissing' | 'ResolveFailed',
+    readonly code:
+      | 'NotFound'
+      | 'NotFile'
+      | 'SessionMissing'
+      | 'ResolveFailed'
+      | 'InvalidHeadingTarget'
+      | 'NotOwner',
     message: string,
   ) {
     super(message);

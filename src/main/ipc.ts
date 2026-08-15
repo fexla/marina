@@ -81,6 +81,8 @@ import {
   type FilePanelActionPayload,
   type FilePanelSnapshot,
   type FilePanelUpdatedPayload,
+  type FilePanelHeadingNavigationPayload,
+  type OpenFilePanelPayload,
   type OpenPathFromMarkdownPayload,
   type GetFileTreeRootsPayload,
   type GetFileTreeRootsResponse,
@@ -2114,9 +2116,12 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
 
   registerHandle(
     COMMAND_CHANNELS.FILE_PANEL_OPEN,
-    async (_e, envelope: CommandEnvelope<FilePanelActionPayload>): Promise<FilePanelSnapshot> => {
+    async (_e, envelope: CommandEnvelope<OpenFilePanelPayload>): Promise<FilePanelSnapshot> => {
       requireFilePanelOwner(sessionManager, envelope.payload.sessionId, envelope.windowId);
-      return filePanelService.openFile(envelope.payload.sessionId, envelope.payload.path);
+      return filePanelService.openFile(envelope.payload.sessionId, envelope.payload.path, {
+        expectedOwnerWindowId: envelope.windowId,
+        ...(envelope.payload.heading === undefined ? {} : { heading: envelope.payload.heading }),
+      });
     },
   );
 
@@ -2703,6 +2708,18 @@ function wireEventBroadcasts(deps: IpcLayerDeps): void {
   // map,不显示就不读)。
   filePanelService.on('filePanelUpdated', (p: FilePanelUpdatedPayload) => {
     broadcastEvent<FilePanelUpdatedPayload>(EVENT_CHANNELS.FILE_PANEL_UPDATED, p);
+  });
+
+  // heading 是一次性 view intent，不可跟可重放的 filePanelUpdated 一起广播。
+  // 只在请求发生时定向给 owner；watcher/workspace restore 永远不会重放它。
+  filePanelService.on('filePanelNavigationRequested', (p: FilePanelHeadingNavigationPayload) => {
+    const ownerClientId = sessionManager.get(p.sessionId)?.ownerWindowId;
+    if (!ownerClientId) return;
+    sendEventTo<FilePanelHeadingNavigationPayload>(
+      ownerClientId,
+      EVENT_CHANNELS.FILE_PANEL_HEADING_NAVIGATION_REQUESTED,
+      p,
+    );
   });
 
   // v0.3.3 Feature D:workspace 切换完成(bind switched / new)。FilePanelService

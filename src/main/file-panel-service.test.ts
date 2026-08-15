@@ -240,6 +240,91 @@ describe('FilePanelService - requestActivation (打开即激活)', () => {
   });
 });
 
+describe('FilePanelService - heading navigation request', () => {
+  let dir: string;
+  let svc: FilePanelService;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'marina-fp-heading-'));
+    svc = new FilePanelService();
+    svc.attachSessionLookup(makeLookup({ s1: { currentCwd: dir, ownerWindowId: 'w1' } }));
+  });
+
+  afterEach(async () => {
+    await svc.stop();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('打开 Markdown 时把标题作为独立的一次性导航请求发出', async () => {
+    const filePath = join(dir, 'report.md');
+    await writeFile(filePath, '# 概览\n\n## 详细说明\n');
+    const navigations: Array<{
+      sessionId: string;
+      path: string;
+      heading: string;
+      requestId: string;
+    }> = [];
+    svc.on('filePanelNavigationRequested', (payload) => navigations.push(payload));
+
+    await svc.openFile('s1', filePath, { heading: '  详细说明  ' });
+
+    expect(navigations).toEqual([
+      {
+        sessionId: 's1',
+        path: filePath,
+        heading: '详细说明',
+        requestId: expect.any(String),
+      },
+    ]);
+  });
+
+  it('重复打开同一标题也生成新 requestId，保证相同跳转可再次执行', async () => {
+    const filePath = join(dir, 'report.md');
+    await writeFile(filePath, '# 概览\n');
+    const requestIds: string[] = [];
+    svc.on('filePanelNavigationRequested', (payload: { requestId: string }) => {
+      requestIds.push(payload.requestId);
+    });
+
+    await svc.openFile('s1', filePath, { heading: '概览' });
+    await svc.openFile('s1', filePath, { heading: '概览' });
+
+    expect(requestIds).toHaveLength(2);
+    expect(requestIds[0]).not.toBe(requestIds[1]);
+  });
+
+  it('异步解析期间 owner 改变时拒绝旧 IPC 请求且不发更新/导航', async () => {
+    const filePath = join(dir, 'owner-race.md');
+    await writeFile(filePath, '# Owner race\n');
+    const session = { currentCwd: dir, ownerWindowId: 'w1' as string | null };
+    svc.attachSessionLookup({ get: (id) => (id === 's1' ? session : null) });
+    const updates: unknown[] = [];
+    const navigations: unknown[] = [];
+    svc.on('filePanelUpdated', (payload) => updates.push(payload));
+    svc.on('filePanelNavigationRequested', (payload) => navigations.push(payload));
+
+    const opening = svc.openFile('s1', filePath, {
+      heading: 'Owner race',
+      expectedOwnerWindowId: 'w1',
+    });
+    session.ownerWindowId = 'w2';
+
+    await expect(opening).rejects.toMatchObject({ code: 'NotOwner' });
+    expect(svc.getOpenFiles('s1')).toEqual({ files: [], activePath: null });
+    expect(updates).toEqual([]);
+    expect(navigations).toEqual([]);
+  });
+
+  it('非 Markdown 文件带 heading 时拒绝且不污染已打开列表', async () => {
+    await writeFile(join(dir, 'notes.txt'), 'plain text');
+
+    await expect(svc.openFile('s1', 'notes.txt', { heading: '概览' })).rejects.toMatchObject({
+      code: 'InvalidHeadingTarget',
+    });
+    expect(svc.getOpenFiles('s1')).toEqual({ files: [], activePath: null });
+  });
+});
+
 describe('FilePanelService - readFile', () => {
   let dir: string;
   let svc: FilePanelService;

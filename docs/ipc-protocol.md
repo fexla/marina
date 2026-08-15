@@ -6,8 +6,13 @@
 > 这份文档定义所有消息的 schema、语义、错误码、时序约束。
 > 实现代码必须严格遵循,不允许"自由发挥"。
 
-文档版本:4.0 · 最后更新:2026-08-07
+文档版本:4.1 · 最后更新:2026-08-14
 
+> **v4.1 变更**(Markdown 标题导航,向后兼容):
+> - `cmd:file-panel:open` 与 HTTP `POST /open-file` 新增可选 `heading`，内容是可见标题文字。
+> - 新增 owner 定向事件 `evt:file-panel:heading-navigation-requested`；它是一次性 view intent，不进入 PanelState/workspace，也不会被 watcher 重放。
+> - 此变更只增加可选字段与事件，不改变握手 schema，`PROTOCOL_VERSION` 仍为 4。
+>
 > **v4.0 变更**(收藏分组 kind 隔离):
 > - `GroupNode.kind` 与新增分组 payload 的 `kind` 改为必填，local/ssh 分组树必须隔离。
 > - 新 renderer 不能与仍返回无 kind group 的 v3 daemon 混用，`PROTOCOL_VERSION` 升为 4。
@@ -1895,6 +1900,47 @@ V1 简化:大多数托盘动作 Main 自己处理,不需要通知 Renderer。这
 
 ### 6.6 File Panel
 
+#### `cmd:file-panel:open` / HTTP `POST /open-file`
+
+两条入口都进入 `FilePanelService.openFile`。旧调用只传路径，行为不变；Markdown 调用可附带
+一次性可见标题导航：
+
+```typescript
+interface OpenFilePanelPayload {
+  sessionId: string;
+  path: string;
+  heading?: string;
+}
+
+interface OpenFileHttpBody {
+  terminal: string;
+  path: string;
+  heading?: string;
+}
+```
+
+`heading` 必须是非空字符串且只支持 Markdown 文件。Main 先完成打开/激活并发送
+`evt:file-panel:updated`，再向当前 owner 发送新的标题事件。匹配语义由 renderer 统一执行：
+标题文字 trim、连续空白折叠、忽略大小写；重复可见标题选择文档中的第一个。目标不存在时
+文件仍保持打开，renderer 消费该请求并显示未命中提示。
+
+#### `evt:file-panel:heading-navigation-requested`
+
+```typescript
+interface FilePanelHeadingNavigationPayload {
+  sessionId: string;
+  path: string;
+  heading: string;
+  requestId: string;
+}
+```
+
+**时序与生命周期**:
+- 仅推给该 session 当前 owner；`requestId` 每次调用唯一，重复 `show --heading` 必须再次跳转。
+- 它是瞬态导航意图，不属于 `FilePanelSnapshot`、workspace snapshot 或任何持久化状态。
+- `fs.watch` 内容刷新只发 `evt:file-panel:updated`，绝不能重新发送/重放标题请求。
+- renderer 在目标命中或确认未命中后都消费请求；跳转前先取消旧 scroll restore fence，并展开目标所在的折叠章节。
+
 #### `evt:file-panel:updated`
 某 session 的文件面板状态变化(已打开文件列表 / 当前 active 文件)。仅推给该 session
 的 owner 窗口(与 `evt:session:output` 同策略)。
@@ -1990,6 +2036,7 @@ class IPCError extends Error {
 | `InvalidSettings` | 设置不合法 | 数值越界 / 枚举错误 |
 | `ConfirmationRequired` | 危险操作需要 confirmed=true | 实现错 |
 | `FileNotFound` | 文件不存在(导入用) | — |
+| `InvalidHeadingTarget` | 标题导航参数无效 | `heading` 为空/过长/含控制字符，或目标不是 Markdown 文件 |
 | `InvalidImportFile` | 导入文件损坏 | — |
 | `IncompatibleVersion` | 协议版本不兼容 | 跨版本导入 |
 

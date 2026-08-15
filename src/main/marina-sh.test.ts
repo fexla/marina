@@ -42,17 +42,33 @@ const MOCK_SERVER = resolve(__dirname, 'marina-cli-mock-server.py');
 const TOKEN = 'test-token-xyz';
 const MARINA_VARS = ['MARINA_SERVICE', 'MARINA_TOKEN', 'TERMINAL_ID', 'MARINA_WORKSPACE'] as const;
 
-/** bash 运行时(被测 marina.sh 的解释器)。试 PATH 上的 bash 与 Git for Windows 常见路径。 */
+/**
+ * bash 运行时(被测 marina.sh 的解释器)。Windows 先选固定 Git Bash，避免 PATH 上
+ * 的 WSL/旧 bash.exe 用系统代码页解 argv；候选必须真实往返一个 UTF-8 参数才算可用。
+ */
 function findBash(): string | null {
-  const candidates = [
-    'bash',
-    'C:\\Program Files\\Git\\bin\\bash.exe',
-    'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
-  ];
-  for (const c of candidates) {
+  const candidates =
+    process.platform === 'win32'
+      ? [
+          'C:\\Program Files\\Git\\bin\\bash.exe',
+          'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
+          'bash',
+        ]
+      : ['bash'];
+  const probe = '详细说明';
+  for (const candidate of candidates) {
     try {
-      const r = spawnSync(c, ['-c', 'exit 0'], { stdio: 'ignore' });
-      if (r.status === 0) return c;
+      const env: NodeJS.ProcessEnv = { ...process.env };
+      if (process.platform === 'win32') {
+        env['LANG'] = 'C.UTF-8';
+        env['LC_ALL'] = 'C.UTF-8';
+      }
+      const result = spawnSync(
+        candidate,
+        ['-c', 'printf %s "$1"', 'marina-utf8-probe', probe],
+        { env, encoding: 'utf8', windowsHide: true },
+      );
+      if (result.status === 0 && result.stdout === probe) return candidate;
     } catch {
       /* try next */
     }
@@ -107,6 +123,12 @@ function runMarinaSh(
       if (v === undefined) delete env[k];
       else env[k] = v;
     }
+  }
+  // Git for Windows 的 MSYS argv 转换受 locale 影响；把测试进程契约钉为 UTF-8，
+  // 与现代 Linux/macOS 终端及 Marina 实际注入的 UTF-8 环境一致。
+  if (process.platform === 'win32') {
+    env['LANG'] = 'C.UTF-8';
+    env['LC_ALL'] = 'C.UTF-8';
   }
   const child = spawn(BASH as string, [SH, ...args], {
     env,
@@ -391,6 +413,41 @@ describeOrSkip('marina.sh POSIX client (requires bash + curl + Python mock)', ()
     expect(JSON.parse(openReq!.body)).toMatchObject({ terminal: 't1' });
     expect(JSON.parse(openReq!.body).path.replace(/\\/g, '/')).toMatch(/report\.md$/);
     expect(r.stdout).toContain('shown:');
+  });
+
+  it('show: --heading forwards a UTF-8 visible heading', async () => {
+    const f = join(workspaceOs, 'report-with-heading.md');
+    writeFileSync(f, '# 概览\n\n## 详细说明');
+    const r = await runMarinaSh(['show', toBashPath(f), '--heading', '详细说明'], {
+      env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+    });
+
+    expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+    const openReq = readRequests(mock.logFile).find((x) => x.path === '/open-file');
+    expect(openReq).toBeDefined();
+    expect(JSON.parse(openReq!.body)).toMatchObject({ terminal: 't1', heading: '详细说明' });
+  });
+
+  it('show: --heading rejects a recognized option as its value and duplicate declarations', async () => {
+    const f = join(workspaceOs, 'strict-heading.md');
+    writeFileSync(f, '# strict');
+    for (const args of [
+      ['show', toBashPath(f), '--heading', '--quiet'],
+      ['show', toBashPath(f), '--heading', '-q'],
+      ['show', toBashPath(f), '--heading', 'First', '--heading', 'Second'],
+      ['show', toBashPath(f), '--heading', ''],
+    ]) {
+      const before = readRequests(mock.logFile).filter(
+        (request) => request.path === '/open-file',
+      ).length;
+      const result = await runMarinaSh(args, {
+        env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+      });
+      expect(result.status, `args=${JSON.stringify(args)} stderr=${result.stderr}`).toBe(2);
+      expect(
+        readRequests(mock.logFile).filter((request) => request.path === '/open-file'),
+      ).toHaveLength(before);
+    }
   });
 
   it('show: nonexistent file -> exit 3 (rejected)', async () => {

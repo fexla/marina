@@ -453,6 +453,43 @@ describeOrSkip('marina.cmd launcher + marina.ps1 (requires PowerShell + Python m
     expect(r.stdout.trim()).toBe(`shown: ${f}`);
   });
 
+  it('show: --heading forwards a UTF-8 visible heading without changing the path contract', () => {
+    const f = join(workspace, 'report-with-heading.md');
+    writeFileSync(f, '# 概览\n\n## 详细说明');
+    const r = runMarina(['show', f, '--heading', '详细说明'], {
+      env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+    });
+
+    expect(r.status, `stderr: ${r.stderr}`).toBe(0);
+    const openReq = readRequests().find((x) => x.path === '/open-file');
+    expect(openReq).toBeDefined();
+    expect(JSON.parse(openReq!.body)).toMatchObject({
+      terminal: 't1',
+      path: f,
+      heading: '详细说明',
+    });
+  });
+
+  it('show: --heading rejects a recognized option as its value and duplicate declarations', () => {
+    const f = join(workspace, 'strict-heading.md');
+    writeFileSync(f, '# strict');
+    for (const args of [
+      ['show', f, '--heading', '--quiet'],
+      ['show', f, '--heading', '-q'],
+      ['show', f, '--heading', 'First', '--heading', 'Second'],
+      ['show', f, '--heading', ''],
+    ]) {
+      const before = readRequests().filter((request) => request.path === '/open-file').length;
+      const result = runMarina(args, {
+        env: { MARINA_SERVICE: mock.baseUrl, MARINA_TOKEN: TOKEN, TERMINAL_ID: 't1' },
+      });
+      expect(result.status, `args=${JSON.stringify(args)} stderr=${result.stderr}`).toBe(2);
+      expect(readRequests().filter((request) => request.path === '/open-file')).toHaveLength(
+        before,
+      );
+    }
+  });
+
   it('show: UTF-8 filename survives end-to-end (the path mode UTF-8 contract)', () => {
     // 路径含中文:cmd.exe→powershell.exe 经 CreateProcessW 传 UTF-16,
     // marina.ps1 把 JSON body 显式 UTF-8 编码后发出。mock server 记录原始
