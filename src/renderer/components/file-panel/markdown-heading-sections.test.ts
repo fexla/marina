@@ -21,6 +21,7 @@ interface TestNode {
   value?: string;
   children?: TestNode[];
   data?: { hName?: string; hProperties?: Record<string, unknown> };
+  position?: { start: { line: number }; end: { line: number } };
 }
 
 const heading = (depth: number, text: string): TestNode => ({
@@ -34,6 +35,28 @@ const paragraph = (text: string): TestNode => ({
   children: [{ type: 'text', value: text }],
 });
 
+/** 给节点补 remark-parse 风格的源码位置（单行节点 start=end）。 */
+function withPosition(node: TestNode, startLine: number, endLine: number): TestNode {
+  return {
+    ...node,
+    position: {
+      start: { line: startLine, column: 1 },
+      end: { line: endLine, column: 1 },
+    },
+  } as TestNode;
+}
+
+/** 收集全部 section 的标题→折叠行数属性（无属性则不入表）。 */
+function collectCounts(nodes: ShapeNode[], into = new Map<string, string>()): Map<string, string> {
+  for (const node of nodes) {
+    if (node.kind === 'section' && node.collapsedCount !== undefined) {
+      into.set(node.text ?? '', node.collapsedCount);
+    }
+    collectCounts(node.children, into);
+  }
+  return into;
+}
+
 const root = (...children: TestNode[]): TestNode => ({ type: 'root', children });
 
 interface ShapeNode {
@@ -41,6 +64,7 @@ interface ShapeNode {
   id?: string;
   level?: number;
   text?: string;
+  collapsedCount?: string | undefined;
   children: ShapeNode[];
 }
 
@@ -51,12 +75,17 @@ function shapeOf(node: TestNode): ShapeNode {
   if (node.type === 'marina-details') {
     const props = node.data?.hProperties ?? {};
     const summary = node.children?.[0];
+    const summaryProps = summary?.data?.hProperties ?? {};
     const headingNode = summary?.children?.[0];
     return {
       kind: 'section',
       id: String(props['data-markdown-heading-id'] ?? ''),
       level: Number(props['data-markdown-heading-level'] ?? 0),
       text: headingNode?.children?.[0]?.value ?? '',
+      collapsedCount:
+        typeof summaryProps['data-markdown-heading-collapsed-count'] === 'string'
+          ? String(summaryProps['data-markdown-heading-collapsed-count'])
+          : undefined,
       children: (node.children ?? []).slice(1).map(shapeOf),
     };
   }
@@ -178,6 +207,23 @@ describe('remarkMarinaHeadingSections — H1-H6 全层级重组', () => {
     }));
     expect(links.map((link) => link.level)).toEqual([1, 3, 2]);
     expect(links.every((link) => link.href.startsWith('#'))).toBe(true);
+  });
+
+  it('折叠行数统计：section 覆盖的源码行数写入 collapsed-count，含子标题子树', () => {
+    const tree = root(
+      withPosition(heading(1, '甲'), 1, 1),
+      withPosition(paragraph('a'), 2, 2),
+      withPosition(paragraph('b'), 4, 4),
+      withPosition(heading(2, '乙'), 5, 5),
+      withPosition(paragraph('c'), 6, 6),
+      withPosition(heading(1, '丙'), 7, 7),
+      withPosition(paragraph('d'), 8, 8),
+    );
+    const { content } = runPlugin(tree);
+    const counts = collectCounts(content);
+    expect(counts.get('甲')).toBe('5'); // 覆盖 1→6 行（丙是同级，不含）
+    expect(counts.get('乙')).toBe('1'); // 覆盖 5→6 行：只有一段
+    expect(counts.get('丙')).toBe('1'); // 覆盖 7→8 行：尾段也计入
   });
 
   it('无标题文档：原样返回，不注入 layout/rail', () => {

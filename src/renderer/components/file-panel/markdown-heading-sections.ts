@@ -25,6 +25,11 @@ interface MarkdownAstData {
   hProperties?: Record<string, unknown>;
 }
 
+interface MarkdownAstPosition {
+  start: { line: number; column: number; offset?: number };
+  end: { line: number; column: number; offset?: number };
+}
+
 interface MarkdownAstNode {
   type: string;
   depth?: number;
@@ -34,6 +39,8 @@ interface MarkdownAstNode {
   label?: string;
   children?: MarkdownAstNode[];
   data?: MarkdownAstData;
+  /** remark-parse 默认携带源码位置；手工构造的节点可能没有。 */
+  position?: MarkdownAstPosition;
 }
 
 interface MarkdownAstRoot extends MarkdownAstNode {
@@ -120,6 +127,13 @@ export function remarkMarinaHeadingSections(): (tree: unknown) => void {
   };
 }
 
+/** 单个章节的折叠行数追踪：details 属性引用 + 覆盖范围的首末源码行。 */
+interface CollapsedLinesEntry {
+  hProperties: Record<string, unknown>;
+  startLine: number;
+  endLine: number;
+}
+
 /**
  * 把平铺的 AST 重组为 H1-H6 全层级嵌套的 details 章节（单调栈）。
  *
@@ -127,11 +141,19 @@ export function remarkMarinaHeadingSections(): (tree: unknown) => void {
  * （它属于 T 的祖先或前驱兄弟）。栈保存当前打开的章节链：遇到新标题时弹出
  * 所有 level ≥ 新标题的章节，再把新章节挂到栈顶（无栈则挂根）。
  * 首个标题之前的内容留在根级，不属于任何 section。
+ *
+ * 重组同时统计每个章节覆盖的源码行数（标题行 → 子树最后一行的行差），写入
+ * details 的 data-markdown-heading-collapsed-count。summary 据此渲染
+ * “N 行已折叠”提示——折叠态的可感知性不能只靠 13px chevron 的 90° 旋转，
+ * 收起量是更重要的 affordance（同 GitHub collapsed lines 提示）。
  */
 function structureHeadingSections(children: MarkdownAstNode[]): MarkdownAstNode[] {
   const result: MarkdownAstNode[] = [];
-  // 栈元素同时记录章节节点的 heading level，避免从 hProperties 里反解析。
-  const stack: { node: MarkdownAstNode; level: number }[] = [];
+  // 栈元素同时记录章节节点的 heading level，避免从 hProperties 里反解析；
+  // entry 指向行数追踪条目（栈上章节的活跃引用）。已弹栈的章节不再吸收
+  // 后续内容——它的覆盖范围在边界标题处已经关闭。
+  const stack: { node: MarkdownAstNode; level: number; entry: CollapsedLinesEntry }[] = [];
+  const tracked: CollapsedLinesEntry[] = [];
 
   const owner = (): MarkdownAstNode | null => {
     const top = stack[stack.length - 1];
@@ -147,13 +169,38 @@ function structureHeadingSections(children: MarkdownAstNode[]): MarkdownAstNode[
       const parent = owner();
       if (parent?.children) parent.children.push(section);
       else result.push(section);
-      stack.push({ node: section, level: child.depth });
+      stack.push({
+        node: section,
+        level: child.depth,
+        entry: {
+          // 行数提示最终渲染在 summary 里(summary 组件读自身节点属性),
+          // 因此挂在 summary 的 hProperties 上而不是 details 的。
+          hProperties: (section.children![0]!.data!.hProperties ??= {}),
+          startLine: child.position?.start.line ?? 0,
+          endLine: child.position?.start.line ?? 0,
+        },
+      });
+      tracked.push(stack[stack.length - 1]!.entry);
       continue;
     }
 
     const parent = owner();
     if (parent?.children) parent.children.push(child);
     else result.push(child);
+    const endLine = child.position?.end.line;
+    if (endLine !== undefined && endLine > 0) {
+      // 只更新栈上（仍打开）的章节链:它们包含这个子内容。
+      for (const frame of stack) {
+        if (endLine > frame.entry.endLine) frame.entry.endLine = endLine;
+      }
+    }
+  }
+
+  for (const entry of tracked) {
+    const collapsedLines = Math.max(0, entry.endLine - entry.startLine);
+    if (collapsedLines >= 1) {
+      entry.hProperties['data-markdown-heading-collapsed-count'] = String(collapsedLines);
+    }
   }
 
   return result;

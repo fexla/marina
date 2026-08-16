@@ -3731,6 +3731,15 @@ html[data-maximized='true'] .app-root.with-shell {
   min-width: 0;
   cursor: pointer;
   list-style: none;
+
+  /* hover 整行轻背景:折叠交互的可点击性提示。用 currentcolor 混色跟随
+   * markdown 主题(自定义主题注入的配色下同样成立),不引入新变量。 */
+  border-radius: 3px;
+  transition: background-color 120ms ease;
+}
+
+.markdown-heading-summary:hover {
+  background-color: color-mix(in srgb, currentcolor 5%, transparent);
 }
 
 .markdown-heading-summary::-webkit-details-marker {
@@ -3754,6 +3763,32 @@ html[data-maximized='true'] .app-root.with-shell {
 
 .markdown-heading-section[open] > .markdown-heading-summary > .markdown-heading-summary-chevron {
   transform: translateY(1px) rotate(90deg);
+
+  /* 展开/折叠的常态色差:仅 90° 旋转在 13px 图标上太微弱,叠加透明度差让
+   * 两种状态在扫视下也能区分(用户反馈:看不出来是收起还是展开)。 */
+  opacity: 0.75;
+}
+
+/* 折叠行数提示:折叠态的最强 affordance——不仅说明"收起了",还说明收了多少
+ * (同 GitHub collapsed lines)。展开时隐藏;user-select:none 让选中标题复制
+ * 时不携带提示文字。数字由 remark 插件统计源码行数写入 data 属性,组件渲染
+ * 成文字;空章节(<2 行)不生成。 */
+.markdown-heading-summary-count {
+  display: none;
+  flex: 0 0 auto;
+  margin-left: 8px;
+  opacity: 0.5;
+  font-size: 11px;
+  font-weight: 400;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.markdown-heading-section:not([open])
+  > .markdown-heading-summary
+  > .markdown-heading-summary-count {
+  display: block;
 }
 
 .markdown-heading-summary > h1,
@@ -3897,6 +3932,32 @@ html[data-maximized='true'] .app-root.with-shell {
  * 可见态性挂 -expanded 类(hover 浮动展开的 CSS 开关),两类互斥。 */
 .markdown-heading-rail-hidden .markdown-heading-rail-items {
   display: none;
+}
+
+/* 全部展开按钮:深层折叠后的逃生门,由 nav 组件在存在折叠时渲染。
+ * 静止窄轨隐藏,仅 hover 展开面板时可见(与条目面板同一显隐节奏)。 */
+.markdown-heading-rail-expand-all {
+  flex-shrink: 0;
+  visibility: hidden;
+  margin-top: 4px;
+  padding: 2px 4px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--markdown-heading-rail-fg, #f0f);
+  opacity: 0.7;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.markdown-heading-rail-expand-all:hover,
+.markdown-heading-rail-expand-all:focus-visible,
+.markdown-heading-rail-expanded:hover .markdown-heading-rail-expand-all,
+.markdown-heading-rail-expanded:has(:focus-visible) .markdown-heading-rail-expand-all {
+  visibility: visible;
+  opacity: 1;
+  background-color: color-mix(in srgb, var(--markdown-heading-rail-fg, #f0f) 10%, transparent);
 }
 
 .markdown-heading-rail-items {

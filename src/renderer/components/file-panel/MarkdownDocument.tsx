@@ -162,6 +162,12 @@ export function MarkdownDocument({
     [commitCollapsedHeadingIds],
   );
 
+  /** 一键展开全部章节。深层嵌套折叠后的逃生门:轨道面板尾部按钮。 */
+  const expandAllHeadings = useCallback((): void => {
+    if (collapsedHeadingIdsRef.current.size === 0) return;
+    commitCollapsedHeadingIds(new Set());
+  }, [commitCollapsedHeadingIds]);
+
   /** 目录按钮是跨文档的显示偏好，写 L2；收起 = 隐藏整个目录，只留按钮本身。 */
   const toggleOutlineVisible = useCallback((): void => {
     setOutlineVisible((previous) => {
@@ -264,13 +270,50 @@ export function MarkdownDocument({
               // toggle 是折叠态的唯一同步真值来源(见 summary onClick 注释):
               // 点击/键盘/程序赋值 open 都会到这里;而 React 只在 prop 值变化
               // 时才写 DOM,这里提交后重渲染写回的是同值,不会与原生行为打架。
-              setHeadingCollapsed(headingId, !event.currentTarget.open);
+              const nowCollapsed = !event.currentTarget.open;
+              setHeadingCollapsed(headingId, nowCollapsed);
+              // 折叠可能把视口里的内容整段收走:文档高度骤减后浏览器会把
+              // scrollTop 钳到新的 maxScroll,视口跳到无关位置,而用户刚点的
+              // 标题行却被留在视口外。折叠后若 summary 不在滚动容器视口内,
+              // 把它补滚到视口顶——用户的注意力焦点就是他刚折叠的标题。
+              // 展开(`nowCollapsed=false`)不需要:标题上方内容未变,summary
+              // 的文档位置不变,不会因此移出视口。两帧 rAF 等折叠后的布局
+              // 与滚动钳制都落地再测几何。
+              if (nowCollapsed) {
+                const section = event.currentTarget;
+                requestAnimationFrame(() => {
+                  requestAnimationFrame(() => {
+                    if (!section.isConnected || section.open) return;
+                    const summary = section.querySelector('summary');
+                    const scrollOwner = section.closest<HTMLElement>('.file-panel-body');
+                    if (!summary || !scrollOwner) return;
+                    const summaryRect = summary.getBoundingClientRect();
+                    const ownerRect = scrollOwner.getBoundingClientRect();
+                    if (summaryRect.bottom < ownerRect.top || summaryRect.top > ownerRect.bottom) {
+                      scrollOwner.dispatchEvent(
+                        new Event(FILE_VIEWER_PROGRAMMATIC_NAVIGATION_EVENT),
+                      );
+                      summary.scrollIntoView({ block: 'start' });
+                    }
+                  });
+                });
+              }
             }}
           />
         );
       },
       summary: ({ node, children, ...props }) => {
         const headingId = readNodeStringProperty(node, 'data-markdown-heading-id');
+        // 折叠行数提示(见 markdown-heading-sections.ts 的行数统计)。只在
+        // 折叠态由 CSS 显示;user-select:none 保证选中标题复制时不带提示文字。
+        const collapsedCount = readNodeStringProperty(
+          node,
+          'data-markdown-heading-collapsed-count',
+        );
+        const collapsedLabel =
+          collapsedCount && Number(collapsedCount) >= 1
+            ? `${collapsedCount} ${tx('行已折叠', 'lines collapsed')}`
+            : null;
         return (
           <summary
             {...props}
@@ -284,12 +327,19 @@ export function MarkdownDocument({
               // 个竞态)。折叠真值唯一来源是 details 的 toggle 事件:点击/键盘/
               // 程序改 open 都会触发它,且在用户能做下一个操作之前必达。
               //
-              // 拖选/Shift 扩选标题文字 = 复制意图,不是折叠意图:此时 click 的
-              // 默认动作(切 details)必须吞掉,否则选完标题章节就合上了。
-              // 只拦 detail===1 的单击:双击/三击选词靠原生"两次 toggle 互相
-              // 抵消"回到原状,这里拦第二下反而破坏抵消,净折叠一次。选区必须
-              // 整段落在 summary 内才算;跨进正文的拖选 click 落在共同祖先
-              // details 上,根本不会进这个 handler。
+              // 拖选/Shift 扩选/三击选段标题文字 = 复制意图,不是折叠意图:此时
+              // click 的默认动作(切 details)必须吞掉,否则选完标题章节就合
+              // 上了。原生 click 每次都 toggle:双击(第二击 detail=2)靠两次
+              // 互相抵消回到原状;但三击的第三击(detail=3)会净折叠一次。
+              //
+              // 单击(detail=1):拖选/Shift 选区完整落在 summary 内才拦——跨进
+              // 正文的拖选 click 落在共同祖先 details 上,根本不会进这个
+              // handler,这里只需覆盖起点终点都在标题内的选区。
+              //
+              // 三击+(detail>=3):Chromium 的段落选择单位是整个 details 块,
+              // 选区会跨进(甚至 display:none 的)折叠内容——不能拿"选区完整
+              // 在 summary 内"当条件,改为看这次点击落点本身。三击后把选区
+              // 收缩到标题元素内容:复制到的就是看到的标题,不带隐藏正文。
               if (event.detail === 1) {
                 const selection = window.getSelection();
                 const anchorNode = selection?.anchorNode ?? null;
@@ -304,6 +354,18 @@ export function MarkdownDocument({
                 ) {
                   event.preventDefault();
                 }
+              } else if (event.detail >= 3) {
+                if (event.currentTarget.contains(event.target as Node | null)) {
+                  event.preventDefault();
+                  const heading = event.currentTarget.querySelector('h1,h2,h3,h4,h5,h6');
+                  if (heading) {
+                    const range = document.createRange();
+                    range.selectNodeContents(heading);
+                    const selection = window.getSelection();
+                    selection?.removeAllRanges();
+                    selection?.addRange(range);
+                  }
+                }
               }
             }}
           >
@@ -311,6 +373,9 @@ export function MarkdownDocument({
               <Icon name="chevronRight" size={13} />
             </span>
             {children}
+            {collapsedLabel !== null && (
+              <span className="markdown-heading-summary-count">{collapsedLabel}</span>
+            )}
           </summary>
         );
       },
@@ -342,7 +407,22 @@ export function MarkdownDocument({
             >
               <Icon name="chevronRight" size={13} />
             </button>
-            <div className="markdown-heading-rail-items">{children}</div>
+            <div className="markdown-heading-rail-items">
+              {children}
+              {/* 全部展开:深层折叠后的逃生门。只在存在折叠时渲染;折叠态经 ref
+               * 读取(见 details 组件的稳定性注释),每次重渲染都会重读最新值。
+                 静止窄轨里由 CSS 隐藏,仅 hover 展开面板时可见。 */}
+              {collapsedHeadingIdsRef.current.size > 0 && (
+                <button
+                  type="button"
+                  className="markdown-heading-rail-expand-all"
+                  title={tx('展开全部折叠的章节', 'Expand all collapsed sections')}
+                  onClick={expandAllHeadings}
+                >
+                  {tx('全部展开', 'Expand all')}
+                </button>
+              )}
+            </div>
           </nav>
         );
       },
@@ -397,9 +477,12 @@ export function MarkdownDocument({
     // 依赖里刻意没有 collapsedHeadingIds:details/summary 改读 ref,折叠不换
     // 组件身份、不 remount markdown 树(见 details 组件内注释)。折叠后的目录
     // 重算由 rail effect 的 toggle 捕获监听 + ResizeObserver 驱动,无需重建。
+    // expandAllHeadings 是稳定的 useCallback([commitCollapsedHeadingIds]),
+    // 而后者只随 sessionId/文档身份变化——不会破坏组件身份稳定。
     [
       allowSudo,
       documentIdentity,
+      expandAllHeadings,
       fileMtimeMs,
       filePath,
       navigateToHeading,
