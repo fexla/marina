@@ -162,12 +162,6 @@ export function MarkdownDocument({
     [commitCollapsedHeadingIds],
   );
 
-  /** 一键展开全部章节。深层嵌套折叠后的逃生门:轨道面板尾部按钮。 */
-  const expandAllHeadings = useCallback((): void => {
-    if (collapsedHeadingIdsRef.current.size === 0) return;
-    commitCollapsedHeadingIds(new Set());
-  }, [commitCollapsedHeadingIds]);
-
   /** 目录按钮是跨文档的显示偏好，写 L2；收起 = 隐藏整个目录，只留按钮本身。 */
   const toggleOutlineVisible = useCallback((): void => {
     setOutlineVisible((previous) => {
@@ -394,22 +388,7 @@ export function MarkdownDocument({
             >
               <Icon name="chevronRight" size={13} />
             </button>
-            <div className="markdown-heading-rail-items">
-              {children}
-              {/* 全部展开:深层折叠后的逃生门。只在存在折叠时渲染;折叠态经 ref
-               * 读取(见 details 组件的稳定性注释),每次重渲染都会重读最新值。
-                 静止窄轨里由 CSS 隐藏,仅 hover 展开面板时可见。 */}
-              {collapsedHeadingIdsRef.current.size > 0 && (
-                <button
-                  type="button"
-                  className="markdown-heading-rail-expand-all"
-                  title={tx('展开全部折叠的章节', 'Expand all collapsed sections')}
-                  onClick={expandAllHeadings}
-                >
-                  {tx('全部展开', 'Expand all')}
-                </button>
-              )}
-            </div>
+            <div className="markdown-heading-rail-items">{children}</div>
           </nav>
         );
       },
@@ -464,12 +443,9 @@ export function MarkdownDocument({
     // 依赖里刻意没有 collapsedHeadingIds:details/summary 改读 ref,折叠不换
     // 组件身份、不 remount markdown 树(见 details 组件内注释)。折叠后的目录
     // 重算由 rail effect 的 toggle 捕获监听 + ResizeObserver 驱动,无需重建。
-    // expandAllHeadings 是稳定的 useCallback([commitCollapsedHeadingIds]),
-    // 而后者只随 sessionId/文档身份变化——不会破坏组件身份稳定。
     [
       allowSudo,
       documentIdentity,
-      expandAllHeadings,
       fileMtimeMs,
       filePath,
       navigateToHeading,

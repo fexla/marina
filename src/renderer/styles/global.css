@@ -3929,32 +3929,6 @@ html[data-maximized='true'] .app-root.with-shell {
   display: none;
 }
 
-/* 全部展开按钮:深层折叠后的逃生门,由 nav 组件在存在折叠时渲染。
- * 静止窄轨隐藏,仅 hover 展开面板时可见(与条目面板同一显隐节奏)。 */
-.markdown-heading-rail-expand-all {
-  flex-shrink: 0;
-  visibility: hidden;
-  margin-top: 4px;
-  padding: 2px 4px;
-  border: none;
-  border-radius: 3px;
-  background: transparent;
-  color: var(--markdown-heading-rail-fg, #f0f);
-  opacity: 0.7;
-  font-size: 11px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.markdown-heading-rail-expand-all:hover,
-.markdown-heading-rail-expand-all:focus-visible,
-.markdown-heading-rail-expanded:hover .markdown-heading-rail-expand-all,
-.markdown-heading-rail-expanded:has(:focus-visible) .markdown-heading-rail-expand-all {
-  visibility: visible;
-  opacity: 1;
-  background-color: color-mix(in srgb, var(--markdown-heading-rail-fg, #f0f) 10%, transparent);
-}
-
 .markdown-heading-rail-items {
   box-sizing: border-box;
   display: flex;
