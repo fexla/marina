@@ -147,7 +147,9 @@ export function MarkdownDocument({
     [headingUiCacheKey, sessionId],
   );
 
-  /** summary click 提前记录意图，details toggle 作为键盘/程序化变化的兜底真值。 */
+  /** 折叠态唯一同步入口:details 的 toggle 事件(点击/键盘/程序改 open 都会
+   * 触发)。同步提交 L1 而不是藏进 state updater,避免组件在 updater 执行前
+   * 就 unmount 导致折叠工作态丢失。 */
   const setHeadingCollapsed = useCallback(
     (headingId: string, collapsed: boolean): void => {
       const previous = collapsedHeadingIdsRef.current;
@@ -244,13 +246,24 @@ export function MarkdownDocument({
       details: ({ node, ...props }) => {
         const headingId = readNodeStringProperty(node, 'data-markdown-heading-id');
         if (!headingId) return <details {...props} />;
+        // open 从 ref 读取而不是解构 state:components 的身份必须跨折叠稳定。
+        // react-markdown(v10)没有任何 memo,每次渲染都用 components 闭包作元素
+        // type 重建元素树;闭包身份一变,React 就把整棵 markdown 子树(含目录轨
+        // nav、代码块、图片)当换类型卸载重建 —— 轨道 scrollTop 清零重滚、CSS
+        // 过渡复位,肉眼就是"左上角面板闪一下跳一下"。ref 读法让折叠只走原生
+        // details toggle(同一 DOM 节点),React 重渲染时 prop 值与 DOM 实际态
+        // 始终一致(点击折叠:原生先翻,渲染补同值;程序展开:expandHeadingSections
+        // 先开 DOM 再提交 state,渲染补同值;重挂载:首渲染读到最新折叠集)。
         return (
           <details
             {...props}
-            open={!collapsedHeadingIds.has(headingId)}
+            open={!collapsedHeadingIdsRef.current.has(headingId)}
             onToggle={(event) => {
               // 嵌套 H2 的 toggle 不应被 H1 handler 二次处理。
               if (event.target !== event.currentTarget) return;
+              // toggle 是折叠态的唯一同步真值来源(见 summary onClick 注释):
+              // 点击/键盘/程序赋值 open 都会到这里;而 React 只在 prop 值变化
+              // 时才写 DOM,这里提交后重渲染写回的是同值,不会与原生行为打架。
               setHeadingCollapsed(headingId, !event.currentTarget.open);
             }}
           />
@@ -264,10 +277,33 @@ export function MarkdownDocument({
             onClick={(event) => {
               props.onClick?.(event);
               if (event.defaultPrevented || !headingId) return;
-              const section = event.currentTarget.parentElement;
-              if (section instanceof HTMLDetailsElement) {
-                // click default action 尚未执行：当前 open=true 表示这次意图是折叠。
-                setHeadingCollapsed(headingId, section.open);
+              // summary 的 click 除了选拦截之外什么都不做,尤其不能在这里预提交
+              // 折叠状态:React 18 离散事件同步 flush,会在原生默认动作(切
+              // details)执行前就把受控 open 写到 DOM,随后原生 toggle 再翻一
+              // 次,两者互相抵消 → 点击毫无反应(旧实现靠组件重挂载掩盖了这
+              // 个竞态)。折叠真值唯一来源是 details 的 toggle 事件:点击/键盘/
+              // 程序改 open 都会触发它,且在用户能做下一个操作之前必达。
+              //
+              // 拖选/Shift 扩选标题文字 = 复制意图,不是折叠意图:此时 click 的
+              // 默认动作(切 details)必须吞掉,否则选完标题章节就合上了。
+              // 只拦 detail===1 的单击:双击/三击选词靠原生"两次 toggle 互相
+              // 抵消"回到原状,这里拦第二下反而破坏抵消,净折叠一次。选区必须
+              // 整段落在 summary 内才算;跨进正文的拖选 click 落在共同祖先
+              // details 上,根本不会进这个 handler。
+              if (event.detail === 1) {
+                const selection = window.getSelection();
+                const anchorNode = selection?.anchorNode ?? null;
+                const focusNode = selection?.focusNode ?? null;
+                if (
+                  selection &&
+                  !selection.isCollapsed &&
+                  anchorNode !== null &&
+                  focusNode !== null &&
+                  event.currentTarget.contains(anchorNode) &&
+                  event.currentTarget.contains(focusNode)
+                ) {
+                  event.preventDefault();
+                }
               }
             }}
           >
@@ -358,9 +394,11 @@ export function MarkdownDocument({
         return <pre>{props.children}</pre>;
       },
     }),
+    // 依赖里刻意没有 collapsedHeadingIds:details/summary 改读 ref,折叠不换
+    // 组件身份、不 remount markdown 树(见 details 组件内注释)。折叠后的目录
+    // 重算由 rail effect 的 toggle 捕获监听 + ResizeObserver 驱动,无需重建。
     [
       allowSudo,
-      collapsedHeadingIds,
       documentIdentity,
       fileMtimeMs,
       filePath,
@@ -581,7 +619,10 @@ export function MarkdownDocument({
       }
       delete rail.dataset.markdownHeadingOverflow;
     };
-  }, [collapsedHeadingIds, containerRef, filePath, normalizedText, outlineVisible]);
+    // 依赖里没有 collapsedHeadingIds:折叠不再 remount 链接/标题 DOM,entries
+    // 在整个挂载周期内持续有效;折叠引起的可见性变化由 root 上的 toggle 捕获
+    // 监听和 ResizeObserver 重算,不必拆掉重建(重建会清空轨道 scrollTop)。
+  }, [containerRef, filePath, normalizedText, outlineVisible]);
 
   // 外部标题请求只处理一次。使用 layout effect 保证文件激活后首帧就落到目标，且
   // 在 scrollIntoView 前显式取消 useFileViewerScroll 仍等待布局的旧位置恢复。
