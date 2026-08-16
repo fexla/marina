@@ -1,24 +1,20 @@
 /**
  * @file skill-installer.ts
  * @purpose 将 Marina 内置的 show-in-marina skill 安装到用户选中的本地项目，供
- *   Pi、Claude Code 或 Codex 自动发现；应用启动时自动刷新已装副本。
+ *   Pi、Claude Code 或 Codex 自动发现。
  *
  * @关键设计:
  * - 收藏路径是安装目标项目根目录；内置 skill 是唯一来源，用户无需另选文件。
  * - 三个目标使用各自的官方项目级发现目录：.pi/skills、.claude/skills、
  *   .agents/skills；复制而非符号链接，项目可独立提交、打包和迁移。
  * - 先完整预检冲突，避免“Pi 装成功、Claude 因已有目录失败”的半完成状态。
- * - syncManagedSkills（v0.3.3）：启动时对收藏路径下“已存在且签名匹配”的副本
- *   做就地刷新，修复安装后不更新的缺口（如旧副本不认识 --heading）。绝不新建
- *   目录、绝碰签名不匹配的目录（那是用户自建内容）。
  *
  * @对应文档章节: Pi docs/skills.md、Claude Code skills docs、OpenAI Codex skills docs。
  *
  * @不要在这里做的事:
  * - 不安装任意用户提供的脚本或目录（降低从 UI 写入不可信代码的风险）。
  * - 不删除项目目录以外的内容；覆盖仅作用于同名受管 skill 目录，且必须由 UI
- *   二次确认后通过 overwrite=true 显式授权（syncManagedSkills 除外：它只刷新
- *   签名匹配的受管副本，不扩展到任何新路径）。
+ *   二次确认后通过 overwrite=true 显式授权。
  */
 import { promises as fs } from 'node:fs';
 import { basename, join, resolve, relative } from 'node:path';
@@ -57,11 +53,6 @@ const TARGET_DIRS: Record<SkillInstallTarget, readonly string[]> = {
   claude: ['.claude', 'skills'],
   codex: ['.agents', 'skills'],
 };
-
-const TARGET_LIST = Object.keys(TARGET_DIRS) as SkillInstallTarget[];
-
-/** 受管副本的最小文件签名：同名目录里同时有这两个文件才算 Marina 装出去的。 */
-const MANAGED_COPY_SIGNATURE_FILES = ['SKILL.md', 'marina.ps1'] as const;
 
 /**
  * 复制内置 show-in-marina skill 到项目级 agent skill 目录。
@@ -117,86 +108,6 @@ export class SkillInstaller {
       logger.info(MODULE, `installed target=${item.target} destination=${item.destination}`);
     }
     return { installed, conflicts: [] };
-  }
-
-  /**
-   * v0.3.3 启动同步：刷新收藏路径下 Marina 管理的旧 skill 副本。
-   *
-   * 背景：install() 是一次性复制，装出去的副本不会随后续版本更新——用户在别的
-   * 项目里一个月前装的副本不认识新参数（--heading 直接 usage error），且 Marina
-   * 无从主动通知。本方法在每次启动时对收藏路径做一次保守同步。
-   *
-   * 保守规则（缺一不可，防碰用户自建内容）：
-   * - 只看 destinationFor() 算出的三个官方目标目录，绝不新建任何目录；
-   * - 目标必须“已存在”且签名匹配（同名目录内同时有 SKILL.md 与 marina.ps1），
-   *   才认定为 Marina 受管副本并覆盖为最新内置内容；
-   * - 签名不匹配（如用户手写的同名 skill）→ 跳过不动；单项失败只 warn 不中断。
-   *
-   * @param projectPaths 本地收藏路径列表（Remote/SSH bookmark 不适用，调用方过滤）。
-   * @returns refreshed = 已刷新副本的目录列表；skipped = 跳过（不存在/签名不匹配/失败）计数。
-   */
-  async syncManagedSkills(
-    projectPaths: string[],
-  ): Promise<{ refreshed: string[]; skipped: number }> {
-    await this.validateSource();
-    const refreshed: string[] = [];
-    let skipped = 0;
-    for (const rawPath of projectPaths) {
-      if (!rawPath || typeof rawPath !== 'string') {
-        skipped += TARGET_LIST.length;
-        continue;
-      }
-      for (const target of TARGET_LIST) {
-        let destination: string;
-        try {
-          destination = this.destinationFor(rawPath, target);
-        } catch {
-          skipped++;
-          continue;
-        }
-        try {
-          if (!(await this.isManagedCopy(destination))) {
-            skipped++;
-            continue;
-          }
-          // 与 install 的 overwrite 分支同构：只删受管目录本身，再整体替换。
-          await fs.rm(destination, { recursive: true, force: true, maxRetries: 3 });
-          await fs.cp(this.sourceDir, destination, {
-            recursive: true,
-            force: false,
-            errorOnExist: true,
-          });
-          refreshed.push(destination);
-          logger.info(MODULE, `sync refreshed destination=${destination}`);
-        } catch (err) {
-          skipped++;
-          logger.warn(
-            MODULE,
-            `sync failed destination="${destination}" (kept stale copy, non-fatal)`,
-            err,
-          );
-        }
-      }
-    }
-    if (refreshed.length > 0 || skipped > 0) {
-      logger.info(MODULE, `sync done refreshed=${refreshed.length} skipped=${skipped}`);
-    }
-    return { refreshed, skipped };
-  }
-
-  /** 目标目录存在且含 SKILL.md + marina.ps1 → 认定为 Marina 受管副本。 */
-  private async isManagedCopy(destination: string): Promise<boolean> {
-    try {
-      const stat = await fs.stat(destination);
-      if (!stat.isDirectory()) return false;
-      for (const file of MANAGED_COPY_SIGNATURE_FILES) {
-        const fileStat = await fs.stat(join(destination, file));
-        if (!fileStat.isFile()) return false;
-      }
-      return true;
-    } catch {
-      return false;
-    }
   }
 
   /** Pi / Claude / Codex 的项目级安装目标，供 UI 预览与测试复用。 */
