@@ -70,14 +70,26 @@ export function normalizeMarkdownHeadingText(text: string): string {
  *
  * 同名标题刻意取文档顺序中的第一个：接口保持一个字符串参数，不把 renderer 的
  * slug/ordinal 复杂度泄漏给普通 agent 调用方。标题应尽量使用有辨识度的名称。
+ *
+ * ATX 前缀容忍（v0.3.3）：agent 从 Markdown 源码拷标题时几乎总是带着 `## ` 前缀
+ * （实测：带前缀传入永远匹配失败，症状是文件打开但不跳）。前缀不是可见文字，
+ * 剥掉后再匹配，`--heading '## 目标'` 与 `--heading '目标'` 完全等价。
+ * 两级尝试，优先精确：①原文/严格 ATX（`#{1,6}`+空白）→ ②宽松剥任意 `#{1,6}`。
+ * 宽松层兜住 agent 手打无空白的 `#顶层`；可见文字真的以 # 开头的标题（如
+ * `#hashtag 说明`）在第一层就精确命中，不会被误剥。
  */
 export function resolveMarkdownHeadingTarget(
   headings: readonly MarkdownHeadingIdentity[],
   target: string,
 ): string | null {
-  const wanted = normalizeMarkdownHeadingText(target);
-  if (!wanted) return null;
-  return (
-    headings.find((heading) => normalizeMarkdownHeadingText(heading.text) === wanted)?.id ?? null
-  );
+  const candidates = [target.replace(/^#{1,6}[\t ]+/, ''), target.replace(/^#{1,6}/, '')];
+  for (const candidate of candidates) {
+    const wanted = normalizeMarkdownHeadingText(candidate);
+    if (!wanted) continue;
+    const hit = headings.find(
+      (heading) => normalizeMarkdownHeadingText(heading.text) === wanted,
+    )?.id;
+    if (hit) return hit;
+  }
+  return null;
 }

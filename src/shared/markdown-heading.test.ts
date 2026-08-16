@@ -44,4 +44,29 @@ describe('Markdown heading identity', () => {
   it('拒绝空白目标，避免把无效请求误跳到第一个空标题', () => {
     expect(resolveMarkdownHeadingTarget([{ id: 'section', text: '' }], '   ')).toBeNull();
   });
+
+  it('容忍 ATX 源码前缀：`## 目标` 与 `目标` 解析到同一 id', () => {
+    const headings = [
+      { id: 'target', text: '目标章节' },
+      { id: 'h1', text: '顶层' },
+    ];
+
+    expect(resolveMarkdownHeadingTarget(headings, '## 目标章节')).toBe('target');
+    expect(resolveMarkdownHeadingTarget(headings, '#顶层')).toBe('h1');
+    expect(resolveMarkdownHeadingTarget(headings, '######  目标章节')).toBe('target');
+  });
+
+  it('无空白的 # 开头文字：可见文字以 # 开头的标题精确命中，其余走宽松回退', () => {
+    const headings = [
+      { id: 'hashtag', text: '#hashtag 标题' },
+      { id: 'plain', text: 'hashtag 标题' },
+    ];
+
+    // 可见文字真的以 # 开头：第一层（原文）精确命中，不误剥。
+    expect(resolveMarkdownHeadingTarget(headings, '#hashtag 标题')).toBe('hashtag');
+    // `##hashtag 标题`：严格层不中，宽松层剥掉 ## 后命中同名可见文字。
+    expect(resolveMarkdownHeadingTarget(headings, '##hashtag 标题')).toBe('plain');
+    // 只剩前缀本身(如 `--heading "##"`)两级都剥成空 → 拒绝，不误跳第一个标题。
+    expect(resolveMarkdownHeadingTarget(headings, '##')).toBeNull();
+  });
 });
