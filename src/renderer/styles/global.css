@@ -3738,15 +3738,32 @@ html[data-maximized='true'] .app-root.with-shell {
   transition: background-color 120ms ease;
 }
 
+/* github-markdown-css 等主题注入 `.markdown-body summary { display: list-item }`
+ * (优先级 0,1,1)会压掉单类选择器(0,1,0)的 flex:summary 退化为 list-item 后
+ * chevron span 保持纯 inline,而 CSS 规定 inline 元素的 transform 不生效 ——
+ * 折叠/展开的旋转信号从第一天起就从未渲染过(透明度差是唯一存活信号,
+ * 13px 图标上不可辨)。加 .markdown-body 前缀(0,2,0)稳定压回;
+ * 无 .markdown-body 祖先时退回上面的基础规则。 */
+.markdown-body .markdown-heading-summary {
+  display: flex;
+  align-items: baseline;
+}
+
 .markdown-heading-summary:hover {
   background-color: color-mix(in srgb, currentcolor 5%, transparent);
 }
+
+/* flex 容器恢复后,主题的 summary h1..h6 { display:inline-block }(0,1,2)
+ * 对 flex item 无害(自动块化);但 baseline 对齐依赖 flex 声明在先。 */
 
 .markdown-heading-summary::-webkit-details-marker {
   display: none;
 }
 
 .markdown-heading-summary-chevron {
+  /* 显式块化,不依赖父级 flex:inline 元素的 transform 不渲染,状态信号
+   * (折叠朝右/展开朝下的旋转)必须独立于祖先布局成立。 */
+  display: block;
   flex: 0 0 16px;
   width: 16px;
   color: currentcolor;
