@@ -629,6 +629,26 @@ function bootstrap(): void {
       await sessionWorkspaceManager.initialize();
       const { bookmarksSource } = await pathManager.initialize();
       logger.info('main', `bookmarks loaded from: ${bookmarksSource}`);
+
+      // v0.3.3:启动即刷新 Marina 管理的项目级 skill 副本(收藏路径下签名匹配的
+      // 旧副本自动升级,如 --heading 支持);只对已存在的受管副本就地覆盖,绝不
+      // 新建目录。软失败不打断启动。
+      void skillInstaller
+        .syncManagedSkills(
+          pathManager
+            .listBookmarks()
+            .filter((bookmark) => bookmark.kind === 'local')
+            .map((bookmark) => bookmark.path),
+        )
+        .then((result) => {
+          if (result.refreshed.length > 0) {
+            logger.info(
+              'main',
+              `managed skill copies refreshed on start: ${result.refreshed.length}`,
+            );
+          }
+        })
+        .catch((err) => logger.warn('main', 'skill sync on start failed (non-fatal)', err));
       const sshProfilesSrc = await sshProfileManager.initialize();
       logger.info('main', `ssh profiles loaded from: ${sshProfilesSrc}`);
       const remoteProfilesSrc = await remoteProfileManager.initialize();
