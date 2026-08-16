@@ -3750,7 +3750,10 @@ html[data-maximized='true'] .app-root.with-shell {
   flex: 0 0 16px;
   width: 16px;
   color: currentcolor;
-  opacity: 0.45;
+
+  /* 状态信号只有这一个:折叠=朝右、半透明;展开=朝下、近乎实色。
+   * 透明度差是主辨识通道,旋转 90° 是方向信号。 */
+  opacity: 0.4;
   transform: translateY(1px);
   transition:
     transform 120ms ease,
@@ -3763,32 +3766,7 @@ html[data-maximized='true'] .app-root.with-shell {
 
 .markdown-heading-section[open] > .markdown-heading-summary > .markdown-heading-summary-chevron {
   transform: translateY(1px) rotate(90deg);
-
-  /* 展开/折叠的常态色差:仅 90° 旋转在 13px 图标上太微弱,叠加透明度差让
-   * 两种状态在扫视下也能区分(用户反馈:看不出来是收起还是展开)。 */
-  opacity: 0.75;
-}
-
-/* 折叠行数提示:折叠态的最强 affordance——不仅说明"收起了",还说明收了多少
- * (同 GitHub collapsed lines)。展开时隐藏;user-select:none 让选中标题复制
- * 时不携带提示文字。数字由 remark 插件统计源码行数写入 data 属性,组件渲染
- * 成文字;空章节(<2 行)不生成。 */
-.markdown-heading-summary-count {
-  display: none;
-  flex: 0 0 auto;
-  margin-left: 8px;
-  opacity: 0.5;
-  font-size: 11px;
-  font-weight: 400;
-  white-space: nowrap;
-  user-select: none;
-  -webkit-user-select: none;
-}
-
-.markdown-heading-section:not([open])
-  > .markdown-heading-summary
-  > .markdown-heading-summary-count {
-  display: block;
+  opacity: 0.85;
 }
 
 .markdown-heading-summary > h1,

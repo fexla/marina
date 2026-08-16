@@ -304,16 +304,6 @@ export function MarkdownDocument({
       },
       summary: ({ node, children, ...props }) => {
         const headingId = readNodeStringProperty(node, 'data-markdown-heading-id');
-        // 折叠行数提示(见 markdown-heading-sections.ts 的行数统计)。只在
-        // 折叠态由 CSS 显示;user-select:none 保证选中标题复制时不带提示文字。
-        const collapsedCount = readNodeStringProperty(
-          node,
-          'data-markdown-heading-collapsed-count',
-        );
-        const collapsedLabel =
-          collapsedCount && Number(collapsedCount) >= 1
-            ? `${collapsedCount} ${tx('行已折叠', 'lines collapsed')}`
-            : null;
         return (
           <summary
             {...props}
@@ -373,9 +363,6 @@ export function MarkdownDocument({
               <Icon name="chevronRight" size={13} />
             </span>
             {children}
-            {collapsedLabel !== null && (
-              <span className="markdown-heading-summary-count">{collapsedLabel}</span>
-            )}
           </summary>
         );
       },
