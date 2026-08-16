@@ -102,3 +102,30 @@ describe('Shipped Windows scripts must be ASCII-only (ENC-1)', () => {
     });
   }
 });
+
+describe('show-in-marina bash dispatcher must be zero-external-tooling', () => {
+  // 背景(2026-08-16 实测):AI 工具(Claude Code 等)在 Marina 终端里以裸 Git Bash
+  // 起进程(no profile),MSYS PATH 只是转译后的 Windows PATH;Marina PTY 的 PATH
+  // 从注册表刷新,含 Git\cmd 但不含 Git\usr\bin。该环境下:
+  //   `#!/usr/bin/env bash` → "/usr/bin/env: 'bash': No such file or directory"
+  //   dirname/uname 等任何 /usr/bin 工具 → "command not found"
+  // dispatcher 在 exec 客户端之前只允许 bash 内建(直到 powershell.exe 接手)。
+  const content = readFileSync(resolve(REPO_ROOT, 'src/skills/show-in-marina/marina'), 'utf8');
+
+  it('shebang 是 #!/bin/bash(env 形式在裸 MSYS 下找不到 bash)', () => {
+    const firstLine = content.split('\n')[0];
+    expect(firstLine).toBe('#!/bin/bash');
+  });
+
+  it('不依赖 /usr/bin 外部工具(非注释行禁止 $(dirname / $(uname)', () => {
+    // 只查代码行:注释里描述约束本身时会提到这些词。
+    const codeLines = content.split('\n').filter((line) => !line.trimStart().startsWith('#'));
+    const code = codeLines.join('\n');
+    expect(code).not.toMatch(/\$\(dirname/);
+    expect(code).not.toMatch(/\$\(uname/);
+  });
+
+  it('行尾为纯 LF(CRLF 会让 shebang/变量值带上 \\r)', () => {
+    expect(content).not.toContain('\r');
+  });
+});

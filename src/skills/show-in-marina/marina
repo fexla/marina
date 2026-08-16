@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 #
 # @file marina
 # @purpose Platform-dispatching entry point for the show-in-marina skill. An
@@ -17,6 +17,26 @@
 #                      needs NO extra runtime there either (no jq/python/node).
 #   This dispatcher picks one based on what is available on the host, so a
 #   single `marina` entry point works everywhere the skill is installed.
+#
+# @zero-external-tooling (hard requirement):
+#   This script MUST run with ONLY bash builtins until it execs a client.
+#   Real-world trap (repro'd 2026-08-16): AI tools (Claude Code etc.) inside
+#   a Marina terminal spawn Git Bash RAW -- no login/profile -- so the MSYS
+#   PATH is just the translated Windows PATH. Marina's PTY PATH is refreshed
+#   from the registry, which contains Git\cmd but NOT Git\usr\bin. In that
+#   environment:
+#     - `#!/usr/bin/env bash` shebang dies: env cannot FIND bash on PATH
+#       ("/usr/bin/env: 'bash': No such file or directory").
+#     - dirname / uname / any /usr/bin tool: "command not found".
+#   Consequences for this file:
+#     - Shebang is `#!/bin/bash`: /bin is a guaranteed MSYS mount (and the
+#       standard location on macOS and mainstream Linux), and it bypasses
+#       the PATH search that `env` does. (NixOS-style hosts without /bin/bash
+#       are out of scope; they can still run `bash marina ...` explicitly.)
+#     - SCRIPT_DIR uses bash parameter expansion instead of dirname(1).
+#     - cygpath is OPTIONAL (guarded by command -v, with a POSIX-path
+#       fallback that powershell.exe accepts).
+#   Guarded by shipped-scripts-ascii.test.ts (shebang + no $(dirname/...)).
 #
 # @dispatch rule:
 #     powershell.exe available (Windows, or a Linux box with PowerShell Core
@@ -37,13 +57,29 @@
 #   src/skills/show-in-marina/SKILL.md     when to use which entry point
 
 # Locate the directory of THIS script (side by side with marina.ps1 and
-# marina.sh). $BASH_SOURCE gives the path this script was invoked from, so it
-# works regardless of the agent's cwd or PATH -- we never assume a bare
-# `marina.sh` / `marina.ps1` is on PATH. (It does NOT resolve symlinks;
-# invocation via a symlink would look for the siblings next to the symlink.
-# SKILL.md requires invoking the installed file directly, so symlink
-# invocation is not a supported path.)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# marina.sh). BUILTIN-ONLY on purpose (see @zero-external-tooling above):
+# dirname(1) is NOT available when AI tools spawn Git Bash raw inside a
+# Marina terminal. ${BASH_SOURCE[0]} gives the path this script was invoked
+# from, so it works regardless of the agent's cwd or PATH. (It does NOT
+# resolve symlinks; SKILL.md requires invoking the installed file directly,
+# so symlink invocation is not a supported path.)
+case "${BASH_SOURCE[0]}" in
+  */*)
+    SCRIPT_PARENT="${BASH_SOURCE[0]%/*}"
+    ;;
+  *\\*)
+    # Windows-style path with backslashes (e.g. `bash D:\skills\marina ping`):
+    # no forward slash, so the case above missed it. Strip after the last
+    # backslash instead; MSYS `cd` accepts Windows-style paths natively.
+    SCRIPT_PARENT="${BASH_SOURCE[0]%\\*}"
+    ;;
+  *)
+    # Invoked as a bare name (e.g. `bash marina` from the skill directory):
+    # no separator to strip, the script lives in the current directory.
+    SCRIPT_PARENT="."
+    ;;
+esac
+SCRIPT_DIR="$(cd -- "${SCRIPT_PARENT}" && pwd)"
 
 # -- Windows path: PowerShell client (marina.ps1) -------------------------
 #
@@ -81,7 +117,9 @@ if [ -n "${PS_BIN}" ]; then
   # powershell.exe. Under Git Bash / MSYS the MSYS runtime would convert a
   # POSIX path argument for us, but that is a runtime feature, not guaranteed
   # on every bash port. cygpath is the explicit, portable conversion; if it
-  # is missing we fall back to the POSIX path and rely on MSYS conversion.
+  # is missing (raw MSYS without /usr/bin on PATH -- see
+  # @zero-external-tooling) we fall back to the forward-slash path, which
+  # powershell.exe -File accepts natively.
   if command -v cygpath >/dev/null 2>&1; then
     PS1_PATH_WIN="$(cygpath -w "${PS1_PATH}")"
   else
