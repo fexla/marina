@@ -155,6 +155,19 @@ function filterGroupForestByKind(groups: GroupNode[], kind: PathKind): GroupNode
     }));
 }
 
+/**
+ * 按 groupId 在分组森林里递归找组名(外部文件拖放命中分组后,toast / 浮卡
+ * 需要展示目标组名;找不到返回 null — 组可能在拖拽途中被其他窗口解散)。
+ */
+function findGroupNameById(groups: GroupNode[], id: string): string | null {
+  for (const group of groups) {
+    if (group.id === id) return group.name;
+    const found = findGroupNameById(group.subgroups ?? [], id);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
 interface BackendDirectoryPickerIntent {
   kind: 'bookmark' | 'temporary';
   /** bookmark 从分组菜单发起时，选择结果原子地直接进入该组。 */
@@ -192,7 +205,7 @@ export function Sidebar(): JSX.Element {
   const toast = useToast();
   const modal = useModal();
   const ctxMenu = useContextMenuApi();
-  const { t } = useTranslation();
+  const { t, tx } = useTranslation();
   const [dragOver, setDragOver] = useState(false);
   const [directoryPickerIntent, setDirectoryPickerIntent] =
     useState<BackendDirectoryPickerIntent | null>(null);
@@ -550,10 +563,18 @@ export function Sidebar(): JSX.Element {
    */
   const dragHeartbeatRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // 外部文件拖放:指针当前悬停的分组 id(null = 未命中任何组,落到收藏根/未分组)。
+  // 驱动两件事:组块高亮(ext-drop-over,经 BookmarkCategory 逐层下传)与浮卡文案。
+  const [dropTargetGroupId, setDropTargetGroupId] = useState<string | null>(null);
+  // 侧栏根元素锚点,外部拖放的坐标命中检测从这里限定查询范围。
+  const sidebarRef = useRef<HTMLElement | null>(null);
+
   const clearDragOverSoon = (): void => {
     if (dragHeartbeatRef.current) clearTimeout(dragHeartbeatRef.current);
     dragHeartbeatRef.current = setTimeout(() => {
       setDragOver(false);
+      // 心跳超时 = 光标已离开侧栏/拖拽被取消,目标分组高亮一并清除。
+      setDropTargetGroupId(null);
       dragHeartbeatRef.current = null;
     }, 150);
   };
@@ -579,6 +600,37 @@ export function Sidebar(): JSX.Element {
     return false;
   };
 
+  /**
+   * 外部文件拖放:从指针坐标解析「松手时文件夹进入哪个分组」。
+   *
+   * 为什么用最小面积组块而不是行级命中:GroupBlock 根 div(.sidebar-group
+   * [data-bookmark-group-id])完整包住组头、子组容器与本组路径列表,落在
+   * 其内的任何点(含子组 H 的行 —— H 的块面积更小)语义上都属于「这个组」。
+   * 取包含指针的最小面积块 = 最深的那个组,与 resolveDropFromPoint 的
+   * depth 优先排序同一语义。折叠组的头部也在其块内 → 拖到折叠组头上 = 进该组。
+   * 未命中任何组块(未分组区/收藏外/收藏分类折叠) → null,落到收藏根,同旧版。
+   *
+   * @排查:高亮/落组不对时先看 DOM — 组块必须有 .sidebar-group 类和
+   * data-bookmark-group-id 属性(GroupBlock 根 div);本函数只认这两个标记。
+   */
+  const resolveDropGroupIdFromPoint = (x: number, y: number): string | null => {
+    const root = sidebarRef.current;
+    if (!root) return null;
+    let best: { id: string; area: number } | null = null;
+    const blocks = root.querySelectorAll<HTMLElement>(
+      '.sidebar-group[data-bookmark-group-id]',
+    );
+    for (const el of Array.from(blocks)) {
+      const r = el.getBoundingClientRect();
+      if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
+      const area = r.width * r.height;
+      if (best === null || area < best.area) {
+        best = { id: el.dataset.bookmarkGroupId!, area };
+      }
+    }
+    return best?.id ?? null;
+  };
+
   const handleDragOver = (e: DragEvent<HTMLElement>): void => {
     // 注意:这里不调 preventDefault / 不设 dropEffect — App.tsx 的 window
     // 监听器是唯一决策点(它会通过 data-drop-zone 属性识别本元素是 drop
@@ -586,13 +638,22 @@ export function Sidebar(): JSX.Element {
     // 用户裁决 3A:OS 文件夹拖入只在「客户端本机 backend + 当前电脑段」可用。
     if (!isFileDrag(e) || !dropEnabled) return;
     setDragOver(true);
+    // 悬停分组解析:高亮当前指向的组/子组,让用户在松手前就知道会进哪个组。
+    // 函数式 setState 同值短路,指针在组内移动时零重渲染。
+    const gid = resolveDropGroupIdFromPoint(e.clientX, e.clientY);
+    setDropTargetGroupId((prev) => (prev === gid ? prev : gid));
     clearDragOverSoon();
   };
 
   const handleDrop = async (e: DragEvent<HTMLElement>): Promise<void> => {
     e.preventDefault();
     e.stopPropagation();
+    // 先解析落点分组再清视觉态 — 坐标来自事件本身,与视觉态无关,但保持顺序
+    // 一致(dragover 期间维护的 dropTargetGroupId 理论上应等于这里的解析结果,
+    // 不相等时以 drop 坐标为准)。
+    const groupId = resolveDropGroupIdFromPoint(e.clientX, e.clientY);
     setDragOver(false);
+    setDropTargetGroupId(null);
     if (dragHeartbeatRef.current) {
       clearTimeout(dragHeartbeatRef.current);
       dragHeartbeatRef.current = null;
@@ -607,6 +668,9 @@ export function Sidebar(): JSX.Element {
       return;
     }
     const files = Array.from(e.dataTransfer.files);
+    // 失败逐个收集,一次性 toast — 一次拖多个文件夹时不会弹一串错误。
+    const failures: string[] = [];
+    let added = 0;
     for (const file of files) {
       // file.path 是 Electron 提供的扩展属性 (浏览器标准 File API 没有),
       // V1 我们假定 sandbox: false + nodeIntegration: false + contextIsolation: true
@@ -616,15 +680,41 @@ export function Sidebar(): JSX.Element {
       try {
         await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_ADD, {
           path,
+          // 命中分组时原子地直接进组(后端 addBookmark 已支持,同一事务,
+          // 不会出现先闪到未分组再 reorder 的半完成状态)。
+          ...(groupId ? { groupId } : {}),
         });
+        added++;
       } catch (err) {
         console.error('[Sidebar] drop add-bookmark failed', err);
+        failures.push(
+          `${lastSegmentOf(path)}: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
+    }
+    if (failures.length > 0) {
+      toast.push({
+        kind: 'error',
+        // 典型失败:BookmarkAlreadyExists(已收藏) / GroupNotFound(拖拽途中组被
+        // 其他窗口解散) / PathNotDirectory(拖的是文件不是文件夹)。
+        message: `拖入收藏失败 — ${failures.join('；')}`,
+      });
+      return;
+    }
+    // 进组成功时 toast 报组名:折叠组的落点不可见,必须给用户确认反馈。
+    // 落到根(未命中组)保持旧行为静默 — 路径条目直接出现在收藏里,可见即可。
+    if (groupId && added > 0) {
+      const groupName = findGroupNameById(groupsFiltered, groupId);
+      toast.push({
+        kind: 'success',
+        message: groupName !== null ? `已收藏到「${groupName}」` : '已收藏到指定分组',
+      });
     }
   };
 
   return (
     <aside
+      ref={sidebarRef}
       className={`sidebar${dragOver ? ' drag-over' : ''}`}
       data-drop-zone={dropEnabled ? 'files' : undefined}
       style={{ flexBasis: `${sidebarWidth}px` }}
@@ -642,7 +732,16 @@ export function Sidebar(): JSX.Element {
           视觉锚,完全不依赖边框渲染。pointer-events:none + aria-hidden 不挡 drop。 */}
       <div className="sidebar-drop-hint" aria-hidden="true">
         <span className="sidebar-drop-hint-icon">📁</span>
-        <span className="sidebar-drop-hint-label">{t('sidebar.dropHint')}</span>
+        <span className="sidebar-drop-hint-label">
+          {dropTargetGroupId
+            ? // 命中分组时文案升级为具体组名,与组块高亮互相印证;
+              // 找不到组名(拖拽途中被解散)退回通用文案,drop 时会报错 toast。
+              tx(
+                `松开添加到「${findGroupNameById(groupsFiltered, dropTargetGroupId) ?? '指定分组'}」`,
+                `Drop into “${findGroupNameById(groupsFiltered, dropTargetGroupId) ?? 'group'}”`,
+              )
+            : t('sidebar.dropHint')}
+        </span>
       </div>
       {showSegmented && (
         <div
@@ -723,6 +822,8 @@ export function Sidebar(): JSX.Element {
           }
           onRequestAddSubgroup={(parentId) => void addGroupPrompt(parentId)}
           onRequestAddFolder={(groupId) => void handleAddBookmark(undefined, groupId)}
+          // 外部文件拖放悬停命中的组 id → 组块高亮(见 GroupBlock ext-drop-over)。
+          externalDropTargetGroupId={dropTargetGroupId}
           {...(effectiveSegment === 'remote'
             ? { addFolderDisabledReason: 'SSH 远端目录浏览尚不可用；不会退化为手输路径' }
             : {})}
@@ -1315,6 +1416,7 @@ function BookmarkGroupList({
   onRequestAddFolder,
   addFolderDisabledReason,
   disabled,
+  externalDropTargetGroupId,
 }: {
   groups: GroupNode[];
   parentId: string | null;
@@ -1332,6 +1434,8 @@ function BookmarkGroupList({
   onRequestAddFolder: (groupId: string) => void;
   addFolderDisabledReason?: string;
   disabled?: boolean;
+  /** 外部文件(Explorer)拖放悬停命中的组 id → 命中组块高亮。仅视觉,不参与 DnD。 */
+  externalDropTargetGroupId?: string | null;
 }): JSX.Element {
   const containerId =
     parentId === null ? BOOKMARK_ROOT_GROUP_CONTAINER : bookmarkSubgroupContainerId(parentId);
@@ -1393,6 +1497,9 @@ function BookmarkGroupList({
               renderPath={renderPath}
               onRequestAddSubgroup={onRequestAddSubgroup}
               onRequestAddFolder={onRequestAddFolder}
+              {...(externalDropTargetGroupId !== undefined
+                ? { externalDropTargetGroupId }
+                : {})}
               {...(addFolderDisabledReason ? { addFolderDisabledReason } : {})}
             />
           );
@@ -1421,6 +1528,7 @@ function GroupBlock({
   onRequestAddSubgroup,
   onRequestAddFolder,
   addFolderDisabledReason,
+  externalDropTargetGroupId,
 }: {
   group: GroupNode;
   depth: number;
@@ -1440,6 +1548,8 @@ function GroupBlock({
   onRequestAddSubgroup: (parentId: string) => void;
   onRequestAddFolder: (groupId: string) => void;
   addFolderDisabledReason?: string;
+  /** 外部文件(Explorer)拖放悬停命中本组时高亮整块;Sidebar 侧解析,这里只比 id。 */
+  externalDropTargetGroupId?: string | null;
 }): JSX.Element {
   const groupId = GROUP_ID_PREFIX + group.id;
   const isCollapsed = collapsedSet.has(group.id);
@@ -1511,7 +1621,10 @@ function GroupBlock({
   const className =
     'sidebar-group bookmark-drop-zone' +
     (sortable.isDragging ? ' dragging' : '') +
-    (dropTarget.isOver ? ' drop-over' : '');
+    (dropTarget.isOver ? ' drop-over' : '') +
+    // 外部文件拖放高亮与 dnd-kit 的 drop-over 同一视觉语言;互斥场景
+    // (dnd-kit 只在内部拖拽激活)不会同时出现,叠加也无害。
+    (externalDropTargetGroupId === group.id ? ' ext-drop-over' : '');
 
   return (
     <div
@@ -1548,6 +1661,9 @@ function GroupBlock({
             onRequestAddSubgroup={onRequestAddSubgroup}
             onRequestAddFolder={onRequestAddFolder}
             disabled={groupDropForbidden}
+            {...(externalDropTargetGroupId !== undefined
+              ? { externalDropTargetGroupId }
+              : {})}
             {...(addFolderDisabledReason ? { addFolderDisabledReason } : {})}
           />
           <BookmarkPathList
@@ -1588,6 +1704,7 @@ function BookmarkCategory({
   actionTitle,
   onAction,
   displayNames,
+  externalDropTargetGroupId,
 }: {
   /** 当前 local/SSH segment 可见路径（只用于渲染和碰撞）。 */
   paths: PathNode[];
@@ -1610,6 +1727,8 @@ function BookmarkCategory({
   /** 事件带出,供调用方定位弹层锚点(如远程段选服务器菜单) */
   onAction?: (e: React.MouseEvent<HTMLButtonElement>) => void;
   displayNames: Map<string, string>;
+  /** 外部文件(Explorer)拖放时指针悬停命中的组 id;null = 未命中。仅用于高亮。 */
+  externalDropTargetGroupId: string | null;
 }): JSX.Element {
   const { t } = useTranslation();
   const toast = useToast();
@@ -2237,6 +2356,7 @@ function BookmarkCategory({
               renderPath={renderPath}
               onRequestAddSubgroup={onRequestAddSubgroup}
               onRequestAddFolder={onRequestAddFolder}
+              externalDropTargetGroupId={externalDropTargetGroupId}
               {...(addFolderDisabledReason ? { addFolderDisabledReason } : {})}
             />
             {dragState?.indicator ? <DropIndicator geom={dragState.indicator} /> : null}

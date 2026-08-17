@@ -1556,6 +1556,16 @@ html[data-maximized='true'] .app-root.with-shell {
   background: color-mix(in srgb, var(--color-accent-special, #f0f) 14%, transparent);
 }
 
+/* 外部文件(Explorer)拖放时悬停命中的组块高亮。与上面 dnd-kit 的 drop-over
+   同一视觉语言(accent 洗涤),另加 1px 描边 —— 此时整个侧栏已处于 16% 洗涤态,
+   只靠背景区分度不够,描边让「会进这个组」一目了然。不改高度,不引起回流。 */
+.sidebar-group.ext-drop-over {
+  background: color-mix(in srgb, var(--color-accent-special, #f0f) 14%, transparent);
+  outline: 1px solid var(--color-accent-special, #c4a7e7);
+  outline-offset: -1px;
+  border-radius: 4px;
+}
+
 /* 列表容器命中高亮（可选的轻微背景，不改变高度）。 */
 .sidebar-paths.drop-over,
 .bookmark-group-container.drop-over {
