@@ -5,6 +5,13 @@ description: Use Marina's terminal-side file panel to show the user Markdown, te
 
 # Show files in Marina
 
+> **在你写 Markdown 文档之前，先读本目录的 `MARKDOWN-CAPABILITIES.md`** —— 那是面板
+> 渲染 Markdown 的**完整能力清单**（标准格式）：可点击的本地文件链接/网页链接/页内锚点、
+> 可一键运行的代码块（bash/powershell/cmd）、` ```gallery ` 图片画廊、本地图片、目录导航，
+> 以及硬性约束（只读查看器、>2MB 截断、**原始 HTML 被禁用**等）。按它写才能让文档在
+> 面板里真正可交互，而不是纯文本。下文只摘最关键的两条（链接、可运行代码块）；
+> gallery / 图片 / sudo / 文件类型见那份文档。
+
 Place a result in the active terminal's Marina file panel instead of pasting a
 long document into chat. This skill ships a small CLI that handles env
 vars, HTTP, UTF-8 encoding, and Bearer auth for you. The same `marina`
