@@ -1,13 +1,29 @@
 # TIT-1 · OSC 标题 shell 启动垃圾覆盖 displayName
 
-**状态**:workaround 已 ship(beta.2),根因待续查
+**状态**:**已由 ADR-032 根治**(2026-08-19,标题来源分层 TitleState/resolveTitle)。本文档保留作为历史记录与启发式护栏说明。
 **优先级**:P1(影响 daily driver 第一印象,已用启发式过滤兜底)
 **首次报告**:2026-05-14,用户在 beta.1 安装后实测
 **对应 commit**:`7264004 fix(session): TIT-1 过滤 shell 启动期的"裸路径"OSC 标题`
 
 ---
 
-## 现象
+## 结案说明(ADR-032,2026-08-19)
+
+真正的根因不是「缺一道过滤屏障」,而是 **displayName 没有
+权威模型**:OSC 0 单一通道里混着前台程序与 shell 及其子进程
+两类发声者(pi 的 bash 工具在 Windows 上不 detached,子进程共享
+ConPTY console,SetConsoleTitle 被翻成 OSC 0),接收端只能猜内容。
+"Windows PowerShell" 是友好名,任何内容启发式都列不全。
+
+ADR-032 把 displayName 改成 TitleState 五槽派生值(default <
+shell < program < agent < user),TIT-1 启发式从「唯一防线」降级为
+分类器第一层(命中 → 丢弃,不进槽)。36 个回归 case 继续作为
+护栏保留,断言语义不变。详见 软件定义书.md ADR-032 与
+`src/main/title-resolver.ts`。
+
+---
+
+## 现象(历史记录)
 
 新建 Shell 模板的 session 后,tab / sidebar 的 displayName 显示成 shell 自己的 exe 路径或 Git Bash 的默认 PS1 前缀,不是预期的 `"PowerShell"` / `"Bash"` / `"cmd"`:
 
