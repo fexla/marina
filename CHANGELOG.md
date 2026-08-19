@@ -7,6 +7,14 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+## [0.3.3-dev.7] — 2026-08-12
+
+> 修复 pi 压缩上下文时侧边栏误显示闲置(dev.6 是诊断构建,合并升格)。
+
+### 修复
+
+- **pi 压缩上下文期间侧边栏不再误显示闲置。** 根因:pi-marina-bridge 只监听 `agent_start`/`agent_settled`,漏了 `session_before_compact`/`session_compact`。threshold 压缩(上下文累积超阈)常发生在 `agent_settled` 之后 —— 压缩全程 bridge 不发任何事件 → Marina 停在 settled(idle),与用户体感「还在工作」矛盾。bridge 现监听 `session_before_compact` → 发 `agent_working`(压缩=工作);`session_compact` → `willRetry=false` 发 `agent_settled`(压缩完无后续),`willRetry=true`(overflow retry)保持 working 等随后的 `agent_start`。
+
 ## [0.3.3-dev.5] — 2026-08-11
 
 > 0.3.3 系列第 5 个 dev 构建。汇总 `0.3.3-dev.3` 之后的远程命令、终端链接、Git 面板、pi 集成与架构稳定性修复,供本地/内测验证。(dev.4 号未实际构建,合并升格为 dev.5)

@@ -17,6 +17,8 @@
  *   pi session_shutdown{reason}     → event=session_shutdown (reason=quit → 清 pi 身份)
  *   pi agent_start                   → event=agent_working   (清"未查看"标记)
  *   pi agent_settled                 → event=agent_settled   (设"未查看"标记)
+ *   pi session_before_compact        → event=agent_working   (压缩=工作,覆盖可能的 settled)
+ *   pi session_compact {willRetry}   → event=agent_settled   (仅 willRetry=false;overflow retry 保持 working)
  *   pi session_info_changed {name}   → event=name_changed    (更新终端显示名)
  *
  * @不在这里做的事：
@@ -176,6 +178,26 @@ export default function (pi: ExtensionAPI): void {
   pi.on('agent_settled', async (_event, ctx) => {
     const piSessionId = ctx.sessionManager.getSessionId();
     if (!piSessionId) return;
+    await postEvent(env, piSessionId, 'agent_settled');
+  });
+
+  // session_before_compact：pi 开始压缩上下文（threshold/overflow/manual）→ 通知
+  // Marina "working"。压缩是实打实的工作，且 threshold 压缩常发生在 agent_settled
+  // 之后——若不监听，压缩全程 Marina 停在 settled(idle)，与用户体感「还在工作」矛盾。
+  // 复用 agent_working 信号：Marina 只需 working/settled 二态，不需区分压缩。
+  pi.on('session_before_compact', async (_event, ctx) => {
+    const piSessionId = ctx.sessionManager.getSessionId();
+    if (!piSessionId) return;
+    await postEvent(env, piSessionId, 'agent_working');
+  });
+
+  // session_compact：压缩完成。overflow 压缩 willRetry=true（被中断的 turn 要重试）
+  // → 不发，保持 working，等随后的 agent_start(retry)；threshold/manual willRetry=false
+  // （无后续工作）→ settled，压缩完若没新工作则 idle。
+  pi.on('session_compact', async (event, ctx) => {
+    const piSessionId = ctx.sessionManager.getSessionId();
+    if (!piSessionId) return;
+    if (event.willRetry) return; // overflow 会 retry(agent_start),保持 working
     await postEvent(env, piSessionId, 'agent_settled');
   });
 
