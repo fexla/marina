@@ -18,7 +18,9 @@ if test -f "$__marina_user_xdg/fish/config.fish"
     source "$__marina_user_xdg/fish/config.fish"
 end
 
-# 注入 OSC 1337 cwd hook
+# 注入 OSC 1337 cwd hook(ADR-032:每次 prompt 同时发 OSC 133 D+A,
+# D 供 Marina 释放 program 标题槽;不发 C,避免被 pi 的分区标记污染)
 function __marina_emit_cwd --on-event fish_prompt
+    printf '\033]133;D\007\033]133;A\007'
     printf '\033]1337;CurrentDir=%s\007' (pwd)
 end

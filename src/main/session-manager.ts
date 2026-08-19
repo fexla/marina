@@ -63,6 +63,14 @@ import { ByteStreamStateGetter } from './state-getters/byte-stream-state-getter'
 import type { AgentStateGetter } from './state-getters/agent-state-getter';
 import type { TerminalStateGetter } from './state-getters/terminal-state-getter';
 import type { TemplatesManager } from './templates-manager';
+import {
+  classifyOscTitle,
+  createTitleState,
+  resolveTitle,
+  sanitizeTitle,
+  type TitleSourceKind,
+  type TitleState,
+} from './title-resolver';
 import type { SettingsManager } from './settings-manager';
 import type { AIClient } from './ai-client';
 // M2:coordinator 类型(仅类型导入,不产生运行时循环依赖 —— coordinator 反过来
@@ -451,11 +459,12 @@ interface ManagedSession {
    */
   recentKeys: KeyEvent[];
   /**
-   * 用户是否已手动改过 displayName。一旦为 true,后续 OSC 0/1/2 标题事件
-   * 不再覆盖 displayName — 手动改名优先级永久高于 shell 标题(Claude Code、
-   * Windows Terminal hostname 等会持续刷标题,不锁住会冲掉用户的命名)。
+   * 标题来源插槽(ADR-032):displayName = resolveTitle(titleState) 的**派生值**,
+   * 唯一写入点是 declareTitle。旧 manuallyRenamed 布尔的语义被
+   * `titleState.user !== null` 取代(M1-C rename / STM-3 clear 行为不变)。
+   * 内存态,不持久化(session 不跨重启,ADR-008)。
    */
-  manuallyRenamed: boolean;
+  titleState: TitleState;
   /**
    * PER-2 / F1:IPC 聚合缓冲 — 8ms 窗口内积累的 sessionOutput,timer 到点
    * 一次性 emit。降低高速 PTY 输出场景下 IPC 消息数,缓解 renderer 反压。
@@ -840,6 +849,9 @@ export class SessionManager extends EventEmitter {
     if (!managed) return;
     managed.stateGetter = managed.byteStreamGetter;
     this.applyState(managed);
+    // ADR-032:agent 退出 → 释放 agent 标题槽,显示回落到 program/shell/default。
+    // pi 没装 bridge 时 agent 槽本来就是 null,这里 no-op。
+    this.declareTitle(managed, 'agent', null);
   }
 
   /**
@@ -872,14 +884,14 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  /** @implements PiSessionHooks.onPiName:pi 对话名 → 终端显示名(受 manuallyRenamed 保护)。 */
+  /** @implements PiSessionHooks.onPiName:pi 对话名 → agent 槽(ADR-032)。
+   * 与裸 OSC(program 槽)分开:bridge 明确声明比字节流猜的更可信。
+   * name 为空/未提供不动(不强制清空;agent 槽在 unbindAgent 时释放)。 */
   onPiName(sessionId: string, name: string | null): void {
     const managed = this.sessions.get(sessionId);
-    if (!managed || managed.manuallyRenamed) return;
-    // name 为空/未提供不动(不强制清空)。
-    if (typeof name === 'string' && name.trim() && managed.info.displayName !== name) {
-      managed.info.displayName = name;
-      this.emitStateChanged(managed, { displayName: name });
+    if (!managed) return;
+    if (typeof name === 'string' && name.trim()) {
+      this.declareTitle(managed, 'agent', name);
     }
   }
 
@@ -1206,7 +1218,9 @@ export class SessionManager extends EventEmitter {
       lastEnterAt: 0,
       lastInputAt: 0,
       recentKeys: [],
-      manuallyRenamed: false,
+      titleState: createTitleState(
+        isSsh ? `${input.sshProfile!.name}:${pathRef.path}` : pickDisplayName(template, displayShell),
+      ),
       pendingEmit: null,
       pendingEmitTimer: null,
       // BETA-006 v2 + CURSOR-1:headless 镜像,scrollback 行数对齐 renderer
@@ -1280,9 +1294,9 @@ export class SessionManager extends EventEmitter {
    * M1-C:重命名 session 的 displayName。空字符串拒绝。幂等(同名无副作用)。
    * 不存在的 sessionId 静默(与 sendInput / resize 一致的"竞态时静默"语义)。
    *
-   * 调用后 manuallyRenamed 永久置 true,后续 OSC 0/1/2 标题事件不再覆盖
-   * 此 session 的 displayName(见 handleOscTitle)。即使新名 = 旧名也置位
-   * — 用户明确说"我要这个名字"就是接管命名权。
+   * ADR-032:写入 user 槽(优先级 40,永久最高)— 即使用户说的新名 = 旧名也置位
+   * — 用户明确说"我要这个名字"就是接管命名权。旧 manuallyRenamed 布尔的
+   * 语义由 `titleState.user !== null` 承接。
    */
   renameSession(sessionId: string, newDisplayName: string): void {
     const managed = this.sessions.get(sessionId);
@@ -1294,22 +1308,23 @@ export class SessionManager extends EventEmitter {
         `[SessionManager] rename: 新名不能为空 (sessionId="${sessionId}")`,
       );
     }
-    managed.manuallyRenamed = true;
-    if (managed.info.displayName === trimmed) return;
-    managed.info.displayName = trimmed;
-    this.emitStateChanged(managed, { displayName: trimmed });
+    this.declareTitle(managed, 'user', trimmed);
   }
 
   /**
-   * STM-3:清除 manuallyRenamed 标记,让 OSC 0/1/2 标题事件重新覆盖
-   * displayName。用户主动放弃手动命名以恢复 Claude Code 等持续刷新的
-   * 自动标题。幂等(标记本来就 false 时 no-op)。
+   * STM-3:清除手动命名(user 槽置 null),让自动标题(bridged agent /
+   * program / shell)重新生效。用户主动放弃手动命名以恢复 Claude Code 等
+   * 持续刷新的自动标题。幂等(槽本来就 null 时 no-op)。
    * 不存在的 sessionId 静默(与 sendInput / resize 一致)。
+   *
+   * 注意(ADR-032 后的微小行为变化):displayName 现在是派生值,清除后
+   * **立即**回落到现存次高槽(而不是等下一条标题事件)。这更符合
+   * "交回自动命名"的语义 — 自动侧的最后已知值本来就在槽里。
    */
   clearManualRename(sessionId: string): void {
     const managed = this.sessions.get(sessionId);
     if (!managed) return;
-    managed.manuallyRenamed = false;
+    this.declareTitle(managed, 'user', null);
   }
 
   /**
@@ -1867,6 +1882,14 @@ export class SessionManager extends EventEmitter {
         this.handleOsc1337Cwd(managed, ev.value);
       } else if (ev.kind === 'title') {
         this.handleOscTitle(managed, ev.value);
+      } else if (ev.kind === 'prompt') {
+        // ADR-032:只认 D(命令结束 = 前台程序确定退出)→ 释放 program 槽。
+        // A/B/C 有意忽略:pi 自己会往输出里写 133;A/B/C 作为消息分区标记
+        // (pi dist assistant-message.js),拿它们驱动状态会被 pi 污染;
+        // pi 从不发 D。shell hook 只在新 prompt 渲染时发 D。
+        if (ev.phase === 'D') {
+          this.declareTitle(managed, 'program', null);
+        }
       }
       // unknown 事件目前忽略 (V1.1 加 RemoteHost 等)
     }
@@ -2282,31 +2305,39 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * 处理 OSC 0/1/2 标题事件 — 用 shell / Claude Code 报告的标题更新
-   * session.displayName。
+   * 处理 OSC 0/1/2 标题事件(ADR-032:声明来源,裁决交给 resolveTitle)。
    *
    * 规则:
-   * - manuallyRenamed=true → 跳过,用户手动改名优先(见 renameSession)
-   * - 清掉控制字符(\r \n \t 等):标题如果含换行会把 sidebar 排版打乱;
-   *   shell 实践里也极少把控制字符放进标题(Claude Code 用空格连接段)
-   * - 长度上限 100:与 path-manager 收藏改名上限一致;过长 sidebar 显示不下,
-   *   也防恶意 OSC 注入超长字符串
-   * - 去前后空白后为空 → 忽略(有的 shell 启动期会发空标题清屏,不动当前名)
-   * - 与现有 displayName 相同 → no-op,不发广播
-   * - TIT-1:整段就是 shell exe 路径 / MINGW prefix 的"启动垃圾"标题 →
-   *   忽略,不让 powershell.exe / cmd.exe / Git Bash 把 sidebar 里的友好名
-   *   ("PowerShell" / "Bash")覆盖成 "C:\Windows\System32\cmd.exe"。
-   *   合法 CLI 工具标题(vim / claude / make ...)前后有描述性内容,
-   *   不会被 looksLikeShellStartupGarbage 误判,详见该函数注释。
+   * - sanitizeTitle:控制字符/RTL 重写替空格、折叠、截 100(防排版打乱
+   *   与超长注入);空串忽略
+   * - classifyOscTitle 归槽:TIT-1 启动垃圾(裸路径/exe)→ 丢弃;shell
+   *   自报名(「Windows PowerShell」等)→ shell 槽;其余 → program 槽
+   * - 归槽后由 declareTitle 统一裁决显示值 — program(20) > shell(10),
+   *   所以 pi 的标题不会再被 shell 子进程的 SetConsoleTitle 抢走
+   *   (ConPTY 把它翻成 OSC 0 发进来,落 shell 槽,压不过 program)
    */
   private handleOscTitle(managed: ManagedSession, rawTitle: string): void {
-    if (managed.manuallyRenamed) return;
     const cleaned = sanitizeTitle(rawTitle);
     if (!cleaned) return;
-    if (looksLikeShellStartupGarbage(cleaned)) return;
-    if (cleaned === managed.info.displayName) return;
-    managed.info.displayName = cleaned;
-    this.emitStateChanged(managed, { displayName: cleaned });
+    const source = classifyOscTitle(cleaned);
+    if (!source) return; // TIT-1 启动垃圾:丢弃,不进任何槽
+    this.declareTitle(managed, source, cleaned);
+  }
+
+  /**
+   * ADR-032:displayName 的**唯一**写入点。写入来源槽 → resolveTitle 派生
+   * 显示值 → 与现值相同则 no-op(不发广播)。
+   *
+   * 所有调用方只声明「谁 + 值」:renameSession(user)、onPiName(unbindAgent
+   * 释放)、handleOscTitle(classifyOscTitle 归槽)、OSC 133 D(program 释放)。
+   * 优先级/回退逻辑集中在 title-resolver.ts,这里不做任何内容判断。
+   */
+  private declareTitle(managed: ManagedSession, source: TitleSourceKind, value: string | null): void {
+    managed.titleState[source] = value;
+    const next = resolveTitle(managed.titleState);
+    if (next === managed.info.displayName) return; // 幂等:显示值未变不广播
+    managed.info.displayName = next;
+    this.emitStateChanged(managed, { displayName: next });
   }
 
   private startCwdPolling(managed: ManagedSession): void {
@@ -2800,90 +2831,6 @@ if [ -n "$target" ]; then
 fi
 new_session
 `;
-
-/**
- * OSC 标题"启动垃圾"识别(TIT-1):
- *
- * ⚠️ 这是一个 workaround,不是根治。详见
- * `docs/issues/tit-1-osc-title-shell-startup-garbage.md` —— 有用户实测体感
- * 与代码考古结论之间未对齐的缺口,某处可能有过一道屏障后来失效了,真正
- * 根因尚未定位。下次回归此现象时先读那份 issue 文档。
- *
- * Windows 上 powershell.exe / cmd.exe 启动时调 Win32 SetConsoleTitle()
- * 把窗口标题设成自己的 exe 路径,ConPTY 把这次调用翻译成 OSC 0 序列发给
- * xterm 消费者;Git Bash 默认 PS1 又在每次 prompt 时主动发
- * `\e]0;MINGW64:<cwd>\a`。这些"shell 启动 / 内置 prompt"产出的标题对
- * Marina 用户而言全是噪声 — 他们希望 tab 显示的是 "PowerShell" / "Bash"
- * 或自己跑的工具名(vim / claude / node ...),不是 shell 自己的 exe 路径
- * 或 cwd 重复。
- *
- * 但绝不能误杀 CLI 工具的合法标题。CLI 工具(vim / claude / make ...)
- * 的标题特征是 **路径只是更长描述的一部分** —— "vim /etc/hosts" /
- * "✻ Claude · ~/p (working…)" / "make -j4"。所以判别规则是:
- *
- *   整段标题 *本身就是* 一个裸路径 → 启动垃圾 → 拒
- *   标题里 *包含* 路径但前后有别的内容 → 合法 → 放行
- *
- * 用 ^...$ 完整匹配实现这一区分。
- */
-export function looksLikeShellStartupGarbage(title: string): boolean {
-  // 关键判别:整段标题 *以路径前缀起手* 即视为垃圾 —— 不要求剩余部分无
-  // 空格,因为 "C:\Program Files\..." 这种合法 Windows 路径含空格。
-  // 真实 CLI 工具的标题永远是 verb-leading("vim C:\foo" / "nano /etc/hosts"
-  // / "✻ Claude ..."),不会以裸盘符或裸 "/" 起手,所以 ^ 锚就够区分。
-
-  // 1. Windows 盘符路径起手 — "C:\..." / "C:/..." / "D:\Program Files\..."
-  if (/^[A-Za-z]:[\\/]/.test(title)) return true;
-  // 2. UNC 路径起手 — "\\server\share\..."
-  if (/^\\\\/.test(title)) return true;
-  // 3. Unix 绝对路径起手 — "/usr/bin/bash"
-  if (title.startsWith('/')) return true;
-  // 4. Git Bash / MSYS2 默认 PS1 前缀 — 每次 prompt 重复发
-  //    "MINGW64:<cwd>" / "MINGW32:..." / "MSYS:..." / "MSYS2:..."
-  if (/^(MINGW(32|64|ARM)?|MSYS\d?):/i.test(title)) return true;
-  // 5. 裸 exe 文件名(无空格,以 .exe 结尾)— "cmd.exe" / "pwsh.exe"
-  //    "Visual Studio Code.exe" 等空格 exe 名作为 *启动期* 标题极其罕见,
-  //    放过比误杀稳。
-  if (/^\S+\.exe$/i.test(title)) return true;
-  return false;
-}
-
-/**
- * OSC 0/1/2 标题规范化:
- *   - 控制字符(C0 + DEL)替成空格
- *   - OSC-6:Unicode 双向重写字符也替成空格(防 RTL override 视觉欺骗)
- *   - 合并连续空格、trim、截到 100 字符
- *
- * 空串返回 ''(调用方据此跳过)。
- */
-const TITLE_MAX_LEN = 100;
-function sanitizeTitle(raw: string): string {
-  let s = '';
-  for (const ch of raw) {
-    const code = ch.codePointAt(0)!;
-    if (code < 0x20 || code === 0x7f) {
-      s += ' ';
-      continue;
-    }
-    // OSC-6:Unicode 双向重写字符 — 防止恶意 OSC 通过 RTL override 让
-    // tab 标题视觉上反转("safe.txt exe.live" 看上去像 "evil.exe safe.txt"
-    // 反向版)。U+200B / U+200E / U+200F / U+202A-202E / U+2066-2069。
-    if (
-      code === 0x200b ||
-      code === 0x200e ||
-      code === 0x200f ||
-      (code >= 0x202a && code <= 0x202e) ||
-      (code >= 0x2066 && code <= 0x2069)
-    ) {
-      s += ' ';
-      continue;
-    }
-    s += ch;
-  }
-  s = s.replace(/\s+/g, ' ').trim();
-  if (s.length > TITLE_MAX_LEN) s = s.slice(0, TITLE_MAX_LEN);
-  return s;
-}
 
 /**
  * 把 OSC 1337 报告的 cwd 规范化:trim、~ 展开、PSDrive 前缀剥离、转绝对。

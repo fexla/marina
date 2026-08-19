@@ -49,8 +49,21 @@ if (Test-Path $PROFILE) {
 # Wrap the prompt function. Save the original first so we can call it,
 # otherwise we would recurse infinitely if the user's profile already
 # defined a prompt.
+#
+# ADR-032: in addition to the OSC 1337 cwd report, every prompt render also
+# emits OSC 133 D ("command finished"; the shell only renders a new prompt
+# after the previous foreground command exited for good). Marina's main
+# process uses D -- and only D -- to release the "program" title slot, so
+# the tab falls back to the shell/default name once the foreground program
+# (pi, vim, ...) is gone. We deliberately do NOT emit C here: pi itself
+# writes 133;A/B/C into its output as message-zone markers, so any state
+# driven by A/B/C would be poisoned by pi. D is emitted by shells only.
 $script:_marinaOriginalPrompt = $function:prompt
 function prompt {
+    # OSC 133 D then A: previous command finished, new prompt starts.
+    # 133;D may carry an exit code param (VS Code form); Marina accepts both.
+    $oscMark = "$([char]27)]133;D$([char]7)$([char]27)]133;A$([char]7)"
+    [Console]::Write($oscMark)
     $cwd = (Get-Location).Path
     # OSC 1337: \x1b ] 1337 ; CurrentDir=<cwd> \x07
     $osc = "$([char]27)]1337;CurrentDir=$cwd$([char]7)"

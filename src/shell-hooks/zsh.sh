@@ -12,8 +12,10 @@ if [[ -f "$HOME/.zshrc" ]]; then
     source "$HOME/.zshrc"
 fi
 
-# 注入 OSC 1337 cwd hook
+# 注入 OSC 1337 cwd hook(ADR-032:每次 prompt 同时发 OSC 133 D+A,
+# D 供 Marina 释放 program 标题槽;不发 C,避免被 pi 的分区标记污染)
 __marina_emit_cwd() {
+    printf '\033]133;D\007\033]133;A\007'
     printf '\033]1337;CurrentDir=%s\007' "$PWD"
 }
 typeset -ag precmd_functions

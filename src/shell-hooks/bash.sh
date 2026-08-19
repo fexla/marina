@@ -21,7 +21,11 @@ if [ -f "$HOME/.bashrc" ]; then
 fi
 
 # 注入 OSC 1337 cwd hook (仅当不重复时)
+# ADR-032:每次 prompt 渲染同时发 OSC 133 D+A(上一条命令结束、新 prompt
+# 开始)— Marina 用 D(且只用 D)释放 program 标题槽。不发 C:pi 自己会往
+# 输出里写 133;A/B/C 作消息分区标记,C 驱动的状态会被 pi 污染。
 __marina_emit_cwd() {
+    printf '\033]133;D\007\033]133;A\007'
     local cwd="$PWD"
     if command -v cygpath >/dev/null 2>&1; then
         # Git Bash / MSYS2 / Cygwin:转 Windows 风格

@@ -308,7 +308,11 @@ export class WindowsAdapter implements PlatformAdapter {
         // cmd.exe 没有 prompt function,用 PROMPT 环境变量内嵌 OSC 1337。
         // ESC \\ (即 1B 5C) 是 ST (String Terminator),OSC 序列的标准结尾;
         // BEL (07) 也行但部分 Windows 解析器更喜欢 ST。
-        const PROMPT = '$E]1337;CurrentDir=$P$E\\$P$G ';
+        //
+        // ADR-032:PROMPT 里同样内嵌 OSC 133 D+A(每次 prompt 渲染 = 上一条
+        // 命令结束),Marina 用 D 释放 program 标题槽。cmd 的 PROMPT 变量
+        // 没有 BEL 转义码,只能用 ST($E\\)结尾 — parser 两种终止符都认。
+        const PROMPT = '$E]133;D$E\\$E]133;A$E\\$E]1337;CurrentDir=$P$E\\$P$G ';
         const env: Record<string, string> = {
           PROMPT,
           EASYTERM_HOOK: hookFilePath,

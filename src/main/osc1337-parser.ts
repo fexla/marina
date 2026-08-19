@@ -4,6 +4,8 @@
  *   - OSC 1337 (iTerm2):CurrentDir → cwd 事件
  *   - OSC 0 / 1 / 2 (XTerm 标题):set icon/window title → title 事件
  *     (Claude Code、Windows Terminal hostname 提示等都走这套)
+ *   - OSC 133 (FinalTerm/VS Code shell 集成):prompt 生命周期标记 →
+ *     prompt 事件(ADR-032:只用于 D=命令结束 → 释放 program 标题槽)
  *   残留字节透明转发给 owner renderer。
  *
  * @关键设计:
@@ -12,13 +14,14 @@
  * - **不损耗任何字节流**:已识别 OSC 序列从输出中剥离,但所有非 OSC 字节
  *   1:1 输出。这样 xterm.js 不会渲染出 OSC 序列的乱码字符,同时也不丢失
  *   实际的 ANSI 颜色 / 控制序列
- * - 当前识别 OSC 0/1/2/1337;其余 OSC (例如 OSC 8 超链接) 整段透传给 xterm
+ * - 当前识别 OSC 0/1/2/133/1337;其余 OSC (例如 OSC 8 超链接) 整段透传给
+ *   xterm(xterm.js 对未消费的 OSC 自己忽略,不渲染)
  * - 序列终止符接受 BEL (\x07) 与 ST (ESC \\,即 \x1b\x5c) 两种
  *
- * @对应文档章节: 软件定义书.md 5.1.8、ADR-003、ADR-008
+ * @对应文档章节: 软件定义书.md 5.1.8、ADR-003、ADR-008、ADR-032
  *
  * @AGENTS.md 5.3 必测: OSC 序列解析 (各种边界:跨包、夹在 ANSI 中、
- *   超长 stash、未完结永远等不到 ST、OSC 0/2 title 事件)
+ *   超长 stash、未完结永远等不到 ST、OSC 0/2 title 事件、OSC 133 D 标记)
  */
 
 /**
@@ -38,11 +41,17 @@ export interface OscParseResult {
  *   "✻ Claude · ~/project (working…)" 这类状态;OSC 1=icon only,OSC 2=
  *   window title only。三者业务上等价(都是给"session 显示名"用的),
  *   parser 不区分,统一抛 title 事件
+ * - `prompt`:OSC 133 A/B/C/D shell 集成标记(FinalTerm/VS Code 协议)。
+ *   A=prompt 开始、B=命令输入开始、C=命令开始执行、D=命令结束(可带
+ *   `;exitcode` 参数)。ADR-032 只消费 D(前台程序确定退出 → 释放
+ *   program 标题槽);A/B/C 有意不驱动状态 —— pi 自己会往输出里写
+ *   133;A/B/C 作为消息分区标记,拿来推断阶段会被 pi 污染
  * - `unknown`:OSC 1337 中未知 key (例如 RemoteHost)。raw 保留供调试
  */
 export type Osc1337Event =
   | { kind: 'cwd'; value: string }
   | { kind: 'title'; value: string }
+  | { kind: 'prompt'; phase: 'A' | 'B' | 'C' | 'D' }
   | { kind: 'unknown'; raw: string };
 
 /**
@@ -152,6 +161,8 @@ export class Osc1337Parser {
       // OSC 完整: ESC ] payload TERM
       const payload = input.subarray(escIdx + 2, terminatorInfo.payloadEnd);
       const titleSeq = parseTitleOscPayload(payload);
+      // 注意判定顺序:先 1337 再 133("1337;" 与 "133;" 前缀互不碰撞 —
+      // 第 4 字节一个是 '7' 一个是 ';',先查谁都不影响结果,保持历史顺序)
       const isOsc1337 =
         payload.length >= 5 && payload.subarray(0, 5).equals(Buffer.from('1337;'));
       if (isOsc1337) {
@@ -164,8 +175,17 @@ export class Osc1337Parser {
         // session.displayName,sidebar / tab 会同步更新。
         events.push({ kind: 'title', value: titleSeq });
       } else {
-        // 其他 OSC (例如 OSC 8 超链接) 透传给 xterm,整段含起始 ESC ] 与终止符
-        passthroughChunks.push(input.subarray(escIdx, terminatorInfo.afterEnd));
+        const promptPhase = parsePromptOscPayload(payload);
+        if (promptPhase) {
+          // OSC 133 shell 集成标记(ADR-032)。剥离同 1337/0/1/2 —
+          // xterm.js 不消费它们,透传只会在个别终端适配层里变成垃圾。
+          // 注意 pi 的输出里也含 133;A/B/C(消息分区标记),事件照发,
+          // 消费方(session-manager)只对 D 起反应,不受污染。
+          events.push({ kind: 'prompt', phase: promptPhase });
+        } else {
+          // 其他 OSC (例如 OSC 8 超链接) 透传给 xterm,整段含起始 ESC ] 与终止符
+          passthroughChunks.push(input.subarray(escIdx, terminatorInfo.afterEnd));
+        }
       }
       cursor = terminatorInfo.afterEnd;
     }
@@ -238,6 +258,37 @@ function parseTitleOscPayload(payload: Buffer): string | null {
   }
   if (payload[1] !== 0x3b /* ';' */) return null;
   return payload.subarray(2).toString('utf8');
+}
+
+/**
+ * 如果 payload 是 OSC 133 shell 集成标记,返回阶段字母;否则返回 null。
+ *
+ * 形式(终止符由调用方处理):
+ *   `133;A` / `133;B` / `133;C` / `133;D`            — 四个阶段
+ *   `133;D;<exitcode>`                                — D 可带退出码参数
+ *   (VS Code shellIntegration 就是这么发的,Marina 的 shell hook 同样)
+ *
+ * 严格校验第 5 字节必须是 A-D、其后要么结束要么 ';',避免把 "133;X..."
+ * 这类未知内容误存。"1337;" 在第 4 字节就是 '7' 而非 ';',与本函数
+ * 天然互斥。
+ */
+function parsePromptOscPayload(payload: Buffer): 'A' | 'B' | 'C' | 'D' | null {
+  if (payload.length < 5) return null;
+  if (
+    payload[0] !== 0x31 /* '1' */ ||
+    payload[1] !== 0x33 /* '3' */ ||
+    payload[2] !== 0x33 /* '3' */ ||
+    payload[3] !== 0x3b /* ';' */
+  ) {
+    return null;
+  }
+  const phase = payload[4]!;
+  if (phase !== 0x41 && phase !== 0x42 && phase !== 0x43 && phase !== 0x44) {
+    return null; // 'A'-'D'
+  }
+  // 长度正好 5("133;X")合法;更长时第 6 字节必须是 ';'(如 "133;D;0")
+  if (payload.length > 5 && payload[5] !== 0x3b /* ';' */) return null;
+  return String.fromCharCode(phase) as 'A' | 'B' | 'C' | 'D';
 }
 
 /**

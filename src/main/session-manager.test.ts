@@ -22,10 +22,10 @@ import {
   SessionManager,
   SessionManagerError,
   inferDisplayName,
-  looksLikeShellStartupGarbage,
   type PtySpawnFn,
   type SessionWorkspaceSource,
 } from './session-manager';
+import { looksLikeShellStartupGarbage } from './title-resolver';
 import { Osc1337Parser } from './osc1337-parser';
 import { BUILTIN_TEMPLATES, mergeBuiltins } from './templates-manager';
 import { makePathId } from './path-manager';
@@ -1704,6 +1704,82 @@ describe('SessionManager — OSC 0/1/2 标题 (displayName 自动跟随)', () =>
     fp.emitData('\x1b]0;make -j4\x07');
     expect(mgr.get(info.id)!.displayName).toBe('make -j4');
   });
+
+  // ADR-032 核心回归:pi 的 program 标题不再被 shell 子进程的
+  // SetConsoleTitle(ConPTY 翻成 OSC 0)抢走。这是本 ADR 修的 bug。
+  it('ADR-032:pi 标题落地后,shell 子进程的 "Windows PowerShell" 不再覆盖', async () => {
+    const { mgr } = makeManager();
+    const info = await mgr.createSession({
+      pathId: '/p',
+      templateId: 'shell',
+      ownerWindowId: 'w',
+      cols: 80,
+      rows: 24,
+    });
+    const fp = FakePty.instances[0]!;
+    // pi 启动,设置标题(verb-leading,归 program 槽)
+    fp.emitData('\x1b]0;pi - 架构设计 - marina\x07');
+    expect(mgr.get(info.id)!.displayName).toBe('pi - 架构设计 - marina');
+    // pi 的 bash 工具 spawn 的 powershell.exe 子进程抢标题(shell 槽)
+    fp.emitData('\x1b]0;Windows PowerShell\x07');
+    expect(mgr.get(info.id)!.displayName).toBe('pi - 架构设计 - marina');
+    // 提权前缀变体也一样
+    fp.emitData('\x1b]0;Administrator: Windows PowerShell\x07');
+    expect(mgr.get(info.id)!.displayName).toBe('pi - 架构设计 - marina');
+  });
+
+  it('ADR-032:纯 shell session 的 "Windows PowerShell" 照常显示(旧版行为不变)', async () => {
+    const { mgr } = makeManager();
+    const info = await mgr.createSession({
+      pathId: '/p',
+      templateId: 'shell',
+      ownerWindowId: 'w',
+      cols: 80,
+      rows: 24,
+    });
+    const fp = FakePty.instances[0]!;
+    fp.emitData('\x1b]0;Windows PowerShell\x07');
+    expect(mgr.get(info.id)!.displayName).toBe('Windows PowerShell');
+  });
+
+  it('ADR-032:OSC 133 D(命令结束)释放 program 槽,回落 shell/default 槽', async () => {
+    const { mgr } = makeManager();
+    const info = await mgr.createSession({
+      pathId: '/p',
+      templateId: 'shell',
+      ownerWindowId: 'w',
+      cols: 80,
+      rows: 24,
+    });
+    const fp = FakePty.instances[0]!;
+    // shell 自报名落 shell 槽;pi 标题落 program 槽
+    fp.emitData('\x1b]0;Windows PowerShell\x07');
+    fp.emitData('\x1b]0;pi - chat - proj\x07');
+    expect(mgr.get(info.id)!.displayName).toBe('pi - chat - proj');
+    // pi 退出 → shell 渲染新 prompt → hook 发 133;D → program 槽释放
+    fp.emitData('\x1b]133;D\x07');
+    expect(mgr.get(info.id)!.displayName).toBe('Windows PowerShell'); // 回落 shell 槽
+    // D 带退出码参数(VS Code 形式)也要能释放
+    fp.emitData('\x1b]0;vim a.txt\x07');
+    fp.emitData('\x1b]133;D;0\x07');
+    expect(mgr.get(info.id)!.displayName).toBe('Windows PowerShell');
+  });
+
+  it('ADR-032:OSC 133 A/B/C 不释放 program 槽(pi 自己的分区标记不能驱走 pi 标题)', async () => {
+    const { mgr } = makeManager();
+    const info = await mgr.createSession({
+      pathId: '/p',
+      templateId: 'shell',
+      ownerWindowId: 'w',
+      cols: 80,
+      rows: 24,
+    });
+    const fp = FakePty.instances[0]!;
+    fp.emitData('\x1b]0;pi - chat - proj\x07');
+    // pi 渲染对话消息时发的分区标记(见 pi dist assistant-message.js)
+    fp.emitData('\x1b]133;A\x07\x1b]133;B\x07\x1b]133;C\x07');
+    expect(mgr.get(info.id)!.displayName).toBe('pi - chat - proj');
+  });
 });
 
 describe('looksLikeShellStartupGarbage (TIT-1)', () => {
@@ -2274,6 +2350,59 @@ describe('Osc1337Parser', () => {
     const p = new Osc1337Parser();
     const r = p.parse(Buffer.from('\x1b]1337;RemoteHost=x.y.z\x07'));
     expect(r.events).toEqual([{ kind: 'unknown', raw: 'RemoteHost=x.y.z' }]);
+  });
+
+  // ADR-032:OSC 133 shell 集成标记 — 只为 D(命令结束)事件服务。
+  it('OSC 133 D → prompt 事件 + 从 passthrough 剥离', () => {
+    const p = new Osc1337Parser();
+    const r = p.parse(Buffer.from('A\x1b]133;D\x07B'));
+    expect(r.events).toEqual([{ kind: 'prompt', phase: 'D' }]);
+    expect(r.passthrough.toString('utf8')).toBe('AB');
+  });
+
+  it('OSC 133 D 可带退出码参数(VS Code 形式 "133;D;0")', () => {
+    const p = new Osc1337Parser();
+    const r = p.parse(Buffer.from('\x1b]133;D;0\x07'));
+    expect(r.events).toEqual([{ kind: 'prompt', phase: 'D' }]);
+    expect(r.passthrough.length).toBe(0);
+  });
+
+  it('OSC 133 A/B/C 同样报事件(pi 的消息分区标记就长这样)', () => {
+    const p = new Osc1337Parser();
+    const r = p.parse(Buffer.from('\x1b]133;A\x07\x1b]133;B\x07\x1b]133;C\x07'));
+    expect(r.events).toEqual([
+      { kind: 'prompt', phase: 'A' },
+      { kind: 'prompt', phase: 'B' },
+      { kind: 'prompt', phase: 'C' },
+    ]);
+  });
+
+  it('OSC 133 ST 终止符形式与未知变体', () => {
+    const p = new Osc1337Parser();
+    // ST 终止(ESC \\),Marina shell hook 发的就是这种
+    const r1 = p.parse(Buffer.from('\x1b]133;A\x1b\\'));
+    expect(r1.events).toEqual([{ kind: 'prompt', phase: 'A' }]);
+    // 未知阶段字母 X → 不识别,透传
+    const r2 = p.parse(Buffer.from('\x1b]133;X\x07'));
+    expect(r2.events).toEqual([]);
+    expect(r2.passthrough.length).toBeGreaterThan(0);
+  });
+
+  it('OSC 1337 与 OSC 133 前缀互不碰撞(顺序无关)', () => {
+    const p = new Osc1337Parser();
+    const r = p.parse(Buffer.from('\x1b]1337;CurrentDir=/a\x07\x1b]133;D\x07'));
+    expect(r.events).toEqual([
+      { kind: 'cwd', value: '/a' },
+      { kind: 'prompt', phase: 'D' },
+    ]);
+  });
+
+  it('OSC 133 D 跨 chunk 切分 → 第二次完成解析', () => {
+    const p = new Osc1337Parser();
+    const r1 = p.parse(Buffer.from('\x1b]133;'));
+    expect(r1.events).toEqual([]);
+    const r2 = p.parse(Buffer.from('D\x07'));
+    expect(r2.events).toEqual([{ kind: 'prompt', phase: 'D' }]);
   });
 
   it('孤立的 ESC 在末尾 → 存 stash,不丢字节', () => {
@@ -2995,6 +3124,32 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
       name: '不应生效',
     });
     expect(mgr.get(sid)?.displayName).toBe('我的终端');
+  });
+
+  // ADR-032:name_changed 落 agent 槽;pi 退出(session_shutdown →
+  // unbindAgent)释放 agent 槽,显示回落到自动侧。有 bridge 的机器上,
+  // 这保证 pi 退出后 tab 不会永远卡在最后一条对话名。
+  it('ADR-032:pi 退出释放 agent 标题槽,显示回落自动侧', async () => {
+    const { mgr, pi } = makePiManager();
+    const { sid } = await makeSession(mgr);
+    const autoName = mgr.get(sid)!.displayName; // default 槽推断名
+    await pi.handlePiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'startup',
+    });
+    await pi.handlePiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'name_changed',
+      name: '重构认证模块',
+    });
+    expect(mgr.get(sid)?.displayName).toBe('重构认证模块');
+    await pi.handlePiSessionEvent(sid, {
+      piSessionId: 'pi-1',
+      event: 'session_shutdown',
+      reason: 'quit',
+    });
+    expect(mgr.get(sid)?.displayName).toBe(autoName);
   });
 
   it('session_shutdown(reason:quit) 清 isPiAgent + 删 piSession 映射', async () => {

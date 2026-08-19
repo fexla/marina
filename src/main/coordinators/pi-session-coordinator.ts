@@ -33,7 +33,7 @@ import type { SessionWorkspaceCoordinator } from './session-workspace-coordinato
 export interface PiSessionHooks {
   /** pi 身份声明/退出:isPiAgent 翻转为 true/false(幂等,仅变化时 emit)。 */
   onPiAgentChanged(sessionId: string, isPiAgent: boolean): void;
-  /** pi 对话名 → 终端显示名(受 manuallyRenamed 保护)。 */
+  /** pi 对话名 → agent 标题槽(ADR-032;优先级高于裸 OSC 的 program 槽)。 */
   onPiName(sessionId: string, name: string | null): void;
   // ── agent 状态机集成(终端状态分层:agent getter 接管,字节流 fallback 旁路)──
   /** agent 绑定(session_start):SessionManager 把 stateGetter 换成传入的 agent getter。 */

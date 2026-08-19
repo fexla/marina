@@ -257,7 +257,12 @@ export interface SessionInfo {
   rows: number;
   /** PTY 子进程 PID,用于诊断;-1 表示尚未 spawn 或已退出 */
   pid: number;
-  /** 显示名,默认 templateId 对应模板的 name */
+  /**
+   * 显示名 — **派生值**(ADR-032):= resolveTitle(titleState),取
+   * default < shell < program < agent < user 中最高非空槽。
+   * main 端唯一写入点 SessionManager.declareTitle;renderer 只读。
+   * 默认 = templateId 对应模板的 name(或 shell 推断名)。
+   */
   displayName: string;
   /** 当前持有该 session 的 owner window;null 表示无主 */
   ownerWindowId: string | null;
