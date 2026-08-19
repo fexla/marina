@@ -2441,6 +2441,8 @@ function PathItem({
   const dispatch = useAppDispatch();
   const ctxMenu = useContextMenuApi();
   const toast = useToast();
+  // 全局 pi 集成已装时的「仍要继续吗」确认弹窗用（见下方安装 pi 集成 onSelect）。
+  const modal = useModal();
   const expanded = state.expandedPathIds.has(node.id);
   const selected = state.selectedPathId === node.id;
   const sessions = useMemo(
@@ -2769,29 +2771,56 @@ function PathItem({
         });
         // v0.3.3 ADR-028：项目级安装 pi-marina-bridge（写该项目的 .pi/settings.json）。
         // 全局安装见设置页。需 pi 已装，未装时 main 抛 PiNotInstalled，这里 toast 提示。
+        //
+        // 全局已装时先弹警告再装：ADR-028 说 bridge 是哑转发器、非 Marina 环境
+        // no-op，「可安全全局安装」，全局+项目并存不冲突；但全局注册已覆盖本机
+        // 所有项目（含本项目），项目级安装多数场景是多余的，用户应知情后决定。
+        // 状态与安装走同一 backend（远程窗口时都在 daemon 上执行），检测结果即
+        // 安装目标机的真实状态。状态查询失败（远程旧 daemon 不支持该通道）不
+        // 阻塞，按原行为直接装——不能因为查询手段缺失而挡住功能本身。
         items.push({
           label: '为此项目安装 pi 集成…',
           hint: '注册 pi-marina-bridge 到本项目（仅本项目生效）',
           onSelect: () => {
-            window.api
-              .invoke(
-                COMMAND_CHANNELS.PI_BRIDGE_INSTALL,
-                { scope: 'project', projectPath: node.path },
-              )
-              .then((r) =>
+            void (async () => {
+              try {
+                const status = await window.api.invoke(
+                  COMMAND_CHANNELS.PI_BRIDGE_STATUS,
+                  undefined,
+                );
+                if (status.globallyInstalled) {
+                  const ok = await modal.confirm({
+                    title: '全局 pi 集成已安装',
+                    message:
+                      '检测到 pi-marina-bridge 已全局安装，全局注册对本机所有项目生效（包括本项目）。\n' +
+                      '项目级安装通常没有必要，除非希望本项目使用独立于全局的注册。\n' +
+                      '仍要为此项目安装吗？',
+                    confirmLabel: '仍要安装',
+                    cancelLabel: '取消',
+                  });
+                  if (!ok) return;
+                }
+              } catch {
+                // 查询失败不阻塞安装流程（见上方注释）
+              }
+              try {
+                const r = await window.api.invoke(
+                  COMMAND_CHANNELS.PI_BRIDGE_INSTALL,
+                  { scope: 'project', projectPath: node.path },
+                );
                 toast.push({
                   kind: 'success',
                   message: r.alreadyInstalled
                     ? 'pi 集成已为本项目安装过'
                     : '已为本项目安装 pi 集成，重启已运行的 pi 后生效',
-                }),
-              )
-              .catch((err: unknown) =>
+                });
+              } catch (err: unknown) {
                 toast.push({
                   kind: 'error',
                   message: `安装 pi 集成失败:${err instanceof Error ? err.message : String(err)}`,
-                }),
-              );
+                });
+              }
+            })();
           },
         });
       }
