@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { WebSocket } from 'ws';
+import * as net from 'node:net';
 import type { ClientTransport } from './client-registry';
 import { WsServer, parseFrame, serializeFrame, type WsFrame } from './transport-ws';
 
@@ -33,6 +34,40 @@ function connect(port: number): Promise<WebSocket> {
     const ws = new WebSocket(`ws://127.0.0.1:${port}`);
     ws.on('open', () => resolve(ws));
     ws.on('error', reject);
+  });
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 造一个"完成 WS 升级握手后装死"的原始 TCP client:对 server 的 ping 永远
+ * 不回 pong,模拟网络静默中断(daemon 收不到 FIN/RST 的半开连接)。生产里
+ * 这就是"断网瞬间用户关掉远程窗口"留下的幽灵连接。
+ */
+function connectSilentRaw(port: number): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect({ host: '127.0.0.1', port }, () => {
+      // 手写 WS upgrade 请求(Sec-WebSocket-Key 任意合法 base64,server 不校验)。
+      socket.write(
+        'GET / HTTP/1.1\r\n' +
+          'Host: 127.0.0.1\r\n' +
+          'Upgrade: websocket\r\n' +
+          'Connection: Upgrade\r\n' +
+          'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n' +
+          'Sec-WebSocket-Version: 13\r\n\r\n',
+      );
+    });
+    let buf = '';
+    const onData = (d: Buffer): void => {
+      buf += d.toString('utf8');
+      if (buf.includes('\r\n\r\n')) {
+        socket.off('data', onData);
+        // 101 响应头收到 = 升级完成,server 侧 registerClient 已跑。此后装死。
+        resolve(socket);
+      }
+    };
+    socket.on('data', onData);
+    socket.on('error', reject);
   });
 }
 
@@ -328,5 +363,44 @@ describe('WsServer — 重连竞态', () => {
 
     ws2.close();
     await new Promise((r) => setTimeout(r, 200));
+  }, 10000);
+});
+
+describe('WsServer — 心跳(ipc-protocol §2.6:ping/pong,连续 3 次未响应判死)', () => {
+  it('正常 client(ws 库自动回 pong)跨多个心跳周期不被误杀', async () => {
+    // 20ms 周期 × 15 个周期:阈值 3,若心跳把健康连接误判,早该触发 disconnected。
+    const server = new WsServer({ heartbeatIntervalMs: 20 });
+    servers.push(server);
+    const port = await server.start(0);
+    let disconnectCount = 0;
+    server.onClientDisconnected(() => {
+      disconnectCount++;
+    });
+    await connect(port);
+    await sleep(300);
+    expect(server.clientCount()).toBe(1);
+    expect(disconnectCount).toBe(0);
+  });
+
+  it('静默死连接(握手后从不回 pong)被 terminate → onClientDisconnected 触发', async () => {
+    // 复现用户场景:断网瞬间关掉远程窗口 → daemon 侧没有 FIN/RST,连接半开。
+    // 心跳必须在有限时间内检出并 terminate,否则幽灵 client 永久持有
+    // session owner,重开的窗口全部命中 SessionAlreadyOwned。
+    const server = new WsServer({ heartbeatIntervalMs: 20 });
+    servers.push(server);
+    const port = await server.start(0);
+    const disconnected = new Promise<string>((resolve) =>
+      server.onClientDisconnected((id) => resolve(id)),
+    );
+    await connectSilentRaw(port);
+    // 阈值 3 次 × 20ms → ~80-100ms 内 terminate;留 2s 余量防 CI 抖动。
+    const id = await Promise.race([
+      disconnected,
+      sleep(2000).then(() => {
+        throw new Error('心跳未在 2s 内 terminate 静默死连接');
+      }),
+    ]);
+    expect(typeof id).toBe('string');
+    expect(id.length).toBeGreaterThan(0);
   }, 10000);
 });

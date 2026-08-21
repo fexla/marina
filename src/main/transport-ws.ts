@@ -148,10 +148,30 @@ export type AuthResult = { clientId: string } | { error: string };
 /** 认证处理器:接收 client 首帧原始数据,自行解析+校验 token。 */
 export type AuthHandler = (firstMessage: unknown) => AuthResult;
 
+/** WsServer 可调参数(测试传小值加速心跳判定;生产用默认)。 */
+export interface WsServerOptions {
+  /**
+   * 心跳 ping 周期(毫秒)。对齐 ipc-protocol.md §2.6:ping/pong 30s,连续
+   * HEARTBEAT_MAX_MISSED 次无 pong 判定死连接 → terminate → 走正常断线流程。
+   * 测试可传 10~25ms 加速。
+   */
+  heartbeatIntervalMs?: number;
+}
+
+/**
+ * 连续多少次 ping 没有 pong 就判定连接已死。3 次 × 30s = 最坏 ~2 分钟检出,
+ * 短于该窗口的网络抖动不会误杀正常 client。
+ */
+const HEARTBEAT_MAX_MISSED = 3;
+
 /**
  * daemon 侧的 WS server。事件驱动:上层(daemon 入口)注册三个回调,
  * 把 connected → 注册进 ClientRegistry、message → 走 dispatcher、
  * disconnected → registry.remove + session 自动 release。
+ *
+ * 内建 ping/pong 心跳(ipc-protocol.md §2.6):静默断线(收不到 FIN/RST)的
+ * client 由心跳检出并 terminate,保证上层"断线 → 宽限 → release"流程对
+ * 拔线/断网场景也必然发生。见本文件底部心跳段注释。
  *
  * 端口 0 = 让 OS 分配随机端口(loopback 自测 / 测试用),start() 返回实际端口。
  */
@@ -164,6 +184,15 @@ export class WsServer {
   private readonly wsByClient = new Map<string, WebSocket>();
   /** 可选认证处理器;设置后新连接必须先握手通过才注册。 */
   private authHandler?: AuthHandler;
+  /** 每个 ws 当前连续未回应 pong 的 ping 次数(心跳用;pong 到达清零)。 */
+  private readonly missedPings = new Map<WebSocket, number>();
+  /** 心跳自调度 timer(null = 未在跑)。 */
+  private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly heartbeatIntervalMs: number;
+
+  constructor(opts: WsServerOptions = {}) {
+    this.heartbeatIntervalMs = opts.heartbeatIntervalMs ?? 30_000;
+  }
 
   /**
    * 启动 WS server。
@@ -189,6 +218,8 @@ export class WsServer {
       wss.on('listening', () => {
         const addr = wss.address();
         const actualPort = typeof addr === 'object' && addr ? addr.port : port;
+        // 监听成功才起心跳;start 失败(端口占用)不留 timer。
+        this.startHeartbeat();
         resolve(actualPort);
       });
       wss.on('connection', (ws) => this.handleConnection(ws));
@@ -216,6 +247,7 @@ export class WsServer {
     const wss = this.wss;
     if (!wss) return Promise.resolve();
     this.wss = null;
+    this.stopHeartbeat();
     // stop/restart 是服务端主动关闭，不能依赖每个 socket 的异步 close 回调。
     // 先对当前认证 identity 显式发 disconnected，再 clear；随后 close handler
     // 因 identity guard 不会重复通知，demand/session 清理必达。
@@ -304,7 +336,15 @@ export class WsServer {
       }
     });
 
+    ws.on('pong', () => {
+      // 心跳:任何 pong 都证明这条连接活着(双向有流量),计数清零。
+      this.missedPings.set(ws, 0);
+    });
+
     ws.on('close', () => {
+      // 心跳状态按 ws 实例记,先清再走身份 guard(旧 socket 的条目必须删,
+      // 不能因为映射里已是新 ws 就把旧条目留在表里)。
+      this.missedPings.delete(ws);
       // 重连场景:新 ws 可能已用同一 clientId 注册(registerClient 覆盖旧条目)。
       // 旧 ws 的 close 事件此时若触发,不能删除新 ws 的条目,否则重连后的 client
       // 会从 registry 丢失 → session 被误 release。只有映射里仍是当前关闭的 ws 才删。
@@ -382,5 +422,81 @@ export class WsServer {
         );
       }
     }
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // 心跳(ipc-protocol.md §2.6:ping/pong 30s,3 次未响应判定断线)
+  // ──────────────────────────────────────────────────────────────────
+
+  /**
+   * 为什么需要心跳:TCP 静默中断(拔线/Wi-Fi 掉了/NAT 表项超时)时,daemon 侧
+   * socket 永远等不到 FIN/RST,close 事件不触发 → RemoteDaemon 的重连宽限期
+   * 计时器永不启动 → zombie clientId 永久持有 session owner。用户网络恢复后
+   * 重开窗口拿到新 clientId,claim 全部命中 SessionAlreadyOwned,"终端被之前的
+   * 窗口占用"。ping 是主动探测:连续多轮无回应即判死。
+   *
+   * client 无需任何配合代码:WS 协议层 ping 由浏览器(生产 preload)和 ws 库
+   * (测试 client)自动回 pong,JS 层不可见也无需处理。
+   */
+  private startHeartbeat(): void {
+    this.scheduleHeartbeatTick();
+  }
+
+  /** 用 recursive setTimeout 而非 setInterval(对齐 background-tasks 规范 I.3)。 */
+  private scheduleHeartbeatTick(): void {
+    if (this.heartbeatTimer) clearTimeout(this.heartbeatTimer);
+    this.heartbeatTimer = setTimeout(() => {
+      this.heartbeatTimer = null;
+      if (!this.wss) return;
+      try {
+        this.heartbeatTick();
+      } finally {
+        if (this.wss) this.scheduleHeartbeatTick();
+      }
+    }, this.heartbeatIntervalMs);
+    // 心跳不应阻止 headless daemon / 测试进程退出。
+    this.heartbeatTimer.unref?.();
+  }
+
+  /**
+   * 一轮心跳检查。判定顺序:先看上一轮计数是否已达阈值(达阈值 terminate,
+   * 不再 ping),否则计数 +1 并发 ping。pong 到达时计数清零(registerClient 的
+   * pong listener),所以健康连接永远停在 1;死连接每轮 +1,共收到 3 发 ping
+   * 无回应后在第 4 轮被断开(30s 周期下最坏 ~2 分钟检出)。
+   *
+   * 判死后只 ws.terminate():close 事件随后触发 notifyDisconnected → 上层
+   * RemoteDaemon 的宽限计时 → session owner release。传输层不做业务清理。
+   */
+  private heartbeatTick(): void {
+    for (const [clientId, ws] of this.wsByClient) {
+      const missed = this.missedPings.get(ws) ?? 0;
+      if (missed >= HEARTBEAT_MAX_MISSED) {
+        logger.warn(
+          'transport-ws',
+          `heartbeat timeout: ${missed} pings unanswered, terminating clientId="${clientId}"`,
+        );
+        this.missedPings.delete(ws);
+        try {
+          ws.terminate();
+        } catch {
+          /* 已关闭;close 事件仍会触发 */
+        }
+        continue;
+      }
+      this.missedPings.set(ws, missed + 1);
+      try {
+        ws.ping();
+      } catch {
+        /* send 失败的连接马上会被 error/close 事件清理,下一轮不再遍历到 */
+      }
+    }
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearTimeout(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    this.missedPings.clear();
   }
 }
