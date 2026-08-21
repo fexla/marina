@@ -77,6 +77,14 @@ export const COMMAND_CHANNELS = {
   SESSION_CREATE: 'cmd:session:create',
   SESSION_CLOSE: 'cmd:session:close',
   SESSION_CLAIM: 'cmd:session:claim',
+  /**
+   * v0.3.3 用户裁决:显式强占 — 右键菜单「占用此终端」。与 claim 的区别:
+   * claim 在别人持有时抛 SessionAlreadyOwned(8.4 默认不抢);takeover 直接
+   * 覆盖旧 owner。典型场景:远程 client 断网变僵尸仍持有 session(心跳检出
+   * 前的窗口期),或用户明确想从另一个窗口抢回控制权。旧 owner 收
+   * evt:session:owner-changed 广播,其 UI 自动转为「其他窗口持有」。
+   */
+  SESSION_TAKEOVER: 'cmd:session:takeover',
   SESSION_RELEASE: 'cmd:session:release',
   SESSION_FOCUS_OWNER: 'cmd:session:focus-owner',
   SESSION_SEND_INPUT: 'cmd:session:send-input',
@@ -784,6 +792,14 @@ export interface CloseSessionPayload {
 export interface ClaimSessionPayload {
   sessionId: string;
 }
+
+/**
+ * cmd:session:takeover 的 payload/response 与 claim 同形(sessionId 进,
+ * lastSeq 出),语义差异只在 main 端是否允许覆盖他人 owner。用别名而非
+ * 重复定义,避免两处类型漂移。
+ */
+export type TakeoverSessionPayload = ClaimSessionPayload;
+export type TakeoverSessionResponse = ClaimSessionResponse;
 
 export interface ClaimSessionResponse {
   /**

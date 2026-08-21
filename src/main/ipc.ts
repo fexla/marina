@@ -71,6 +71,7 @@ import {
   type AppStateChangedPayload,
   type BookmarksUpdatedPayload,
   type ClaimSessionPayload,
+  type TakeoverSessionPayload,
   type ClaimSessionResponse,
   type AttachTerminalViewPayload,
   type AttachTerminalViewResponse,
@@ -815,6 +816,22 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
       //     切换都重复 serialize + 传输 0.6-2MB payload — 切终端慢的纯浪费点
       // lastSeq 保留在响应里:claim-gate 只 await settle 不用它,但保留它让
       // 协议形状稳定(以后 delta 同步可复用),且是零成本的字段。
+      return { lastSeq: sessionManager.getLastEmittedSeq(envelope.payload.sessionId) ?? -1 };
+    },
+  );
+
+  // v0.3.3 用户裁决:右键菜单「占用此终端」→ 显式强占 owner。claim 对他人
+  // 持有抛 SessionAlreadyOwned(8.4 默认不抢);takeover 直接覆盖 —— 服务
+  // "远程断网后旧 client 僵尸持有 session"与"用户明确要抢回控制权"两个场景。
+  // 旧 owner 侧 UI 由 sessionOwnerChanged 广播自动转「其他窗口持有」,无需
+  // 额外通知命令。lastSeq 语义与 claim 相同。
+  registerHandle(
+    COMMAND_CHANNELS.SESSION_TAKEOVER,
+    async (
+      _e,
+      envelope: CommandEnvelope<TakeoverSessionPayload>,
+    ): Promise<ClaimSessionResponse> => {
+      sessionManager.takeoverOwner(envelope.payload.sessionId, envelope.windowId);
       return { lastSeq: sessionManager.getLastEmittedSeq(envelope.payload.sessionId) ?? -1 };
     },
   );

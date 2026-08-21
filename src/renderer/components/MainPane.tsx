@@ -528,6 +528,33 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
   // 复制到剪贴板 — 统一走 useCopyToClipboard hook(P2-11)。
   const copyToClipboard = useCopyToClipboard();
 
+  // v0.3.3「占用此终端」:显式从当前持有方(可能是远程断网后的僵尸 client)
+  // 接管所有权。与 orphan 乐观接管不同:这里**等 daemon 确认后**才切视图 —
+  // 抢的是别人的东西,失败时保持原状最不惊讶;成功后 owner-changed 广播通常
+  // 已到,本地补同值 dispatch 幂等(App.tsx claim 路径同款模式)。
+  const handleTakeover = async (sessionId: string): Promise<void> => {
+    try {
+      await window.api.invoke(COMMAND_CHANNELS.SESSION_TAKEOVER, { sessionId });
+      const prevOwnedId = findMyOwnedSessionId(state);
+      if (prevOwnedId && prevOwnedId !== sessionId) {
+        dispatch({
+          type: 'sessions/owner-changed',
+          sessionId: prevOwnedId,
+          ownerWindowId: null,
+        });
+      }
+      dispatch({ type: 'sessions/owner-changed', sessionId, ownerWindowId: myWindowId });
+      dispatch({ type: 'view/select-session', sessionId });
+      // 与 orphan 接管分支同款:rAF 后命中新挂载的 TerminalView 送焦点。
+      focusTerminalDom();
+    } catch (err) {
+      toast.push({
+        kind: 'error',
+        message: `占用失败:${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  };
+
   const handleContextMenu = (e: MouseEvent<HTMLButtonElement>): void => {
     e.preventDefault();
     e.stopPropagation();
@@ -540,6 +567,7 @@ function Tab({ session, myWindowId, selected }: TabProps): JSX.Element {
         pathTree: state.pathTree,
         copyToClipboard,
         onClose: (sid) => void closeSession(sid),
+        onTakeover: (sid) => void handleTakeover(sid),
         toastError: (message) => toast.push({ kind: 'error', message }),
         onRename: async () => {
           // Tab 端走 Modal.prompt(Sidebar 端走行内编辑,两者菜单"内容"对齐

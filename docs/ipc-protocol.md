@@ -253,7 +253,7 @@ function sendTo<P>(windowId: string, channel: string, payload: P) {
 - 认证:握手首帧带 `Authorization: Bearer <token>`(token 由 daemon 持久化生成,详见软件定义书 §14.9.4)
 - 帧格式:命令/事件各一种 JSON 帧,字段对齐 §2.3/2.4 信封
 - PTY 字节流(`evt:session:output`):走 WS binary frame(对齐 §8 性能)
-- 心跳:ping/pong 30s,3 次未响应判定断线 → 触发自动 release(§5.2)
+- 心跳:ping/pong 30s,3 次未响应判定断线 → 触发自动 release(§5.2)。**v0.3.3 起已实现**:`WsServer` 内建 server→client ping(此前只写了规格没实现,静默断线的 client 会永久持有 session owner);client 无需配合 —— 浏览器 WebSocket / ws 库在协议层自动回 pong。terminate 后走既有 disconnected → 重连宽限(10s)→ release 流程,最坏检出 ~2 分钟。检出前窗口期用 `cmd:session:takeover` 手动兜底
 - 重连:client 端指数 backoff(1s/2s/4s/.../max 30s);重连后凭 token 复用 clientId(§4 WS 握手)
 
 **本地用户零影响**:不开远程后端时,Transport-Ws 代码 lazy load,不注册 WS server,本地走 Transport-Local 与 v1.x 完全一致。
@@ -295,6 +295,7 @@ v2.0 引入 `clientId` 后,两个字段名容易混淆,明确边界:
 | `cmd:session:create` | 新建一个 session |
 | `cmd:session:close` | 关闭一个 session |
 | `cmd:session:claim` | 把一个 session 的 owner 设为本窗口 |
+| `cmd:session:takeover` | 右键「占用此终端」:显式从当前持有方强占 owner(v0.3.3) |
 | `cmd:session:release` | 释放本窗口对某 session 的 ownership |
 | `cmd:session:focus-owner` | 聚焦某 session 的 owner 窗口 |
 | `cmd:session:send-input` | 向 session 发送键盘输入 |
@@ -727,6 +728,32 @@ interface ReleaseSessionPayload {
 - owner 标识从 `windowId` 改为 `ownerClientId`。**注意:此 channel v1 就存在**(`src/shared/protocol.ts` `SESSION_RELEASE`、`src/main/ipc.ts` handler),v2.0 是**语义扩展**而非新增 channel
 - **自动 release**:client 断线(WS 关闭 / 心跳超时)→ daemon 自动把该 `clientId` 持有的所有 session 走上述 release 流程。这是"断网不丢 session"的基础:session 留在 daemon 上,client 重连后凭 token 复用 clientId → 重新 claim → 拿回 scrollback
 - **互斥保证**:自动 release 与重连握手在 daemon 端 client 表的单一锁上串行化,避免"断线瞬间重连"的竞争(见软件定义书 §14.9.3)
+
+---
+
+#### `cmd:session:takeover`
+v0.3.3(2026-08-21,用户裁决):显式强占 — 右键菜单「占用此终端」。与 `claim`
+的区别:claim 在他人持有时抛 `SessionAlreadyOwned`(8.4 默认"点击=聚焦持有方,
+不抢");takeover 直接覆盖旧 owner。
+
+```typescript
+// Payload 与 claim 同形(TakeoverSessionPayload = ClaimSessionPayload)
+interface { sessionId: string }
+// Response 与 claim 同形
+interface { lastSeq: number }
+```
+
+**动机**:远程 client 断网瞬间被关掉时,daemon 侧连接半开(收不到 FIN/RST),
+在心跳(§2.6)检出并 terminate 之前的窗口期(最坏 ~2 分钟)里,旧 clientId 仍
+持有 session,重开的窗口 claim 全部命中 `SessionAlreadyOwned`。takeover 给用户
+一个显式的手动兜底;对"多窗口之间明确想抢回控制权"的场景同样适用。
+
+**Errors**:
+- `SessionNotFound`
+
+**Side Effects**:
+- session 的 owner 无条件改为调用方 client(接管者此前持有的其他 session 先释放,单焦点不变量与 claim 相同)
+- 广播 `evt:session:owner-changed`(旧持有方 UI 据此转「其他窗口持有」;其残留 view lease 由 terminal-view-registry 标记断流,新 owner attach 时替换)
 
 ---
 

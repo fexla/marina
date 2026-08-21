@@ -3121,6 +3121,32 @@ function SessionItemImpl({
   // 同 PathItem.copyToClipboard,统一走 useCopyToClipboard hook(P2-11)。
   const copyToClipboard = useCopyToClipboard();
 
+  // v0.3.3「占用此终端」:显式从当前持有方(可能是远程断网后的僵尸 client)
+  // 接管所有权。等 daemon 确认后才切视图(抢的是别人的,失败保持原状);
+  // 成功后广播通常已到,本地补同值 dispatch 幂等。与 Tab 端 handleTakeover
+  // 同协议,Sidebar 额外补 select-path(与 handleClick mine 分支一致)。
+  const handleTakeover = async (sessionId: string): Promise<void> => {
+    try {
+      await window.api.invoke(COMMAND_CHANNELS.SESSION_TAKEOVER, { sessionId });
+      const prevOwnedId = findMyOwnedSessionId(stateRef.current);
+      if (prevOwnedId && prevOwnedId !== sessionId) {
+        dispatch({
+          type: 'sessions/owner-changed',
+          sessionId: prevOwnedId,
+          ownerWindowId: null,
+        });
+      }
+      dispatch({ type: 'sessions/owner-changed', sessionId, ownerWindowId: myWindowId });
+      dispatch({ type: 'view/select-path', pathId: session.pathId });
+      dispatch({ type: 'view/select-session', sessionId });
+    } catch (err) {
+      toast.push({
+        kind: 'error',
+        message: `占用失败:${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  };
+
   const handleContextMenu = (e: MouseEvent<HTMLLIElement>): void => {
     e.preventDefault();
     e.stopPropagation();
@@ -3140,6 +3166,7 @@ function SessionItemImpl({
         // 关闭走统一续看逻辑(关掉当前终端时自动切到同目录另一个无主终端)。
         // SessionItem 刻意不订阅 useAppState(防抖动),这里用 stateRef.current。
         onClose: (sid) => void closeSessionWithContinue(stateRef.current, dispatch, sid),
+        onTakeover: (sid) => void handleTakeover(sid),
         toastError: (message) => toast.push({ kind: 'error', message }),
         // Sidebar 端走"行内编辑"重命名(Tab 端走 Modal.prompt)
         onRename: beginRename,

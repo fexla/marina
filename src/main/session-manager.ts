@@ -1483,6 +1483,37 @@ export class SessionManager extends EventEmitter {
     this.releaseAllOwnedBy(windowId, { exceptSessionId: sessionId });
   }
 
+  /**
+   * 显式强占:把 sessionId 的 owner 无条件改为 windowId(右键菜单「占用此终端」)。
+   *
+   * 与 claimOwner 的区别:claim 在别人持有时抛 SessionAlreadyOwned(软件定义书
+   * 8.4 默认"点击=聚焦持有方,不抢");takeover 是用户显式动作,直接覆盖旧
+   * owner —— 典型场景是远程 client 断网后变僵尸仍持有 session(心跳检出前的
+   * 窗口期),或用户明确想从另一个窗口抢回控制权。旧 owner 通过
+   * sessionOwnerChanged 广播得知,其 UI 自动转为「其他窗口持有」。
+   *
+   * 单焦点 owner 不变量与 claim 相同:接管者此前持有的其他 session 先释放。
+   * 无主时行为等同 claim。view lease 无需特殊处理:terminal-view-registry 的
+   * attach 会替换旧 lease,旧持有方残留 lease 会被标记断流。
+   *
+   * @throws SessionManagerError SessionNotFound
+   */
+  takeoverOwner(sessionId: string, windowId: string): void {
+    const managed = this.sessions.get(sessionId);
+    if (!managed) {
+      throw new SessionManagerError('SessionNotFound', `sessionId="${sessionId}"`);
+    }
+    const oldOwner = managed.info.ownerWindowId;
+    if (oldOwner === windowId) return; // 已是自己的 → 幂等 no-op
+    managed.info.ownerWindowId = windowId;
+    this.emit('sessionOwnerChanged', {
+      sessionId,
+      oldOwnerWindowId: oldOwner,
+      newOwnerWindowId: windowId,
+    });
+    this.releaseAllOwnedBy(windowId, { exceptSessionId: sessionId });
+  }
+
   private releaseAllOwnedBy(windowId: string, options?: { exceptSessionId?: string }): void {
     const except = options?.exceptSessionId;
     for (const managed of this.sessions.values()) {

@@ -1971,6 +1971,72 @@ describe('SessionManager — owner 切换', () => {
     expect(mgr.get(b.id)?.ownerWindowId).toBe('w-1');
   });
 
+  it('takeoverOwner 从他人持有强占:owner 覆盖 + 广播 owner-changed', async () => {
+    const { mgr } = makeManager();
+    const info = await mgr.createSession({
+      pathId: '/p',
+      templateId: 'shell',
+      ownerWindowId: 'w-1',
+      cols: 80,
+      rows: 24,
+    });
+    const events: Array<{ sessionId: string; oldOwnerWindowId: string | null }> = [];
+    mgr.on(
+      'sessionOwnerChanged',
+      (e: { sessionId: string; oldOwnerWindowId: string | null }) =>
+        events.push({ sessionId: e.sessionId, oldOwnerWindowId: e.oldOwnerWindowId }),
+    );
+    mgr.takeoverOwner(info.id, 'w-2');
+    // 强占成功:claim 在这里会抛 SessionAlreadyOwned,takeover 不抛。
+    expect(mgr.get(info.id)?.ownerWindowId).toBe('w-2');
+    // 旧 owner 侧 UI 靠这条广播转「其他窗口持有」。
+    expect(events).toEqual([{ sessionId: info.id, oldOwnerWindowId: 'w-1' }]);
+  });
+
+  it('takeoverOwner 释放接管者此前持有的其他 session(单焦点不变量)', async () => {
+    const { mgr } = makeManager();
+    const a = await mgr.createSession({
+      pathId: '/a',
+      templateId: 'shell',
+      ownerWindowId: 'w-2',
+      cols: 80,
+      rows: 24,
+    });
+    const b = await mgr.createSession({
+      pathId: '/b',
+      templateId: 'shell',
+      ownerWindowId: 'w-1',
+      cols: 80,
+      rows: 24,
+    });
+    mgr.takeoverOwner(b.id, 'w-2');
+    expect(mgr.get(a.id)?.ownerWindowId).toBeNull();
+    expect(mgr.get(b.id)?.ownerWindowId).toBe('w-2');
+  });
+
+  it('takeoverOwner 已是自己的 → 幂等 no-op(不再广播)', async () => {
+    const { mgr } = makeManager();
+    const info = await mgr.createSession({
+      pathId: '/p',
+      templateId: 'shell',
+      ownerWindowId: 'w-1',
+      cols: 80,
+      rows: 24,
+    });
+    let eventCount = 0;
+    mgr.on('sessionOwnerChanged', () => {
+      eventCount += 1;
+    });
+    expect(() => mgr.takeoverOwner(info.id, 'w-1')).not.toThrow();
+    expect(mgr.get(info.id)?.ownerWindowId).toBe('w-1');
+    expect(eventCount).toBe(0);
+  });
+
+  it('takeoverOwner session 不存在 → throw SessionNotFound', () => {
+    const { mgr } = makeManager();
+    expect(() => mgr.takeoverOwner('no-such', 'w-1')).toThrowError(/SessionNotFound/);
+  });
+
   it('handleWindowClosed 把该窗口持有的所有 session owner 设 null,不杀 PTY', async () => {
     const { mgr } = makeManager();
     const info = await mgr.createSession({

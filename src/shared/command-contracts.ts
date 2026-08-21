@@ -38,6 +38,7 @@ import type {
   ReorderSessionsPayload,
   UpdateSessionUiLayoutPayload,
   ClaimSessionPayload,
+  TakeoverSessionPayload,
   GetScrollbackPayload,
   AttachTerminalViewPayload,
   DetachTerminalViewPayload,
@@ -126,6 +127,7 @@ import type {
   CreateWindowResponse,
   CreateSessionResponse,
   ClaimSessionResponse,
+  TakeoverSessionResponse,
   GetScrollbackResponse,
   AttachTerminalViewResponse,
   OpenSessionInNewWindowResponse,
@@ -242,6 +244,11 @@ export interface CommandContractMap {
   [COMMAND_CHANNELS.SESSION_CLAIM]: {
     payload: ClaimSessionPayload;
     response: ClaimSessionResponse;
+  };
+  /** v0.3.3 右键「占用此终端」:显式强占(他人持有时也成功,与 claim 的区别点)。 */
+  [COMMAND_CHANNELS.SESSION_TAKEOVER]: {
+    payload: TakeoverSessionPayload;
+    response: TakeoverSessionResponse;
   };
   [COMMAND_CHANNELS.SESSION_GET_SCROLLBACK]: {
     payload: GetScrollbackPayload;

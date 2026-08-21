@@ -22,6 +22,13 @@ export interface SessionMenuDeps {
   copyToClipboard: (text: string, label: string) => void;
   /** 触发重命名 UX。Tab 端走 Modal.prompt;Sidebar 端走行内编辑。 */
   onRename: () => void;
+  /**
+   * v0.3.3 用户裁决:「占用此终端」— variant=other 时菜单首项,显式从当前
+   * 持有方(可能是断网僵尸 client,也可能是另一个真实窗口)接管所有权。
+   * 两端(Tab/Sidebar)各自实现:invoke SESSION_TAKEOVER → 成功后 owner-changed
+   * + select,让"占用"直接落到"正在用"。
+   */
+  onTakeover: (sessionId: string) => void;
   /** 关闭终端(带「自动续看」):关掉当前正在看的终端时切到同目录另一个无主
    *  终端。两端的关闭都走它,保证标签栏可见/隐藏行为一致。不传则退回直接
    *  SESSION_CLOSE(向后兼容)。 */
@@ -47,6 +54,17 @@ export function buildSessionContextMenu(
   const invoke = window.api.invoke.bind(window.api);
 
   return [
+    // v0.3.3:仅「其他窗口持有」时出现,是 other 场景的主操作(点击 tab 的
+    // 行为是聚焦持有方,而这里允许直接抢回所有权)。放首位。
+    ...(isOther
+      ? [
+          {
+            label: '占用此终端',
+            hint: '接管所有权,当前持有窗口将失去控制',
+            onSelect: () => deps.onTakeover(session.id),
+          },
+        ]
+      : []),
     {
       label: '重命名…',
       disabled: isOther,
