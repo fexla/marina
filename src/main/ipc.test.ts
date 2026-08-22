@@ -40,69 +40,85 @@ import { makePathId } from './path-manager';
 // electron mock — ipcMain.handle 捕获 handler 到 handlers Map
 // ──────────────────────────────────────────────────────────────────
 
-const { handlers, mockApp, mockBrowserWindow, mockClipboard, mockDialog, mockShell, mockIpcMain } =
-  vi.hoisted(() => {
-    const handlers = new Map<string, (...args: unknown[]) => unknown>();
-    const mockIpcMain = {
-      handle: (channel: string, handler: (...args: unknown[]) => unknown): void => {
-        handlers.set(channel, handler);
-      },
-      removeHandler: (channel: string): void => {
-        handlers.delete(channel);
-      },
-    };
-    const mockApp = {
-      getPath: (): string => '/tmp/marina-test',
-      getVersion: (): string => '0.0.0-test',
-      on: (): void => {},
-      quit: (): void => {},
-      isPackaged: false,
-    };
-    const mockBrowserWindow = {
-      getAllWindows: (): unknown[] => [],
-      getFocusedWindow: (): unknown => null,
-      // Electron 的真实 fromWebContents(undefined) 会在内部访问
-      // webContents.getOwnerBrowserWindow 并抛 TypeError；mock 必须保留这个失败模式，
-      // 否则 WS fakeEvent.sender=undefined 的远程回归永远测不出来。
-      fromWebContents: (webContents: unknown): unknown => {
-        if (!webContents) {
-          throw new TypeError(
-            "Cannot read properties of undefined (reading 'getOwnerBrowserWindow')",
-          );
-        }
-        return null;
-      },
-    };
-    const mockClipboard = {
-      readText: (): string => '',
-      writeText: (): void => {},
-    };
-    const mockDialog = {
-      showSaveDialog: vi.fn((): Promise<unknown> => Promise.resolve({ canceled: true })),
-      showOpenDialog: vi.fn((): Promise<unknown> => Promise.resolve({ canceled: true })),
-      showMessageBox: vi.fn((): Promise<unknown> => Promise.resolve({ response: 0 })),
-    };
-    const mockShell = {
-      openExternal: vi.fn((): Promise<void> => Promise.resolve()),
-      openPath: vi.fn((): Promise<string> => Promise.resolve('')),
-      showItemInFolder: vi.fn(),
-    };
-    return {
-      handlers,
-      mockApp,
-      mockBrowserWindow,
-      mockClipboard,
-      mockDialog,
-      mockShell,
-      mockIpcMain,
-    };
-  });
+const {
+  handlers,
+  mockApp,
+  mockBrowserWindow,
+  mockClipboard,
+  mockDialog,
+  mockNativeImage,
+  mockShell,
+  mockIpcMain,
+} = vi.hoisted(() => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const mockIpcMain = {
+    handle: (channel: string, handler: (...args: unknown[]) => unknown): void => {
+      handlers.set(channel, handler);
+    },
+    removeHandler: (channel: string): void => {
+      handlers.delete(channel);
+    },
+  };
+  const mockApp = {
+    getPath: (): string => '/tmp/marina-test',
+    getVersion: (): string => '0.0.0-test',
+    on: (): void => {},
+    quit: (): void => {},
+    isPackaged: false,
+  };
+  const mockBrowserWindow = {
+    getAllWindows: (): unknown[] => [],
+    getFocusedWindow: (): unknown => null,
+    // Electron 的真实 fromWebContents(undefined) 会在内部访问
+    // webContents.getOwnerBrowserWindow 并抛 TypeError；mock 必须保留这个失败模式，
+    // 否则 WS fakeEvent.sender=undefined 的远程回归永远测不出来。
+    fromWebContents: (webContents: unknown): unknown => {
+      if (!webContents) {
+        throw new TypeError(
+          "Cannot read properties of undefined (reading 'getOwnerBrowserWindow')",
+        );
+      }
+      return null;
+    },
+  };
+  const mockClipboard = {
+    readText: (): string => '',
+    writeText: (): void => {},
+    // v0.3.3 文档图片交互:SYSTEM_CLIPBOARD_WRITE_IMAGE 走 writeImage
+    writeImage: vi.fn(),
+  };
+  // nativeImage.createFromDataURL 默认返回非空图;具体用例按需 mockReturnValue。
+  const mockNativeImage = {
+    createFromDataURL: vi.fn((): { isEmpty: () => boolean } => ({ isEmpty: () => false })),
+  };
+  const mockDialog = {
+    showSaveDialog: vi.fn((): Promise<unknown> => Promise.resolve({ canceled: true })),
+    showOpenDialog: vi.fn((): Promise<unknown> => Promise.resolve({ canceled: true })),
+    showMessageBox: vi.fn((): Promise<unknown> => Promise.resolve({ response: 0 })),
+  };
+  const mockShell = {
+    openExternal: vi.fn((): Promise<void> => Promise.resolve()),
+    openPath: vi.fn((): Promise<string> => Promise.resolve('')),
+    showItemInFolder: vi.fn(),
+  };
+  return {
+    handlers,
+    mockApp,
+    mockBrowserWindow,
+    mockClipboard,
+    mockDialog,
+    mockNativeImage,
+    mockShell,
+    mockIpcMain,
+  };
+});
 
 vi.mock('electron', () => ({
   ipcMain: mockIpcMain,
   app: mockApp,
   BrowserWindow: mockBrowserWindow,
   clipboard: mockClipboard,
+  nativeImage: mockNativeImage,
   dialog: mockDialog,
   shell: mockShell,
 }));
@@ -1020,5 +1036,152 @@ describe('IPC file-panel owner 校验 (H2)', () => {
         message: expect.stringContaining('sess-owner'),
       },
     });
+  });
+});
+
+describe('IPC v0.3.3 图片交互 (GALLERY_REVEAL_IMAGE / SYSTEM_CLIPBOARD_WRITE_IMAGE)', () => {
+  // 文档/图片/gallery 三个 surface 共用的两条通道:reveal 走 backend-data
+  // (owner 校验 + main resolve,路径不回 renderer);write-image 走 local-control
+  // (剪贴板属于客户端机器)。这里测"编排本身能错"的部分:owner gate、resolver
+  // 结果到 shell 动作的映射、dataUrl 前缀防御。
+
+  function ownerSessionOf(owner: string | null): SessionInfo {
+    return {
+      id: 'sess-owner',
+      pathId: '',
+      templateId: 'shell',
+      originalCwd: '/tmp',
+      currentCwd: '/tmp',
+      cols: 80,
+      rows: 24,
+      pid: 1234,
+      displayName: 'shell',
+      ownerWindowId: owner,
+      state: 'active',
+      createdAt: Date.now(),
+    };
+  }
+
+  it('GALLERY_REVEAL_IMAGE: owner 放行,resolver 路径交给 showItemInFolder', async () => {
+    const { installIpcLayer, dispatchCommand } = await freshIpc();
+    const { deps, stubs } = makeStubs();
+    stubs.sessionManager.get.mockImplementation((sessionId: string) =>
+      sessionId === 'sess-owner' ? ownerSessionOf('win-owner') : null,
+    );
+    // 真实 FilePanelService 未 start,panels 为空 → openGalleryImage 只会返
+    // 'md file not in this panel';这里 spy 掉 resolver 隔离测 ipc 编排层。
+    const resolveSpy = vi
+      .spyOn(deps.filePanelService, 'openGalleryImage')
+      .mockResolvedValue({ path: '/tmp/pics/a.gif' });
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    const result = await dispatchCommand(COMMAND_CHANNELS.GALLERY_REVEAL_IMAGE, {
+      windowId: 'win-owner',
+      requestId: 'img-1',
+      payload: { sessionId: 'sess-owner', mdPath: '/tmp/x.md', src: './a.gif' },
+    });
+
+    expect(result).toEqual({ ok: true, result: { ok: true } });
+    expect(resolveSpy).toHaveBeenCalledWith('sess-owner', '/tmp/x.md', './a.gif');
+    expect(mockShell.showItemInFolder).toHaveBeenCalledWith('/tmp/pics/a.gif');
+  });
+
+  it('GALLERY_REVEAL_IMAGE: resolver 失败时原样返回 error,不触发 Explorer', async () => {
+    const { installIpcLayer, dispatchCommand } = await freshIpc();
+    const { deps, stubs } = makeStubs();
+    stubs.sessionManager.get.mockImplementation((sessionId: string) =>
+      sessionId === 'sess-owner' ? ownerSessionOf('win-owner') : null,
+    );
+    vi.spyOn(deps.filePanelService, 'openGalleryImage').mockResolvedValue({
+      error: 'not found',
+    });
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    const result = await dispatchCommand(COMMAND_CHANNELS.GALLERY_REVEAL_IMAGE, {
+      windowId: 'win-owner',
+      requestId: 'img-2',
+      payload: { sessionId: 'sess-owner', mdPath: '/tmp/x.md', src: './missing.gif' },
+    });
+
+    expect(result).toEqual({ ok: true, result: { error: 'not found' } });
+    expect(mockShell.showItemInFolder).not.toHaveBeenCalled();
+  });
+
+  it('GALLERY_REVEAL_IMAGE: 非 owner client 被拒(与 open-image 同防线)', async () => {
+    const { installIpcLayer, dispatchCommand } = await freshIpc();
+    const { deps, stubs } = makeStubs();
+    stubs.sessionManager.get.mockImplementation((sessionId: string) =>
+      sessionId === 'sess-owner' ? ownerSessionOf('win-owner') : null,
+    );
+    const resolveSpy = vi.spyOn(deps.filePanelService, 'openGalleryImage');
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    const result = await dispatchCommand(COMMAND_CHANNELS.GALLERY_REVEAL_IMAGE, {
+      windowId: 'intruder-client',
+      requestId: 'img-3',
+      payload: { sessionId: 'sess-owner', mdPath: '/tmp/x.md', src: './a.gif' },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: 'NotOwner',
+        message: expect.stringContaining('sess-owner'),
+      },
+    });
+    expect(resolveSpy).not.toHaveBeenCalled();
+    expect(mockShell.showItemInFolder).not.toHaveBeenCalled();
+  });
+
+  it('SYSTEM_CLIPBOARD_WRITE_IMAGE: data:image/ dataUrl 经 nativeImage 解码后写剪贴板', async () => {
+    const { installIpcLayer, dispatchCommand } = await freshIpc();
+    const { deps } = makeStubs();
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    const result = await dispatchCommand(COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_IMAGE, {
+      windowId: 'win-a',
+      requestId: 'clip-1',
+      payload: { dataUrl: 'data:image/gif;base64,R0lGODlh' },
+    });
+
+    expect(result).toEqual({ ok: true, result: { ok: true } });
+    expect(mockNativeImage.createFromDataURL).toHaveBeenCalledWith(
+      'data:image/gif;base64,R0lGODlh',
+    );
+    expect(mockClipboard.writeImage).toHaveBeenCalledTimes(1);
+  });
+
+  it('SYSTEM_CLIPBOARD_WRITE_IMAGE: 非 data:image/ 前缀被拒,不触碰剪贴板', async () => {
+    const { installIpcLayer, dispatchCommand } = await freshIpc();
+    const { deps } = makeStubs();
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    const result = await dispatchCommand(COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_IMAGE, {
+      windowId: 'win-a',
+      requestId: 'clip-2',
+      payload: { dataUrl: 'data:text/html;base64,PGI+' },
+    });
+
+    expect(result).toEqual({ ok: true, result: { ok: false, error: 'not an image dataUrl' } });
+    expect(mockNativeImage.createFromDataURL).not.toHaveBeenCalled();
+    expect(mockClipboard.writeImage).not.toHaveBeenCalled();
+  });
+
+  it('SYSTEM_CLIPBOARD_WRITE_IMAGE: nativeImage 解码出空图时 ok=false 带原因', async () => {
+    const { installIpcLayer, dispatchCommand } = await freshIpc();
+    const { deps } = makeStubs();
+    mockNativeImage.createFromDataURL.mockReturnValueOnce({ isEmpty: () => true });
+    installIpcLayer(deps as Parameters<typeof installIpcLayer>[0]);
+
+    const result = await dispatchCommand(COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_IMAGE, {
+      windowId: 'win-a',
+      requestId: 'clip-3',
+      payload: { dataUrl: 'data:image/png;base64,' },
+    });
+
+    // result.result 是 unknown(dispatchCommand 通用封装),先窄化再断言字段。
+    const response = result.ok ? (result.result as { ok: boolean }) : null;
+    expect(response?.ok).toBe(false);
+    expect(mockClipboard.writeImage).not.toHaveBeenCalled();
   });
 });

@@ -37,7 +37,8 @@ interface Toast extends ToastInput {
   bornAt: number;
 }
 
-interface ToastApi {
+/** v0.3.3 起导出:imageActions.ts 等非组件模块按结构注入 toast 反馈,不拉 hook。 */
+export interface ToastApi {
   push(t: ToastInput): void;
   dismiss(id: number): void;
 }

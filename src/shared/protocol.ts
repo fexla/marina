@@ -238,6 +238,11 @@ export const COMMAND_CHANNELS = {
    */
   SYSTEM_CLIPBOARD_READ_TEXT: 'cmd:system:clipboard-read-text',
   SYSTEM_CLIPBOARD_WRITE_TEXT: 'cmd:system:clipboard-write-text',
+  /** v0.3.3 文档图片交互:把 renderer 已持有的图片 base64 dataUrl 写进系统剪贴板
+   * (main 端 nativeImage.createFromDataURL + clipboard.writeImage)。走 local-control:
+   * 用户剪贴板属于当前客户端机器 —— 远程窗口里复制的也是"看到的那张图"。
+   * GIF 经 nativeImage 只保留首帧(Windows 剪贴板位图本身无动画语义)。 */
+  SYSTEM_CLIPBOARD_WRITE_IMAGE: 'cmd:system:clipboard-write-image',
 
   /** BETA-031:AI 助手测试连接 — 主进程用 SDK 跑一次 ping,返回成功 / 错误描述 */
   AI_TEST_CONNECTION: 'cmd:ai:test-connection',
@@ -386,6 +391,11 @@ export const COMMAND_CHANNELS = {
   GALLERY_RESOLVE_IMAGE: 'cmd:gallery:resolve-image',
   /** 用系统图片查看器打开 gallery 某张图(main resolve 路径后 shell.openPath)。 */
   GALLERY_OPEN_IMAGE: 'cmd:gallery:open-image',
+  /** v0.3.3 文档图片交互:在资源管理器中显示 markdown 引用的图片(main resolve
+   * 路径后 shell.showItemInFolder,不把绝对路径返给 renderer)。markdown 正文
+   * 内联图片与 gallery 共用 open/reveal 这一对通道 —— payload 语义相同:
+   * "相对 mdPath 解析这个 src 并对磁盘文件调系统动作"。 */
+  GALLERY_REVEAL_IMAGE: 'cmd:gallery:reveal-image',
 } as const;
 
 export type CommandChannel = (typeof COMMAND_CHANNELS)[keyof typeof COMMAND_CHANNELS];
@@ -440,6 +450,7 @@ const LOCAL_CONTROL_COMMANDS_SET: ReadonlySet<string> = new Set<CommandChannel>(
   COMMAND_CHANNELS.REMOTE_DAEMON_SET_PASSWORD,
   COMMAND_CHANNELS.SYSTEM_CLIPBOARD_READ_TEXT,
   COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT,
+  COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_IMAGE,
   COMMAND_CHANNELS.PERFORMANCE_GET_STATUS,
   COMMAND_CHANNELS.PERFORMANCE_WRITE_REPORT,
   COMMAND_CHANNELS.PERFORMANCE_OPEN_REPORTS_DIR,
@@ -1444,6 +1455,21 @@ export interface ClipboardWriteTextResponse {
   ok: boolean;
 }
 
+/** v0.3.3 文档图片交互 cmd:system:clipboard-write-image payload。dataUrl 是
+ * renderer 已经加载在 <img> 里的 base64 dataUrl(本地图片经 read-image 换来,
+ * 或 gallery resolve-image 下载换来),main 端转 nativeImage 写剪贴板 —— 不
+ * 重新读磁盘,保证"复制的就是看到的那一帧"(含 mtime cache-bust 语义)。 */
+export interface ClipboardWriteImagePayload {
+  dataUrl: string;
+}
+
+/** cmd:system:clipboard-write-image 返回。ok=false 时带 error 原因(非
+ * data:image/ 前缀 / nativeImage 解码失败),renderer 可提示。 */
+export interface ClipboardWriteImageResponse {
+  ok: boolean;
+  error?: string;
+}
+
 // ──────────────────────────────────────────────────────────────────
 // Markdown 代码块执行域 (v0.3.3,ADR-023)
 // ──────────────────────────────────────────────────────────────────
@@ -1960,6 +1986,19 @@ export interface GalleryOpenImagePayload {
 /** cmd:gallery:open-image 返回。ok=true 表示已触发系统查看器(具体是否打开成功
  * 由 OS 决定,shell.openPath 返回空串=无错误);error 时 renderer 可提示。 */
 export type GalleryOpenImageResponse = { ok: true } | { error: string };
+
+/** v0.3.3 文档图片交互 cmd:gallery:reveal-image payload。与 open-image 同 payload:
+ * main 端 resolve 到磁盘绝对路径(本地图原路径;网络图下载缓存路径)后调
+ * shell.showItemInFolder,同样不把绝对路径返给 renderer(防泄露)。 */
+export interface GalleryRevealImagePayload {
+  sessionId: string;
+  mdPath: string;
+  src: string;
+}
+
+/** cmd:gallery:reveal-image 返回。ok=true 表示已触发资源管理器定位;error 时
+ * renderer 可提示(文件缺失/超限/非图片/owner 校验失败等)。 */
+export type GalleryRevealImageResponse = { ok: true } | { error: string };
 
 /**
  * cmd:file-panel:read 返回。按 kind 区分内容载体:

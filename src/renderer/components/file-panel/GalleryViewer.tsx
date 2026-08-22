@@ -24,6 +24,9 @@ import {
 } from '@shared/protocol';
 import { parseGalleryCode } from '@shared/gallery-parser';
 import { useTranslation } from '../LanguageProvider';
+import { useToast } from '../Toast';
+import { useContextMenuApi } from '../ContextMenu';
+import { buildImageActionMenu, revealMarkdownImageInExplorer } from './imageActions';
 
 /** 单张图的解析状态(懒加载 ±1 窗口内才 resolve)。 */
 type ResolvedImage = { dataUrl: string } | { error: string } | null;
@@ -48,6 +51,8 @@ export function GalleryViewer({
   mtimeMs,
 }: GalleryViewerProps): JSX.Element {
   const { tx } = useTranslation();
+  const toast = useToast();
+  const ctxMenu = useContextMenuApi();
   const items = useMemo(() => parseGalleryCode(code), [code]);
   const [current, setCurrent] = useState(0);
   // resolved:index → {dataUrl} | {error}。null/不在 map = 未加载(骨架)。
@@ -211,6 +216,35 @@ export function GalleryViewer({
     });
   };
 
+  // v0.3.3 图片交互:主图区右键菜单与 Markdown 内联图 / ImageViewer 同形态
+  // (生成器 imageActions.ts)。复制项只在当前图已 resolve 出 dataUrl 时提供。
+  const handleStageContextMenu = (e: React.MouseEvent<HTMLDivElement>): void => {
+    const item = items[safeCurrent];
+    if (!item) return;
+    e.preventDefault();
+    ctxMenu.open({
+      x: e.clientX,
+      y: e.clientY,
+      items: buildImageActionMenu(
+        {
+          open: openCurrent,
+          reveal: () => {
+            revealMarkdownImageInExplorer({
+              sessionId,
+              mdPath: documentPath,
+              src: item.src,
+              toast,
+              tx,
+            });
+          },
+          copyImageDataUrl:
+            currentResolved && 'dataUrl' in currentResolved ? currentResolved.dataUrl : undefined,
+        },
+        { toast, tx },
+      ),
+    });
+  };
+
   const currentItem = items[safeCurrent]!; // 上面 items.length === 0 已提前返回,safeCurrent 必在 [0, items.length-1]
   const currentResolved = resolved.get(safeCurrent);
   const currentLoading = loading.has(safeCurrent);
@@ -226,6 +260,7 @@ export function GalleryViewer({
       <div
         className="gallery-stage"
         onClick={openCurrent}
+        onContextMenu={handleStageContextMenu}
         title={tx('点击用系统图片查看器打开', 'Click to open in system image viewer')}
       >
         <button

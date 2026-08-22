@@ -21,7 +21,16 @@
  * - cmd:session:create / close / claim / release / focus-owner / send-input / resize
  * - 所有 evt:* 广播
  */
-import { app, BrowserWindow, clipboard, ipcMain, dialog, safeStorage, shell } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  ipcMain,
+  nativeImage,
+  dialog,
+  safeStorage,
+  shell,
+} from 'electron';
 import { getBuildType } from './build-type';
 import type { FilePanelService } from './file-panel-service';
 import type { FileTreeService } from './file-tree-service';
@@ -79,6 +88,8 @@ import {
   type ClipboardReadTextResponse,
   type ClipboardWriteTextPayload,
   type ClipboardWriteTextResponse,
+  type ClipboardWriteImagePayload,
+  type ClipboardWriteImageResponse,
   type FilePanelActionPayload,
   type FilePanelSnapshot,
   type FilePanelUpdatedPayload,
@@ -109,6 +120,8 @@ import {
   type GalleryResolveImageResponse,
   type GalleryOpenImagePayload,
   type GalleryOpenImageResponse,
+  type GalleryRevealImagePayload,
+  type GalleryRevealImageResponse,
   type GetMdThemeCssPayload,
   type GetMdThemeCssResponse,
   type ListMdThemesResponse,
@@ -1770,6 +1783,35 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     },
   );
 
+  // v0.3.3 文档图片交互:复制图片本体到系统剪贴板。payload 是 renderer 已加载
+  // 在 <img> 里的 base64 dataUrl —— main 端不重读磁盘,保证"复制的就是看到的
+  // 那一帧"(文件 mtime 变更后 read-image 已 cache-bust 重拉)。
+  // 防御:只接受 data:image/ 前缀,防止把任意 dataUrl(如内嵌 HTML/SVG 外的
+  // 内容)当图片解码;nativeImage 解码失败/空图返回 ok=false 带 error。
+  // 已知限制:GIF 经 nativeImage 只保留首帧 —— Windows 剪贴板位图无动画语义。
+  registerHandle(
+    COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_IMAGE,
+    (_e, envelope: CommandEnvelope<ClipboardWriteImagePayload>): ClipboardWriteImageResponse => {
+      const dataUrl = envelope.payload?.dataUrl;
+      if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
+        return { ok: false, error: 'not an image dataUrl' };
+      }
+      try {
+        const image = nativeImage.createFromDataURL(dataUrl);
+        if (image.isEmpty()) {
+          return { ok: false, error: 'image decoded empty (unsupported or corrupt data)' };
+        }
+        clipboard.writeImage(image);
+        return { ok: true };
+      } catch (err) {
+        return {
+          ok: false,
+          error: `nativeImage decode failed: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+    },
+  );
+
   // Templates CRUD (CP-4 chunk 4)
   registerHandle(
     COMMAND_CHANNELS.TEMPLATE_ADD,
@@ -2228,6 +2270,28 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
       // shell.openPath 返空串=成功打开,非空串=错误信息(OS 语义)。
       const openError = await shell.openPath(r.path);
       return openError ? { error: openError } : { ok: true };
+    },
+  );
+
+  // v0.3.3 文档图片交互:在资源管理器中显示 markdown 引用的图片(markdown 正文
+  // 内联图与 gallery 共用)。resolver 与 open-image 完全共用 —— openGalleryImage
+  // 的真实语义是"resolve 这个 md 相对 src 到磁盘绝对路径给 shell 用",这里只是
+  // 把 shell 动作从 openPath 换成 showItemInFolder,同样不把路径返给 renderer。
+  registerHandle(
+    COMMAND_CHANNELS.GALLERY_REVEAL_IMAGE,
+    async (
+      _e,
+      envelope: CommandEnvelope<GalleryRevealImagePayload>,
+    ): Promise<GalleryRevealImageResponse> => {
+      requireFilePanelOwner(sessionManager, envelope.payload.sessionId, envelope.windowId);
+      const r = await filePanelService.openGalleryImage(
+        envelope.payload.sessionId,
+        envelope.payload.mdPath,
+        envelope.payload.src,
+      );
+      if ('error' in r) return r;
+      shell.showItemInFolder(r.path);
+      return { ok: true };
     },
   );
 }

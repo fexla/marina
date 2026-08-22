@@ -49,7 +49,13 @@ import { Icon } from '../icons';
 import { useTranslation } from '../LanguageProvider';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { useToast } from '../Toast';
+import { useContextMenuApi } from '../ContextMenu';
 import { GalleryViewer } from './GalleryViewer';
+import {
+  buildImageActionMenu,
+  openMarkdownImageExternally,
+  revealMarkdownImageInExplorer,
+} from './imageActions';
 import { MarkdownCodeBlock, extractCodeBlockInfo } from './MarkdownCodeBlock';
 import { remarkMarinaHeadingSections } from './markdown-heading-sections';
 import { applyMarkdownRailPixelSnap } from './markdown-rail-pixel-snap';
@@ -845,6 +851,11 @@ function normalizeMdImageSources(md: string): string {
  * 图片：远程/data/blob URL 直接交给 img；本地引用只有 fileContext 才能经 main
  * 相对真实 Markdown 文件解析并读成 data URL。无路径能力时显示占位，不尝试
  * renderer base URL 或 file://，避免错误目录与 CSP 行为漂移。
+ *
+ * v0.3.3 图片交互（仅有 fileContext 时启用，命令面板输出保持纯静态图）：
+ * - 单击 → main resolve 后用系统图片查看器打开；
+ * - 右键 → 用系统图片查看器打开 / 复制图片 / 在 Explorer 中显示；
+ * - 图片被链接包裹（[![alt](img)](link)）时单击仍归 MdLink 导航。
  */
 function MdImage({
   src,
@@ -857,6 +868,9 @@ function MdImage({
   mdPath: string | undefined;
   mtimeMs: number | null;
 }): JSX.Element {
+  const { tx } = useTranslation();
+  const toast = useToast();
+  const ctxMenu = useContextMenuApi();
   const [url, setUrl] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -899,6 +913,45 @@ function MdImage({
     };
   }, [src, sessionId, mdPath, mtimeMs]);
 
+  // 交互层整体 gate 在 fileContext 上：GALLERY_* 通道要求 mdPath 过 main 端
+  // 成员校验，命令面板输出没有路径能力，挂了也只能报错，不如保持纯静态图。
+  const interactive = mdPath !== undefined && typeof src === 'string' && src.length > 0;
+
+  const openExternally = (): void => {
+    if (!mdPath || !src) return;
+    openMarkdownImageExternally({ sessionId, mdPath, src, toast, tx });
+  };
+
+  const handleClick = (event: React.MouseEvent<HTMLImageElement>): void => {
+    if (!interactive) return;
+    // 图片在 <a> 内（[![..](img)](link)）：点击属于链接导航，交给 MdLink 的
+    // <a onClick> 处理。这里不 preventDefault / stopPropagation，事件继续冒泡。
+    if ((event.target as HTMLElement).closest('a')) return;
+    openExternally();
+  };
+
+  const handleContextMenu = (event: React.MouseEvent<HTMLImageElement>): void => {
+    if (!interactive) return;
+    event.preventDefault();
+    ctxMenu.open({
+      x: event.clientX,
+      y: event.clientY,
+      items: buildImageActionMenu(
+        {
+          open: openExternally,
+          reveal: () => {
+            if (!mdPath || !src) return;
+            revealMarkdownImageInExplorer({ sessionId, mdPath, src, toast, tx });
+          },
+          // 远程 http 直链的 url 就是原 URL（非 dataUrl），没有位图数据，
+          // 不提供复制能力（能力驱动：不生成"复制图片"项）。
+          copyImageDataUrl: url !== null && url.startsWith('data:') ? url : undefined,
+        },
+        { toast, tx },
+      ),
+    });
+  };
+
   if (err) {
     return (
       <span className="md-img-error" title={err}>
@@ -909,5 +962,14 @@ function MdImage({
   if (!url) {
     return <span className="md-img-loading">…</span>;
   }
-  return <img src={url} alt={alt ?? ''} loading="lazy" />;
+  return (
+    <img
+      src={url}
+      alt={alt ?? ''}
+      loading="lazy"
+      className={interactive ? 'md-img-actionable' : undefined}
+      onClick={handleClick}
+      onContextMenu={handleContextMenu}
+    />
+  );
 }

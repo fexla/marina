@@ -3662,6 +3662,12 @@ html[data-maximized='true'] .app-root.with-shell {
   font-style: italic;
 }
 
+/* v0.3.3 文档图片交互:有 fileContext 的内联图可单击打开/右键菜单,用指针光标
+ * 提示可点。不在此做 hover 视觉(图片内容自身色彩不可控,叠效果易脏)。 */
+.md-img-actionable {
+  cursor: pointer;
+}
+
 /* Markdown viewer:正文排版。react-markdown 输出原生 h1~h6/p/ul/pre/code 等,
  * 这里给基础间距 + 代码块底色。颜色走主题变量。 */
 
@@ -4496,7 +4502,8 @@ html[data-maximized='true'] .app-root.with-shell {
   overflow-wrap: anywhere;
 }
 
-/* 图片 viewer:居中、可滚动;图按宽度等比缩放(max-width:100%)。 */
+/* 图片 viewer:居中、可滚动;图按宽度等比缩放(max-width:100%)。
+ * v0.3.3:单击用系统图片查看器打开(title 有提示),指针光标。 */
 .file-image-viewer {
   display: flex;
   align-items: flex-start;
@@ -4506,6 +4513,7 @@ html[data-maximized='true'] .app-root.with-shell {
 .file-image-viewer img {
   max-width: 100%;
   height: auto;
+  cursor: pointer;
 }
 
 .file-unknown-viewer {

@@ -79,6 +79,7 @@ import type {
   ImeProbeDumpPayload,
   OpenExternalPayload,
   ClipboardWriteTextPayload,
+  ClipboardWriteImagePayload,
   AddTemplatePayload,
   UpdateTemplatePayload,
   DeleteTemplatePayload,
@@ -91,6 +92,7 @@ import type {
   ReadImagePayload,
   GalleryResolveImagePayload,
   GalleryOpenImagePayload,
+  GalleryRevealImagePayload,
   GetFileTreeRootsPayload,
   ListFileTreeDirectoryPayload,
   OpenFileTreeFilePayload,
@@ -159,6 +161,7 @@ import type {
   GetAutoStartResponse,
   ClipboardReadTextResponse,
   ClipboardWriteTextResponse,
+  ClipboardWriteImageResponse,
   AddTemplateResponse,
   UpdateTemplateResponse,
   ExportSettingsResponse,
@@ -168,6 +171,7 @@ import type {
   ReadImageResponse,
   GalleryResolveImageResponse,
   GalleryOpenImageResponse,
+  GalleryRevealImageResponse,
   GetFileTreeRootsResponse,
   ListFileTreeDirectoryResponse,
   ListFileTreeRecursiveResponse,
@@ -463,6 +467,10 @@ export interface CommandContractMap {
     payload: ClipboardWriteTextPayload;
     response: ClipboardWriteTextResponse;
   };
+  [COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_IMAGE]: {
+    payload: ClipboardWriteImagePayload;
+    response: ClipboardWriteImageResponse;
+  };
 
   // ── Performance / diagnostics ─────────────────────────────────────────────
   [COMMAND_CHANNELS.PERFORMANCE_GET_STATUS]: {
@@ -552,6 +560,10 @@ export interface CommandContractMap {
   [COMMAND_CHANNELS.GALLERY_OPEN_IMAGE]: {
     payload: GalleryOpenImagePayload;
     response: GalleryOpenImageResponse;
+  };
+  [COMMAND_CHANNELS.GALLERY_REVEAL_IMAGE]: {
+    payload: GalleryRevealImagePayload;
+    response: GalleryRevealImageResponse;
   };
 
   // ── File tree ─────────────────────────────────────────────────────────────

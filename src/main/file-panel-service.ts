@@ -631,10 +631,12 @@ export class FilePanelService extends EventEmitter {
   }
 
   /**
-   * v0.3.3 Feature A(ADR-026):用系统图片查看器打开 gallery 某张图。
+   * v0.3.3 Feature A(ADR-026):把 md 引用图 resolve 成磁盘绝对路径,供 ipc 层
+   * 调 shell。真实语义是"resolver",不只服务 open —— gallery/markdown 内联图的
+   * open-image(shell.openPath)与 reveal-image(shell.showItemInFolder)共用本方法。
    *
    * 返回的是已 resolve 的磁盘绝对路径(本地图原路径;网络图缓存路径),
-   * 由 ipc 层调 shell.openPath。**不把路径返给 renderer**(防泄露——与
+   * 由 ipc 层调 shell。**不把路径返给 renderer**(防泄露——与
    * SYSTEM_OPEN_PATH 不同,后者要求 renderer 持路径;本通道全程 main 解析)。
    *
    * 安全:本地图复用 resolveLocalImageAbs(同成员校验 + 路径解析);网络图
