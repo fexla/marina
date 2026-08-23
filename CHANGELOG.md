@@ -5,7 +5,28 @@
 ## [Unreleased]
 
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
-> 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
+> 等攒够一批、产开发构建(附录 F)或正式发布时，把本段折成一个版本号(并加日期)。
+
+## [0.3.3-dev.9] — 2026-08-23
+
+> dev.8 出包后积累的两项：文档图片可交互 + show-in-marina skill 能力参考随包分发。
+
+### Added
+
+- **文档图片可交互(点开/右键复制/在资源管理器中显示)。** Markdown 正文内联图
+  (MdImage)、图片文件(ImageViewer)、gallery 代码块(GalleryViewer)三个看图 surface 统一获得：
+  单击 → main resolve 后用系统图片查看器打开(图片被链接包裹时单击仍归链接导航)；
+  右键 → 用系统图片查看器打开 / 复制图片 / 在 Explorer 中显示(生成器收敛在 imageActions.ts，
+  能力驱动)。新通道 `cmd:gallery:reveal-image` 与 `cmd:system:clipboard-write-image`(复制的就是
+  看到的那一帧;GIF 只保留首帧)。命令面板输出无 fileContext，图片保持纯静态。
+
+### Changed
+
+- **show-in-marina skill 附带 Markdown 面板能力参考文档。** 随包分发的
+  `src/skills/show-in-marina/` 新增 `MARKDOWN-CAPABILITIES.md`(面板渲染 Markdown 的完整能力清单：
+  本地文件/网页/锚点链接、可运行代码块、gallery、本地图片、目录导航、硬性约束如 raw HTML 禁用)，
+  并在 SKILL.md 顶部加指向它的摘要——AI 安装该 skill 后写文档时能按标准格式产出可交互文档，
+  而不是只知道链接和代码块两条。仓库本地 `.pi/skills` 开发副本不受影响。
 
 ## [0.3.3-dev.8] — 2026-08-21
 
