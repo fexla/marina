@@ -38,11 +38,13 @@ export default defineConfig({
       // claim-gate(模块级 race gate,纯 Promise 逻辑无 DOM/React) +
       // styles/global-css.test.ts(样式契约守卫:静态扫描 CSS 文本,非 UI 行为测试) +
       // file-panel/markdown-rail-pixel-snap.test.ts(点阵像素吸附纯函数,无 DOM/React) +
-      // file-panel/markdown-heading-sections.test.ts(H1-H6 章节重组纯 AST 变换)。
+      // file-panel/markdown-heading-sections.test.ts(H1-H6 章节重组纯 AST 变换) +
+      // file-panel/markdown-url-transform.test.ts(盘符路径放行/危险协议剥空,纯函数)。
       'src/renderer/store.test.ts',
       'src/renderer/components/common/**/*.test.ts',
       'src/renderer/components/file-panel/markdown-rail-pixel-snap.test.ts',
       'src/renderer/components/file-panel/markdown-heading-sections.test.ts',
+      'src/renderer/components/file-panel/markdown-url-transform.test.ts',
       'src/renderer/hooks/claim-gate.test.ts',
       'src/renderer/styles/**/*.test.ts',
     ],

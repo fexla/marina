@@ -10,8 +10,10 @@
  *   文档路径，绝不拿 command key 冒充文件路径绕过该安全 seam。
  * - documentIdentity 只用于代码块运行缓存。文件用规范化路径，命令用稳定 key；
  *   两种来源切面板卸载后都能恢复同一代码块的运行状态。
- * - Markdown 主题、GFM、外链、代码块和 DOM 查找都在本模块内，避免两个面板继续
+ * - Markdown 主题、GFM、外链、代码块和 DOM 查找都在本模块内,避免两个面板继续
  *   漂移出两套行为。
+ * - URL 消毒经 marinaUrlTransform 放行 Windows 盘符绝对路径:react-markdown 默认
+ *   会把 "C:"/"D:" 当未知协议把 href 剥空(2026-08-23 修复,详见该文件头)。
  *
  * @对应文档: docs/方案-命令面板-20260802.md D5；软件定义书 ADR-018、ADR-028。
  *
@@ -57,6 +59,7 @@ import {
   revealMarkdownImageInExplorer,
 } from './imageActions';
 import { MarkdownCodeBlock, extractCodeBlockInfo } from './MarkdownCodeBlock';
+import { marinaUrlTransform } from './markdown-url-transform';
 import { remarkMarinaHeadingSections } from './markdown-heading-sections';
 import { applyMarkdownRailPixelSnap } from './markdown-rail-pixel-snap';
 import { markdownSurfaceClass } from './markdown-surface';
@@ -706,7 +709,11 @@ export function MarkdownDocument({
 
   return (
     <div className={markdownSurfaceClass(mdStyle)} ref={containerRef}>
-      <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>
+      <ReactMarkdown
+        remarkPlugins={remarkPlugins}
+        components={components}
+        urlTransform={marinaUrlTransform}
+      >
         {normalizedText}
       </ReactMarkdown>
       {trailingContent}

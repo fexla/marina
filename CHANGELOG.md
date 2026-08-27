@@ -7,6 +7,16 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时，把本段折成一个版本号(并加日期)。
 
+### Fixed
+
+- **Markdown 里的 Windows 盘符绝对路径链接可以点击了。** `[图](D:\a\b.png)` /
+  `[页](C:\Users\x\m.html)` 此前渲染成 `<a href="">` 点击无反应:react-markdown 的
+  defaultUrlTransform 把 "C:"/"D:" 误判为未知 URL 协议(第一个 `:` 在任何 `/?#` 之前
+  且不在 https?/mailto 白名单)把 href 整条剥空。现在经自定义 urlTransform 放行盘符
+  路径(含 micromark 把反斜杠编码出的 `%5C` 形态),其余协议照旧消毒(javascript: 等
+  仍剥空)。图片 `![](...)` 的盘符 src 同样受益;main 端无需改动(decodeURIComponent
+  + resolve 对绝对路径天然正确)。
+
 ## [0.3.3-dev.9] — 2026-08-23
 
 > dev.8 出包后积累的两项：文档图片可交互 + show-in-marina skill 能力参考随包分发。
