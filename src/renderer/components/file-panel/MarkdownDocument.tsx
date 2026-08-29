@@ -14,6 +14,8 @@
  *   漂移出两套行为。
  * - URL 消毒经 marinaUrlTransform 放行 Windows 盘符绝对路径:react-markdown 默认
  *   会把 "C:"/"D:" 当未知协议把 href 剥空(2026-08-23 修复,详见该文件头)。
+ * - 裸盘符路径经 remarkMarinaPathAutolink 自动链接("read D:\\a.png" 这类无链接
+ *   语法的正文也能点,2026-08 修复);点击分流仍走同一个 MdLink seam。
  *
  * @对应文档: docs/方案-命令面板-20260802.md D5；软件定义书 ADR-018、ADR-028。
  *
@@ -61,6 +63,7 @@ import {
 import { MarkdownCodeBlock, extractCodeBlockInfo } from './MarkdownCodeBlock';
 import { marinaUrlTransform } from './markdown-url-transform';
 import { remarkMarinaHeadingSections } from './markdown-heading-sections';
+import { remarkMarinaPathAutolink } from './markdown-path-autolink';
 import { applyMarkdownRailPixelSnap } from './markdown-rail-pixel-snap';
 import { markdownSurfaceClass } from './markdown-surface';
 
@@ -467,7 +470,10 @@ export function MarkdownDocument({
   );
 
   const remarkPlugins = useMemo(
-    () => (filePath === undefined ? [remarkGfm] : [remarkGfm, remarkMarinaHeadingSections]),
+    () =>
+      filePath === undefined
+        ? [remarkGfm, remarkMarinaPathAutolink]
+        : [remarkGfm, remarkMarinaHeadingSections, remarkMarinaPathAutolink],
     [filePath],
   );
 
