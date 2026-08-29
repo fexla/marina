@@ -1,0 +1,161 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  /* Marina terminal CSS excerpts (global.css) + xterm.css (injected) */
+  html, body { margin: 0; height: 100%; background: #1e1e1e; }
+  #wrap { height: 100vh; display: flex; flex-direction: column; }
+  .terminal-host { position: relative; overflow: hidden; flex: 1 1 0; min-height:0; min-width:0; }
+  .terminal-host .xterm { position: absolute; inset: 0; padding: 10px 12px; }
+  .terminal-host .xterm-viewport { background-color: transparent !important; }
+  .terminal-host .xterm-viewport::-webkit-scrollbar { width: 12px; height: 12px; }
+  .terminal-host .xterm-viewport::-webkit-scrollbar-track { background: #2a2a2a; }
+  .terminal-host .xterm-viewport::-webkit-scrollbar-thumb { background: #555; }
+</style>
+</head>
+<body>
+<div id="wrap"><div class="terminal-host" id="termhost"></div></div>
+<script>
+  const { Terminal } = require('@xterm/xterm');
+  const { FitAddon } = require('@xterm/addon-fit');
+  const { WebglAddon } = require('@xterm/addon-webgl');
+  const { ipcRenderer } = require('electron');
+  const fs = require('fs');
+  document.head.appendChild(Object.assign(document.createElement('style'), {
+    textContent: fs.readFileSync('node_modules/@xterm/xterm/css/xterm.css', 'utf8'),
+  }));
+
+  const log = [];
+  const L = (m) => { log.push(`[${performance.now().toFixed(0)}] ${m}`); if (log.length > 400) log.shift(); console.log('[sim] ' + m); };
+
+  // ── xterm setup mirroring TerminalView.tsx ──
+  const host = document.getElementById('termhost');
+  const os = require('os');
+  const buildNumber = parseInt(os.release().split('.')[2] || '0', 10);
+  const term = new Terminal({
+    fontFamily: 'Consolas, "Courier New", monospace',
+    fontSize: 13,
+    lineHeight: 1.0,
+    cursorBlink: true,
+    cursorStyle: 'bar',
+    scrollback: 5000,
+    allowProposedApi: true,
+    ...(buildNumber ? { windowsPty: { backend: 'conpty', buildNumber } } : {}),
+  });
+  const fit = new FitAddon();
+  term.loadAddon(fit);
+  term.open(host);
+  try { term.loadAddon(new WebglAddon()); L('webgl renderer loaded'); }
+  catch (e) { L('webgl FAIL: ' + e.message); }
+  fit.fit();
+
+  // ── PTY lives in the MAIN process (node-pty needs worker threads) ──
+  const mode = new URLSearchParams(location.search).get('mode') || 'sim';
+  ipcRenderer.send('pty-spawn', { mode, cols: term.cols, rows: term.rows });
+  L(`pty spawn requested mode=${mode} cols=${term.cols} rows=${term.rows}`);
+  ipcRenderer.on('pty-out', (_e, d) => term.write(d));
+  term.onData(d => ipcRenderer.send('pty-in', d));
+  ipcRenderer.on('pty-exit', (_e, code) => L(`pty exited code=${code}`));
+
+  // ── resize plumbing mirroring TerminalView (RO + 150ms debounce) ──
+  let lastCols = term.cols, lastRows = term.rows, resizeTimer = null;
+  const performResize = () => {
+    try { fit.fit(); } catch (e) { L('fit threw: ' + e.message); return; }
+    const { cols, rows } = term;
+    if (cols < 20 || rows < 5) return;
+    if (cols === lastCols && rows === lastRows) return;
+    L(`RESIZE ${lastCols}x${lastRows} -> ${cols}x${rows}`);
+    lastCols = cols; lastRows = rows;
+    ipcRenderer.send('pty-resize', { cols, rows });
+  };
+  new ResizeObserver(() => {
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { resizeTimer = null; performResize(); }, 150);
+  }).observe(host);
+  term.onData(() => { if (resizeTimer) { clearTimeout(resizeTimer); resizeTimer = null; performResize(); } }); // XTM-7 flush
+
+  // ── automation: type / click / focus, like the user's trigger pattern ──
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789 你好世界.,;';
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  let stopped = false;
+  (async () => {
+    await sleep(3000); // let TUI settle
+    let i = 0;
+    while (!stopped) {
+      const r = Math.random();
+      if (r < 0.62) { // type 1-3 chars
+        const s = Array.from({length: 1 + Math.floor(Math.random()*3)}, () => chars[Math.floor(Math.random()*chars.length)]).join('');
+        term.input(s, true);
+        L(`type ${JSON.stringify(s)}`);
+      } else if (r < 0.80) { // click at random point in terminal
+        const rect = host.getBoundingClientRect();
+        const x = rect.left + Math.random()*rect.width, y = rect.top + Math.random()*rect.height;
+        const opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, view: window };
+        host.dispatchEvent(new MouseEvent('mousedown', opts));
+        host.dispatchEvent(new MouseEvent('mouseup', opts));
+        host.dispatchEvent(new MouseEvent('click', opts));
+        L(`click @${Math.round(x)},${Math.round(y)}`);
+      } else if (r < 0.90) { // backspace
+        term.input('\x7f', true); L('backspace');
+      } else if (r < 0.96) { // window focus cycle
+        window.blur(); await sleep(120); window.focus(); term.focus(); L('focus cycle');
+      } else { // scroll wheel inside terminal
+        host.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -(Math.random()*160+40), clientX: 300, clientY: 300 }));
+        L('wheel');
+      }
+      await sleep(250 + Math.random()*600);
+      i++;
+      if (i % 200 === 0) L(`heartbeat i=${i}`);
+    }
+  })();
+
+  // ── anomaly detector ──
+  const baseGeo = {};
+  const geo = () => {
+    const pick = (sel) => { const el = host.querySelector(sel); if (!el) return null;
+      const r = el.getBoundingClientRect(); const cs = getComputedStyle(el);
+      return { l: +r.left.toFixed(1), w: +r.width.toFixed(1), ovX: cs.overflowX, cw: el.clientWidth, sw: el.scrollWidth }; };
+    return {
+      screen: pick('.xterm-screen'), scrollable: pick('.xterm-scrollable-element'),
+      viewport: pick('.xterm-viewport'), canvas: pick('canvas'),
+      page: { scrollW: document.documentElement.scrollWidth, innerW: window.innerWidth },
+      cols: term.cols, rows: term.rows, dpr: window.devicePixelRatio,
+      vbar: (() => { const el = host.querySelector('.xterm-scrollbar.xterm-vertical'); return el ? [...el.classList].join(',') : null; })(),
+      hbar: (() => { const el = host.querySelector('.xterm-scrollbar.xterm-horizontal'); return el ? [...el.classList].join(',') : null; })(),
+    };
+  };
+  const dumpTree = () => {
+    const walk = (el, d, out) => { const cs = getComputedStyle(el); const r = el.getBoundingClientRect();
+      out.push('  '.repeat(d) + el.tagName + '.' + [...el.classList].join('.') + ` [${Math.round(r.width)}x${Math.round(r.height)} @${r.left.toFixed(1)}] ovX=${cs.overflowX} cw=${el.clientWidth} sw=${el.scrollWidth}`);
+      for (const c of el.children) walk(c, d+1, out); };
+    const out = []; walk(host, 0, out); return out.join('\n');
+  };
+  let anomalies = 0;
+  setInterval(() => {
+    const g = geo();
+    if (!baseGeo.screen) Object.assign(baseGeo, JSON.parse(JSON.stringify(g)));
+    const problems = [];
+    for (const k of ['screen', 'scrollable', 'viewport', 'canvas']) {
+      const cur = g[k], was = baseGeo[k];
+      if (!cur || !was) continue;
+      if (Math.abs(cur.l - was.l) > 0.5) problems.push(`${k}.left ${was.l} -> ${cur.l}`);
+      if (Math.abs(cur.w - was.w) > 0.5) problems.push(`${k}.width ${was.w} -> ${cur.w}`);
+      if ((cur.ovX === 'auto' || cur.ovX === 'scroll') && cur.sw > cur.cw + 1) problems.push(`${k} H-OVERFLOW sw=${cur.sw} cw=${cur.cw}`);
+    }
+    if (g.page.scrollW > g.page.innerW + 1) problems.push(`PAGE H-OVERFLOW scrollW=${g.page.scrollW} innerW=${g.page.innerW}`);
+    if (g.cols !== baseGeo.cols || g.rows !== baseGeo.rows) { L(`cols/rows now ${g.cols}x${g.rows} (was ${baseGeo.cols}x${baseGeo.rows})`); baseGeo.cols = g.cols; baseGeo.rows = g.rows; }
+    if (problems.length) {
+      anomalies++;
+      if (anomalies <= 15) {
+        console.log('[SHIFT-CAPTURE] ' + JSON.stringify({ t: performance.now(), problems, geo: g, lastLog: log.slice(-60), tree: dumpTree() }));
+      }
+      // re-baseline so we catch the *next* deviation too
+      Object.assign(baseGeo, JSON.parse(JSON.stringify(g)));
+    }
+  }, 200);
+
+  window.addEventListener('beforeunload', () => { stopped = true; try { ipcRenderer.send('pty-kill'); } catch {} });
+</script>
+</body>
+</html>

@@ -1,0 +1,90 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  /* Marina's terminal CSS (global.css excerpts) + xterm's own css injected by JS */
+  html, body { margin: 0; height: 100%; background: #1e1e1e; }
+  #host { height: 100vh; display: flex; flex-direction: column; }
+  .terminal-host { position: relative; overflow: hidden; flex: 1 1 0; }
+  .terminal-host .xterm { position: absolute; inset: 0; padding: 10px 12px; }
+  .terminal-host .xterm-viewport { background-color: transparent !important; }
+  .terminal-host .xterm-viewport::-webkit-scrollbar { width: 12px; height: 12px; }
+  .terminal-host .xterm-viewport::-webkit-scrollbar-track { background: #333; }
+  .terminal-host .xterm-viewport::-webkit-scrollbar-thumb { background: #666; }
+</style>
+</head>
+<body>
+<div id="host"><div class="terminal-host" id="termhost"></div></div>
+<script>
+  const { Terminal } = require('@xterm/xterm');
+  const { FitAddon } = require('@xterm/addon-fit');
+  const { WebglAddon } = require('@xterm/addon-webgl');
+  const fs = require('fs');
+  const style = document.createElement('style');
+  style.textContent = fs.readFileSync('node_modules/@xterm/xterm/css/xterm.css', 'utf8');
+  document.head.appendChild(style);
+
+  window.__probe = async function (scenario) {
+    const host = document.getElementById('termhost');
+    const term = new Terminal({ scrollback: 5000, cursorBlink: true });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(host);
+    try { term.loadAddon(new WebglAddon()); } catch (e) { console.log('webgl fail', e); }
+    fit.fit();
+    term.write('x'.repeat(term.cols) + '\r\n');
+    term.write('padding line\r\n'.repeat(30));
+    term.write('pi> ');
+    await new Promise(r => term.write('', r));
+    await new Promise(r => requestAnimationFrame(r));
+
+    if (scenario === 'scrollbackGrow') {
+      // push enough output to grow scrollback (scrollbar conditions change)
+      term.write('more output to fill scrollback\r\n'.repeat(60));
+      await new Promise(r => term.write('', r));
+      await new Promise(r => requestAnimationFrame(r));
+    }
+    if (scenario === 'resizeWider') {
+      // simulate what RO/fit would do if container grew by 12px (scrollbar gone)
+      host.style.paddingRight = '0px';
+      fit.fit();
+      await new Promise(r => requestAnimationFrame(r));
+    }
+
+    const dump = (el, depth) => {
+      const cs = getComputedStyle(el);
+      const r = el.getBoundingClientRect();
+      const info = [];
+      if (cs.overflowX !== 'visible') info.push('ovX=' + cs.overflowX);
+      if (cs.overflowY !== 'visible') info.push('ovY=' + cs.overflowY);
+      return '  '.repeat(depth) + el.tagName + '.' + [...el.classList].join('.') +
+        ' [' + Math.round(r.width) + 'x' + Math.round(r.height) + '] ' + info.join(' ') +
+        ' inlineW=' + (el.style.width || '-') + ' inlineH=' + (el.style.height || '-');
+    };
+    const walk = (el, depth, out) => {
+      out.push(dump(el, depth));
+      for (const c of el.children) walk(c, depth + 1, out);
+    };
+    const out = [];
+    walk(host, 0, out);
+    const vp = host.querySelector('.xterm-viewport');
+    const canvas = host.querySelector('.xterm-screen canvas');
+    return {
+      scenario,
+      tree: out.join('\n'),
+      termCols: term.cols, termRows: term.rows,
+      viewport: {
+        clientWidth: vp.clientWidth, scrollWidth: vp.scrollWidth,
+        clientHeight: vp.clientHeight, scrollHeight: vp.scrollHeight,
+        HScrollbarVisible: vp.scrollWidth > vp.clientWidth,
+      },
+      canvasCssW: canvas ? canvas.style.width : null,
+      canvasBackingW: canvas ? canvas.width : null,
+      dpr: window.devicePixelRatio,
+    };
+  };
+  window.__term = () => term;
+</script>
+</body>
+</html>
