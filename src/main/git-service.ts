@@ -43,7 +43,7 @@ import { promises as fs, statSync } from 'node:fs';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import type { BackgroundDemandLevel, FilePanelSnapshot } from '@shared/protocol';
 import { resolveDiffOpenFileState } from '@shared/diff-path';
-import { detectFileKind } from '@shared/file-kind';
+import { detectFileKind, isBinaryLikeKind } from '@shared/file-kind';
 import type { PathKind, SessionState } from '@shared/types';
 import type { FilePanelService } from './file-panel-service';
 import { BackgroundWorkScheduler } from './background-work-scheduler';
@@ -509,15 +509,16 @@ export class GitService extends EventEmitter {
 
     // v0.3.3:二进制文件没有可读的文本 diff —— git 只会输出一行
     // "Binary files a/x.png and b/x.png differ",点开毫无信息量。对扩展名不在
-    // 文本白名单的文件(detectFileKind ∈ {'image','unknown'},判定口径与文件
-    // 面板一致,见 file-kind.ts "绝不靠猜" 约定),改为直接按普通方式打开文件
-    // 本身:图片 → 面板图片查看器,其它二进制 → "暂不支持预览"占位 —— 与在
+    // 文本白名单的文件(isBinaryLikeKind,detectFileKind ∈ {'image','unknown'},
+    // 判定口径与文件面板一致,见 file-kind.ts "绝不靠猜" 约定),改为直接按
+    // 普通方式打开文件本身:图片 → 面板图片查看器,其它二进制 → "暂不支持
+    // 预览"占位 —— 与在
     // 文件树里点击同名文件的行为完全一致,零新 IPC(复用 filePanelService。
     // openFile)。两类目标不回退、保留 diff:deleted(工作区已无实体,openFile
     // 必失败,diff 的 "deleted file mode" 仍有信息量)与目录条目(modified
     // submodule,diff 仍能显示 Subproject commit 变更)。见 tryResolveDirectOpenTarget。
     const directKind = detectFileKind(basename(relativePath));
-    if (directKind === 'image' || directKind === 'unknown') {
+    if (isBinaryLikeKind(directKind)) {
       const directPath = await this.tryResolveDirectOpenTarget(repoRoot, relativePath);
       if (directPath) {
         logger.info(

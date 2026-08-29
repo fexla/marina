@@ -3,7 +3,7 @@
  * @purpose 验证 detectFileKind 的扩展名 / 无扩展名 / 边界判定。
  */
 import { describe, expect, it } from 'vitest';
-import { detectFileKind } from './file-kind';
+import { detectFileKind, isBinaryLikeKind } from './file-kind';
 
 describe('detectFileKind', () => {
   it('markdown 扩展名', () => {
@@ -76,5 +76,22 @@ describe('detectFileKind', () => {
     expect(detectFileKind('0001-fix-bug.patch')).toBe('diff');
     // diff 优先于 text(这些扩展名不被 TEXT_EXT 吃掉)
     expect(detectFileKind('a/b/c.diff')).toBe('diff');
+  });
+});
+
+describe('isBinaryLikeKind(v0.3.3 Git 面板分流单一真源)', () => {
+  it('image/unknown 为 true(无法文本 diff,点击直接打开);文本三族为 false', () => {
+    expect(isBinaryLikeKind('image')).toBe(true);
+    expect(isBinaryLikeKind('unknown')).toBe(true);
+    expect(isBinaryLikeKind('text')).toBe(false);
+    expect(isBinaryLikeKind('markdown')).toBe(false);
+    expect(isBinaryLikeKind('diff')).toBe(false);
+  });
+
+  it('与 detectFileKind 联动:常见二进制/图片判定为 true,源码为 false', () => {
+    expect(isBinaryLikeKind(detectFileKind('logo.png'))).toBe(true);
+    expect(isBinaryLikeKind(detectFileKind('bundle.exe'))).toBe(true);
+    expect(isBinaryLikeKind(detectFileKind('src/app.ts'))).toBe(false);
+    expect(isBinaryLikeKind(detectFileKind('README.md'))).toBe(false);
   });
 });

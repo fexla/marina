@@ -16,8 +16,10 @@
   「暂不支持预览」占位 —— 与在文件树里点击同名文件的行为一致,零新 IPC(分流在
   main 端 `GitService.openDiff` 单点完成,renderer 不改)。两个例外保留 diff:已删除文件
   (工作区无实体,diff 仍有 "deleted file mode" 信息)与目录条目(modified submodule,diff
-  显示 Subproject commit 变更)。文本文件行为不变。对应 软件定义书 §14.6 ADR-017
-  条款的 v0.3.3 标注。
+  显示 Subproject commit 变更)。文本文件行为不变。右键菜单同步:二进制文件主项
+  标签由「打开 diff」换成「打开文件」并省略重复的「打开文件本身」次级项(deleted 仍标
+  「打开 diff」);判定谓词提炼为 shared `isBinaryLikeKind`,main/renderer 单一真源。
+  对应 软件定义书 §14.6 ADR-017 条款的 v0.3.3 标注。
 
 ## [0.3.3-dev.10] — 2026-08-23
 

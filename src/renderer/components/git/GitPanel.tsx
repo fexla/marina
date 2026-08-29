@@ -31,6 +31,7 @@ import {
 import { buildGitTree, type GitTreeNode } from '@shared/build-git-tree';
 import { matchText } from '@shared/text-search';
 import { fileIconFor } from '@shared/file-icon';
+import { detectFileKind, isBinaryLikeKind } from '@shared/file-kind';
 import { usePanelPreference } from '../../hooks/usePanelPreference';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { buildFileEntryMenu } from '../common/fileListRowContextMenu';
@@ -316,24 +317,46 @@ export function GitPanel({ sessionId, search }: GitPanelProps): JSX.Element {
 
   // v0.3.1 ADR-018:右键菜单改用统一生成器 buildFileEntryMenu。
   // tree + flat 都用它,形态与其他面板一致。deleted 文件 → openFile 禁用。
-  const buildEntryMenu = (relativePath: string, tone?: GitStatusTone): ContextMenuItem[] =>
-    buildFileEntryMenu(
-      {
-        primary: { label: tx('打开 diff', 'Open diff'), run: () => openDiff(relativePath) },
-        openFile: {
-          run: () => openFile(relativePath),
-          disabled: tone === 'deleted',
-        },
-        relativePath,
-        resolveAbsolutePath: () => resolveAbsPath(relativePath),
-        // reveal / openExternal 都先 resolve 到绝对路径再调系统 IPC。抽个局部 helper
-        // 避免两处重复 then/catch ladder。
-        reveal: () => withAbsPath(relativePath, (abs) => onSystemOp(abs, 'show')),
-        // v0.3.2:用系统默认应用打开(deleted 文件工作区已删,让系统报错即可)。
-        openExternal: () => withAbsPath(relativePath, (abs) => onSystemOp(abs, 'open')),
+  //
+  // v0.3.3:二进制文件(isBinaryLikeKind,与 main 端 GitService.openDiff 分流
+  // 同一口径)的点击行为是「直接打开文件本身」,主项标签随之换成「打开文件」,
+  // 并按生成器语义省略 openFile 次级项(与 primary 重复,file-tree 同例不提供)。
+  // deleted 例外:工作区无实体,main 端会落回 diff,主项保持「打开 diff」。
+  // 已知近似:submodule 这类目录条目 basename 无扩展名 → 也会标成
+  // 「打开文件」,但 main 端按目标形态兜底落回 diff(renderer 不做 fs 探测,
+  // 标签不追求比 main 端更准)。
+  const buildEntryMenu = (relativePath: string, tone?: GitStatusTone): ContextMenuItem[] => {
+    // git 相对路径恒用 '/' 分隔,取末段做扩展名判定(不引入 node:path)
+    const directOpen =
+      tone !== 'deleted' &&
+      isBinaryLikeKind(detectFileKind(relativePath.split('/').pop() ?? relativePath));
+    const entryContext: Parameters<typeof buildFileEntryMenu>[0] = {
+      primary: {
+        label: directOpen ? tx('打开文件', 'Open file') : tx('打开 diff', 'Open diff'),
+        run: () => openDiff(relativePath),
       },
-      { copyToClipboard, toastError: (m) => toast.push({ kind: 'error', message: m }), tx },
-    );
+      relativePath,
+      resolveAbsolutePath: () => resolveAbsPath(relativePath),
+      // reveal / openExternal 都先 resolve 到绝对路径再调系统 IPC。抽个局部 helper
+      // 避免两处重复 then/catch ladder。
+      reveal: () => withAbsPath(relativePath, (abs) => onSystemOp(abs, 'show')),
+      // v0.3.2:用系统默认应用打开(deleted 文件工作区已删,让系统报错即可)。
+      openExternal: () => withAbsPath(relativePath, (abs) => onSystemOp(abs, 'open')),
+    };
+    // exactOptionalPropertyTypes 下不能赋 undefined;directOpen 时主项已等价
+    // 「打开文件本身」,次级项整个不提供(生成器:不提供就没这项)。
+    if (!directOpen) {
+      entryContext.openFile = {
+        run: () => openFile(relativePath),
+        disabled: tone === 'deleted',
+      };
+    }
+    return buildFileEntryMenu(entryContext, {
+      copyToClipboard,
+      toastError: (m) => toast.push({ kind: 'error', message: m }),
+      tx,
+    });
+  };
 
   /** resolve 相对路径为绝对路径后执行 op;解析失败 / 系统调用失败都 toast。 */
   function withAbsPath(relativePath: string, op: (abs: string) => void): void {

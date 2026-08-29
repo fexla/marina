@@ -218,3 +218,15 @@ export function detectFileKind(fileName: string): FileKind {
   if (DIFF_EXT.has(ext)) return 'diff';
   return 'unknown';
 }
+
+/**
+ * v0.3.3:Git 面板「二进制文件点击直接打开」分流判定(单一真源)。
+ *
+ * 'image' 与 'unknown' 无法产生可读的文本 diff(git 只输出一行
+ * "Binary files a/x.png and b/x.png differ"),main 端 GitService.openDiff 对
+ * 这类 kind 改为直接打开文件本身;renderer 右键菜单主项也据此切换标签
+ * (「打开 diff」→「打开文件」)。两端共用本函数,保证判定口径永远一致。
+ */
+export function isBinaryLikeKind(kind: FileKind): boolean {
+  return kind === 'image' || kind === 'unknown';
+}
