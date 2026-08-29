@@ -40,9 +40,10 @@ import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promises as fs, statSync } from 'node:fs';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import type { BackgroundDemandLevel, FilePanelSnapshot } from '@shared/protocol';
 import { resolveDiffOpenFileState } from '@shared/diff-path';
+import { detectFileKind } from '@shared/file-kind';
 import type { PathKind, SessionState } from '@shared/types';
 import type { FilePanelService } from './file-panel-service';
 import { BackgroundWorkScheduler } from './background-work-scheduler';
@@ -474,6 +475,10 @@ export class GitService extends EventEmitter {
    * 普通 .diff 文件走既有 openFile 路径。这样:tab 管理 / watcher 自动刷新 /
    * 关闭逻辑 / requestActivation 全部复用,零改动既有状态机。
    *
+   * v0.3.3:二进制文件(扩展名不在文本白名单:图片/未知类型)不走 diff,改为
+   * 直接按普通方式打开文件本身(与文件树点击同名文件一致);deleted 与目录
+   * 条目除外,见 tryResolveDirectOpenTarget。
+   *
    * @param relativePath 相对 repoRoot 的路径(由 getStatus 返回,renderer 原样回传)
    * @throws GitError 同 getStatus + NotARepo(若 relativePath 不在 repoRoot 内)
    */
@@ -501,6 +506,27 @@ export class GitService extends EventEmitter {
     // worktree 内容读取前 realpath + 包含校验。只有 confirmed deleted/conflict 且
     // 目标确实不存在时允许跳过 realpath，以保留删除文件 diff。
     this.resolveLexicallyInsideRepo(repoRoot, relativePath);
+
+    // v0.3.3:二进制文件没有可读的文本 diff —— git 只会输出一行
+    // "Binary files a/x.png and b/x.png differ",点开毫无信息量。对扩展名不在
+    // 文本白名单的文件(detectFileKind ∈ {'image','unknown'},判定口径与文件
+    // 面板一致,见 file-kind.ts "绝不靠猜" 约定),改为直接按普通方式打开文件
+    // 本身:图片 → 面板图片查看器,其它二进制 → "暂不支持预览"占位 —— 与在
+    // 文件树里点击同名文件的行为完全一致,零新 IPC(复用 filePanelService。
+    // openFile)。两类目标不回退、保留 diff:deleted(工作区已无实体,openFile
+    // 必失败,diff 的 "deleted file mode" 仍有信息量)与目录条目(modified
+    // submodule,diff 仍能显示 Subproject commit 变更)。见 tryResolveDirectOpenTarget。
+    const directKind = detectFileKind(basename(relativePath));
+    if (directKind === 'image' || directKind === 'unknown') {
+      const directPath = await this.tryResolveDirectOpenTarget(repoRoot, relativePath);
+      if (directPath) {
+        logger.info(
+          MODULE,
+          `openDiff: binary-like file (${directKind}) opens directly as file: ${relativePath}`,
+        );
+        return this.filePanelService.openFile(sessionId, directPath);
+      }
+    }
 
     // diff 策略:对工作区文件统一用 `git diff -- <path>`,它会覆盖:
     // - 已跟踪文件的 unstaged 改动
@@ -856,6 +882,34 @@ export class GitService extends EventEmitter {
       );
     }
     return canonicalTarget;
+  }
+
+  /**
+   * v0.3.3:解析「二进制文件直接打开」的目标;不满足条件时返回 null(落回 diff)。
+   *
+   * 只有当目标是**现存普通文件**时才返回 canonical 绝对路径:
+   * - 不存在(典型:tone=deleted,工作区已无实体)→ null,保留删除 diff;
+   * - 目录(porcelain v2 会把 modified submodule 当普通条目列出,basename 无
+   *   扩展名 → detectFileKind='unknown' 会进 openDiff 的二进制分支)→ null,
+   *   保留 "Subproject commit xxx → yyy" 这类仍有信息量的 diff;
+   * - 现存文件 → 走 resolveExistingInsideRepo(realpath + repoRoot 包含校验),
+   *   symlink/junction 逃逸在此抛 OutsideRepoRoot,与既有 openDiff/openFile
+   *   安全语义一致。
+   */
+  private async tryResolveDirectOpenTarget(
+    repoRoot: string,
+    relativePath: string,
+  ): Promise<string | null> {
+    const lexicalTarget = this.resolveLexicallyInsideRepo(repoRoot, relativePath);
+    try {
+      const st = await fs.stat(lexicalTarget);
+      if (!st.isFile()) return null;
+    } catch {
+      // ENOENT / 无权限 / symlink 失效都回退 diff;若目标真有问题,produceDiff
+      // 里的 assertDiffWorktreeTargetSafe 会给出更精确的错误。
+      return null;
+    }
+    return this.resolveExistingInsideRepo(repoRoot, relativePath);
   }
 
   // ────────────────────────────────────────────────────────────────

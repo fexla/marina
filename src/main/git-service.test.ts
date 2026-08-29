@@ -388,6 +388,81 @@ describe('GitService', () => {
     expect(snap.files[0]?.origin?.sourceMissing).toBe(true);
   });
 
+  // ── v0.3.3:二进制文件点击 → 直接按普通方式打开(不产生 diff) ──────────
+  it('openDiff:图片文件不走 diff,直接按普通方式打开真实文件', async () => {
+    // PNG magic bytes:分支判定只看扩展名,但 FilePanelService 按 kind='image'
+    // 会真读内容转 base64,给真实文件头让链路端到端成立。
+    await writeFile(
+      join(repoDir, 'logo.png'),
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]),
+    );
+    const spy = vi.spyOn(
+      service as unknown as { runGit: (...a: never[]) => Promise<unknown> },
+      'runGit',
+    );
+
+    const snap = await service.openDiff('s1', 'owner-1', 'logo.png');
+
+    // 分流发生在任何 git 子进程之前:runGit 不应被调用
+    expect(spy).not.toHaveBeenCalled();
+    const opened = snap.files[0]!;
+    expect(opened.path).not.toContain('__marina_diff__');
+    expect(opened.path).toBe(await realpath(join(repoDir, 'logo.png')));
+    expect(opened.kind).toBe('image');
+    // 走 GitService.openFile 同构路径,无 git-diff origin 元数据
+    expect(opened.origin).toBeUndefined();
+  });
+
+  it('openDiff:未知扩展名的二进制文件同样直接打开(kind=unknown 占位)', async () => {
+    await writeFile(join(repoDir, 'bundle.exe'), Buffer.from([0x4d, 0x5a, 0x90, 0x00]));
+
+    const snap = await service.openDiff('s1', 'owner-1', 'bundle.exe');
+
+    const opened = snap.files[0]!;
+    expect(opened.path).not.toContain('__marina_diff__');
+    expect(opened.path).toBe(await realpath(join(repoDir, 'bundle.exe')));
+    expect(opened.kind).toBe('unknown');
+  });
+
+  it('openDiff:deleted 的二进制文件保留 diff(工作区无实体,无法直接打开)', async () => {
+    // 不写工作区文件:deleted 状态下实体已不存在
+    const statusSample = `1 .D N... 100644 000000 000000 aaaa 0000 logo.png\0`;
+    const diffText =
+      `diff --git a/logo.png b/logo.png\n` +
+      `deleted file mode 100644\n` +
+      `Binary files a/logo.png and /dev/null differ\n`;
+    vi.spyOn(service as unknown as { runGit: (...a: never[]) => Promise<unknown> }, 'runGit')
+      .mockResolvedValueOnce({ stdout: Buffer.from(statusSample, 'utf8'), stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: Buffer.from(diffText, 'utf8'), stderr: '', exitCode: 0 });
+
+    const snap = await service.openDiff('s1', 'owner-1', 'logo.png');
+
+    expect(snap.files[0]?.path).toContain('__marina_diff__');
+    expect(snap.files[0]?.origin).toMatchObject({
+      kind: 'git-diff',
+      relativePath: 'logo.png',
+      sourceMissing: true,
+    });
+  });
+
+  it('openDiff:目录条目(如 modified submodule)不回退,仍走 diff', async () => {
+    // submodule 在 porcelain v2 里是普通条目(basename 无扩展名 → detectFileKind
+    // ='unknown'),但目标是目录;diff 仍能显示 Subproject commit 变更,保留。
+    await mkdir(join(repoDir, 'submod'));
+    const statusSample = `1 .M N... 160000 160000 160000 aaaa bbbb submod\0`;
+    const diffText =
+      `diff --git a/submod b/submod\n` +
+      `--- a/submod\n+++ b/submod\n` +
+      `@@ -1 +1 @@\n-Subproject commit aaa\n+Subproject commit bbb\n`;
+    vi.spyOn(service as unknown as { runGit: (...a: never[]) => Promise<unknown> }, 'runGit')
+      .mockResolvedValueOnce({ stdout: Buffer.from(statusSample, 'utf8'), stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: Buffer.from(diffText, 'utf8'), stderr: '', exitCode: 0 });
+
+    const snap = await service.openDiff('s1', 'owner-1', 'submod');
+
+    expect(snap.files[0]?.path).toContain('__marina_diff__');
+  });
+
   it('openDiff:拒绝经 symlink/junction 读取仓库外未跟踪文件内容', async () => {
     await writeFile(join(nonRepoDir, 'secret.txt'), 'TOP_SECRET_OUTSIDE');
     const escapedLink = join(repoDir, 'escaped-link');
