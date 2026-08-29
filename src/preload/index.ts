@@ -80,6 +80,13 @@ const gpuCompositingDisabled = ((): boolean => {
 })();
 
 /**
+ * [DEBUG-shift2] 终端左移 bug 诊断开关:MARINA_SHIFT_CAPTURE=1 启动时,
+ * renderer 在每个 active 终端上挂几何异常检测器,捕获到的快照经
+ * cmd:debug:shift-capture 落盘 + 截图。结案后删除(grep: DEBUG-shift2)。
+ */
+const shiftCaptureEnabled = process.env.MARINA_SHIFT_CAPTURE === '1';
+
+/**
  * 从 URL query string 提取窗口元数据。
  * Main 创建 BrowserWindow 时附加 ?windowId=...&windowNumber=...
  */
@@ -428,6 +435,8 @@ const api = {
    * WebGL + CPU 合成的双重高负载(见 TerminalView PER-1 / 附录 J)。
    */
   gpuCompositingDisabled,
+  /** [DEBUG-shift2] 见上方 shiftCaptureEnabled 注释。 */
+  shiftCaptureEnabled,
 
   /** 协议版本握手 — handshake 第一步 (ipc-protocol.md 第 4 章) */
   getProtocolVersion: (): Promise<{

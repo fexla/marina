@@ -253,6 +253,12 @@ export const COMMAND_CHANNELS = {
    * 不依赖 DevTools 打开。详见 src/shared/ime-probe-ring.ts。
    */
   LOGGER_IME_DUMP: 'cmd:logger:ime-dump',
+  /**
+   * [DEBUG-shift2] 临时诊断通道(终端偶发整体左移 bug):renderer 端检测器
+   * 发现几何异常时上报快照,main 端落盘 logs/shift-capture-*.log + 窗口截图。
+   * 结案后连同通道一起删(标记 grep: DEBUG-shift2)。
+   */
+  DEBUG_SHIFT_CAPTURE: 'cmd:debug:shift-capture',
 
   // 0.3.2 性能诊断域 —— 当前客户端本机 main 的飞行记录器,永远 local-control。
   PERFORMANCE_GET_STATUS: 'cmd:performance:get-status',
@@ -448,6 +454,7 @@ const LOCAL_CONTROL_COMMANDS_SET: ReadonlySet<string> = new Set<CommandChannel>(
   COMMAND_CHANNELS.REMOTE_DAEMON_GET_STATUS,
   COMMAND_CHANNELS.REMOTE_DAEMON_SET_PORT,
   COMMAND_CHANNELS.REMOTE_DAEMON_SET_PASSWORD,
+  COMMAND_CHANNELS.DEBUG_SHIFT_CAPTURE,
   COMMAND_CHANNELS.SYSTEM_CLIPBOARD_READ_TEXT,
   COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_TEXT,
   COMMAND_CHANNELS.SYSTEM_CLIPBOARD_WRITE_IMAGE,
@@ -1725,6 +1732,18 @@ export interface SettingsChangedPayload {
 export interface TemplateListUpdatedPayload {
   templates: Template[];
   defaultTemplateId: string;
+}
+
+/**
+ * [DEBUG-shift2] 终端左移 bug 的自动捕获上报。kind 列出异常类型,
+ * snapshot 是检测器当时抓的完整几何快照(纯数据,便于 JSONL 落盘)。
+ * 详见 src/renderer/shift-capture-debug.ts 头注释。结案后删除(grep: DEBUG-shift2)。
+ */
+export interface ShiftCapturePayload {
+  sessionId: string;
+  kind: string;
+  problems: string[];
+  snapshot: Record<string, unknown>;
 }
 
 /**

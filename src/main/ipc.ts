@@ -210,6 +210,7 @@ import {
   type WindowListUpdatedPayload,
   type ImeProbeDumpPayload,
   type ImeProbeDumpResponse,
+  type ShiftCapturePayload,
   type InstallMarinaSkillPayload,
   type InstallMarinaSkillResponse,
   type PiBridgeInstallPayload,
@@ -1707,6 +1708,50 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
         `leak dump session=${meta.sessionId} t=${meta.t} entries=${entries.length}`,
         { meta, entries },
       );
+      return { ok: true };
+    },
+  );
+
+  // [DEBUG-shift2] 终端左移 bug 捕获:renderer 检测器发现几何异常时上报,
+  // main 端两件事(均 fire-and-forget 友好,永不 throw):
+  //   1. JSONL 追加 logs/shift-capture-YYYY-MM-DD.log(一行一事件)
+  //   2. 发送方窗口 capturePage 截图 → logs/shift-capture-<ts>.png(全局限频 3s)
+  // 结案后连同通道/检测器一起删(grep: DEBUG-shift2)。
+  let lastShiftShot = 0;
+  registerHandle(
+    COMMAND_CHANNELS.DEBUG_SHIFT_CAPTURE,
+    async (
+      _e: Electron.IpcMainInvokeEvent,
+      envelope: CommandEnvelope<ShiftCapturePayload>,
+    ): Promise<{ ok: true }> => {
+      const { sessionId, kind, problems, snapshot } = envelope.payload;
+      const line = JSON.stringify({
+        t: new Date().toISOString(),
+        sessionId,
+        kind,
+        problems,
+        snapshot,
+      });
+      try {
+        const logsDir = joinPath(app.getPath('userData'), 'logs');
+        await fs.mkdir(logsDir, { recursive: true });
+        const day = new Date().toISOString().slice(0, 10);
+        await fs.appendFile(joinPath(logsDir, `shift-capture-${day}.log`), line + '\n', 'utf8');
+        const now = Date.now();
+        if (now - lastShiftShot > 3000) {
+          lastShiftShot = now;
+          const win = BrowserWindow.fromWebContents(_e.sender);
+          if (win && !win.isDestroyed()) {
+            const img = await win.webContents.capturePage();
+            await fs.writeFile(
+              joinPath(logsDir, `shift-capture-${now}.png`),
+              img.toPNG(),
+            );
+          }
+        }
+      } catch (err) {
+        console.warn('[shift-capture] dump failed:', err);
+      }
       return { ok: true };
     },
   );

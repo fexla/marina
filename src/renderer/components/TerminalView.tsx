@@ -89,6 +89,8 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { Check, Maximize2, Minimize2, Plus, X } from 'lucide-react';
 import { COMMAND_CHANNELS, EVENT_CHANNELS, type SessionOutputPayload } from '@shared/protocol';
+// [DEBUG-shift2] 临时诊断挂载(终端左移 bug),结案后删
+import { attachShiftCapture } from '../shift-capture-debug';
 import type { SessionInfo, ThemeId } from '@shared/types';
 import { attachImeCompositionEndCleaner } from '@shared/ime-textarea-workaround';
 import { attachImeCompositionPositionLock } from '@shared/ime-composition-position-lock';
@@ -1094,6 +1096,23 @@ export function TerminalView({
         .catch(() => {});
     };
   }, [session.id]);
+
+  // [DEBUG-shift2] 临时诊断(终端左移 bug):MARINA_SHIFT_CAPTURE=1 时在
+  // active 终端上挂几何异常检测器,异常自动落盘 + 截图。结案后删(grep: DEBUG-shift2)。
+  useEffect(() => {
+    if (!active || !window.api.shiftCaptureEnabled) return undefined;
+    let detach: (() => void) | null = null;
+    const frame = requestAnimationFrame(() => {
+      const container = containerRef.current;
+      const term = termRef.current;
+      if (!container || !term) return;
+      detach = attachShiftCapture(container, term, session.id);
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      detach?.();
+    };
+  }, [active, session.id]);
 
   // 缓存 slot 重新激活:恢复 WebGL/尺寸/焦点。普通 A→B→A 不重建 Terminal,
   // xterm 自己保留 viewportY/isUserScrolling,这才是滚动位置的一等真值。

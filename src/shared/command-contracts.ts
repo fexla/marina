@@ -77,6 +77,7 @@ import type {
   ShowInExplorerPayload,
   OpenPathPayload,
   ImeProbeDumpPayload,
+  ShiftCapturePayload,
   OpenExternalPayload,
   ClipboardWriteTextPayload,
   ClipboardWriteImagePayload,
@@ -495,6 +496,11 @@ export interface CommandContractMap {
   [COMMAND_CHANNELS.LOGGER_IME_DUMP]: {
     payload: ImeProbeDumpPayload;
     response: ImeProbeDumpResponse;
+  };
+  // [DEBUG-shift2] 临时诊断通道(终端左移 bug),结案后删(grep: DEBUG-shift2)
+  [COMMAND_CHANNELS.DEBUG_SHIFT_CAPTURE]: {
+    payload: ShiftCapturePayload;
+    response: { ok: true };
   };
 
   // ── Explorer integration ──────────────────────────────────────────────────
