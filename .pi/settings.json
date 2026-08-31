@@ -1,8 +1,8 @@
 {
   "skills": [
-    "../.claude/skills"
+    ".claude/skills"
   ],
   "packages": [
-    "C:\\Users\\Administrator\\.pi\\agent\\packages\\pi-marina-bridge"
+    "C:\Users\Administrator\.pi\agent\packages\pi-marina-bridge"
   ]
 }
