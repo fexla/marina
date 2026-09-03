@@ -199,6 +199,79 @@ export class PiBridgeInstaller {
     return resolve(rawPath);
   }
 
+  /**
+   * 启动时自动升级(方案 20260817 Q5):比对内置 package 与稳定目录的
+   * package.json version,不一致 → 静默重拷内容(不 spawn pi install——路径
+   * 不变,settings.json 的 packages 引用无需更新)。
+   *
+   * 动机:install() 的已装检测只看 settings 是否含路径,已装则不再复制——
+   * 没有这一步,内置 bridge 修了 bug(如绑定读法)也永远到不了用户机器,
+   * 修复等于没分发。
+   *
+   * 降级安全:任何失败(读不到版本/稳定目录不存在/复制失败)只 warn 返回 false,
+   * 不影响启动;用户下次手动重装也能拿到新内容。
+   *
+   * @returns true = 本次实际刷新了内容。
+   */
+  async ensureUpToDate(): Promise<boolean> {
+    const stableDir = this.getStablePackageDir();
+    const readVersion = async (dir: string): Promise<string | null> => {
+      try {
+        const raw = await fs.readFile(join(dir, 'package.json'), 'utf8');
+        const v = (JSON.parse(raw) as { version?: unknown }).version;
+        return typeof v === 'string' ? v : null;
+      } catch {
+        return null;
+      }
+    };
+    try {
+      const sourceVersion = await readVersion(this.sourceDir);
+      if (!sourceVersion) return false; // 内置源缺失(packaged 布局异常)→ 留给 install() 报完整错误
+      const stableVersion = await readVersion(stableDir);
+      if (stableVersion === sourceVersion) return false;
+      // 未安装过(稳定目录不存在/无版本)且 settings 也没引用 → 不预装(保持
+      // 「用户没开 pi 集成就不碰 ~/.pi」的边界);只在已装的情况下刷新内容。
+      if (!stableVersion) {
+        // 稳定目录读不到版本:要么从未安装(目录不存在)→ 不预装(保持「用户
+        // 没装过 pi 集成就不碰 ~/.pi」的边界);要么目录存在但内容损坏/被清空,
+        // 或 settings 引用了但目录被删 → 值得修复/重建,刷新。
+        const stableDirExists = await this.hasExistingStableCopy();
+        const referencedInGlobal = await this.isAlreadyInstalled(
+          this.getGlobalSettingsFile(),
+          stableDir,
+        );
+        if (!stableDirExists && !referencedInGlobal) return false;
+      }
+      await fs.rm(stableDir, { recursive: true, force: true, maxRetries: 3 });
+      await fs.mkdir(resolve(stableDir, '..'), { recursive: true });
+      await fs.cp(this.sourceDir, stableDir, { recursive: true, force: false, errorOnExist: true });
+      logger.info(
+        MODULE,
+        `auto-upgrade: refreshed ${stableVersion ?? '(none)'} → ${sourceVersion} at ${stableDir}`,
+      );
+      return true;
+    } catch (err) {
+      logger.warn(
+        MODULE,
+        `auto-upgrade failed (harmless; manual reinstall still works): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return false;
+    }
+  }
+
+  /** 稳定目录是否已存在(任一形态:有内容/空/损坏)。供 ensureUpToDate 判定
+   * 「从未安装 → 不预装」 vs 「装过但内容异常 → 重建」。 */
+  private async hasExistingStableCopy(): Promise<boolean> {
+    try {
+      const stat = await fs.stat(this.getStablePackageDir());
+      return stat.isDirectory();
+    } catch {
+      return false;
+    }
+  }
+
   private async validateSource(): Promise<void> {
     const manifest = join(this.sourceDir, 'package.json');
     try {

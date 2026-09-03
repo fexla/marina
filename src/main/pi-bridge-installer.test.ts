@@ -159,4 +159,76 @@ describe('PiBridgeInstaller', () => {
     await expect(fs.stat(join(stable, 'OLD-leftover.txt'))).rejects.toThrow(); // 旧文件被清
     expect(await fs.readFile(join(stable, 'package.json'), 'utf8')).toContain('pi-marina-bridge');
   });
+
+  // ── ensureUpToDate:启动自动升级(方案 20260817 Q5)────────────────
+
+  it('内置版本新于稳定目录 → 重拷内容,不 spawn pi install', async () => {
+    const installer = makeInstaller();
+    // 先以 v0.3.3 安装一次。
+    await fs.writeFile(
+      join(source, 'package.json'),
+      JSON.stringify({ name: '@marina/pi-marina-bridge', version: '0.3.3' }),
+      'utf8',
+    );
+    await installer.install({ scope: 'global' });
+    const spawnCountAfterInstall = spawnCalls.length;
+    // 内置源升到 v0.3.4(app 升级带来的新 bridge)。
+    await fs.writeFile(
+      join(source, 'package.json'),
+      JSON.stringify({ name: '@marina/pi-marina-bridge', version: '0.3.4' }),
+      'utf8',
+    );
+    const refreshed = await installer.ensureUpToDate();
+    expect(refreshed).toBe(true);
+    const stablePkg = JSON.parse(
+      await fs.readFile(join(installer.getStablePackageDir(), 'package.json'), 'utf8'),
+    ) as { version: string };
+    expect(stablePkg.version).toBe('0.3.4');
+    // 路径引用没变 → 不得重复 spawn pi install(settings 无需改写)。
+    expect(spawnCalls.length).toBe(spawnCountAfterInstall);
+  });
+
+  it('版本一致 → no-op(false),不重写稳定目录', async () => {
+    const installer = makeInstaller();
+    await fs.writeFile(
+      join(source, 'package.json'),
+      JSON.stringify({ name: '@marina/pi-marina-bridge', version: '0.3.4' }),
+      'utf8',
+    );
+    await installer.install({ scope: 'global' });
+    // 稳定目录里放一个标记文件:版本一致时不得被动过。
+    await fs.writeFile(join(installer.getStablePackageDir(), 'MARKER.txt'), 'keep', 'utf8');
+    await expect(installer.ensureUpToDate()).resolves.toBe(false);
+    await expect(
+      fs.stat(join(installer.getStablePackageDir(), 'MARKER.txt')),
+    ).resolves.toBeTruthy();
+  });
+
+  it('从未安装(稳定目录不存在且 settings 无引用) → 不预装,保持 false', async () => {
+    const installer = makeInstaller();
+    await fs.writeFile(
+      join(source, 'package.json'),
+      JSON.stringify({ name: '@marina/pi-marina-bridge', version: '0.3.4' }),
+      'utf8',
+    );
+    await expect(installer.ensureUpToDate()).resolves.toBe(false);
+    await expect(fs.stat(installer.getStablePackageDir())).rejects.toThrow(); // 没碰 ~/.pi
+    expect(spawnCalls).toEqual([]);
+  });
+
+  it('稳定目录存在但内容损坏(无 package.json) → 重建', async () => {
+    const installer = makeInstaller();
+    await fs.writeFile(
+      join(source, 'package.json'),
+      JSON.stringify({ name: '@marina/pi-marina-bridge', version: '0.3.4' }),
+      'utf8',
+    );
+    // 稳定目录存在但空(模拟中断/损坏)。目录存在即视为装过 → 修复重建。
+    await fs.mkdir(installer.getStablePackageDir(), { recursive: true });
+    await expect(installer.ensureUpToDate()).resolves.toBe(true);
+    const stablePkg = JSON.parse(
+      await fs.readFile(join(installer.getStablePackageDir(), 'package.json'), 'utf8'),
+    ) as { version: string };
+    expect(stablePkg.version).toBe('0.3.4');
+  });
 });

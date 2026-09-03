@@ -254,6 +254,12 @@ function bootstrap(): void {
       }
     },
   });
+  // 方案 20260817 Q5:启动时自动升级已装的 bridge(版本比对不一致 → 静默重拷)。
+  // 不 await/不阻塞启动;失败只 warn(手动重装仍可拿到新内容)。没有这一步,
+  // install() 的幂等检测会让内置 bridge 的 bug 修复永远到不了用户机器。
+  void piBridgeInstaller.ensureUpToDate().catch(() => {
+    /* ensureUpToDate 内部已全降级 warn;这里兜底防 unhandled rejection */
+  });
   // session 工作区只存 Marina 自己的临时展示文档。它不参与 Path 树、不暴露为
   // 产品意义的 workspace，且按 settings.filePanel.workspaceRetentionDays 延期回收。
   const sessionWorkspaceManager = new SessionWorkspaceManager({
