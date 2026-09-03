@@ -305,6 +305,9 @@ function makeManager(
       cloneWorkspace?(sourceWorkspaceId: string): Promise<{ workspaceId: string; dir: string }>;
       discard(workspaceId: string): Promise<void>;
       release(workspaceId: string): void;
+      /** 修复 2026-09-03:切回已释放 workspace 时复活(清 closedAt),见
+       * SessionWorkspaceManager.retain。coordinator 的 switchSessionToWorkspace 会调。 */
+      retain(workspaceId: string): void;
       getPathForWorkspace(workspaceId: string): string | null;
       // v0.3.3 ADR-024 编排方法(测试不覆盖 bind/list/new/unpin 时传 stub 即可)。
       bind?(): Promise<unknown>;
@@ -2677,6 +2680,9 @@ describe('SessionManager — file panel env 注入', () => {
       },
       release: (workspaceId: string) => {
         calls.push(`release:${workspaceId}`);
+      },
+      retain: (workspaceId: string) => {
+        calls.push(`retain:${workspaceId}`);
       },
       getPathForWorkspace: (workspaceId: string) =>
         workspaceId === WORKSPACE_ID ? `C:\\marina-workspaces\\${WORKSPACE_ID}` : null,
