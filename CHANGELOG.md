@@ -7,6 +7,34 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+## [0.3.3-dev.15] — 2026-09-03
+
+> WebViewer 批:「已打开」面板支持本地 HTML 网页预览(ADR-034)。archify 类 skill
+> 产出的自包含交互产物(内联 SVG/JS、导出按钮)不再外开浏览器,面板内直接可看。
+
+### Added
+
+- **本地 HTML 预览(ADR-034)**:`.html/.htm` 归新 FileKind `web`,WebViewer 以
+  sandbox iframe 经 `marina-file://` 特权协议流式渲染。四层安全防线:路径白名单
+  (已打开文件本体+所在目录+workspace 根,realpath 防 symlink 逃逸)→ 逐响应自
+  包含档 CSP(禁一切 http(s) 出网)→ 32MB 上限+MIME 缺省 octet-stream → svg 额外
+  script-src 'none'。app 自身 CSP 一字不松,仅新增窄项 `frame-src 'self'
+  marina-file:`。预览内容不经 IPC;热刷新复用 fs.watch→mtimeMs 链零新代码。
+  已接受降级(Ctrl+F 不搜 iframe/滚动不持久/主题跟随 OS/非同目录资源断链)。
+- **源码⇄预览切换**:工具条一键切 TextViewer(read 对 web 文件返回源码文本);
+  附重新加载/浏览器打开按钮;超限(>32MB)显示占位+外开。
+- **iframe 内下载闭环**:接 will-download 存系统下载目录 + 广播事件,App 级桥弹
+  in-app toast(不注册 handler 时 Electron 直接取消下载,PoC 实证)。
+- **新冒烟场景** `--file-viewer-html`:端到端断言 iframe 挂载 + 产物内联脚本真实
+  执行(postMessage 回执)+ 源码切换往返。
+
+### Fixed
+
+- **CSP 拼接缺分号**:`wss:` 后漏分号把 frame-src 拼进 connect-src 源表达式
+  (冒烟实测抓到)。
+- **快照恢复 kind 重检测**:旧快照里 .html 存的 'text' 恢复后自动升级为 'web'
+  (onWorkspaceSwitched 改按文件名重检测,与 openFile 同源)。
+
 ## [0.3.3-dev.14] — 2026-09-03
 
 > 现场验证修复批:真实 fork 实测抓到的亲缘读缺陷。需要新构建分发(便携版烧的是内置

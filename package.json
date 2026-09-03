@@ -1,6 +1,6 @@
 {
   "name": "marina-app",
-  "version": "0.3.3-dev.14",
+  "version": "0.3.3-dev.15",
   "private": true,
   "description": "Marina — path-centric, AI-agent-friendly terminal manager for Windows (formerly EasyTerm)",
   "license": "MIT",
@@ -33,6 +33,7 @@
     "smoke:interactive": "node scripts/smoke-interactive.mjs",
     "smoke:terminal-deck": "node scripts/smoke-interactive.mjs --terminal-deck",
     "smoke:file-viewer-scroll": "node scripts/smoke-interactive.mjs --file-viewer-scroll",
+    "smoke:file-viewer-html": "node scripts/smoke-interactive.mjs --file-viewer-html",
     "postinstall": "electron-builder install-app-deps",
     "switch:win": "electron-builder install-app-deps --platform=win32",
     "switch:linux": "electron-builder install-app-deps --platform=linux"
