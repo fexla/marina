@@ -282,7 +282,8 @@ packages 数组,已装则跳过——即**升级依赖用户再点一次安装�
 |---|---|
 | `packages/pi-marina-bridge/extensions/binding.ts`(新) | branch-aware 绑定读 + 父文件尾读亲缘绑定纯函数 |
 | `packages/pi-marina-bridge/extensions/index.ts` | session_start 上报 workspaceId(branch-aware)+ parentSessionFile + parentBinding |
-| `packages/pi-marina-bridge/package.json` | 0.3.3 → 0.3.4 |
+| `packages/pi-marina-bridge/package.json` | 0.3.3 → 0.3.4 → **0.3.5**(现场修复,见下) |
+| 现场回归修复(0.3.5) | `readLastWorkspaceBinding` 原尾部 64KB 读窗在「只绑过一次、对话长到 MB 级」的父文件上读不到头部绑定(实证:父 1.06MB/唯一绑定 L4 → parentWs=null,靠 payload 回退救回);改 readline 流式全文件前扫取最后命中,+32MB 护栏。回归测试:头部绑定×大文件必读出 |
 | `src/main/session-workspace-manager.ts` | `cloneWorkspace`(复制文件+快照重写路径)+ `remapWorkspaceInternalPath` |
 | `src/main/session-manager.ts` | `SessionWorkspaceSource` 接口加 `cloneWorkspace` |
 | `src/main/coordinators/session-workspace-coordinator.ts` | `cloneForSession`;`onSessionDestroyed` 最后占用者 release 防护 |

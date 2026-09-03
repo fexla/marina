@@ -115,19 +115,25 @@ describe('readLastWorkspaceBinding — 父会话文件尾读亲缘绑定', () =>
     }
   });
 
-  it('尾部截半的行(读窗切在行中间)被跳过,仍能找到窗口内更早的完整绑定', async () => {
+  it('绑定在文件头部、文件远大于 64KB(现场回归:父 1.06MB/绑定 L4,尾窗读不到)', async () => {
+    // 2026-09-03 真实 fork 现场抓的缺陷:父对话只在开始时绑过一次(entry 在头部),
+    // 之后对话长到 MB 级——旧的「尾窗反扫」读不到,亲缘字段静默变 null。
+    // 回归断言:头部绑定必须被读到。
     const dir = await fs.mkdtemp(join(tmpdir(), 'marina-bridge-binding-'));
     try {
       const file = join(dir, 'parent.jsonl');
-      const bindingLine = JSON.stringify(wsEntry('W-in-window'));
-      // 先写一条超长行(保证 64KB 读窗的起点落进它,首行被截半),绑定行在其后
-      // (完整落在窗口内)——截半的行必须被跳过,不影响找到后面的完整绑定。
-      const longHead = JSON.stringify({
-        type: 'message',
-        data: { text: 'x'.repeat(200_000) },
-      });
-      await fs.writeFile(file, `${longHead}\n${bindingLine}\n`, 'utf8');
-      await expect(readLastWorkspaceBinding(file)).resolves.toBe('W-in-window');
+      const parts = [
+        JSON.stringify({ type: 'header', id: 'p1' }),
+        JSON.stringify(wsEntry('W-bind-at-start')),
+      ];
+      // 对话主体长到远超旧尾窗:每行 ~1.2KB × 200 行 ≈ 240KB,无绑定 entry。
+      for (let i = 0; i < 200; i += 1) {
+        parts.push(JSON.stringify({ type: 'message', data: { text: `m${i} `.repeat(300) } }));
+      }
+      await fs.writeFile(file, parts.join('\n'), 'utf8');
+      const size = (await fs.stat(file)).size;
+      expect(size).toBeGreaterThan(128 * 1024); // 确认真的超过了旧尾窗量级
+      await expect(readLastWorkspaceBinding(file)).resolves.toBe('W-bind-at-start');
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }

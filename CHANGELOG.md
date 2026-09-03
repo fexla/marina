@@ -26,7 +26,13 @@
   (治 CLI `pi --fork` 冷启动/离线 fork 的永久共享)。④ /tree 不监听(裁决):同文件
   内换分支不切 workspace。⑤ **bridge 自动升级**:启动时比对内置版与稳定目录版,
   不一致静默重拷(不 spawn pi install),从未安装不预装——否则 bridge 的修复永远
-  分发不到用户机器。bridge 0.3.3→0.3.4。
+  分发不到用户机器。bridge 0.3.3→0.3.4→**0.3.5**。
+- **现场 fork 验证抓到并修复亲缘读缺陷(0.3.5)**:真实 fork 实测发现
+  `readLastWorkspaceBinding` 的尾部 64KB 读窗在「只绑过一次、对话长到 MB 级」的
+  父文件上读不到头部绑定(父 1.06MB/唯一绑定 L4 → `parentWs=-`,靠 payload 回退
+  路径救回,但 CLI fork 冷启动的血统判定会静默失效);改 readline 流式全文件前扫
+  取最后命中,+32MB 护栏。同场验证了完整链路:auto-upgrade 生效、fork 继承克隆
+  落 entry、fork 后 /resume 切回自己的 workspace。
 
 ## [0.3.3-dev.12] — 2026-08-29
 

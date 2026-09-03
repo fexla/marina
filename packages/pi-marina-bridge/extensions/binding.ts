@@ -21,7 +21,8 @@
  * - 不发 HTTP(那是 index.ts 的职责)
  * - 不写 entry(appendEntry 只在 Marina 返回新 workspaceId 时由 index.ts 执行)
  */
-import { promises as fs } from 'node:fs';
+import { promises as fs, createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
 
 /** 与 index.ts 共享的 customType(存 workspaceId 的 custom entry 类型标识)。 */
 export const MARINA_WORKSPACE_CUSTOM_TYPE = 'marina-workspace';
@@ -67,7 +68,9 @@ function entryWorkspaceId(entry: {
  * 无任何绑定 entry → null(首访对话 / 从未绑定过的子会话)。
  */
 export function readBranchWorkspaceId(sm: BindingSessionManagerLike): string | null {
-  const scan = (entries: Array<{ type: string; customType?: string; data?: unknown }>): string | null => {
+  const scan = (
+    entries: Array<{ type: string; customType?: string; data?: unknown }>,
+  ): string | null => {
     for (let i = entries.length - 1; i >= 0; i -= 1) {
       const entry = entries[i];
       if (!entry) continue;
@@ -85,37 +88,41 @@ export function readBranchWorkspaceId(sm: BindingSessionManagerLike): string | n
   return scan(sm.getEntries());
 }
 
-/** 反向扫描时一次读入的尾部字节数。绑定 entry 很小;64KB 尾部几乎必然覆盖
- *  文件里最后一条绑定(除非最后一次绑定之后又追加了 64KB+ 的对话内容,
- *  此时返回 null → 调用方按「父无可继承绑定」降级,行为安全)。 */
-const PARENT_TAIL_BYTES = 65536;
+/**
+ * 父文件扫描的大小上限(病态护栏):超过期不扫,返回 null(调用方回退继承
+ * payload 绑定,行为安全)。正常 pi 会话文件远小于此。 */
+const PARENT_MAX_BYTES = 32 * 1024 * 1024;
 
 /**
  * 读另一个会话文件(pi 会话 JSONL)里**最后追加**的 marina-workspace 绑定。
  *
- * 用途:fork/子会话上报亲缘时,取父对话的**当前** workspace。父文件可能很大
- * (MB 级),只从文件尾读一块反向找,不整读。
+ * 用途:fork/子会话上报亲缘时,取父对话的**当前** workspace。
+ *
+ * **为什么是流式全文件前扫而不是尾部读窗**(2026-09-03 现场抓的缺陷):
+ * 绑定 entry 通常在会话开始时追加一次(文件头部),之后对话可以长到 MB 级——
+ * 尾窗读不到头部的绑定,亲缘字段静默变 null。实测:父文件 1.06MB、唯一绑定在
+ * L4,64KB 尾窗返回 null(parentWs=-,Marina 日志实证)。改为 readline 流式
+ * 前扫保留最后一个命中:内存平坦(逐行),一次 session_start 只扫一次,几 MB
+ * 文件毫秒级,不在热路径。
  *
  * 「最后追加」而非「branch-aware」:父文件里的绑定按追加时间排序,最后一条
  * = 父对话最近一次被 Marina 分配的 workspace = 父的当前绑定(每次分配都紧跟
- * 着 append;之后 /tree 导航不会产生新绑定 entry)。
+ * 着 append;/tree 导航不产生新绑定 entry)。
  *
  * @param sessionFile 父会话文件绝对路径(header.parentSession)
- * @returns workspaceId;文件不存在/读失败/尾部没找到 → null(静默降级)
+ * @returns workspaceId;文件不存在/超上限/没找到 → null(静默降级)
  */
 export async function readLastWorkspaceBinding(sessionFile: string): Promise<string | null> {
-  let handle: import('node:fs').promises.FileHandle | null = null;
   try {
-    handle = await fs.open(sessionFile, 'r');
-    const { size } = await handle.stat();
-    const readLen = Math.min(size, PARENT_TAIL_BYTES);
-    const buf = Buffer.alloc(readLen);
-    await handle.read(buf, 0, readLen, size - readLen);
-    // 尾部第一行可能被截半(读窗起点落在行中间)→ 尝试解析失败自然跳过,无害。
-    const lines = buf.toString('utf8').split('\n');
-    for (let i = lines.length - 1; i >= 0; i -= 1) {
-      const line = lines[i]?.trim();
-      if (!line || !line.includes(MARINA_WORKSPACE_CUSTOM_TYPE)) continue; // 快速过滤
+    const { size } = await fs.stat(sessionFile);
+    if (size > PARENT_MAX_BYTES) return null;
+    const rl = createInterface({
+      input: createReadStream(sessionFile, { encoding: 'utf8' }),
+      crlfDelay: Infinity,
+    });
+    let last: string | null = null;
+    for await (const line of rl) {
+      if (!line.includes(MARINA_WORKSPACE_CUSTOM_TYPE)) continue; // 快速过滤大多数行
       try {
         const entry = JSON.parse(line) as {
           type?: string;
@@ -123,16 +130,14 @@ export async function readLastWorkspaceBinding(sessionFile: string): Promise<str
           data?: unknown;
         };
         const ws = entryWorkspaceId(entry as { type: string; customType?: string; data?: unknown });
-        if (ws !== null) return ws;
+        if (ws !== null) last = ws;
       } catch {
-        // 截半的行 / 非 JSON 行 → 继续往前
+        // 非 JSON 行(理论不出现,防御)→ 跳过
       }
     }
-    return null;
+    return last;
   } catch {
     // 文件不存在 / 已被清理 / 权限 → null,调用方按无可继承处理
     return null;
-  } finally {
-    await handle?.close().catch(() => {});
   }
 }
