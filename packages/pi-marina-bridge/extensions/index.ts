@@ -118,11 +118,15 @@ async function postEvent(
     }
     return (await resp.json().catch(() => null)) as { workspaceId?: string } | null;
   } catch (err) {
-    // 离线 / Marina 未运行 / 端点不存在（旧版 Marina）→ 静默降级，pi 继续正常工作。
+    // 离线 / Marina 未运行 / 端点不存在(旧版 Marina)→ 静默降级,pi 继续正常工作。
+    // 超时单独标注:AbortSignal.timeout 只是客户端不再等响应,Marina 忙时请求
+    // 通常仍已送达并被处理(实测 2026-09-03:main 被 workspace 清理风暴拖慢,
+    // agent_settled 3s 超时,但事件在 +3.5s 后照常到达并生效)——避免误判为"事件丢了"。
+    const isTimeout = err instanceof Error && err.name === 'TimeoutError';
     console.warn(
-      `[marina-bridge] failed to post ${event}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+      `[marina-bridge] failed to post ${event}${
+        isTimeout ? ' (timeout — Marina busy; event usually still delivered)' : ''
+      }: ${err instanceof Error ? err.message : String(err)}`,
     );
     return null;
   }
