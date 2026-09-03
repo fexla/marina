@@ -573,6 +573,12 @@ export interface SessionWorkspaceSource {
    * 由本方法生成 UUID；SessionManager 维护 sessionId→workspaceId 映射。
    */
   create(): Promise<{ workspaceId: string; dir: string }>;
+  /**
+   * 克隆已有 workspace(pi /fork「继承」语义,方案 20260817 裁决 1):新建 +
+   * 复制源的面板快照与受管文件(内部路径重写指向新目录)。
+   * 源不存在时抛 code='WorkspaceNotFound'(调用方应先 getRecord 判活)。
+   */
+  cloneWorkspace(sourceWorkspaceId: string): Promise<{ workspaceId: string; dir: string }>;
   /** PTY spawn 失败立即撤销刚创建的 workspace（按 workspaceId）。 */
   discard(workspaceId: string): Promise<void>;
   /**
@@ -1219,7 +1225,9 @@ export class SessionManager extends EventEmitter {
       lastInputAt: 0,
       recentKeys: [],
       titleState: createTitleState(
-        isSsh ? `${input.sshProfile!.name}:${pathRef.path}` : pickDisplayName(template, displayShell),
+        isSsh
+          ? `${input.sshProfile!.name}:${pathRef.path}`
+          : pickDisplayName(template, displayShell),
       ),
       pendingEmit: null,
       pendingEmitTimer: null,
@@ -2363,7 +2371,11 @@ export class SessionManager extends EventEmitter {
    * 释放)、handleOscTitle(classifyOscTitle 归槽)、OSC 133 D(program 释放)。
    * 优先级/回退逻辑集中在 title-resolver.ts,这里不做任何内容判断。
    */
-  private declareTitle(managed: ManagedSession, source: TitleSourceKind, value: string | null): void {
+  private declareTitle(
+    managed: ManagedSession,
+    source: TitleSourceKind,
+    value: string | null,
+  ): void {
     managed.titleState[source] = value;
     const next = resolveTitle(managed.titleState);
     if (next === managed.info.displayName) return; // 幂等:显示值未变不广播

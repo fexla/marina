@@ -38,6 +38,28 @@ const SNAPSHOT_FILE = 'file-panel.json';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const MAX_NAME_LEN = 64;
+
+/**
+ * 把指向 workspace 内部目录的绝对路径重写到另一个 workspace 目录(cloneWorkspace
+ * 用)。p 位于 sourceDir 内(相等或真子路径)→ 同相对位置下的 newDir 路径;
+ * 否则原样返回(external 文件路径不受影响)。
+ *
+ * 比较用大小写不敏感(目录名是 UUID,碰撞概率为零;但 Windows 路径大小写
+ * 可能因注入源不同而不一致,不敏感比较更稳)。
+ */
+function remapWorkspaceInternalPath(p: string, sourceDir: string, newDir: string): string {
+  const normalize = (s: string) => s.replace(/[\\/]+$/, '').toLowerCase();
+  const src = normalize(sourceDir);
+  const probe = normalize(p);
+  if (probe !== src && !probe.startsWith(`${src}\\`) && !probe.startsWith(`${src}/`)) {
+    return p;
+  }
+  // 归一化大小写不敏感匹配后,用剥前缀取代 relative()(后者对大小写不一致的
+  // 输入会返回整路径,语义不对)。剥掉前缀后再去开头的分隔符,拼到 newDir 下。
+  const prefixLen = sourceDir.length;
+  const tail = p.slice(prefixLen).replace(/^[\\/]+/, '');
+  return tail ? join(newDir, tail) : newDir;
+}
 /** workspaceId 与旧 v1 sessionId 都是 UUID v4，同一正则。 */
 const WORKSPACE_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -210,6 +232,83 @@ export class SessionWorkspaceManager {
     this.persist();
     logger.info(MODULE, `create: workspaceId=${workspaceId} dir=${dir}`);
     return { workspaceId, dir };
+  }
+
+  /**
+   * 克隆一个已有 workspace(pi /fork 的「继承」语义,方案 20260817 裁决 1):
+   * 新建 workspace + 复制源的文件面板快照与受管文件,内部路径重写指向新目录。
+   *
+   * 复制内容:
+   * - 源目录顶层所有文件/子目录(**不含** __marina_state__,状态目录单独处理);
+   * - file-panel.json 快照:openedFiles[].path / activeFilePath / scroll 的 key
+   *   里指向源目录内部的绝对路径,全部重写为新目录下的对应路径(external=true
+   *   的外部路径不受影响)——否则 fork 的面板会直接指向父 workspace 里的文件,
+   *   编辑会改到父的文件,违反「fork 不共享」(裁决 3)。
+   *
+   * 失败策略:新建 workspace 必须成功(同 create());复制/快照是**尽力而为的
+   * 增强**——源目录部分复制失败只 warn,不抛(fork 降级为空 workspace,行为安全)。
+   *
+   * @param sourceWorkspaceId 被继承的源 workspace(父对话的当前 workspace)。
+   * @throws 源不存在(调用方应先 getRecord 判活)或新建失败。
+   */
+  async cloneWorkspace(sourceWorkspaceId: string): Promise<CreatedWorkspace> {
+    this.requireInitialized();
+    const sourceRecord = this.records.get(sourceWorkspaceId);
+    if (!sourceRecord) {
+      throw Object.assign(
+        new Error(
+          `[${MODULE}] cloneWorkspace: source workspace "${sourceWorkspaceId}" 不存在(可能已被回收)。` +
+            `调用方应先 getRecord 判活;此时应退回 create() 新建空 workspace。`,
+        ),
+        { code: 'WorkspaceNotFound' },
+      );
+    }
+    const sourceDir = this.workspacePath(sourceWorkspaceId);
+    const created = await this.create();
+    const { workspaceId, dir } = created;
+
+    // 1) 复制受管文件(顶层逐项,跳过状态目录;失败降级为部分复制)。
+    try {
+      const entries = await fs.readdir(sourceDir, { withFileTypes: true });
+      for (const ent of entries) {
+        if (ent.name === STATE_DIR) continue;
+        await fs.cp(join(sourceDir, ent.name), join(dir, ent.name), { recursive: true });
+      }
+    } catch (err) {
+      logger.warn(
+        MODULE,
+        `cloneWorkspace: copy files degraded ws=${workspaceId} src=${sourceWorkspaceId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+
+    // 2) 快照复制 + 内部路径重写(失败降级为无快照,面板空状态)。
+    try {
+      const snapshot = await this.readSnapshot(sourceWorkspaceId);
+      if (snapshot) {
+        const remap = (p: string): string => remapWorkspaceInternalPath(p, sourceDir, dir);
+        const remapped: FilePanelSnapshotData = {
+          ...snapshot,
+          openedFiles: snapshot.openedFiles.map((f) => ({ ...f, path: remap(f.path) })),
+          activeFilePath: snapshot.activeFilePath ? remap(snapshot.activeFilePath) : null,
+          scroll: Object.fromEntries(
+            Object.entries(snapshot.scroll).map(([k, v]) => [remap(k), v]),
+          ),
+        };
+        await this.writeSnapshot(workspaceId, remapped);
+      }
+    } catch (err) {
+      logger.warn(
+        MODULE,
+        `cloneWorkspace: snapshot copy degraded ws=${workspaceId} src=${sourceWorkspaceId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+
+    logger.info(MODULE, `cloneWorkspace: ws=${workspaceId} inherited from=${sourceWorkspaceId}`);
+    return created;
   }
 
   /**

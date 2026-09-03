@@ -120,8 +120,17 @@ export class PiSessionCoordinator {
        * v0.3.3 ADR-028:bridge 从 pi 对话的 marina-workspace entry 恢复出的
        * workspaceId(resume 时带上)。Marina 据此切回原 workspace;缺失/已回收则新建,
        * 新建的 workspaceId 经返回值交回 bridge 存入 entry(跨重启稳定)。
+       *
+       * v0.3.4 起为 branch-aware(当前分支最近的 entry,不是全文件第一个)。
        */
       workspaceId?: string | null;
+      /**
+       * fork/子会话亲缘(方案 20260817):本对话文件的来源(父会话文件路径,
+       * header.parentSession)。fork/clone/pi-subagents 子会话才有。
+       */
+      parentSessionFile?: string | null;
+      /** 父对话当前 workspace(bridge 读父文件最后一条绑定 entry)。 */
+      parentBinding?: string | null;
     },
   ): Promise<{ workspaceId?: string } | void> {
     if (!this.lookup?.hasSession(sessionId)) {
@@ -162,6 +171,14 @@ export class PiSessionCoordinator {
         // 声明 pi 身份(无论开关，isPiAgent 总是准确反映“终端在跑 pi”)。
         this.hooks?.onPiAgentChanged(sessionId, true);
         this.sessionToPiSession.set(sessionId, payload.piSessionId);
+        // 亲缘可见性(方案 20260817 L1):fork/子会话文件带 parentSessionFile,
+        // 记进日志供诊断(谁是谁的儿子、父 workspace 是哪个)。
+        if (payload.parentSessionFile) {
+          logger.info(
+            'PiSessionCoordinator',
+            `pi-lineage: sid=${sessionId} piSid=${payload.piSessionId} parent=${payload.parentSessionFile} parentWs=${payload.parentBinding ?? '-'}`,
+          );
+        }
         // 终端状态分层:创建 AgentStateGetter 并 bind —— stateGetter 换成 agent
         // getter,字节流检测旁路。pi 的 working/settled 经 getter 权威驱动状态。
         const agentGetter = new AgentStateGetter();
@@ -174,6 +191,7 @@ export class PiSessionCoordinator {
           payload.reason ?? 'startup',
           settings,
           payload.workspaceId ?? null,
+          payload.parentBinding ?? null,
         );
       }
 
@@ -217,9 +235,16 @@ export class PiSessionCoordinator {
    * pi 对话切换的核心。workspace 绑定**存在 pi 对话的 entry 里**(bridge 用
    * pi.appendEntry 存,跨重启稳定),Marina 侧不再持有 piSession→workspace 映射。
    *
-   * - new/fork → 建新 workspace,返回 workspaceId(交回 bridge 存进 entry)。
-   * - resume/startup → bridge 从 entry 读出 workspaceId 随事件带上(payloadWorkspaceId):
-   *   还活着(getRecord≠null)就切回 + 重建面板;被回收/首访/缺失则新建,返回新 id。
+   * 分支语义(方案 20260817 裁决 1/3):
+   * - new → 建新空 workspace(新对话,无继承)。
+   * - fork → 建新 workspace 并**继承**父对话当前 workspace 的快照副本
+   *   (copy-on-fork;继承源优先 parentBinding,缺失时回退 payload 带的分支内
+   *   继承 entry)。fork 拿到副本后与父互不共享。
+   * - resume/startup → branch-aware 绑定还活着就切回(同文件共享,裁决 3);
+   *   但若该绑定是从父文件**继承来的**(payload == parentBinding,fork/clone
+   *   首次激活且从未有自己的 workspace),则不共享父的,而是克隆一份并返回新 id
+   *   (bridge 落 entry 后,后续 resume 都回到自己的);被回收/缺失则新建。
+   * - reload / 未知 reason / 开关关闭 → 不动 workspace。
    *
    * 之前用 piSessionId 当内存映射 key,但实测 pi resume 同一对话时 piSessionId 会变
    * (见日志:019fefb0→010fdf2e),映射永远 miss → 每次都建新空 workspace → 文件不恢复。
@@ -230,17 +255,40 @@ export class PiSessionCoordinator {
     reason: string,
     settings: Settings['piIntegration'],
     payloadWorkspaceId: string | null,
+    parentBinding: string | null,
   ): Promise<{ workspaceId?: string } | void> {
     if (!this.workspaceCoordinator.isWorkspaceEnabled()) return; // 未启用 workspace(测试/禁用)→ 跳过
     const wantsNew = reason === 'new' || reason === 'fork';
     const wantsResume = reason === 'resume' || reason === 'startup';
 
     if (wantsNew && settings.enabled && settings.newConversationCreatesWorkspace) {
-      return await this.createAndBindPiWorkspace(sessionId);
+      // fork 继承(裁决 1):优先父对话的**当前** workspace(parentBinding,bridge
+      // 从父文件尾读出);缺失(旧版 bridge/父文件已清理)时回退 payload 里的
+      // 继承 entry(fork 复制路径上的绑定,fork 点位置的父 workspace)。两者都
+      // 指向不存在的 workspace 时退化为空新建。
+      // /new 不继承:新对话就是全新开始。
+      const inheritFrom = reason === 'fork' ? (parentBinding ?? payloadWorkspaceId) : null;
+      return await this.createAndBindPiWorkspace(sessionId, inheritFrom);
     }
     if (wantsResume && settings.enabled && settings.resumeSwitchesWorkspace) {
-      // bridge 从对话 entry 恢复的 workspaceId。还活着就切回;被回收/首访/缺失则新建。
       if (payloadWorkspaceId && this.workspaceCoordinator.getRecord(payloadWorkspaceId)) {
+        // fork 血统首次激活(裁决 3:fork 不共享父 workspace):branch-aware 绑定
+        // 与父的当前绑定相等 → 这个 entry 是从父文件复制来的继承品,不是本对话
+        // 自己的(自己的 entry 在首次激活时就会被新 id 覆盖更新)。克隆一份作为
+        // 起点,返回新 id 让 bridge 落 entry —— 之后 resume 走上面的普通切回分支。
+        // 典型触发:CLI `pi --fork`(冷启动 reason=startup)/ fork 时 Marina 离线
+        // 没能返回新 id / newConversationCreatesWorkspace 关闭期间的 fork。
+        if (parentBinding && payloadWorkspaceId === parentBinding) {
+          const cloned = await this.createAndBindPiWorkspace(sessionId, payloadWorkspaceId);
+          logger.info(
+            'PiSessionCoordinator',
+            `pi-resume: fork-lineage first activation, clone instead of share ` +
+              `sid=${sessionId} src=${payloadWorkspaceId} → ${cloned?.workspaceId ?? '?'}`,
+          );
+          return cloned;
+        }
+        // 普通切回:同文件=同对话=同 workspace(裁决 3 允许共享;跨终端同文件
+        // 的 release 安全由 SessionWorkspaceCoordinator 的最后占用者防护保证)。
         this.workspaceCoordinator.switchSessionToWorkspace(sessionId, payloadWorkspaceId);
         // 触发文件面板重建 + 快照恢复(否则 resume 后原打开文件不恢复)。
         this.workspaceSwitchedNotify?.(sessionId);
@@ -251,29 +299,50 @@ export class PiSessionCoordinator {
         return; // 切回已有,不返回 workspaceId(bridge entry 里已有同一个)
       }
       // 被回收 / 首访 / entry 缺失 → 新建,返回新 id 让 bridge 更新 entry。
-      return await this.createAndBindPiWorkspace(sessionId);
+      return await this.createAndBindPiWorkspace(sessionId, null);
     }
     // reload / 未知 reason / 开关关闭 → 不动 workspace。
   }
 
   /**
-   * 建新 workspace 并绑定到 session(pi 对话)。返回 workspaceId——交回 bridge 存进
-   * pi 对话的 marina-workspace entry,下次 resume 同一对话时 bridge 读出带上 → 切回。
+   * 建/克隆 workspace 并绑定到 session(pi 对话)。返回 workspaceId——交回 bridge
+   * 存进 pi 对话的 marina-workspace entry,下次 resume 同一对话时 bridge 读出带上 → 切回。
+   *
+   * @param inheritFrom 非空且仍存在 → cloneWorkspace(继承快照+文件副本,裁决 1);
+   *   否则 create() 新建空 workspace。继承源不存在(刚被回收)→ 退化为空新建,
+   *   不算错误(fork 降级可用)。
    * workspace 创建失败不阻塞 pi;返回 void(bridge 不更新 entry,下次 resume 会重试)。
    */
   private async createAndBindPiWorkspace(
     sessionId: string,
+    inheritFrom: string | null = null,
   ): Promise<{ workspaceId: string } | void> {
     if (!this.workspaceCoordinator.isWorkspaceEnabled()) return;
     try {
-      const created = await this.workspaceCoordinator.createForSession(sessionId);
+      let created: { workspaceId: string; dir: string };
+      if (inheritFrom && this.workspaceCoordinator.getRecord(inheritFrom)) {
+        created = await this.workspaceCoordinator.cloneForSession(sessionId, inheritFrom);
+        logger.info(
+          'PiSessionCoordinator',
+          `pi-fork-workspace: sid=${sessionId} inherited from=${inheritFrom} ws=${created.workspaceId}`,
+        );
+      } else {
+        created = await this.workspaceCoordinator.createForSession(sessionId);
+        if (inheritFrom) {
+          logger.info(
+            'PiSessionCoordinator',
+            `pi-fork-workspace: inherit source ${inheritFrom} gone, fallback to empty ws=${created.workspaceId}`,
+          );
+        } else {
+          logger.info(
+            'PiSessionCoordinator',
+            `pi-new-workspace: sid=${sessionId} ws=${created.workspaceId}`,
+          );
+        }
+      }
       // 触发文件面板重建(新 workspace 无快照 → onWorkspaceSwitched 清空 files,
-      // 符合 new 语义)。
+      // 符合 new 语义;克隆时从新 ws 的快照恢复,符合 fork 继承语义)。
       this.workspaceSwitchedNotify?.(sessionId);
-      logger.info(
-        'PiSessionCoordinator',
-        `pi-new-workspace: sid=${sessionId} ws=${created.workspaceId}`,
-      );
       return { workspaceId: created.workspaceId };
     } catch (err) {
       logger.warn(

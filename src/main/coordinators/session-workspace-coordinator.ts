@@ -101,6 +101,28 @@ export class SessionWorkspaceCoordinator {
   }
 
   /**
+   * 为 session 克隆一个已有 workspace 作为它的新 workspace(pi /fork 继承,方案
+   * 20260817 裁决 1):复制源的面板快照 + 受管文件,绑定到新 id。fork 后的新对话
+   * 拿到父对话 workspace 的完整副本,但不与父共享(裁决 3)。
+   *
+   * 源 workspace 不存在(刚被回收)时抛 WorkspaceNotFound——调用方
+   * (PiSessionCoordinator)应捕获并退回 createForSession(空 workspace)。
+   */
+  async cloneForSession(
+    sessionId: string,
+    sourceWorkspaceId: string,
+  ): Promise<{ workspaceId: string; dir: string }> {
+    if (!this.workspaceManager) {
+      throw Object.assign(new Error('workspace manager not configured'), {
+        code: 'WorkspaceNotConfigured',
+      });
+    }
+    const created = await this.workspaceManager.cloneWorkspace(sourceWorkspaceId);
+    this.sessionWorkspaceBindings.set(sessionId, created.workspaceId);
+    return created;
+  }
+
+  /**
    * PTY spawn 失败时撤销刚创建的 workspace(不保留,等保留期没意义)。
    * 内部 try/catch,失败只 warn(不阻塞主流程)。
    */
@@ -127,7 +149,24 @@ export class SessionWorkspaceCoordinator {
   onSessionDestroyed(sessionId: string): void {
     const wsId = this.sessionWorkspaceBindings.get(sessionId) ?? null;
     try {
-      if (wsId) this.workspaceManager?.release(wsId);
+      if (wsId) {
+        // 共享防护(方案 20260817 裁决 3):同一对话文件可以在多个 Marina 终端里
+        // 打开(跨终端 /resume 同一 id),此时多个 session 绑同一 workspace——
+        // 「同文件=同对话=同 workspace」允许共享。但任一终端关闭就 release 会把
+        // 还在被占用的工作区推进回收倒计时,保留期一到另一终端的面板内容蒸发。
+        // 因此只有**最后一个**占用者销毁时才 release。
+        const stillInUse = [...this.sessionWorkspaceBindings.entries()].some(
+          ([sid, boundWs]) => sid !== sessionId && boundWs === wsId,
+        );
+        if (stillInUse) {
+          logger.info(
+            'SessionWorkspaceCoordinator',
+            `skip release: ws=${wsId} still bound by other session(s) (destroying sid=${sessionId})`,
+          );
+        } else {
+          this.workspaceManager?.release(wsId);
+        }
+      }
     } catch (err) {
       // 工作区元数据失败不能阻塞主 session 销毁；manager 会在下次启动根据
       // manifest 重试回收，日志保留足够诊断信息。

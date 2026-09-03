@@ -465,7 +465,9 @@ export class LocalHttpGateway {
   }
 
   /**
-   * v0.3.3 ADR-028:POST /pi-session-event。body {terminal, piSessionId, event, reason?, name?}。
+   * v0.3.3 ADR-028:POST /pi-session-event。body {terminal, piSessionId, event,
+   * reason?, name?, workspaceId?, parentSessionFile?, parentBinding?}(后两个是
+   * 方案 20260817 的 fork/子会话亲缘字段,可选)。
    * 解析 + 校验后转发给注入的 piEventOps(PiSessionCoordinator.handlePiSessionEvent)。
    * fire-and-forget 语义：响应只表“已接收”，不保证 pi 业务结果(那由后续 evt 推送)。
    * 处理失败返 500 + error，但 pi 不会因此卡住(它不等业务结果)。
@@ -482,13 +484,24 @@ export class LocalHttpGateway {
       reason?: string;
       name?: string | null;
       workspaceId?: string | null;
+      parentSessionFile?: string | null;
+      parentBinding?: string | null;
     };
     try {
       body = JSON.parse(await readBody(req)) as typeof body;
     } catch {
       return send(res, 400, { error: 'invalid JSON body' });
     }
-    const { terminal, piSessionId, event, reason, name, workspaceId } = body;
+    const {
+      terminal,
+      piSessionId,
+      event,
+      reason,
+      name,
+      workspaceId,
+      parentSessionFile,
+      parentBinding,
+    } = body;
     if (!terminal) return send(res, 400, { error: 'body 需要 { terminal }' });
     if (!piSessionId) return send(res, 400, { error: 'body 需要 { piSessionId }' });
     const VALID_EVENTS = [
@@ -508,10 +521,25 @@ export class LocalHttpGateway {
         reason?: string;
         name?: string | null;
         workspaceId?: string | null;
+        parentSessionFile?: string | null;
+        parentBinding?: string | null;
       } = { piSessionId, event: event as (typeof VALID_EVENTS)[number] };
       if (reason !== undefined) payload.reason = reason;
       if (name !== undefined && name !== null) payload.name = name;
       if (workspaceId !== undefined && workspaceId !== null) payload.workspaceId = workspaceId;
+      // 方案 20260817:亲缘字段(可选;旧版 bridge 不带,校验为 string 才透传)。
+      if (
+        parentSessionFile !== undefined &&
+        parentSessionFile !== null &&
+        typeof parentSessionFile === 'string'
+      )
+        payload.parentSessionFile = parentSessionFile;
+      if (
+        parentBinding !== undefined &&
+        parentBinding !== null &&
+        typeof parentBinding === 'string'
+      )
+        payload.parentBinding = parentBinding;
       // session_start 可能返回 { workspaceId }(新建的),作为响应体交回 bridge 存进
       // pi 对话 entry(appendEntry);其它事件返回 void → 响应 { ok: true }。
       const result = await this.piEventOps.applyPiSessionEvent(terminal, payload);

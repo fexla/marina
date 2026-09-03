@@ -446,4 +446,60 @@ describe('SessionWorkspaceManager', () => {
     await fs.writeFile(file, '{broken', 'utf8');
     expect(await manager.readSnapshot(WS_A)).toBeNull();
   });
+
+  // ── cloneWorkspace(pi /fork 继承,方案 20260817 裁决 1)──────────
+
+  it('cloneWorkspace 复制受管文件 + 快照,内部路径重写指向新目录,源不动', async () => {
+    const src = await manager.create(); // WS_A
+    // 源里放一份受管文件(agent 产物) + 一份带内外路径的快照。
+    const reportDir = join(src.dir, 'reports');
+    await fs.mkdir(reportDir, { recursive: true });
+    await fs.writeFile(join(reportDir, 'r.md'), '# fork me', 'utf8');
+    const internalPath = join(reportDir, 'r.md');
+    const externalPath = 'D:\\proj\\src\\main.ts';
+    await manager.writeSnapshot(WS_A, {
+      version: 1,
+      openedFiles: [
+        { path: internalPath, kind: 'text', external: false },
+        { path: externalPath, kind: 'text', external: true },
+      ],
+      activeFilePath: internalPath,
+      scroll: { [internalPath]: { scrollTop: 42, scrollLeft: 0 } },
+      runs: [],
+    });
+
+    const cloned = await manager.cloneWorkspace(WS_A); // WS_B
+    expect(cloned.workspaceId).toBe(WS_B);
+    // 受管文件已复制,内容一致;
+    const copied = await fs.readFile(join(cloned.dir, 'reports', 'r.md'), 'utf8');
+    expect(copied).toBe('# fork me');
+    // 快照:内部路径重写到新目录,外部路径不动,scroll 跟着重写。
+    const snap = await manager.readSnapshot(WS_B);
+    expect(snap).not.toBeNull();
+    const internalClonePath = join(cloned.dir, 'reports', 'r.md');
+    expect(snap!.openedFiles.map((f) => f.path)).toEqual([internalClonePath, externalPath]);
+    expect(snap!.activeFilePath).toBe(internalClonePath);
+    expect(snap!.scroll[internalClonePath]).toEqual({ scrollTop: 42, scrollLeft: 0 });
+    expect(snap!.scroll[internalPath]).toBeUndefined();
+    // 新 record active;源的快照/文件未被改动(继承是副本,不共享)。
+    expect(manager.getRecord(WS_B)).toMatchObject({ closedAt: null });
+    const srcSnap = await manager.readSnapshot(WS_A);
+    expect(srcSnap!.openedFiles[0]!.path).toBe(internalPath);
+    // 状态目录不是顶层文件复制出来的(dirty copy)而是写入新快照:无双重状态。
+    const stateFiles = await fs.readdir(join(cloned.dir, '__marina_state__'));
+    expect(stateFiles).toEqual(['file-panel.json']);
+  });
+
+  it('cloneWorkspace 源不存在 → 抛 WorkspaceNotFound(调用方判活后应退回 create)', async () => {
+    await expect(manager.cloneWorkspace('no-such-ws')).rejects.toMatchObject({
+      code: 'WorkspaceNotFound',
+    });
+  });
+
+  it('cloneWorkspace 源无快照/无文件 → 空副本,不抛(全新 fork 的降级路径)', async () => {
+    await manager.create();
+    const cloned = await manager.cloneWorkspace(WS_A);
+    expect(manager.getRecord(cloned.workspaceId)).not.toBeNull();
+    await expect(manager.readSnapshot(cloned.workspaceId)).resolves.toBeNull();
+  });
 });

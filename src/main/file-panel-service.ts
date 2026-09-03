@@ -209,6 +209,13 @@ export interface PiEventOps {
       name?: string | null;
       /** bridge 从对话 entry 恢复的 workspaceId(resume 时带上,Marina 据此切回)。 */
       workspaceId?: string | null;
+      /**
+       * fork/子会话亲缘(方案 20260817 裁决 1/3):本对话文件的来源(父会话文件
+       * 路径,header.parentSession)。fork/clone/pi-subagents 子会话才有。
+       */
+      parentSessionFile?: string | null;
+      /** 父对话当前 workspace(bridge 读父文件最后一条绑定 entry 得到)。 */
+      parentBinding?: string | null;
     },
   ): Promise<{ workspaceId?: string } | void>;
 }

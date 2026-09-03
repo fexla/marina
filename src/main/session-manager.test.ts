@@ -301,6 +301,8 @@ function makeManager(
     filePanelService?: { getUrl(): { baseUrl: string; token: string } | null };
     workspaceManager?: {
       create(): Promise<{ workspaceId: string; dir: string }>;
+      /** 方案 20260817 fork 继承:克隆已有 workspace(可缺省,协调层测试不覆盖时)。 */
+      cloneWorkspace?(sourceWorkspaceId: string): Promise<{ workspaceId: string; dir: string }>;
       discard(workspaceId: string): Promise<void>;
       release(workspaceId: string): void;
       getPathForWorkspace(workspaceId: string): string | null;
@@ -1981,10 +1983,8 @@ describe('SessionManager — owner 切换', () => {
       rows: 24,
     });
     const events: Array<{ sessionId: string; oldOwnerWindowId: string | null }> = [];
-    mgr.on(
-      'sessionOwnerChanged',
-      (e: { sessionId: string; oldOwnerWindowId: string | null }) =>
-        events.push({ sessionId: e.sessionId, oldOwnerWindowId: e.oldOwnerWindowId }),
+    mgr.on('sessionOwnerChanged', (e: { sessionId: string; oldOwnerWindowId: string | null }) =>
+      events.push({ sessionId: e.sessionId, oldOwnerWindowId: e.oldOwnerWindowId }),
     );
     mgr.takeoverOwner(info.id, 'w-2');
     // 强占成功:claim 在这里会抛 SessionAlreadyOwned,takeover 不抛。
@@ -3039,8 +3039,15 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
       resumeSwitch?: boolean;
       getRecord?: (wsId: string) => unknown;
     } = {},
-  ): { mgr: SessionManager; created: string[]; pi: PiSessionCoordinator } {
+  ): {
+    mgr: SessionManager;
+    created: string[];
+    /** cloneWorkspace 调用记录(from → to),fork 继承断言用。 */
+    cloned: Array<{ from: string; to: string }>;
+    pi: PiSessionCoordinator;
+  } {
     const created: string[] = [];
+    const cloned: Array<{ from: string; to: string }> = [];
     let counter = 0;
     const settings = makeStubSettingsManager();
     const pi = (settings.get() as Settings).piIntegration;
@@ -3056,13 +3063,20 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
           created.push(wsId);
           return { workspaceId: wsId, dir: `C:\\fake\\${wsId}` };
         },
+        cloneWorkspace: async (sourceId: string) => {
+          counter += 1;
+          const wsId = `ws-${counter}`;
+          created.push(wsId);
+          cloned.push({ from: sourceId, to: wsId });
+          return { workspaceId: wsId, dir: `C:\\fake\\${wsId}` };
+        },
         discard: async () => {},
         release: () => {},
         getPathForWorkspace: () => null,
         getRecord: (wsId: string) => (opts.getRecord ? opts.getRecord(wsId) : { name: null }),
       },
     });
-    return { mgr, created, pi: piCoordinator };
+    return { mgr, created, cloned, pi: piCoordinator };
   }
 
   async function makeSession(mgr: SessionManager): Promise<{ sid: string; base: number }> {
@@ -3128,6 +3142,112 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
     });
     expect(created.length).toBe(beforeResume + 1); // 回收 → 重建
     expect(r?.workspaceId).toBeDefined(); // 返回新 id 让 bridge 更新 entry
+  });
+
+  // ── fork 继承(方案 20260817 裁决 1:fork 新建 workspace 且继承原 workspace)──
+
+  it('session_start(fork) 带 parentBinding → 新建 workspace 并从父克隆(继承)', async () => {
+    const { mgr, created, cloned, pi } = makePiManager();
+    const { sid } = await makeSession(mgr);
+    const base = created.length;
+    const r = await pi.handlePiSessionEvent(sid, {
+      piSessionId: 'pi-fork',
+      event: 'session_start',
+      reason: 'fork',
+      parentSessionFile: 'C:\\pi\\parent.jsonl',
+      parentBinding: 'ws-parent', // 父对话当前 workspace(bridge 从父文件尾读出)
+    });
+    expect(created.length).toBe(base + 1); // fork 新建一个(不是切回父的)
+    expect(cloned).toEqual([{ from: 'ws-parent', to: r?.workspaceId ?? '' }]); // 继承=克隆
+    expect(r?.workspaceId).toBeDefined(); // 新 id 交回 bridge 落 entry
+  });
+
+  it('session_start(fork) 无 parentBinding → 回退继承 payload 里的继承 entry', async () => {
+    // 旧版 bridge / 父文件已清理:退而求其次,用 fork 复制路径上的绑定(fork 点
+    // 位置的父 workspace)。仍不共享,克隆一份。
+    const { mgr, created, cloned, pi } = makePiManager();
+    const { sid } = await makeSession(mgr);
+    const base = created.length;
+    await pi.handlePiSessionEvent(sid, {
+      piSessionId: 'pi-fork',
+      event: 'session_start',
+      reason: 'fork',
+      workspaceId: 'ws-inherited-at-fork-point',
+    });
+    expect(created.length).toBe(base + 1);
+    expect(cloned.map((c) => c.from)).toEqual(['ws-inherited-at-fork-point']);
+  });
+
+  it('session_start(fork) 继承源已回收 → 退化空新建,不算错误', async () => {
+    const { mgr, created, cloned, pi } = makePiManager({
+      getRecord: (wsId) => (wsId === 'ws-parent' ? undefined : { name: null }),
+    });
+    const { sid } = await makeSession(mgr);
+    const base = created.length;
+    const r = await pi.handlePiSessionEvent(sid, {
+      piSessionId: 'pi-fork',
+      event: 'session_start',
+      reason: 'fork',
+      parentBinding: 'ws-parent', // 刚被回收
+    });
+    expect(created.length).toBe(base + 1); // 空新建
+    expect(cloned).toEqual([]); // 没克隆
+    expect(r?.workspaceId).toBeDefined();
+  });
+
+  it('session_start(new) 不继承(新对话=全新开始,即使误带 parentBinding)', async () => {
+    const { mgr, created, cloned, pi } = makePiManager();
+    const { sid } = await makeSession(mgr);
+    const base = created.length;
+    await pi.handlePiSessionEvent(sid, {
+      piSessionId: 'pi-new',
+      event: 'session_start',
+      reason: 'new',
+      parentBinding: 'ws-parent',
+    });
+    expect(created.length).toBe(base + 1);
+    expect(cloned).toEqual([]); // new 永远空新建
+  });
+
+  // ── fork 血统首次激活不共享(裁决 3:fork/子会话不共享 workspace)────────
+
+  it('resume 带的绑定 == parentBinding(继承品)→ 不切回父的,克隆一份并返回新 id', async () => {
+    // 典型:CLI `pi --fork` 冷启动(reason=startup)或 fork 时 Marina 离线没
+    // 能返回新 id——分支上只有从父文件复制来的绑定 entry。若直接切回就变成
+    // 父子共享同一 workspace(违反裁决 3),且 bridge 永远不会拿到自己的 id。
+    const { mgr, created, cloned, pi } = makePiManager();
+    const { sid } = await makeSession(mgr);
+    const base = created.length;
+    const r = await pi.handlePiSessionEvent(sid, {
+      piSessionId: 'pi-fork',
+      event: 'session_start',
+      reason: 'startup',
+      workspaceId: 'ws-parent', // 继承的 entry
+      parentSessionFile: 'C:\\pi\\parent.jsonl',
+      parentBinding: 'ws-parent', // 与 payload 相等 → 判定为继承品
+    });
+    expect(created.length).toBe(base + 1); // 克隆新建,不是切回
+    expect(cloned.map((c) => c.from)).toEqual(['ws-parent']);
+    expect(r?.workspaceId).toBeDefined(); // 新 id 让 bridge 覆盖 entry
+    expect(r?.workspaceId).not.toBe('ws-parent');
+  });
+
+  it('resume 带自己的绑定(≠ parentBinding)→ 正常切回(fork 也不误判)', async () => {
+    // fork 首次激活拿到自己的 ws 后,后续 resume:绑定是自己的,与父的无关
+    // → 走普通切回(同文件=同对话=同 workspace,裁决 3 允许)。
+    const { mgr, created, cloned, pi } = makePiManager();
+    const { sid } = await makeSession(mgr);
+    const before = created.length;
+    await pi.handlePiSessionEvent(sid, {
+      piSessionId: 'pi-fork',
+      event: 'session_start',
+      reason: 'resume',
+      workspaceId: 'ws-own', // 自己的 entry
+      parentSessionFile: 'C:\\pi\\parent.jsonl',
+      parentBinding: 'ws-parent', // 父的 ≠ 自己的
+    });
+    expect(created.length).toBe(before); // 切回,不新建
+    expect(cloned).toEqual([]);
   });
 
   it('agent_settled 设 hasUnviewedWork=true；agent_working 清除', async () => {

@@ -11,6 +11,7 @@ import type { SessionLookup } from './session-lookup';
 /** 构造一个可记调用/可控返回的 workspaceManager mock。 */
 type WmMocks = {
   create: Mock;
+  cloneWorkspace: Mock;
   discard: Mock;
   release: Mock;
   getPathForWorkspace: Mock;
@@ -29,6 +30,10 @@ function makeWorkspaceManager(overrides: Record<string, unknown> = {}) {
     create: vi.fn(async () => {
       calls.push('create');
       return { workspaceId: 'ws-1', dir: 'C:\\fake\\ws-1' };
+    }),
+    cloneWorkspace: vi.fn(async (sourceId: string) => {
+      calls.push(`clone:${sourceId}`);
+      return { workspaceId: 'ws-clone', dir: 'C:\\fake\\ws-clone' };
     }),
     discard: vi.fn(async (id: string) => {
       calls.push(`discard:${id}`);
@@ -140,6 +145,47 @@ describe('SessionWorkspaceCoordinator — 生命周期', () => {
     await coord.createForSession('s1');
     expect(() => coord.onSessionDestroyed('s1')).not.toThrow();
     expect(coord.getWorkspaceIdForSession('s1')).toBeNull();
+  });
+
+  // ── fork 继承(方案 20260817 裁决 1)──────────────────────────────
+
+  it('cloneForSession 委托 manager.cloneWorkspace 并把新 id 绑到 session', async () => {
+    const { coord, calls } = makeCoord();
+    const created = await coord.cloneForSession('s1', 'ws-parent');
+    expect(created).toEqual({ workspaceId: 'ws-clone', dir: 'C:\\fake\\ws-clone' });
+    expect(calls).toContain('clone:ws-parent');
+    expect(coord.getWorkspaceIdForSession('s1')).toBe('ws-clone');
+  });
+
+  it('cloneForSession 在 manager 未注入时抛 WorkspaceNotConfigured', async () => {
+    const { coord } = makeCoord({ workspaceManagerNull: true });
+    await expect(coord.cloneForSession('s1', 'ws-parent')).rejects.toMatchObject({
+      code: 'WorkspaceNotConfigured',
+    });
+  });
+
+  // ── 同文件共享的 release 防护(方案 20260817 裁决 3)────────────
+
+  it('多 session 共享同一 workspace(跨终端同文件):最后一个占用者销毁才 release', async () => {
+    // 生产中全应用只有一个 SessionWorkspaceCoordinator,所有 session 的绑定都在
+    // 同一张表里;跨终端 /resume 同一对话文件 → 两条 session 绑同一 ws。
+    const { coord, calls } = makeCoord({
+      lookup: {
+        hasSession: (sid: string) => ['s1', 's2'].includes(sid),
+        getSessionPathId: () => 'C:\\proj',
+      },
+    });
+    await coord.createForSession('s1');
+    const wsId = coord.getWorkspaceIdForSession('s1');
+    expect(wsId).toBe('ws-1');
+    coord.switchSessionToWorkspace('s2', wsId!);
+
+    // 第一个销毁:仍被 s2 占用 → 不得 release(否则保留期一到 s2 面板内容蒸发)。
+    coord.onSessionDestroyed('s1');
+    expect(calls).not.toContain('release:ws-1');
+    // 最后一个销毁:正常 release。
+    coord.onSessionDestroyed('s2');
+    expect(calls).toContain('release:ws-1');
   });
 });
 
