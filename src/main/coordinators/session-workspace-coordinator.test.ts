@@ -14,6 +14,7 @@ type WmMocks = {
   cloneWorkspace: Mock;
   discard: Mock;
   release: Mock;
+  retain: Mock;
   getPathForWorkspace: Mock;
   bind: Mock;
   list: Mock;
@@ -40,6 +41,9 @@ function makeWorkspaceManager(overrides: Record<string, unknown> = {}) {
     }),
     release: vi.fn((id: string) => {
       calls.push(`release:${id}`);
+    }),
+    retain: vi.fn((id: string) => {
+      calls.push(`retain:${id}`);
     }),
     getPathForWorkspace: vi.fn((id: string) => (id.startsWith('ws-') ? `C:\\fake\\${id}` : null)),
     bind: vi.fn(async () => ({
@@ -270,6 +274,27 @@ describe('SessionWorkspaceCoordinator — workspace 编排', () => {
     expect(coord.getRecord('ws-none')).toBeNull();
     coord.switchSessionToWorkspace('s1', 'ws-9');
     expect(coord.getWorkspaceIdForSession('s1')).toBe('ws-9');
-    void wm;
+    // 修复 2026-09-03:切回时必须 retain(清 closedAt),否则 cleanupExpired 会
+    // 持续 rmdir 正被占用的目录(EBUSY 无限重试风暴,见 SessionWorkspaceManager.retain)。
+    expect(wm.retain).toHaveBeenCalledWith('ws-9');
+  });
+
+  it('bindWorkspace switched 路径也要 retain(切到 unpin 过的命名 ws 不进清理风暴)', async () => {
+    const { coord, wm } = makeCoord({
+      workspaceManager: {
+        bind: vi.fn(async () => ({
+          kind: 'switched',
+          workspaceId: 'ws-9',
+          dir: 'C:\\fake\\ws-9',
+          createdAt: 1,
+          fileCount: 2,
+        })),
+      },
+    });
+    await coord.createForSession('s1'); // 当前绑定 ws-1
+    const result = await coord.bindWorkspace('s1', 'named', false);
+    expect(result.kind).toBe('switched');
+    expect(coord.getWorkspaceIdForSession('s1')).toBe('ws-9');
+    expect(wm.retain).toHaveBeenCalledWith('ws-9');
   });
 });

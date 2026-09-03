@@ -38,6 +38,9 @@ const SNAPSHOT_FILE = 'file-panel.json';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const MAX_NAME_LEN = 64;
+/** cleanup 失败退避:首次 30s,连续失败每次翻倍,cap 1h(见 cleanupBackoffMs 注释)。 */
+const CLEANUP_BACKOFF_BASE_MS = 30_000;
+const CLEANUP_BACKOFF_CAP_MS = 60 * 60 * 1000;
 
 /**
  * 把指向 workspace 内部目录的绝对路径重写到另一个 workspace 目录(cloneWorkspace
@@ -153,6 +156,18 @@ export class SessionWorkspaceManager {
   private readonly store: JsonStore<WorkspaceManifest>;
   private records = new Map<string, WorkspaceRecord>();
   private cleanupTimer: NodeJS.Timeout | null = null;
+  /**
+   * cleanup 失败后的重试退避(毫秒,0 = 无退避)。一次失败 → CLEANUP_BACKOFF_BASE_MS,
+   * 连续失败每次翻倍,cap 到 CLEANUP_BACKOFF_CAP_MS;全部成功清零。
+   *
+   * 为什么必须退避(实测事故 2026-09-03 portable):cleanupExpired 失败后
+   * rescheduleCleanup 算出 delay=0(到期记录仍在,expiry 已过)→ setTimeout(0)
+   * 立即重试 → 无限风暴。一个被文件面板 fs.watch 锁住的 workspace 以 ~640ms/轮
+   * 刷了数小时(每轮 fs.rm 递归扫描 + rmdir ×3 重试),main 的 IO/线程池被拖垮,
+   * pi 的 agent_settled HTTP POST 3s 超时。退避把暂时性占用(EBUSY)压到分钟级重试,
+   * 既不删不掉也刷不死进程。
+   */
+  private cleanupBackoffMs = 0;
   private initialized = false;
 
   constructor(options: SessionWorkspaceManagerOptions) {
@@ -508,7 +523,13 @@ export class SessionWorkspaceManager {
     }
     if (earliestExpiry === null) return;
 
-    const delay = Math.max(0, Math.min(MAX_TIMEOUT_MS, earliestExpiry - now));
+    // 到期时间决定"最早该试的时刻";上轮失败退避(cleanupBackoffMs)把实际重试
+    // 推迟到 now+backoff —— 两者取大,避免 delay=0 无限重试(见字段注释)。首次
+    // 尝试(backoff=0)仍是到期即删,保留"0 天=立即回收"的设计语义。
+    const delay = Math.max(
+      this.cleanupBackoffMs,
+      Math.max(0, Math.min(MAX_TIMEOUT_MS, earliestExpiry - now)),
+    );
     this.cleanupTimer = setTimeout(() => {
       this.cleanupTimer = null;
       void this.cleanupExpired().catch((err: unknown) => {
@@ -528,6 +549,7 @@ export class SessionWorkspaceManager {
     const now = this.now();
     const retentionMs = this.retentionDays() * DAY_MS;
     let changed = false;
+    let anyFailed = false;
 
     for (const [workspaceId, record] of [...this.records]) {
       // pinned 免回收（即使 closedAt 非空，只要还 pinned 就不删）。
@@ -540,6 +562,7 @@ export class SessionWorkspaceManager {
         changed = true;
         logger.info(MODULE, `cleanup: removed expired workspace ws=${workspaceId}`);
       } catch (err) {
+        anyFailed = true;
         logger.warn(
           MODULE,
           `cleanup: failed ws=${workspaceId}; keeping record for retry: ${
@@ -547,6 +570,17 @@ export class SessionWorkspaceManager {
           }`,
         );
       }
+    }
+    // 失败退避(见 cleanupBackoffMs 字段注释):目录被 fs.watch/别的进程暂时占用
+    // (EBUSY)不该触发无限重试;全部成功才清零。
+    if (anyFailed) {
+      this.cleanupBackoffMs =
+        this.cleanupBackoffMs === 0
+          ? CLEANUP_BACKOFF_BASE_MS
+          : Math.min(CLEANUP_BACKOFF_CAP_MS, this.cleanupBackoffMs * 2);
+      logger.info(MODULE, `cleanup: had failures, next retry in ${this.cleanupBackoffMs}ms`);
+    } else {
+      this.cleanupBackoffMs = 0;
     }
     if (changed) this.persist();
     this.rescheduleCleanup();
@@ -559,6 +593,31 @@ export class SessionWorkspaceManager {
       this.cleanupTimer = null;
     }
     await this.store.flush();
+  }
+
+  /**
+   * 复活一个已 release 的 workspace:closedAt 清回 null —— 它重新被 session
+   * 占用,不再是待回收态。幂等(closedAt 已是 null / 不在 manifest → no-op)。
+   *
+   * 为什么必须存在(实测事故 2026-09-03 portable):pi resume 切回已 release 且
+   * 已到期的 workspace 时,若只改 session→workspace 绑定而不清 closedAt,
+   * cleanupExpired 不知道它重新被占用,持续 rmdir 一个正被使用的目录;目录被
+   * 文件面板 fs.watch 锁住 → EBUSY → 无限重试风暴(见 cleanupBackoffMs 注释),
+   * 最终拖垮 main 的 IO。两个调用点:pi resume 切回(switchSessionToWorkspace)
+   * 与 CLI bind --name 切到已存在 workspace(bindWorkspace 的 switched 分支)。
+   */
+  retain(workspaceId: string): void {
+    this.requireInitialized();
+    const record = this.records.get(workspaceId);
+    if (!record) {
+      logger.warn(MODULE, `retain: unknown ws=${workspaceId} (no-op)`);
+      return;
+    }
+    if (record.closedAt === null) return; // 活跃中,无需复活
+    record.closedAt = null;
+    this.persist();
+    this.rescheduleCleanup();
+    logger.info(MODULE, `retain: ws=${workspaceId} reopened (closedAt cleared)`);
   }
 
   /** 供测试与未来诊断使用：仅返回受管目录，不暴露或接受任意外部路径。 */

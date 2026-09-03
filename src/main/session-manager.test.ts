@@ -3072,6 +3072,7 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
         },
         discard: async () => {},
         release: () => {},
+        retain: () => {},
         getPathForWorkspace: () => null,
         getRecord: (wsId: string) => (opts.getRecord ? opts.getRecord(wsId) : { name: null }),
       },
@@ -3400,6 +3401,7 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
         },
         discard: async () => {},
         release: () => {},
+        retain: () => {},
         getPathForWorkspace: () => null,
         getRecord: () => ({ name: null }),
       },
@@ -3462,6 +3464,7 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
         },
         discard: async () => {},
         release: () => {},
+        retain: () => {},
         getPathForWorkspace: () => null,
         getRecord: () => ({
           name: null,

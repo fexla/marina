@@ -587,6 +587,12 @@ export interface SessionWorkspaceSource {
    */
   release(workspaceId: string): void;
   /**
+   * 复活已 release 的 workspace(closedAt 清回 null):pi resume / CLI bind 切回
+   * 已释放 workspace 时调,否则 cleanupExpired 会持续删除重新被占用的目录
+   * (2026-09-03 实测事故:EBUSY 无限重试风暴)。见 SessionWorkspaceManager.retain。
+   */
+  retain(workspaceId: string): void;
+  /**
    * v0.3.3 ADR-024：取 workspace 的受管目录（仅返回，不接受任意外部路径）。
    * SessionManager 的 getWorkspacePathForSession 代理调它。
    */

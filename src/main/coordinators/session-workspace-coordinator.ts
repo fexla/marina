@@ -223,6 +223,9 @@ export class SessionWorkspaceCoordinator {
         this.workspaceManager.release(currentWsId);
       }
       this.sessionWorkspaceBindings.set(sessionId, result.workspaceId);
+      // 切回的 ws 可能被 unpin(occupied=false)标过 closedAt 已到期 → 同样需
+      // 复活,否则 cleanupExpired 会删一个重新被占用的目录(见 retain 注释)。
+      this.workspaceManager.retain(result.workspaceId);
     }
     return result;
   }
@@ -334,5 +337,9 @@ export class SessionWorkspaceCoordinator {
   /** 把 session 的 workspace 绑定指向已存在的 workspace(pi resume 切回)。 */
   switchSessionToWorkspace(sessionId: string, workspaceId: string): void {
     this.sessionWorkspaceBindings.set(sessionId, workspaceId);
+    // 复活:切回的 ws 可能已 release 过(closedAt 已标,甚至已到期)。不清回
+    // null 的话 cleanupExpired 不知道它重新被占用,会持续 rmdir 正在使用的目录
+    // → EBUSY 无限重试风暴(实测事故 2026-09-03,见 SessionWorkspaceManager.retain)。
+    this.workspaceManager?.retain(workspaceId);
   }
 }

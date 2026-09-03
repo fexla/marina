@@ -8,7 +8,7 @@
  * @安全约束:每个 case 使用 createTempDataDir；绝不读写真实 Marina userData。
  * @对应文档章节: AGENTS.md 5.3 / 5.6、ADR-024、session-workspace-manager.ts 文件头。
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { createTempDataDir, removeTempDataDir } from './persistence';
@@ -98,6 +98,62 @@ describe('SessionWorkspaceManager', () => {
     await manager.cleanupExpired();
 
     await expect(fs.access(created.dir)).rejects.toThrow();
+  });
+
+  // ── retain(pi/CLI 切回已释放 workspace 的复活,修复 2026-09-03 EBUSY 风暴)──
+
+  it('retain 复活已到期记录:closedAt 清 null,到期后 cleanupExpired 也不删', async () => {
+    // 事故复盘:pi resume 切回已 release 且已到期的 ws,若不清 closedAt,
+    // cleanupExpired 会持续 rmdir 正被占用的目录(EBUSY 无限重试)。
+    const created = await manager.create();
+    manager.release(WS_A);
+    now += 30 * DAY_MS; // 早已到期
+
+    manager.retain(WS_A);
+
+    expect(manager.getRecord(WS_A)?.closedAt).toBeNull();
+    await manager.cleanupExpired();
+    await expect(fs.stat(created.dir)).resolves.toBeDefined();
+    expect(manager.getPathForWorkspace(WS_A)).toBe(created.dir);
+  });
+
+  it('retain 幂等:活跃(closedAt=null)记录 no-op,未知 id no-op 不抛', async () => {
+    await manager.create();
+    manager.retain(WS_A); // 活跃中
+    expect(manager.getRecord(WS_A)?.closedAt).toBeNull();
+
+    expect(() => manager.retain('no-such-ws')).not.toThrow();
+  });
+
+  it('cleanup 失败后按指数退避重试,不再 delay=0 无限刷;成功后清零', async () => {
+    // 用 mock 让 fs.rm 失败,模拟目录被占用(EBUSY)。
+    const fsPromises = await import('node:fs');
+    const rmSpy = vi.spyOn(fsPromises.promises, 'rm').mockRejectedValue(
+      Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' }),
+    );
+    try {
+      retentionDays = 0;
+      const created = await manager.create();
+      manager.release(WS_A);
+      // 首次失败 → backoff = 30s;base 值直接驱动下次调度。
+      await manager.cleanupExpired();
+      expect((manager as unknown as { cleanupBackoffMs: number }).cleanupBackoffMs).toBe(30_000);
+      await expect(fs.stat(created.dir)).resolves.toBeDefined(); // 目录还在
+
+      // 连续失败翻倍:60s → 120s。
+      await manager.cleanupExpired();
+      expect((manager as unknown as { cleanupBackoffMs: number }).cleanupBackoffMs).toBe(60_000);
+      await manager.cleanupExpired();
+      expect((manager as unknown as { cleanupBackoffMs: number }).cleanupBackoffMs).toBe(120_000);
+
+      // 恢复真实 rm(成功路径)→ 下一次 cleanupExpired 成功 → backoff 清零。
+      rmSpy.mockRestore();
+      await manager.cleanupExpired();
+      expect((manager as unknown as { cleanupBackoffMs: number }).cleanupBackoffMs).toBe(0);
+      await expect(fs.access(created.dir)).rejects.toThrow(); // 这次真的删掉了
+    } finally {
+      rmSpy.mockRestore();
+    }
   });
 
   it('启动恢复把崩溃前 active 的记录视为刚关闭，不会立即删除', async () => {
