@@ -510,13 +510,16 @@ export class FilePanelService extends EventEmitter {
       const mime = IMAGE_MIME[ext] ?? 'application/octet-stream';
       return { kind: 'image', dataUrl: `data:${mime};base64,${buf.toString('base64')}`, mime };
     }
-    // text / markdown / diff(三种同为 UTF-8 读路径,diff 由 renderer 高亮)
+    // text / markdown / diff(三种同为 UTF-8 读路径,diff 由 renderer 高亮)。
+    // 'web'(ADR-034)走同一 UTF-8 读路径,但响应 kind 固定映射为 'text':预览内容
+    // 不经此通道(由 marina-file:// 协议流式服务),read 只服务 WebViewer 的
+    // "源码查看"模式,复用 TextViewer 渲染。
     const buf = await fs.readFile(abs);
     const truncated = buf.byteLength > MAX_READ_TEXT_BYTES;
     const text = truncated
       ? buf.subarray(0, MAX_READ_TEXT_BYTES).toString('utf8')
       : buf.toString('utf8');
-    return { kind: file.kind, text, truncated };
+    return { kind: file.kind === 'web' ? 'text' : file.kind, text, truncated };
   }
 
   /**

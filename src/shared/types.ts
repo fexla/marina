@@ -918,10 +918,11 @@ export interface SessionRuntimeShape {
  * detectFileKind),未知扩展名归 'unknown' —— 面板显示"暂不支持预览"占位,
  * 不报错(终端程序 open 一个二进制文件是正常场景)。
  *
- * 'web' 是为未来网页预览(本地 HTML / 远程 URL)预留的槽位,本轮 detectFileKind
- * 不会返回它;FileViewer 里有对应分支但渲染占位提示。
+ * 'web'(v0.3.4,ADR-034):本地 HTML 文件,由 WebViewer 经 marina-file:// 特权
+ * 协议在 sandbox iframe 里渲染(只读、自包含档)。远程 URL 明确不支持 ——
+ * 面板不是浏览器,http(s) 链接一律外开系统浏览器。
  */
-export type FileKind = 'text' | 'markdown' | 'image' | 'diff' | 'unknown';
+export type FileKind = 'text' | 'markdown' | 'image' | 'web' | 'diff' | 'unknown';
 
 /**
  * 已打开文件的来源语义。来源由真正掌握导航目标的 main 模块写入，renderer 只消费，

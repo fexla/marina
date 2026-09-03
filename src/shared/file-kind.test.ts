@@ -28,8 +28,19 @@ describe('detectFileKind', () => {
     expect(detectFileKind('deploy.yaml')).toBe('text');
     expect(detectFileKind('setup.ps1')).toBe('text');
     expect(detectFileKind('run.sh')).toBe('text');
-    expect(detectFileKind('index.html')).toBe('text');
     expect(detectFileKind('data.csv')).toBe('text');
+  });
+
+  it('html 扩展名归 web(v0.3.4,ADR-034,WebViewer sandbox iframe 渲染)', () => {
+    expect(detectFileKind('index.html')).toBe('web');
+    expect(detectFileKind('page.htm')).toBe('web');
+    expect(detectFileKind('ARCHITECTURE.HTML')).toBe('web'); // 大小写不敏感
+    expect(detectFileKind('Diagram.V2.html')).toBe('web'); // 多段名取最后一段
+    expect(detectFileKind('docs/arch.html')).toBe('web');
+    // 相邻 web 资源仍是 text:它们单独打开是源码,只在作为 iframe 子资源时
+    // 才被 marina-file:// 协议服务
+    expect(detectFileKind('style.css')).toBe('text');
+    expect(detectFileKind('app.js')).toBe('text');
   });
 
   it('无扩展名但有约定俗成文本含义', () => {
@@ -80,11 +91,12 @@ describe('detectFileKind', () => {
 });
 
 describe('isBinaryLikeKind(v0.3.3 Git 面板分流单一真源)', () => {
-  it('image/unknown 为 true(无法文本 diff,点击直接打开);文本三族为 false', () => {
+  it('image/unknown 为 true(无法文本 diff,点击直接打开);文本四族为 false', () => {
     expect(isBinaryLikeKind('image')).toBe(true);
     expect(isBinaryLikeKind('unknown')).toBe(true);
     expect(isBinaryLikeKind('text')).toBe(false);
     expect(isBinaryLikeKind('markdown')).toBe(false);
+    expect(isBinaryLikeKind('web')).toBe(false); // html 的 git diff 仍是文本 diff
     expect(isBinaryLikeKind('diff')).toBe(false);
   });
 

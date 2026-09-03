@@ -1,7 +1,7 @@
 /**
  * @file src/shared/file-kind.ts
  * @purpose 按文件名判定文件在"终端侧边文件面板"里应渲染成哪种类型
- *   (text / markdown / image / unknown)。
+ *   (text / markdown / image / web / diff / unknown)。
  *
  * @关键设计:
  * - 纯函数,无副作用,不碰 fs —— main 与 renderer 都能用,也便于单测。
@@ -9,8 +9,9 @@
  * - 只看扩展名 + 少量"无扩展名但有约定俗成含义"的文件名(LICENSE / Dockerfile /
  *   .gitignore 等)。判定不出来一律 'unknown',面板显示"暂不支持预览"占位,
  *   绝不靠猜(把二进制当文本渲染会乱码 + 浪费 IPC)。
- * - 'web'(本地 HTML / 远程 URL)是未来能力,detectFileKind 本轮不会返回它;
- *   .html/.htm 当前归 'text'(源码形式展示),等 WebViewer 落地再改判。
+ * - 'web'(v0.3.4,ADR-034):本地 HTML 文件,由 WebViewer 在 sandbox iframe 里
+ *   经 marina-file:// 特权协议渲染;.html/.htm 归此类。远程 URL 不支持
+ *   (http(s) 链接一律外开系统浏览器)。
  * - svg 归 'image':通过 <img src=dataUrl> 加载 svg 时浏览器不执行其中的
  *   脚本,安全;直接 innerHTML 才有 XSS 风险,我们不走那条路。
  *
@@ -41,8 +42,18 @@ const IMAGE_EXT = new Set([
 ]);
 
 /**
+ * HTML 扩展名(v0.3.4,ADR-034)。渲染成真实网页:WebViewer 用 sandbox iframe
+ * 经 marina-file:// 特权协议加载 —— 自定义 scheme 文档不继承 app CSP,内联
+ * 脚本可执行;安全模型(路径白名单/逐响应 CSP)见 ADR-034。
+ * 检测优先级必须在 TEXT_EXT 之前,否则会被文本表吃掉。
+ */
+const WEB_EXT = new Set(['html', 'htm']);
+
+/**
  * 文本/源码/配置扩展名(按 UTF-8 读成字符串,<pre> 或 react-markdown 展示)。
  * 不求穷尽,覆盖常见开发文件即可;漏网的归 unknown 也只是显示占位,不致命。
+ * 注意 .html/.htm 不在这里 —— 归 'web'(WEB_EXT);css/js 等仍归 text,
+ * 它们只在作为 iframe 子资源时才被 marina-file:// 协议服务,单独打开仍是源码。
  */
 const TEXT_EXT = new Set([
   // 纯文本 / 日志 / 数据
@@ -64,9 +75,7 @@ const TEXT_EXT = new Set([
   'tsv',
   'xml',
   'sql',
-  // web / 标记(.html 本轮按源码文本展示,等 WebViewer 再改)
-  'html',
-  'htm',
+  // web 标记(.html/.htm 已移入 WEB_EXT 归 'web';css/scss 单独打开仍是源码文本)
   'css',
   'scss',
   'sass',
@@ -214,6 +223,7 @@ export function detectFileKind(fileName: string): FileKind {
   const ext = extOf(lower);
   if (MARKDOWN_EXT.has(ext)) return 'markdown';
   if (IMAGE_EXT.has(ext)) return 'image';
+  if (WEB_EXT.has(ext)) return 'web'; // 必须在 TEXT_EXT 之前(见 WEB_EXT 注释)
   if (TEXT_EXT.has(ext)) return 'text';
   if (DIFF_EXT.has(ext)) return 'diff';
   return 'unknown';

@@ -2025,6 +2025,8 @@ export type GalleryRevealImageResponse = { ok: true } | { error: string };
  *   diff 由 renderer DiffViewer 用 highlight.js 做行级着色(方案-diff高亮.md B)
  * - image:base64 dataUrl(可直接喂 <img src>),mime 供调试/未来按类型优化
  * - unknown:文件类型不支持预览(二进制 / 陌生扩展名)
+ * 注:'web' 文件(ADR-034)的预览不经此通道 —— WebViewer 直接加载 marina-file://
+ * 协议 URL;read 返回的永远是源码文本(kind:'text',供源码查看模式)。
  */
 export type ReadFileResponse =
   | { kind: 'text' | 'markdown' | 'diff'; text: string; truncated: boolean }
@@ -2107,7 +2109,9 @@ export interface WorkspaceBindResult {
   fileCount?: number;
 }
 
-/** ReadFileResponse 的 kind 与 FileKind 的交集(排除 web,本轮不支持)。 */
+/** ReadFileResponse 的 kind 与 FileKind 的交集。
+ * 注:'web'(ADR-034)的预览内容不经 read 通道(由 marina-file:// 协议流式服务);
+ * read 对 web 文件返回的是 kind:'text' 的源码文本(WebViewer 源码查看模式)。 */
 export type ReadableFileKind = Exclude<FileKind, 'unknown'>;
 
 // ──────────────────────────────────────────────────────────────────
