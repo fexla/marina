@@ -17,7 +17,9 @@
  *   Phase 3 · Clean & Switch   清 out/、按目标平台 rebuild node-pty
  *   Phase 4 · Build            electron-vite + electron-builder(Windows 直跑,
  *                              Linux 走 Docker 隔离构建,见 ISO-1)
- *   Phase 5 · Verify           调 verify-artifacts.mjs 校验产物纯净度
+ *   Phase 5 · Verify & Prune   调 verify-artifacts.mjs 校验产物纯净度;
+ *                              校验通过后默认删 {win,linux}-unpacked/ 中间
+ *                              产物(--keep-unpacked 可保留)
  *   Phase 6 · Report           汇总产物路径 / 大小 / SHA256 + 下一步提示
  *
  * @用法
@@ -33,6 +35,9 @@
  *     --skip-tests        跳过 vitest(已知失败时临时用,要解决根因再发版)
  *     --skip-verify       跳过产物校验(强烈不推荐;只用于调试本脚本本身)
  *     --no-clean          不清 out/(增量编译,本机调试用)
+ *     --keep-unpacked     保留 release/<v>/{win,linux}-unpacked/ 中间产物
+ *                         (默认 Verify 通过后删除;2026-09-03 起,动机是
+ *                         release/ 曾因历史 unpacked 累积到 18GB)
  *     --dry-run           只打印计划,不真跑
  *     --bump=<策略>       发版前自动 bump 版本号
  *                         策略:patch / minor / major / prerelease / none(默认)
@@ -50,7 +55,7 @@
  *   AGENTS.md 第 4 章                CP-4 打包要求
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, statSync, rmSync, readdirSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { platform as osPlatform } from 'node:os';
@@ -70,6 +75,7 @@ const opts = {
   skipTests: false,
   skipVerify: false,
   noClean: false,
+  keepUnpacked: false,
   dryRun: false,
   bump: 'none',
   strict: false,
@@ -102,6 +108,9 @@ for (const a of args) {
       break;
     case a === '--no-clean':
       opts.noClean = true;
+      break;
+    case a === '--keep-unpacked':
+      opts.keepUnpacked = true;
       break;
     case a === '--dry-run':
       opts.dryRun = true;
@@ -150,6 +159,8 @@ if (opts.help) {
 
 其他:
   --strict           verify 阶段警告也算失败
+  --keep-unpacked    保留 release/<版本>/{win,linux}-unpacked/ 中间产物
+                     (默认 Verify 通过后自动删除,省约 320 MB/平台/版本)
   --dry-run          只打印计划,不真跑
   --help / -h        本帮助
 
@@ -468,9 +479,13 @@ if (opts.linux) {
 phaseDone('Phase 4 · Build');
 
 // ============================================================
-// Phase 5 · Verify
+// Phase 5 · Verify & Prune
 // ============================================================
-section('Phase 5 · Verify');
+// 顺序不变量:prune 必须在 verify 之后 — verify-artifacts.mjs 扫的正是
+// {win,linux}-unpacked/ 下的 *.node(ISO-1 平台纯净度校验)。verify 失败时
+// run() 直接 process.exit(1),unpacked 原样保留供检查,不会走到 prune —
+// 这与本文档"失败产物保留供检查"的原则一致。
+section('Phase 5 · Verify & Prune');
 
 if (opts.skipVerify) {
   warn('跳过产物校验(--skip-verify)');
@@ -481,7 +496,17 @@ if (opts.skipVerify) {
   run('verify-artifacts.mjs', 'node', verifyArgs);
 }
 
-phaseDone('Phase 5 · Verify');
+// unpacked 中间产物清理(2026-09-03 起):
+// electron-builder 必然产出 {win,linux}-unpacked/(打包 staging),但内容
+// 已完整封装进 Setup/Portable/.deb/.rpm/AppImage,留着只占磁盘(Win 约
+// 320MB/版本)。需要直接跑 unpacked 排障 / 手动冒烟时,加 --keep-unpacked。
+if (opts.keepUnpacked) {
+  warn('保留 unpacked 中间产物(--keep-unpacked)');
+} else {
+  pruneUnpacked(releaseVersion);
+}
+
+phaseDone('Phase 5 · Verify & Prune');
 
 // ============================================================
 // Phase 6 · Report
@@ -525,6 +550,54 @@ process.exit(0);
 // ============================================================
 // Helpers below main flow
 // ============================================================
+/**
+ * 删除 release/${version}/ 下的 {win,linux}-unpacked/ 中间产物。
+ *
+ * 为什么只在 Phase 5、且在 verify 之后调用:
+ * - verify-artifacts.mjs 要扫 unpacked 里的 *.node 判平台(ISO-1),
+ *   校验没跑完前不能删;
+ * - verify 失败时 run() 直接 process.exit(1),本函数执行不到,
+ *   产物自动保留供检查。
+ *
+ * --skip-verify 时 prune 照常执行:删的是"封装完成后不再需要的 staging",
+ * 与是否校验无关。
+ *
+ * dry-run 模式只打印计划,不真删。
+ */
+function pruneUnpacked(version) {
+  const releaseDir = join(projectRoot, 'release', version);
+  const targets = ['win-unpacked', 'linux-unpacked'];
+  let pruned = false;
+  for (const t of targets) {
+    const p = join(releaseDir, t);
+    if (!existsSync(p)) continue;
+    if (opts.dryRun) {
+      info(`[dry-run] 将删 release/${version}/${t}/`);
+      pruned = true;
+      continue;
+    }
+    const mb = dirSizeMB(p).toFixed(0);
+    rmSync(p, { recursive: true, force: true });
+    ok(`已删 release/${version}/${t}/(${mb} MB)— 需要保留时加 --keep-unpacked`);
+    pruned = true;
+  }
+  if (!pruned) info('无 unpacked 中间产物需要清理');
+}
+
+/** 递归求目录大小(MB)。仅用于 pruneUnpacked 的日志展示,不追求精确。 */
+function dirSizeMB(p) {
+  let total = 0;
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else total += statSync(full).size;
+    }
+  };
+  walk(p);
+  return total / 1024 / 1024;
+}
+
 function listInstallers(releaseDir) {
   const candidates = [
     'Marina-Setup-${v}-x64.exe',
