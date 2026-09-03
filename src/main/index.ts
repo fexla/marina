@@ -49,10 +49,10 @@ import { LocalHttpGateway } from './http/local-http-gateway';
 import { FileTreeService } from './file-tree-service';
 import { FileTreePollingService } from './file-tree-polling-service';
 import {
-  WEB_FILE_SCHEME,
   WEB_FILE_SCHEME_PRIVILEGES,
   WebFileProtocol,
 } from './web-file-protocol';
+import { WEB_FILE_SCHEME } from '@shared/web-file-url';
 import { EVENT_CHANNELS } from '@shared/protocol';
 import { GitService } from './git-service';
 import { BackgroundWorkScheduler } from './background-work-scheduler';
@@ -623,10 +623,11 @@ function bootstrap(): void {
       // (用户明确要连远程 daemon)。其余指令(script/font/img-src)保持严格。
       const cspProd =
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-        "font-src 'self' data:; img-src 'self' data:; connect-src 'self' ws: wss: " +
+        "font-src 'self' data:; img-src 'self' data:; connect-src 'self' ws: wss:; " +
         // ADR-034:WebViewer 的 sandbox iframe 加载 marina-file:// —— frame-src
         // 回落到 default-src 'self' 会拦掉 custom scheme(PoC 负向对照实证),
-        // 故加窄项。仅此一处放行,app 其余 CSP 不变。
+        // 故加窄项。仅此一处放行,app 其余 CSP 不变。(注意上行末尾必须有分号,
+        // 否则 frame-src 会被拼进 connect-src 的源表达式 —— 冒烟实测踩过。)
         "frame-src 'self' marina-file:";
       const cspDev =
         "default-src 'self' http://127.0.0.1:* ws://127.0.0.1:*; " +
@@ -634,7 +635,7 @@ function bootstrap(): void {
         "style-src 'self' 'unsafe-inline' http://127.0.0.1:*; " +
         "font-src 'self' data: http://127.0.0.1:*; " +
         "img-src 'self' data: http://127.0.0.1:*; " +
-        "connect-src 'self' http://127.0.0.1:* ws: wss: " +
+        "connect-src 'self' http://127.0.0.1:* ws: wss:; " +
         "frame-src 'self' marina-file: http://127.0.0.1:*";
       electronSession.defaultSession.webRequest.onHeadersReceived((details, callback) => {
         // ADR-034:marina-file:// 响应不下发 app CSP。webRequest 会拦截自定义协议

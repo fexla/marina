@@ -1,10 +1,10 @@
 /**
  * @file src/renderer/components/file-panel/FileViewer.tsx
- * @purpose 按 OpenedFile.kind 分发到对应 viewer(text/markdown/image/unknown)。
+ * @purpose 按 OpenedFile.kind 分发到对应 viewer(text/markdown/image/web/diff/unknown)。
  *
- * @未来扩展:若 types.FileKind 加入 'web'(本地 HTML / 远程 URL),这里加一个
- *   case 渲染 <iframe>/<webview> 即可 —— 分发结构已为它留位。本轮 detectFileKind
- *   不返回 'web',所以不会有文件走到那里。
+ * @v0.3.4:预留的 'web' 槽位已兑现(ADR-034)—— WebViewer 以 sandbox iframe 经
+ *   marina-file:// 特权协议渲染本地 HTML;安全模型(白名单/逐响应 CSP)在
+ *   main 端 web-file-protocol.ts。
  */
 import { useRef, type RefObject } from 'react';
 import type { FilePanelHeadingNavigationPayload } from '@shared/protocol';
@@ -15,6 +15,7 @@ import { TextViewer } from './TextViewer';
 import { MarkdownViewer } from './MarkdownViewer';
 import { ImageViewer } from './ImageViewer';
 import { DiffViewer } from './DiffViewer';
+import { WebViewer } from './WebViewer';
 import { useFileViewerScroll } from '../../hooks/useFileViewerScroll';
 
 interface FileViewerProps {
@@ -50,6 +51,9 @@ export function FileViewer({
       );
     case 'image':
       return <ImageViewer sessionId={sessionId} file={file} scrollRef={outerScrollRef} />;
+    case 'web':
+      // iframe 自带内部滚动,不用外层 .file-panel-body(FilePanel 对 web 清外层滚动)
+      return <WebViewer sessionId={sessionId} file={file} search={search} />;
     case 'diff':
       return <DiffViewer sessionId={sessionId} file={file} search={search} />;
     case 'unknown':

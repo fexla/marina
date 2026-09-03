@@ -2336,11 +2336,97 @@ html[data-maximized='true'] .app-root.with-shell {
   background-color: var(--color-bg-primary, #f0f);
 }
 
-/* Text/Diff 有自己的双轴 scroller，外层必须彻底不滚，避免两个 scrollTop 叠加。
- * Markdown/Image/Unknown 继续由 file-panel-body 负责文档级纵向滚动。 */
+/* Text/Diff 有自己的双轴 scroller，Web 的 iframe 自带内部滚动，外层必须彻底
+ * 不滚，避免两个 scrollTop 叠加。Markdown/Image/Unknown 继续由 file-panel-body
+ * 负责文档级纵向滚动。 */
 .file-panel-body[data-viewer-kind='text'],
-.file-panel-body[data-viewer-kind='diff'] {
+.file-panel-body[data-viewer-kind='diff'],
+.file-panel-body[data-viewer-kind='web'] {
   overflow: hidden;
+  padding: 0;
+}
+
+/* ── WebViewer (v0.3.4 ADR-034)：sandbox iframe 渲染本地 HTML ── */
+.file-web-viewer {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+/* 顶部窄工具条：重新加载 / 源码⇄预览 / 浏览器打开。视觉对齐 dock 面板
+ * 的次级操作色（弱化文字按钮，不抢内容焦点）。 */
+.file-web-viewer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--color-border, #f0f);
+  background-color: var(--color-bg-secondary, #f0f);
+}
+
+.file-web-viewer-tool {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary, #f0f);
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.file-web-viewer-tool:hover {
+  color: var(--color-text-primary, #f0f);
+  background-color: var(--color-bg-primary, #f0f);
+}
+
+/* iframe 撑满剩余空间。sandbox 内容自带背景（产物自己的 html/body 背景），
+ * 未设背景的部分透出 .file-panel-body 的 bg-primary。 */
+.file-web-viewer-frame {
+  flex: 1 1 0;
+  width: 100%;
+  min-height: 0;
+  border: none;
+  background-color: var(--color-bg-primary, #f0f);
+}
+
+/* 源码模式：TextViewer 占满剩余空间（自带双轴滚动）。 */
+.file-web-viewer-source > :last-child {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+/* 超限占位：与 UnknownView 同款居中提示 + 可操作按钮。 */
+.file-web-viewer-oversize {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--color-text-secondary, #f0f);
+  font-size: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.file-web-viewer-action {
+  appearance: none;
+  border: 1px solid var(--color-border, #f0f);
+  background: var(--color-bg-primary, #f0f);
+  color: var(--color-text-primary, #f0f);
+  font-size: 12px;
+  padding: 4px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.file-web-viewer-action:hover {
+  border-color: var(--color-text-secondary, #f0f);
 }
 
 /* body 里是自带背景的 .markdown-body 时,去掉本容器 padding,让 .markdown-body

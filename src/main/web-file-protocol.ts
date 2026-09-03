@@ -28,15 +28,16 @@
  */
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { dirname, extname, sep } from 'node:path';
+import { dirname, extname } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import { Readable } from 'node:stream';
-
-/** 协议 scheme 名。URL 形态:marina-file://local/<encoded-abs-path>。 */
-export const WEB_FILE_SCHEME = 'marina-file';
-
-/** URL 里固定写死的 host(见文件头「关键设计」:不能省略)。 */
-const WEB_FILE_HOST = 'local';
+// URL 编解码纯函数与常量在 shared(main 协议层与 renderer WebViewer 共用,
+// 保证两侧永远编出/认得同一种 URL)
+import {
+  MAX_WEB_SERVE_BYTES,
+  WEB_FILE_SCHEME,
+  decodeWebFileUrl,
+} from '@shared/web-file-url';
 
 /**
  * registerSchemesAsPrivileged 的配置(index.ts 在 app ready 前调用)。
@@ -58,10 +59,6 @@ export const WEB_FILE_SCHEME_PRIVILEGES = {
     corsEnabled: true,
   },
 } as const;
-
-/** 单文件服务上限(32MB)。与 text(2MB)/image(10MB)上限同族;html 产物含
- * 内联 SVG 可能较大,给宽裕值。超限 deny 413,WebViewer 显示占位提示。 */
-export const MAX_WEB_SERVE_BYTES = 32 * 1024 * 1024;
 
 /** html 响应下发的自包含档 CSP(ADR-034 裁决 Q2:禁一切 http(s) 出网)。
  * 关键点:
@@ -122,62 +119,6 @@ export function cspForMime(mime: string): string | null {
   if (mime.startsWith('text/html')) return HTML_CSP;
   if (mime === 'image/svg+xml') return SVG_CSP;
   return null;
-}
-
-/**
- * 绝对路径 → marina-file:// URL。逐段 encodeURIComponent(盘符冒号、中文、
- * 空格全部安全转义),renderer 用它构造 iframe src。
- *
- * @example encodePathToWebFileUrl('D:\\x\\arch.html')
- *          // 'marina-file://local/D%3A/x/arch.html'
- */
-export function encodePathToWebFileUrl(fsPath: string): string {
-  const encoded = fsPath
-    .split(/[\\/]+/)
-    .filter((seg) => seg.length > 0)
-    .map((seg) => encodeURIComponent(seg))
-    .join('/');
-  return `${WEB_FILE_SCHEME}://${WEB_FILE_HOST}/${encoded}`;
-}
-
-/**
- * marina-file:// URL → 绝对路径(encodePathToWebFileUrl 的逆运算)。
- *
- * 安全规则:
- * - 逐段 decodeURIComponent 后重组 —— 单次解码,文件名里的字面 '%2F' 不会被
- *   解成路径分隔符(编码时它已是 %252F,解码一次还原为 %2F 字符);
- * - 重组后逐段检查:出现 '..' 段直接拒绝(路径穿越);空段/空路径拒绝;
- * - 不校验白名单(那是 resolve() 的职责,它还要过 realpath)。
- *
- * @returns 合法路径字符串;URL 形态非法/带穿越时返回 null。
- */
-export function decodeWebFileUrl(url: string): string | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return null;
-  }
-  if (parsed.protocol !== `${WEB_FILE_SCHEME}:` || parsed.hostname !== WEB_FILE_HOST) {
-    return null;
-  }
-  // search(?v=缓存击穿参数)不参与路径解析 —— WebViewer 用 mtimeMs-size 做查询串。
-  const segments = parsed.pathname.split('/').filter((seg) => seg.length > 0);
-  if (segments.length === 0) return null;
-  const decoded: string[] = [];
-  for (const seg of segments) {
-    let part: string;
-    try {
-      part = decodeURIComponent(seg);
-    } catch {
-      return null; // 非法百分号序列(如 %ZZ)
-    }
-    if (part === '..' || part.includes('/') || part.includes('\\') || part.includes('\0')) {
-      return null;
-    }
-    decoded.push(part);
-  }
-  return decoded.join(sep);
 }
 
 /** Windows 下路径比较需大小写不敏感 + 忽略尾部分隔符(session-workspace-manager

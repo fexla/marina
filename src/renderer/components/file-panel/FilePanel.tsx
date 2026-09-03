@@ -147,10 +147,15 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
         : probed;
   });
 
-  // Text/Diff 自己拥有内层双轴 scroller；清掉外层 body 可能由上一个
-  // Markdown/Image 留下的 scrollTop，避免出现两个滚动坐标叠加。
+  // Text/Diff/Web 自己拥有内层滚动（Text/Diff 是双轴 scroller，Web 是 iframe
+  // 内部滚动）；清掉外层 body 可能由上一个 Markdown/Image 留下的 scrollTop，
+  // 避免出现两个滚动坐标叠加。
   useLayoutEffect(() => {
-    if (activeFile?.kind === 'text' || activeFile?.kind === 'diff') {
+    if (
+      activeFile?.kind === 'text' ||
+      activeFile?.kind === 'diff' ||
+      activeFile?.kind === 'web'
+    ) {
       bodyScrollRef.current?.scrollTo({ top: 0, left: 0, behavior: 'auto' });
     }
   }, [activeFile?.kind, activeFile?.path]);

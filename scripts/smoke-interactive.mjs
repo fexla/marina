@@ -60,13 +60,17 @@ const terminalDeckMode =
 const fileViewerScrollMode =
   process.argv.includes('--file-viewer-scroll') ||
   process.env.MARINA_SMOKE_FILE_VIEWER_SCROLL === '1';
+const fileViewerHtmlMode =
+  process.argv.includes('--file-viewer-html') ||
+  process.env.MARINA_SMOKE_FILE_VIEWER_HTML === '1';
 const userDataDir = mkdtempSync(join(tmpdir(), 'marina-smoke-'));
 console.log(`[smoke-interactive] user-data-dir=${userDataDir}`);
 console.log(`[smoke-interactive] entry=${mainEntry}`);
 console.log(`[smoke-interactive] electron=${electronPath}`);
 
 // 总超时,比 main harness 内部超时(12s)宽 8s,留给子进程清理空间
-const OUTER_TIMEOUT_MS = terminalDeckMode || fileViewerScrollMode ? 30_000 : 20_000;
+const OUTER_TIMEOUT_MS =
+  terminalDeckMode || fileViewerScrollMode || fileViewerHtmlMode ? 30_000 : 20_000;
 
 let resolved = false;
 let timeoutHandle = null;
@@ -150,6 +154,7 @@ const child = spawn(
       MARINA_SMOKE_INTERACTIVE: '1',
       ...(terminalDeckMode ? { MARINA_SMOKE_TERMINAL_DECK: '1' } : {}),
       ...(fileViewerScrollMode ? { MARINA_SMOKE_FILE_VIEWER_SCROLL: '1' } : {}),
+      ...(fileViewerHtmlMode ? { MARINA_SMOKE_FILE_VIEWER_HTML: '1' } : {}),
       FORCE_COLOR: '0',
     },
     stdio: ['ignore', 'pipe', 'pipe'],

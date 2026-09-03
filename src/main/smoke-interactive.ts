@@ -37,7 +37,8 @@ import { resolve } from 'node:path';
 const MAX_WAIT_FIRST_WINDOW_MS = 8000;
 const TEST_TIMEOUT_MS =
   process.env['MARINA_SMOKE_TERMINAL_DECK'] === '1' ||
-  process.env['MARINA_SMOKE_FILE_VIEWER_SCROLL'] === '1'
+  process.env['MARINA_SMOKE_FILE_VIEWER_SCROLL'] === '1' ||
+  process.env['MARINA_SMOKE_FILE_VIEWER_HTML'] === '1'
     ? 22_000
     : 12_000;
 
@@ -111,11 +112,13 @@ export function installSmokeInteractiveHarness(getFirstWindow: () => BrowserWind
     });
     const inject = (): void => {
       const script =
-        process.env['MARINA_SMOKE_FILE_VIEWER_SCROLL'] === '1'
-          ? buildFileViewerScrollTestScript()
-          : process.env['MARINA_SMOKE_TERMINAL_DECK'] === '1'
-            ? buildTerminalDeckTestScript()
-            : buildTestScript();
+        process.env['MARINA_SMOKE_FILE_VIEWER_HTML'] === '1'
+          ? buildFileViewerHtmlTestScript()
+          : process.env['MARINA_SMOKE_FILE_VIEWER_SCROLL'] === '1'
+            ? buildFileViewerScrollTestScript()
+            : process.env['MARINA_SMOKE_TERMINAL_DECK'] === '1'
+              ? buildTerminalDeckTestScript()
+              : buildTestScript();
       wc.executeJavaScript(script, true).catch((err) => {
         finish(false, `executeJavaScript failed: ${err?.message ?? String(err)}`);
       });
@@ -623,6 +626,121 @@ function buildFileViewerScrollTestScript(): string {
     report(true, 'file viewer scrollTop isolated per file and restored after panel/file/session switches');
   } catch (err) {
     report(false, 'file-viewer-scroll exception: ' + (err && err.stack ? err.stack : String(err)));
+  }
+})();
+`;
+}
+
+/**
+ * 真实 Electron WebViewer 冒烟(ADR-034):fixture html 经 cmd:file-panel:open
+ * 进面板,端到端验证 —— ① iframe 挂载(data-viewer-kind=web)② 产物内联脚本
+ * 真实执行(postMessage 回执:证明 scheme 服务 + frame-src 放行 + app CSP 跳过
+ * 注入 + 逐响应 CSP 四件事同时成立)③ 源码⇄预览切换往返。
+ *
+ * fixture 写在 smoke 独占 userData,打开后它本身就是白名单成员(ADR-034 白名单
+ * 三条件之一),不碰项目/用户数据。
+ *
+ * 启用:MARINA_SMOKE_INTERACTIVE=1 + MARINA_SMOKE_FILE_VIEWER_HTML=1。
+ */
+function buildFileViewerHtmlTestScript(): string {
+  const projectRoot = JSON.stringify(resolve(process.cwd()));
+  // fixture:内联脚本 postMessage 回执 + 内联 svg,模拟 archify 类产物形态。
+  const fixturePath = resolve(app.getPath('userData'), 'web-viewer-fixture.html');
+  writeFileSync(
+    fixturePath,
+    [
+      '<!doctype html>',
+      '<html><head><meta charset="utf-8"></head>',
+      '<body><h1>marina web viewer smoke</h1>',
+      '<svg width="10" height="10"><rect width="10" height="10"/></svg>',
+      '<script>',
+      "parent.postMessage({ marinaSmokeWeb: 'inline-script-ok' }, '*');",
+      '</script></body></html>',
+    ].join('\n'),
+    'utf8',
+  );
+  const htmlPath = JSON.stringify(fixturePath);
+  return `
+(async () => {
+  var t0 = Date.now();
+  var done = false;
+  var projectRoot = ${projectRoot};
+  var htmlPath = ${htmlPath};
+  function report(pass, reason) {
+    if (done) return;
+    done = true;
+    window.api.invoke('smoke:report', {
+      pass: pass,
+      reason: reason,
+      durationMs: Date.now() - t0,
+    }).catch(function () {});
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  async function waitFor(fn, label, timeout) {
+    var end = Date.now() + (timeout || 8000);
+    while (Date.now() < end) {
+      var value = fn();
+      if (value) return value;
+      await sleep(40);
+    }
+    throw new Error('waitFor timeout: ' + label);
+  }
+  // 先同步挂 message 监听再开文件 —— sandbox iframe 的 postMessage 回执不能丢
+  var inlineScriptOk = false;
+  window.addEventListener('message', function (event) {
+    if (event.data && event.data.marinaSmokeWeb === 'inline-script-ok') inlineScriptOk = true;
+  });
+  function webBody() {
+    return document.querySelector('.file-panel-body[data-viewer-kind="web"]');
+  }
+  function webFrame() {
+    var body = webBody();
+    return body ? body.querySelector('.file-web-viewer-frame') : null;
+  }
+  try {
+    await window.api.invoke('cmd:bookmark:add', {
+      path: projectRoot,
+      displayName: 'SMOKE_PROJECT',
+    });
+    var res = await window.api.invoke('cmd:session:create', {
+      pathId: projectRoot,
+      cols: 80,
+      rows: 24,
+    });
+    if (!res || !res.session || !res.session.id) throw new Error('create failed');
+    var sid = res.session.id;
+
+    var opened = await window.api.invoke('cmd:file-panel:open', {
+      sessionId: sid,
+      path: htmlPath,
+    });
+    if (!opened) throw new Error('file-panel:open returned empty');
+
+    var frame = await waitFor(webFrame, 'web iframe mounted');
+    if (frame.getAttribute('sandbox') !== 'allow-scripts allow-downloads') {
+      throw new Error('unexpected sandbox attr: ' + frame.getAttribute('sandbox'));
+    }
+
+    // 端到端核心断言:产物内联脚本真实执行(四层条件同时成立才会发生)
+    await waitFor(function () { return inlineScriptOk; }, 'inline script postMessage receipt');
+
+    // 工具条：切换钮恒定位 [0](预览 3 钮：切换/重载/浏览器；源码 2 钮：切换/浏览器)
+    var tools = webBody().querySelectorAll('.file-web-viewer-tool');
+    if (tools.length < 3) throw new Error('preview toolbar buttons < 3');
+    tools[0].click();
+    await waitFor(function () {
+      var body = webBody();
+      return body && body.querySelector('.file-text-viewer') && !body.querySelector('.file-web-viewer-frame');
+    }, 'source mode shows TextViewer without iframe');
+    var sourceTools = webBody().querySelectorAll('.file-web-viewer-tool');
+    if (sourceTools.length !== 2) throw new Error('source toolbar buttons != 2');
+    sourceTools[0].click();
+    await waitFor(webFrame, 'back to preview iframe');
+    await waitFor(function () { return inlineScriptOk; }, 'still ok', 1000);
+
+    report(true, 'web viewer: iframe mounted + inline script executed + source toggle roundtrip');
+  } catch (err) {
+    report(false, 'file-viewer-html exception: ' + (err && err.stack ? err.stack : String(err)));
   }
 })();
 `;

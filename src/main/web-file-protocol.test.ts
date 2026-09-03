@@ -9,13 +9,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  MAX_WEB_SERVE_BYTES,
   WebFileProtocol,
   cspForMime,
-  decodeWebFileUrl,
-  encodePathToWebFileUrl,
   mimeForPath,
 } from './web-file-protocol';
+import {
+  MAX_WEB_SERVE_BYTES,
+  decodeWebFileUrl,
+  encodePathToWebFileUrl,
+} from '../shared/web-file-url';
 
 let root: string;
 

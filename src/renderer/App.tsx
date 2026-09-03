@@ -30,6 +30,7 @@ import { ToastProvider } from './components/Toast';
 import { ModalProvider } from './components/Modal';
 import { LanguageProvider } from './components/LanguageProvider';
 import { LastSessionConfirmBridge } from './components/LastSessionConfirmBridge';
+import { WebDownloadBridge } from './components/WebDownloadBridge';
 import { MdThemeInjector } from './components/file-panel/MdThemeInjector';
 
 type HandshakeState =
@@ -385,6 +386,7 @@ function ConnectedShell({
       <ToastProvider>
         <ModalProvider>
           <LastSessionConfirmBridge />
+          <WebDownloadBridge />
           <ContextMenuProvider>
             <MdThemeInjector />
             <div
