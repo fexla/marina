@@ -7,6 +7,22 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+## [0.3.3-dev.14] — 2026-09-03
+
+> 现场验证修复批:真实 fork 实测抓到的亲缘读缺陷。需要新构建分发(便携版烧的是内置
+> bridge,自动升级只能从当前构建向外刷新,源码里的修复必须随新包到达)。
+
+### Fixed
+
+- **bridge 亲缘读在大父文件上静默失效(0.3.4→0.3.5)**:真实 fork 实测发现
+  `readLastWorkspaceBinding` 的尾部 64KB 读窗在「会话开始只绑过一次、之后对话长到
+  MB 级」的父文件上读不到头部绑定(实证:父 1.06MB/唯一绑定 L4 → `parentWs=-`,
+  靠 payload 回退路径救回 TUI fork;但 CLI `pi --fork` 冷启动的血统判定会静默失效,
+  继承绑定活着时直接共享父 workspace,违反 ADR-033 裁决 3)。改 readline 流式全
+  文件前扫取最后命中(+32MB 护栏),回归测试:头部绑定×>128KB 文件必读出。
+  同场验证链路全通:auto-upgrade 生效、fork 继承克隆落 entry、fork 后 /resume
+  切回自己的 workspace。
+
 ## [0.3.3-dev.13] — 2026-09-03
 
 > pi bridge fork/子会话适配批(fork 继承 + 死绑定根治 + bridge 自动升级)。
@@ -26,13 +42,7 @@
   (治 CLI `pi --fork` 冷启动/离线 fork 的永久共享)。④ /tree 不监听(裁决):同文件
   内换分支不切 workspace。⑤ **bridge 自动升级**:启动时比对内置版与稳定目录版,
   不一致静默重拷(不 spawn pi install),从未安装不预装——否则 bridge 的修复永远
-  分发不到用户机器。bridge 0.3.3→0.3.4→**0.3.5**。
-- **现场 fork 验证抓到并修复亲缘读缺陷(0.3.5)**:真实 fork 实测发现
-  `readLastWorkspaceBinding` 的尾部 64KB 读窗在「只绑过一次、对话长到 MB 级」的
-  父文件上读不到头部绑定(父 1.06MB/唯一绑定 L4 → `parentWs=-`,靠 payload 回退
-  路径救回,但 CLI fork 冷启动的血统判定会静默失效);改 readline 流式全文件前扫
-  取最后命中,+32MB 护栏。同场验证了完整链路:auto-upgrade 生效、fork 继承克隆
-  落 entry、fork 后 /resume 切回自己的 workspace。
+  分发不到用户机器。bridge 0.3.3→0.3.4。
 
 ## [0.3.3-dev.12] — 2026-08-29
 
