@@ -30,8 +30,9 @@
  *
  * @不在这里做的事：
  *   - 不直接操作 Marina workspace（Marina 的 SessionManager 决策）。
- *   - 不缓存/聚合事件（fire-and-forget，每事件独立 POST）。
- *   - 不阻塞 pi：POST 失败只 log，不抛。
+ *   - 不阻塞 pi：除 session_start(需要响应里的 workspaceId)外,事件入后台
+ *     promise 链保序发送,handler 立刻返回(pi 的 ExtensionRunner 串行 await
+ *     每个 handler,见 enqueuePost 注释——曾因 await POST 导致 Marina 卡时 pi 连锁卡死)。
  */
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import {
@@ -140,6 +141,31 @@ export default function (pi: ExtensionAPI): void {
     return;
   }
 
+  /**
+   * 后台发送队列:promise 链串行化,保证事件按发生顺序送达 Marina(working 必须先于
+   * settled,否则 Marina 侧栏状态会错)。
+   *
+   * 为什么不能直接 await postEvent(pi 卡死修复,2026-09-03):pi 的
+   * ExtensionRunner.emit 对每个 handler 是串行 await(见 pi 源码
+   * dist/core/extensions/runner.js)。handler 里 await 一个可能 3s 超时的 HTTP
+   * POST,会把 pi 自己的主流程一起拖住——agent_settled 后常紧跟
+   * session_before_compact + session_compact(2~3 个事件串行),Marina 卡顿时
+   * pi 的收尾路径连续阻塞 10s+,TUI 完全无响应,只能退出重开(用户实测)。
+   * 入队后 handler 立刻返回,pi 永不被 Marina 的快慢拖累。
+   *
+   * session_start 是例外:它需要响应里的 workspaceId(appendEntry 存回对话),
+   * 必须等结果;且它发生在 pi 启动/resume 时,用户对这几秒的敏感度低。
+   */
+  let postQueue: Promise<unknown> = Promise.resolve();
+  /** 入队发送(保序、不阻塞 pi handler)。postEvent 内部 catch 一切错误,链不会 reject。 */
+  function enqueuePost(
+    piSessionId: string,
+    event: PiBridgeEvent,
+    extra: Parameters<typeof postEvent>[3],
+  ): void {
+    postQueue = postQueue.then(() => postEvent(env, piSessionId, event, extra));
+  }
+
   pi.on('session_start', async (event, ctx) => {
     const piSessionId = ctx.sessionManager.getSessionId();
     if (!piSessionId) return; // 内存对话（无文件）→ 无法稳定标识，跳过。
@@ -190,14 +216,14 @@ export default function (pi: ExtensionAPI): void {
   pi.on('session_shutdown', async (event, ctx) => {
     const piSessionId = ctx.sessionManager.getSessionId();
     if (!piSessionId) return;
-    await postEvent(env, piSessionId, 'session_shutdown', { reason: event.reason });
+    enqueuePost(piSessionId, 'session_shutdown', { reason: event.reason });
   });
 
   // agent_start：pi 开始处理用户请求 → 通知 Marina "working"（清旧的"未查看"标记）。
   pi.on('agent_start', async (_event, ctx) => {
     const piSessionId = ctx.sessionManager.getSessionId();
     if (!piSessionId) return;
-    await postEvent(env, piSessionId, 'agent_working');
+    enqueuePost(piSessionId, 'agent_working', {});
   });
 
   // agent_settled：pi 这轮彻底完成（无自动重试/压缩/续跑）→ 通知 Marina "settled"。
@@ -205,7 +231,7 @@ export default function (pi: ExtensionAPI): void {
   pi.on('agent_settled', async (_event, ctx) => {
     const piSessionId = ctx.sessionManager.getSessionId();
     if (!piSessionId) return;
-    await postEvent(env, piSessionId, 'agent_settled');
+    enqueuePost(piSessionId, 'agent_settled', {});
   });
 
   // session_before_compact：pi 开始压缩上下文（threshold/overflow/manual）→ 通知
@@ -215,7 +241,7 @@ export default function (pi: ExtensionAPI): void {
   pi.on('session_before_compact', async (_event, ctx) => {
     const piSessionId = ctx.sessionManager.getSessionId();
     if (!piSessionId) return;
-    await postEvent(env, piSessionId, 'agent_working');
+    enqueuePost(piSessionId, 'agent_working', {});
   });
 
   // session_compact：压缩完成。overflow 压缩 willRetry=true（被中断的 turn 要重试）
@@ -225,13 +251,13 @@ export default function (pi: ExtensionAPI): void {
     const piSessionId = ctx.sessionManager.getSessionId();
     if (!piSessionId) return;
     if (event.willRetry) return; // overflow 会 retry(agent_start),保持 working
-    await postEvent(env, piSessionId, 'agent_settled');
+    enqueuePost(piSessionId, 'agent_settled', {});
   });
 
   // 对话名变更 → 反映到 Marina 终端显示名（受 manuallyRenamed 保护，由 Marina 决定）。
   pi.on('session_info_changed', async (event, ctx) => {
     const piSessionId = ctx.sessionManager.getSessionId();
     if (!piSessionId) return;
-    await postEvent(env, piSessionId, 'name_changed', { name: event.name ?? null });
+    enqueuePost(piSessionId, 'name_changed', { name: event.name ?? null });
   });
 }
