@@ -1177,7 +1177,10 @@ export class FilePanelService extends EventEmitter {
               return {
                 path: abs,
                 name: basename(abs),
-                kind: f.kind as OpenedFile['kind'],
+                // ADR-034:kind 按文件名重检测,不信任快照存储值 —— 旧快照里
+                // .html 存的是 'text'(WebViewer 之前的时代),重开应自动升级为
+                // 'web';detectFileKind 与 openFile 同源,恢复后的面板与新开一致。
+                kind: detectFileKind(basename(abs)),
                 size: st.size,
                 mtimeMs: st.mtimeMs,
                 ...(f.origin ? { origin: f.origin } : {}),
@@ -1186,7 +1189,7 @@ export class FilePanelService extends EventEmitter {
               return {
                 path: abs,
                 name: basename(abs),
-                kind: f.kind as OpenedFile['kind'],
+                kind: detectFileKind(basename(abs)),
                 size: 0,
                 mtimeMs: 0,
                 missing: true,

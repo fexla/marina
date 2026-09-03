@@ -97,6 +97,34 @@ describe('FilePanelService - 状态机', () => {
     expect(svc.getOpenFiles('s1').files[0]?.origin).toEqual(origin);
   });
 
+  it('onWorkspaceSwitched 重检测 kind:旧快照里 .html 存的 text 自动升级为 web(ADR-034)', async () => {
+    // 模拟 WebViewer 落地前写入的旧快照:.html 的 kind 是 'text'
+    await writeFile(join(dir, 'legacy.html'), '<html></html>');
+    await writeFile(join(dir, 'README.md'), '# hi');
+    svc.attachWorkspaceOps({
+      getCurrentPath: () => dir,
+      bind: async () => ({ kind: 'created', workspaceId: 'w1', dir }),
+      list: async () => [],
+      newWorkspace: async () => ({ workspaceId: 'w1', dir }),
+      unpin: async () => ({ workspaceId: 'w1' }),
+      readSnapshotForSession: async () => ({
+        openedFiles: [
+          { path: 'legacy.html', kind: 'text', external: false },
+          { path: 'README.md', kind: 'markdown', external: false },
+        ],
+        activeFilePath: 'legacy.html',
+        scroll: {},
+        runs: [],
+      }),
+    });
+
+    await svc.onWorkspaceSwitched('s1');
+
+    const files = svc.getOpenFiles('s1').files;
+    expect(files[0]?.kind).toBe('web'); // 旧值 'text' 被重检测升级
+    expect(files[1]?.kind).toBe('markdown'); // 未受影响
+  });
+
   it('showFile 切 active;不在列表抛 NotFound', async () => {
     await writeFile(join(dir, 'a.txt'), '1');
     await writeFile(join(dir, 'b.txt'), '2');

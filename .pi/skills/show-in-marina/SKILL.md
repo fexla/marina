@@ -453,8 +453,11 @@ name containing `*` or `?` is treated as a glob and closes every match.
 
 ## Notes
 
-- Supported content: Markdown, text/code, images. Text over 2 MB is truncated
-  in the preview; images over 10 MB are rejected at preview time.
+- Supported content: Markdown, text/code, images, and standalone HTML files
+  (rendered in a sandboxed iframe via the `marina-file://` protocol — interactive
+  artifacts like archify diagrams display with live JS, dark/light themes, and
+  working export buttons; see ADR-034). Text over 2 MB is truncated in the
+  preview; images over 10 MB are rejected at preview time.
 - The panel complements a concise chat summary; it does not replace one.
 - How the CLI finds the panel: it reads `MARINA_SERVICE` / `MARINA_TOKEN` /
   `TERMINAL_ID` that Marina injects into the session. If any required var is
