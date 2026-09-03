@@ -21,12 +21,24 @@
  *   pi session_compact {willRetry}   → event=agent_settled   (仅 willRetry=false;overflow retry 保持 working)
  *   pi session_info_changed {name}   → event=name_changed    (更新终端显示名)
  *
+ * @fork/子会话适配(方案-pibridge-fork与子会话适配-20260817,开发者裁决):
+ *   - 绑定读法 = 当前分支(leaf→root)最近 entry,纯函数拆到 ./binding.ts。
+ *   - session_start 额外上报亲缘:parentSessionFile(header.parentSession,fork/clone
+ *     /子会话文件的父文件路径)+ parentBinding(父文件最后追加的绑定 = 父对话
+ *     当前 workspace)。Marina 用它做 fork 继承与「继承绑定不共享」判定。
+ *   - 不监听 session_tree(裁决 2:/tree 不处理,同文件=同对话=同 workspace)。
+ *
  * @不在这里做的事：
  *   - 不直接操作 Marina workspace（Marina 的 SessionManager 决策）。
  *   - 不缓存/聚合事件（fire-and-forget，每事件独立 POST）。
  *   - 不阻塞 pi：POST 失败只 log，不抛。
  */
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import {
+  MARINA_WORKSPACE_CUSTOM_TYPE,
+  readBranchWorkspaceId,
+  readLastWorkspaceBinding,
+} from './binding';
 
 /** Marina 注入终端子进程的 env 名（见 Marina session-manager.ts env 注入）。 */
 const ENV_SERVICE = 'MARINA_SERVICE';
@@ -36,31 +48,8 @@ const ENV_TERMINAL = 'TERMINAL_ID';
 /** HTTP 端点路径（见 Marina file-panel-service.ts handle()）。 */
 const ENDPOINT_PATH = '/pi-session-event';
 
-/**
- * pi.appendEntry 的 customType:存当前对话绑定的 Marina workspaceId。
- * 存进 pi 对话文件(跨重启稳定),resume 同一对话时 bridge 读出随 session_start
- * 带上 → Marina 切回原 workspace + 恢复打开的文件。
- * (之前靠 Marina 内存映射 piSessionId→workspaceId,但 pi resume 时 piSessionId 会变,
- *  映射永远 miss。改存对话本身,跟对话走。)
- */
-const MARINA_WORKSPACE_CUSTOM_TYPE = 'marina-workspace';
-
-/** 从 ctx.sessionManager.getEntries() 找出本对话绑定的 Marina workspaceId(若有)。 */
-function readMarinaWorkspaceId(ctx: {
-  sessionManager: { getEntries(): Array<{ type: string; customType?: string; data?: unknown }> };
-}): string | null {
-  for (const entry of ctx.sessionManager.getEntries()) {
-    if (
-      entry.type === 'custom' &&
-      entry.customType === MARINA_WORKSPACE_CUSTOM_TYPE &&
-      entry.data &&
-      typeof (entry.data as { workspaceId?: unknown }).workspaceId === 'string'
-    ) {
-      return (entry.data as { workspaceId: string }).workspaceId;
-    }
-  }
-  return null;
-}
+// MARINA_WORKSPACE_CUSTOM_TYPE 常量与绑定读取纯函数已拆到 ./binding.ts(可单测,
+// 被 Marina 仓的 src/main/pi-bridge-binding.test.ts 相对路径 import)。
 
 /** 转发的事件类型（与 Marina PiEventOps.applyPiSessionEvent 对齐）。 */
 type PiBridgeEvent =
@@ -91,7 +80,14 @@ async function postEvent(
   env: { baseUrl: string; token: string; terminal: string },
   piSessionId: string,
   event: PiBridgeEvent,
-  extra: { reason?: string; name?: string | null; workspaceId?: string | null } = {},
+  extra: {
+    reason?: string;
+    name?: string | null;
+    workspaceId?: string | null;
+    /** fork/子会话亲缘(方案 20260817):父会话文件路径 + 父对话当前 workspace。 */
+    parentSessionFile?: string | null;
+    parentBinding?: string | null;
+  } = {},
 ): Promise<{ workspaceId?: string } | null> {
   const url = `${env.baseUrl}${ENDPOINT_PATH}`;
   const body: Record<string, unknown> = { terminal: env.terminal, piSessionId, event };
@@ -99,6 +95,10 @@ async function postEvent(
   if (extra.name !== undefined) body.name = extra.name;
   if (extra.workspaceId !== undefined && extra.workspaceId !== null)
     body.workspaceId = extra.workspaceId;
+  if (extra.parentSessionFile !== undefined && extra.parentSessionFile !== null)
+    body.parentSessionFile = extra.parentSessionFile;
+  if (extra.parentBinding !== undefined && extra.parentBinding !== null)
+    body.parentBinding = extra.parentBinding;
   try {
     const resp = await fetch(url, {
       method: 'POST',
@@ -139,11 +139,34 @@ export default function (pi: ExtensionAPI): void {
   pi.on('session_start', async (event, ctx) => {
     const piSessionId = ctx.sessionManager.getSessionId();
     if (!piSessionId) return; // 内存对话（无文件）→ 无法稳定标识，跳过。
-    // 从本对话 entry 恢复上次绑定的 workspaceId(resume 同一对话时这里读得到)。
-    const knownWorkspaceId = readMarinaWorkspaceId(ctx);
+    // 当前分支(leaf→root)最近的绑定 entry(branch-aware,见 binding.ts;旧的
+    // 全文件 first-match 会永久命中最老的死绑定 → 每次 resume 新建空 workspace)。
+    const knownWorkspaceId = readBranchWorkspaceId(ctx.sessionManager);
+    // 亲缘(裁决 1/3):header.parentSession = 本文件来源(fork/clone 复制 /
+    // pi-subagents 子会话)。读父文件最后追加的绑定 = 父对话当前 workspace。
+    // 失败(父文件已清理/旧版 pi 无 getHeader)→ null,Marina 按无亲缘处理。
+    let parentSessionFile: string | null = null;
+    let parentBinding: string | null = null;
+    try {
+      const header = ctx.sessionManager.getHeader?.() as
+        | { parentSession?: unknown }
+        | undefined;
+      if (header && typeof header.parentSession === 'string' && header.parentSession) {
+        parentSessionFile = header.parentSession;
+        parentBinding = await readLastWorkspaceBinding(parentSessionFile);
+      }
+    } catch (err) {
+      console.warn(
+        `[marina-bridge] read parent lineage failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
     const resp = await postEvent(env, piSessionId, 'session_start', {
       reason: event.reason,
       workspaceId: knownWorkspaceId,
+      parentSessionFile,
+      parentBinding,
     });
     // Marina 新建了 workspace(返回 workspaceId)→ 存进对话 entry,下次 resume 能切回。
     // 切回已有(resp 无 workspaceId)不重写(entry 里已是同一个)。
