@@ -17,7 +17,7 @@
  *
  * @对应文档章节: 软件定义书.md 8.1、9.2.1;AGENTS.md 检查点 1/2
  */
-import { app, Menu, safeStorage, session as electronSession } from 'electron';
+import { app, Menu, protocol, safeStorage, session as electronSession } from 'electron';
 import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { WindowManager } from './window-manager';
@@ -48,6 +48,12 @@ import type { WorkspaceOps } from './file-panel-service';
 import { LocalHttpGateway } from './http/local-http-gateway';
 import { FileTreeService } from './file-tree-service';
 import { FileTreePollingService } from './file-tree-polling-service';
+import {
+  WEB_FILE_SCHEME,
+  WEB_FILE_SCHEME_PRIVILEGES,
+  WebFileProtocol,
+} from './web-file-protocol';
+import { EVENT_CHANNELS } from '@shared/protocol';
 import { GitService } from './git-service';
 import { BackgroundWorkScheduler } from './background-work-scheduler';
 import { SessionWorkspaceManager } from './session-workspace-manager';
@@ -111,6 +117,12 @@ async function scanInvalidPathsAsync(pathManager: PathManager): Promise<void> {
 }
 
 function bootstrap(): void {
+  // ADR-034:marina-file:// 特权协议注册。registerSchemesAsPrivileges 必须在
+  // app ready 之前调用(Electron 硬性要求),故放在 bootstrap 最前面 ——
+  // 后面的单实例锁/路径解析都不依赖它。协议本身的 handle 接线在 whenReady 内
+  // (需要 FilePanelService / SessionWorkspaceManager 的白名单数据源就绪)。
+  protocol.registerSchemesAsPrivileged([WEB_FILE_SCHEME_PRIVILEGES]);
+
   // DEV-COEXIST(2026-05-16):dev 模式下改 app 名,让 npm run dev 与打包版
   // Marina.exe 互不冲突。Electron 把以下 4 类资源全部按 `productName` 派生:
   //   - app.getPath('userData') → %APPDATA%\Marina (dev) vs %APPDATA%\Marina
@@ -611,15 +623,28 @@ function bootstrap(): void {
       // (用户明确要连远程 daemon)。其余指令(script/font/img-src)保持严格。
       const cspProd =
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-        "font-src 'self' data:; img-src 'self' data:; connect-src 'self' ws: wss:";
+        "font-src 'self' data:; img-src 'self' data:; connect-src 'self' ws: wss: " +
+        // ADR-034:WebViewer 的 sandbox iframe 加载 marina-file:// —— frame-src
+        // 回落到 default-src 'self' 会拦掉 custom scheme(PoC 负向对照实证),
+        // 故加窄项。仅此一处放行,app 其余 CSP 不变。
+        "frame-src 'self' marina-file:";
       const cspDev =
         "default-src 'self' http://127.0.0.1:* ws://127.0.0.1:*; " +
         "script-src 'self' 'unsafe-eval' 'unsafe-inline' http://127.0.0.1:*; " +
         "style-src 'self' 'unsafe-inline' http://127.0.0.1:*; " +
         "font-src 'self' data: http://127.0.0.1:*; " +
         "img-src 'self' data: http://127.0.0.1:*; " +
-        "connect-src 'self' http://127.0.0.1:* ws: wss:";
+        "connect-src 'self' http://127.0.0.1:* ws: wss: " +
+        "frame-src 'self' marina-file: http://127.0.0.1:*";
       electronSession.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+        // ADR-034:marina-file:// 响应不下发 app CSP。webRequest 会拦截自定义协议
+        // 响应(PoC 实证);若在这里注入,app CSP(script-src 'self')会与协议层
+        // 逐响应下发的 CSP 交集生效,把 WebViewer 的内联脚本拦死。协议层响应
+        // 自带更严的自包含档 CSP(web-file-protocol.ts),无需 app 层兑底。
+        if (details.url.startsWith('marina-file:')) {
+          callback({ responseHeaders: { ...details.responseHeaders } });
+          return;
+        }
         callback({
           responseHeaders: {
             ...details.responseHeaders,
@@ -666,6 +691,16 @@ function bootstrap(): void {
         logger.error('main', 'file-panel service start failed (degraded, app continues)', err);
       }
       filePanelService.attachSessionLookup(sessionManager);
+      // ADR-034:marina-file:// 协议接线(必须 app ready 后)。白名单两大数据源
+      // 实时拉取:面板已打开文件(主文档永远可服务)+ 受管 workspace 目录;
+      // 前者同时放行其所在目录(iframe 兄弟子资源,见 web-file-protocol.ts)。
+      // handle 回调内的所有安全决策都在 WebFileProtocol.resolve —— 这里只接线。
+      const webFileProtocol = new WebFileProtocol({
+        getOpenFilePaths: () => filePanelService.getAllOpenFilePaths(),
+        getWorkspaceRoots: () => sessionWorkspaceManager.getAllWorkspaceDirs(),
+      });
+      protocol.handle(WEB_FILE_SCHEME, (request) => webFileProtocol.handle(request));
+      logger.info('main', 'marina-file:// protocol registered (ADR-034 WebViewer)');
       // v0.3.3 T12(testability enabler):注入截图回调 —— agent/CLI 走 HTTP /screenshot
       // 自测 UI。闭合 sessionManager.get→ownerWindowId→windowManager.getById→
       // webContents.capturePage→toPNG。不引 electron 进网关层(保持可测)。
@@ -766,6 +801,26 @@ function bootstrap(): void {
       // v2.0 dispatcher 基座:本地窗口 + 远程 WS client 都注册于此。
       // 在 installIpcLayer 前创建,远程后端模式下与 daemon 协调器(remote-daemon.ts)共享。
       const clientRegistry = new ClientRegistry();
+
+      // ADR-034:WebViewer sandbox iframe 内的下载(archify 导出按钮等)。不注册
+      // will-download handler 时 Electron 会直接取消下载(PoC 实证 handler 是
+      // 必要条件)。统一存到系统「下载」目录(文件名去掉路径分隔符等非法字符,
+      // 重名 Electron 自动追加 (1));完成后广播事件,renderer App 级监听组件弹
+      // in-app toast(见 WebDownloadNotifier)。这里不弹保存对话框 —— 产物导出
+      // 是高频低风险动作,打断感不可取。
+      electronSession.defaultSession.on('will-download', (_event, item) => {
+        const safeName = item.getFilename().replace(/[\\/:*?"<>|]/g, '_') || 'marina-download';
+        const savePath = join(app.getPath('downloads'), safeName);
+        item.setSavePath(savePath);
+        item.once('done', (_e, state) => {
+          clientRegistry.broadcast(EVENT_CHANNELS.WEB_DOWNLOAD_COMPLETE, {
+            filename: safeName,
+            path: savePath,
+            state,
+          });
+          logger.info('main', `web download ${state}: ${savePath}`);
+        });
+      });
       // 每 session 单一只读终端视图租约。与 interactive owner 分离,用于让
       // 同窗口隐藏 xterm 在 owner=null 期间继续吃输出并保留真实 viewport。
       const terminalViewRegistry = new TerminalViewRegistry();

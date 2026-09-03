@@ -556,6 +556,13 @@ export const EVENT_CHANNELS = {
   UI_SHOW_LAST_SESSION_CONFIRM: 'evt:ui:show-last-session-confirm',
 
   /**
+   * ADR-034:WebViewer(sandbox iframe)内发起的下载完成通知。main 的
+   * will-download handler 存盘后广播;renderer App 级监听组件弹 toast。
+   * state 取 Electron DownloadItem 的 'completed' | 'cancelled' | 'interrupted'。
+   */
+  WEB_DOWNLOAD_COMPLETE: 'evt:web:download-complete',
+
+  /**
    * 终端侧边文件面板状态变化(REST open/show/close 触发,或 fs.watch 检测到
    * 文件被外部修改)。ipc.ts 只推给该 session 的 owner 窗口(与 SESSION_OUTPUT
    * 同策略),renderer 收到后更新 filePanels Map。
@@ -2042,6 +2049,13 @@ export type ReadFileResponse =
  * fs.watch 刷新发送 false；字段缺失也按 false 处理，不会抢用户已手动切回的焦点。
  * 向后兼容:旧 renderer 忽略该可选字段即可，不影响渲染。
  */
+/** evt:web:download-complete payload(ADR-034)。state 为 Electron 下载终态。 */
+export interface WebDownloadCompletePayload {
+  filename: string;
+  path: string;
+  state: 'completed' | 'cancelled' | 'interrupted';
+}
+
 export interface FilePanelUpdatedPayload {
   sessionId: string;
   files: OpenedFile[];

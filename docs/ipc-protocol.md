@@ -2003,6 +2003,31 @@ interface FilePanelUpdatedPayload {
   后,若没有新的 openFile 就不会被覆盖;PanelStack remount(进出设置页等)从
   store 恢复,不会被历史请求抢回焦点。
 
+#### web 类型文件的读取与渲染(ADR-034)
+
+`.html/.htm` 的 `FileKind` 为 `'web'`。**预览内容不经 IPC**：WebViewer 直接以
+`marina-file://local/<encoded-abs-path>?v=<mtimeMs>-<size>` 加载 sandbox iframe，
+由 main 端 `protocol.handle('marina-file')` 流式服务（白名单与逐响应 CSP 见
+ADR-034）。`cmd:file-panel:read` 对 web 文件**永远返回 `kind:'text'` 的源码
+文本**（UTF-8 + 2MB 截断），仅服务 WebViewer 的「源码查看」模式。
+
+热刷新复用既有链：fs.watch → `refreshOne` 更新 mtimeMs/size →
+`evt:file-panel:updated` → WebViewer 因 `?v=` 变化重载 iframe，无需新事件。
+
+#### `evt:web:download-complete`
+
+WebViewer sandbox iframe 内发起的下载（如 archify 导出按钮）完成时广播到所有
+窗口（main 的 will-download handler 存盘后发出；不注册 handler 时 Electron
+直接取消下载）。renderer App 级监听组件弹 in-app toast。
+
+```typescript
+interface WebDownloadCompletePayload {
+  filename: string;
+  path: string;
+  state: 'completed' | 'cancelled' | 'interrupted';
+}
+```
+
 ---
 
 ## 7. 错误码

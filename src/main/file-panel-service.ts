@@ -477,6 +477,18 @@ export class FilePanelService extends EventEmitter {
   }
 
   /**
+   * ADR-034:所有 session 面板当前打开的文件路径(marina-file:// 协议白名单
+   * 数据源)。主文档永远可服务;其所在目录由 WebFileProtocol 补充放行。
+   */
+  getAllOpenFilePaths(): string[] {
+    const out: string[] = [];
+    for (const state of this.panels.values()) {
+      for (const f of state.files) out.push(f.path);
+    }
+    return out;
+  }
+
+  /**
    * 读已打开文件内容。仅限面板列表内路径(防 renderer 被诱导读任意文件)。
    * text/markdown → 字符串(超限截断);image → base64 dataUrl;unknown → 占位。
    */

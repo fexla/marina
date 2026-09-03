@@ -566,6 +566,15 @@ export class SessionWorkspaceManager {
     return this.records.has(workspaceId) ? this.workspacePath(workspaceId) : null;
   }
 
+  /**
+   * ADR-034:所有存活 workspace(含 released 未到保留期)的目录 ——
+   * marina-file:// 协议白名单数据源之一。records 里被 discard/cleanupExpired
+   * 移除的不会再送出,故这里天然只含磁盘上仍受管的目录。
+   */
+  getAllWorkspaceDirs(): string[] {
+    return [...this.records.keys()].map((id) => this.workspacePath(id));
+  }
+
   /** 获取某 workspace 的 record（供 SessionManager 判断 pinned/状态）。 */
   getRecord(workspaceId: string): WorkspaceRecord | null {
     const r = this.records.get(workspaceId);
