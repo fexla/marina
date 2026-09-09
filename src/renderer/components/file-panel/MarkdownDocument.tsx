@@ -3,11 +3,13 @@
  * @purpose “已打开”文件与命令面板共用的 Markdown 正文渲染模块。
  *
  * @关键设计:
- * - 外部 interface 只接收内存 Markdown、稳定文档身份和可选文件上下文；读取文件、
+ * - 外部 interface 只接收内存 Markdown、稳定文档身份和可选来源上下文；读取文件、
  *   命令状态机、tab 等来源差异留给各自 adapter，正文能力只实现一次。
- * - fileContext 是路径能力而非伪造字段：只有“已打开”文件传入，因此本地链接、
- *   本地图片和 gallery 才能经过 main 的成员校验与相对路径解析。命令 stdout 没有
- *   文档路径，绝不拿 command key 冒充文件路径绕过该安全 seam。
+ * - 能力默认全源复用(ADR-036):插件管线(含标题章节化/目录)、本地链接、本地
+ *   图片、gallery 对文件与命令两种来源同样生效。差异只在**路径解析基准**:
+ *   fileContext(真实文件)→ main 成员校验 + md 目录基准;commandKey(命令输出)
+ *   → main 按该指令运行时 cwd(runCwd 真值)解析。渲染层永不猜基准值,绝不拿
+ *   command key 冒充文件路径。
  * - documentIdentity 只用于代码块运行缓存。文件用规范化路径，命令用稳定 key；
  *   两种来源切面板卸载后都能恢复同一代码块的运行状态。
  * - Markdown 主题、GFM、外链、代码块和 DOM 查找都在本模块内,避免两个面板继续
@@ -27,7 +29,7 @@
  * @不要在这里做的事:
  * - 不读取文件或管理 CommandEntry；那是 MarkdownViewer / CommandPanel adapter 的职责。
  * - 不启用 rehype-raw；命令输出和文件内容都视为不可信，原始 HTML 必须保持禁用。
- * - 不为无 fileContext 的内容猜 cwd / MARINA_WORKSPACE 路径。
+ * - 不猜任何路径基准(渲染层只传 mdPath/commandKey 标识,解析全在 main 端真值)。
  */
 import {
   useCallback,
@@ -73,6 +75,7 @@ import { remarkMarinaHeadingSections } from './markdown-heading-sections';
 import { remarkMarinaPathAutolink } from './markdown-path-autolink';
 import { applyMarkdownRailPixelSnap } from './markdown-rail-pixel-snap';
 import { markdownSurfaceClass } from './markdown-surface';
+import { hasMdSrcBase, mdSrcBasePayload, type MdSrcBase } from './md-src-base';
 
 /** 只有真实“已打开”Markdown 文件才具备的路径相关能力。 */
 export interface MarkdownFileContext {
@@ -89,8 +92,14 @@ export interface MarkdownDocumentProps {
   markdown: string;
   /** 稳定逻辑身份，只用于代码块组件外缓存，不要求是文件路径。 */
   documentIdentity: string;
-  /** 有真实文件路径时开启本地链接、图片与 gallery；命令输出必须省略。 */
+  /** 有真实文件路径时开启本地链接、图片与 gallery 的文件基准(mtime 还作 cache-bust)。 */
   fileContext?: MarkdownFileContext;
+  /**
+   * 命令面板输出来源的路径基准(ADR-036):指令 key。本地链接/图片/gallery 的
+   * 相对路径由 main 按该指令运行时 cwd(CommandEntry.runCwd 真值)解析 ——
+   * 与 fileContext 二选一;两者都无(理论不可达,防御)时路径能力才降级。
+   */
+  commandKey?: string;
   /** dock 级文件内搜索状态。 */
   search: PanelSearchProps;
   /** 文件 adapter 传入根 ref，供其在同一 DOM 上恢复外层滚动位置。 */
@@ -115,6 +124,7 @@ export function MarkdownDocument({
   markdown,
   documentIdentity,
   fileContext,
+  commandKey,
   search,
   rootRef,
   headingNavigation,
@@ -128,6 +138,19 @@ export function MarkdownDocument({
   // 代码块并重复图片 IPC。只有真实路径或 mtime 变化才应重建 components。
   const filePath = fileContext?.path;
   const fileMtimeMs = fileContext?.mtimeMs ?? null;
+  // 路径能力基准(ADR-036):文件来源 mdPath 优先,命令来源 commandKey 兜底。
+  // 有其一,本地链接/图片/gallery 就具备解析能力 —— 能力默认两种来源同享。
+  // 必须 useMemo:对象身份进 MdImage 的解析 effect / GalleryViewer 的 resolveItem
+  // 依赖,若每次 render 新建,任何父级重渲染都会触发图片重新 IPC。
+  const srcBase: MdSrcBase | undefined = useMemo(
+    () =>
+      filePath !== undefined
+        ? { mdPath: filePath }
+        : commandKey !== undefined
+          ? { commandKey }
+          : undefined,
+    [filePath, commandKey],
+  );
   // markdown 渲染风格(用户在设置页选):auto=Marina 主题样式;github-*=GitHub 官方。
   const appState = useAppState();
   const mdStyle = appState.settings.filePanel?.markdownStyle ?? 'auto';
@@ -238,7 +261,8 @@ export function MarkdownDocument({
       const heading = headings.find((candidate) => candidate.id === id);
       if (!heading) return false;
       expandHeadingSections(heading);
-      const scrollOwner = root.closest('.file-panel-body');
+      // 文件面板与命令面板的滚动容器不同(ADR-036 后目录能力全源,两处都要认)。
+      const scrollOwner = root.closest('.file-panel-body, .command-panel-body');
       scrollOwner?.dispatchEvent(new Event(FILE_VIEWER_PROGRAMMATIC_NAVIGATION_EVENT));
       heading.scrollIntoView({ block: 'start' });
       return true;
@@ -257,7 +281,7 @@ export function MarkdownDocument({
           <MdLink
             {...props}
             sessionId={sessionId}
-            mdPath={filePath}
+            srcBase={srcBase}
             onNavigateAnchor={(id) => navigateToHeading(id, 'id')}
           />
         );
@@ -298,7 +322,7 @@ export function MarkdownDocument({
                   requestAnimationFrame(() => {
                     if (!section.isConnected || section.open) return;
                     const summary = section.querySelector('summary');
-                    const scrollOwner = section.closest<HTMLElement>('.file-panel-body');
+                    const scrollOwner = section.closest<HTMLElement>('.file-panel-body, .command-panel-body');
                     if (!summary || !scrollOwner) return;
                     const summaryRect = summary.getBoundingClientRect();
                     const ownerRect = scrollOwner.getBoundingClientRect();
@@ -416,13 +440,13 @@ export function MarkdownDocument({
           src={props.src}
           alt={props.alt}
           sessionId={sessionId}
-          mdPath={filePath}
+          srcBase={srcBase}
           mtimeMs={fileMtimeMs}
         />
       ),
       // fenced code block 共用交互外壳(语言标签 / 复制 / 一键运行 / 输出区)。
-      // gallery 额外依赖真实文档目录；命令输出没有 fileContext 时降级为普通的
-      // MarkdownCodeBlock（仍可复制，但 gallery 不是可运行语言）。
+      // gallery 依赖路径基准(文件 mdPath 或命令运行时 cwd,ADR-036);两种来源
+      // 都没有(理论不可达)才降级为普通 MarkdownCodeBlock(仍可复制)。
       pre: (props) => {
         const info = extractCodeBlockInfo(props.children);
         if (info) {
@@ -430,16 +454,11 @@ export function MarkdownDocument({
           // source offset + code 摘要共同构成 cache identity：切 panel/remount 后
           // 同一块恢复输出；代码或源位置变化则不错误挂回旧运行结果。
           const sourcePosition = start?.offset ?? `${start?.line ?? 0}:${start?.column ?? 0}`;
-          if (
-            filePath !== undefined &&
-            fileMtimeMs !== null &&
-            info.className &&
-            /language-gallery/.test(info.className)
-          ) {
+          if (hasMdSrcBase(srcBase) && info.className && /language-gallery/.test(info.className)) {
             return (
               <GalleryViewer
                 sessionId={sessionId}
-                documentPath={filePath}
+                srcBase={srcBase}
                 code={info.code}
                 mtimeMs={fileMtimeMs}
               />
@@ -466,11 +485,11 @@ export function MarkdownDocument({
       allowSudo,
       documentIdentity,
       fileMtimeMs,
-      filePath,
       navigateToHeading,
       outlineVisible,
       sessionId,
       setHeadingCollapsed,
+      srcBase,
       toggleOutlineVisible,
       tx,
     ],
@@ -481,12 +500,12 @@ export function MarkdownDocument({
   // frontmatter 因此"识别并隐藏":不渲染、不进 Ctrl+F 的 DOM 文本、不进标题大纲,
   // 裸路径自动链接也碰不到它(它是叶子节点,无 text children)。自定义插件安全:
   // heading-sections 只认 heading,path-autolink 只改 text 子节点,yaml 均原样透传。
+  // 插件管线单一化(ADR-036):不再按来源分叉 —— heading-sections(标题章节化 +
+  // 目录轨)对所有来源生效,命令输出同样有目录/折叠。此前"文件来源才挂"的
+  // 双分支正是新功能接不上第二来源的病灶:每加一个插件都要记得改两处。
   const remarkPlugins = useMemo(
-    () =>
-      filePath === undefined
-        ? [remarkGfm, remarkFrontmatter, remarkMarinaPathAutolink]
-        : [remarkGfm, remarkFrontmatter, remarkMarinaHeadingSections, remarkMarinaPathAutolink],
-    [filePath],
+    () => [remarkGfm, remarkFrontmatter, remarkMarinaHeadingSections, remarkMarinaPathAutolink],
+    [],
   );
 
   // CommonMark 严格模式会截断带空格的裸本地图片 URL。统一预处理保证文件来源
@@ -517,9 +536,8 @@ export function MarkdownDocument({
    * scrollIntoView 与正文滚动争抢。
    */
   useLayoutEffect(() => {
-    if (filePath === undefined) return undefined;
     const root = containerRef.current;
-    const scrollOwner = root?.closest<HTMLElement>('.file-panel-body');
+    const scrollOwner = root?.closest<HTMLElement>('.file-panel-body, .command-panel-body');
     const rail = root?.querySelector<HTMLElement>('.markdown-heading-rail');
     if (!root || !scrollOwner || !rail) return undefined;
 
@@ -741,8 +759,8 @@ export function MarkdownDocument({
 
 interface MdLinkProps extends AnchorHTMLAttributes<HTMLAnchorElement> {
   sessionId: string;
-  /** 真实 Markdown 文件路径；缺省表示来源没有本地路径能力。 */
-  mdPath: string | undefined;
+  /** 来源路径基准(文件 mdPath / 命令 commandKey,ADR-036)；缺省表示无路径能力。 */
+  srcBase: MdSrcBase | undefined;
   /** 已解码 anchor id 交给文档统一导航 seam。 */
   onNavigateAnchor: (id: string) => boolean;
 }
@@ -753,17 +771,17 @@ interface MdLinkProps extends AnchorHTMLAttributes<HTMLAnchorElement> {
  * - #anchor → 当前 Markdown 根内定位；
  * - marina: 动作链接(ADR-035)→ MARINA_LINK_RUN,main 解析 show/run 后分发
  *   (与 CLI 同源;无确认弹窗,安全模型同可运行代码块 ADR-023);
- * - 其余本地路径 → 仅在有真实 mdPath 时交给 FilePanelService 解析并打开。
+ * - 其余本地路径 → 交给 main 按来源基准解析后只读打开(ADR-036:文件来源 =
+ *   mdPath 成员校验;命令面板输出 = 指令运行时 cwd 真值)。
  *
- * 命令输出没有文档路径,本地链接会被阻止而不是猜 cwd(marina:show 例外:main
- * 按 session cwd 解析,与 CLI show 同语义)。这样既保持 Electron SPA 不导航,
- * 也不把 command key 伪装成受 main 信任的文件成员。
+ * 渲染层永不猜路径基准 —— 两种来源的基准都是 main 端真值(成员集合 / runCwd)。
+ * 这样既保持 Electron SPA 不导航,也不把 renderer 伪造的路径当受信输入。
  */
 function MdLink({
   href,
   children,
   sessionId,
-  mdPath,
+  srcBase,
   onNavigateAnchor,
   ...anchorProps
 }: MdLinkProps): JSX.Element {
@@ -794,7 +812,7 @@ function MdLink({
         .invoke(COMMAND_CHANNELS.MARINA_LINK_RUN, {
           sessionId,
           href,
-          ...(mdPath === undefined ? {} : { mdPath }),
+          ...mdSrcBasePayload(srcBase),
         })
         .catch((err: unknown) => {
           console.warn('[md] marina link failed', err);
@@ -813,16 +831,18 @@ function MdLink({
         .catch((err: unknown) => console.warn('[md] openExternal failed', err));
       return;
     }
-    if (!mdPath) {
-      // 无真实文档目录就没有正确、安全的相对解析基准。命令面板旧行为同样不打开
-      // 本地链接；这里显式停在能力 seam，而不是让 webContents 默认导航。
+    if (!hasMdSrcBase(srcBase)) {
+      // 无任何路径基准(理论不可达：两种来源 adapter 必给其一)。显式停在能力
+      // seam，而不是让 webContents 默认导航。
       return;
     }
+    // ADR-036：命令面板输出同样打开本地链接 —— mdSrcBasePayload 展开文件来源
+    // (mdPath，成员校验基准)或命令来源(commandKey → main 查 runCwd 真值)。
     window.api
       .invoke(COMMAND_CHANNELS.FILE_PANEL_OPEN_PATH, {
         sessionId,
-        mdPath,
         src: href,
+        ...mdSrcBasePayload(srcBase),
       })
       .catch((err: unknown) => {
         console.warn('[md] openPath failed', err);
@@ -916,11 +936,12 @@ function normalizeMdImageSources(md: string): string {
 }
 
 /**
- * 图片：远程/data/blob URL 直接交给 img；本地引用只有 fileContext 才能经 main
- * 相对真实 Markdown 文件解析并读成 data URL。无路径能力时显示占位，不尝试
- * renderer base URL 或 file://，避免错误目录与 CSP 行为漂移。
+ * 图片：远程/data/blob URL 直接交给 img；本地引用经 main 按来源基准解析并读成
+ * data URL(ADR-036:文件来源 = mdPath 成员校验;命令面板输出 = 指令运行时 cwd
+ * 真值)。两种基准都没有(理论不可达)才显示占位，不尝试 renderer base URL 或
+ * file://，避免错误目录与 CSP 行为漂移。
  *
- * v0.3.3 图片交互（仅有 fileContext 时启用，命令面板输出保持纯静态图）：
+ * v0.3.3 图片交互（有任一路径基准即启用，命令面板输出同权）：
  * - 单击 → main resolve 后用系统图片查看器打开；
  * - 右键 → 用系统图片查看器打开 / 复制图片 / 在 Explorer 中显示；
  * - 图片被链接包裹（[![alt](img)](link)）时单击仍归 MdLink 导航。
@@ -929,11 +950,11 @@ function MdImage({
   src,
   alt,
   sessionId,
-  mdPath,
+  srcBase,
   mtimeMs,
 }: ImgProps & {
   sessionId: string;
-  mdPath: string | undefined;
+  srcBase: MdSrcBase | undefined;
   mtimeMs: number | null;
 }): JSX.Element {
   const { tx } = useTranslation();
@@ -953,9 +974,9 @@ function MdImage({
       setErr(null);
       return;
     }
-    if (!mdPath) {
+    if (!hasMdSrcBase(srcBase)) {
       setUrl(null);
-      setErr('Local image unavailable: this Markdown source has no file path.');
+      setErr('Local image unavailable: this Markdown source has no path base.');
       return;
     }
 
@@ -965,8 +986,8 @@ function MdImage({
     window.api
       .invoke(COMMAND_CHANNELS.FILE_PANEL_READ_IMAGE, {
         sessionId,
-        mdPath,
         src,
+        ...mdSrcBasePayload(srcBase),
       })
       .then((res) => {
         if (cancelled) return;
@@ -979,15 +1000,15 @@ function MdImage({
     return () => {
       cancelled = true;
     };
-  }, [src, sessionId, mdPath, mtimeMs]);
+  }, [src, sessionId, srcBase, mtimeMs]);
 
-  // 交互层整体 gate 在 fileContext 上：GALLERY_* 通道要求 mdPath 过 main 端
-  // 成员校验，命令面板输出没有路径能力，挂了也只能报错，不如保持纯静态图。
-  const interactive = mdPath !== undefined && typeof src === 'string' && src.length > 0;
+  // 交互层 gate 在「有路径基准」上：GALLERY_* 通道对文件来源做成员校验、对
+  // 命令来源按运行时 cwd 解析(main 端真值),两种来源同权(ADR-036)。
+  const interactive = hasMdSrcBase(srcBase) && typeof src === 'string' && src.length > 0;
 
   const openExternally = (): void => {
-    if (!mdPath || !src) return;
-    openMarkdownImageExternally({ sessionId, mdPath, src, toast, tx });
+    if (!hasMdSrcBase(srcBase) || !src) return;
+    openMarkdownImageExternally({ sessionId, srcBase, src, toast, tx });
   };
 
   const handleClick = (event: React.MouseEvent<HTMLImageElement>): void => {
@@ -1008,8 +1029,8 @@ function MdImage({
         {
           open: openExternally,
           reveal: () => {
-            if (!mdPath || !src) return;
-            revealMarkdownImageInExplorer({ sessionId, mdPath, src, toast, tx });
+            if (!hasMdSrcBase(srcBase) || !src) return;
+            revealMarkdownImageInExplorer({ sessionId, srcBase, src, toast, tx });
           },
           // 远程 http 直链的 url 就是原 URL（非 dataUrl），没有位图数据，
           // 不提供复制能力（能力驱动：不生成"复制图片"项）。

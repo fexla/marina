@@ -2212,6 +2212,22 @@ function requireFilePanelOwner(
 function registerFilePanelHandlers(deps: IpcLayerDeps): void {
   const { filePanelService, sessionManager } = deps;
 
+  /**
+   * v0.3.3 ADR-036:命令面板输出来源的相对路径解析基准 = 指令**运行时** cwd
+   * (CommandPanelService.getRunCwd 真值,终端 cd 后旧输出不漂移)。旧持久化
+   * 快照没有 runCwd → 回退 session 当前 cwd;都取不到返回 undefined,由服务层
+   * 报"missing path base"(renderer 显示错误占位/toast)。renderer 只传
+   * commandKey,基准值全程 main 端真值,伪造不了。
+   */
+  const commandBaseDir = (sessionId: string, commandKey: string | undefined): string | undefined => {
+    if (commandKey === undefined) return undefined;
+    return (
+      deps.commandPanelService.getRunCwd(sessionId, commandKey) ??
+      sessionManager.get(sessionId)?.currentCwd ??
+      undefined
+    );
+  };
+
   registerHandle(
     COMMAND_CHANNELS.FILE_PANEL_GET_OPEN_FILES,
     (_e, envelope: CommandEnvelope<GetOpenFilesPayload>): FilePanelSnapshot => {
@@ -2233,6 +2249,7 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
 
   // v0.3.3 Feature B:markdown 文档里的本地文件链接 → 相对 md 目录解析进面板只读查看。
   // 与 FILE_PANEL_OPEN 的区别:解析基准是 mdPath 所在目录(文档作者视角),不是 currentCwd。
+  // ADR-036:命令面板输出(mdPath 缺省 + commandKey)以运行时 cwd 为基准(openFileFromBase)。
   registerHandle(
     COMMAND_CHANNELS.FILE_PANEL_OPEN_PATH,
     async (
@@ -2240,11 +2257,19 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
       envelope: CommandEnvelope<OpenPathFromMarkdownPayload>,
     ): Promise<FilePanelSnapshot> => {
       requireFilePanelOwner(sessionManager, envelope.payload.sessionId, envelope.windowId);
-      return filePanelService.openFileFromMarkdown(
-        envelope.payload.sessionId,
-        envelope.payload.mdPath,
-        envelope.payload.src,
-      );
+      const { sessionId, mdPath, src, commandKey } = envelope.payload;
+      if (mdPath !== undefined) {
+        return filePanelService.openFileFromMarkdown(sessionId, mdPath, src);
+      }
+      const baseDir = commandBaseDir(sessionId, commandKey);
+      if (baseDir === undefined) {
+        throw makeIpcError(
+          'ResolveFailed',
+          '本地链接缺少解析基准:payload 需要 mdPath 或 commandKey 其一' +
+            '(commandKey 需对应存在的指令且能取到运行时/当前 cwd)。',
+        );
+      }
+      return filePanelService.openFileFromBase(sessionId, baseDir, src);
     },
   );
 
@@ -2265,6 +2290,7 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
         envelope.payload.mdPath,
         envelope.payload.href,
         envelope.windowId,
+        envelope.payload.commandKey,
       );
     },
   );
@@ -2297,10 +2323,13 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
     COMMAND_CHANNELS.FILE_PANEL_READ_IMAGE,
     async (_e, envelope: CommandEnvelope<ReadImagePayload>): Promise<ReadImageResponse> => {
       requireFilePanelOwner(sessionManager, envelope.payload.sessionId, envelope.windowId);
+      // ADR-036:命令面板输出来源无 mdPath,基准 = 运行时 cwd(commandBaseDir)。
+      const { sessionId, mdPath, src, commandKey } = envelope.payload;
       return filePanelService.readImageAsset(
-        envelope.payload.sessionId,
-        envelope.payload.mdPath,
-        envelope.payload.src,
+        sessionId,
+        mdPath,
+        src,
+        mdPath !== undefined ? undefined : commandBaseDir(sessionId, commandKey),
       );
     },
   );
@@ -2315,10 +2344,12 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
       envelope: CommandEnvelope<GalleryResolveImagePayload>,
     ): Promise<GalleryResolveImageResponse> => {
       requireFilePanelOwner(sessionManager, envelope.payload.sessionId, envelope.windowId);
+      const { sessionId, mdPath, src, commandKey } = envelope.payload;
       return filePanelService.resolveGalleryImage(
-        envelope.payload.sessionId,
-        envelope.payload.mdPath,
-        envelope.payload.src,
+        sessionId,
+        mdPath,
+        src,
+        mdPath !== undefined ? undefined : commandBaseDir(sessionId, commandKey),
       );
     },
   );
@@ -2329,10 +2360,12 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
       envelope: CommandEnvelope<GalleryOpenImagePayload>,
     ): Promise<GalleryOpenImageResponse> => {
       requireFilePanelOwner(sessionManager, envelope.payload.sessionId, envelope.windowId);
+      const { sessionId, mdPath, src, commandKey } = envelope.payload;
       const r = await filePanelService.openGalleryImage(
-        envelope.payload.sessionId,
-        envelope.payload.mdPath,
-        envelope.payload.src,
+        sessionId,
+        mdPath,
+        src,
+        mdPath !== undefined ? undefined : commandBaseDir(sessionId, commandKey),
       );
       if ('error' in r) return r;
       // shell.openPath 返空串=成功打开,非空串=错误信息(OS 语义)。
@@ -2352,10 +2385,12 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
       envelope: CommandEnvelope<GalleryRevealImagePayload>,
     ): Promise<GalleryRevealImageResponse> => {
       requireFilePanelOwner(sessionManager, envelope.payload.sessionId, envelope.windowId);
+      const { sessionId, mdPath, src, commandKey } = envelope.payload;
       const r = await filePanelService.openGalleryImage(
-        envelope.payload.sessionId,
-        envelope.payload.mdPath,
-        envelope.payload.src,
+        sessionId,
+        mdPath,
+        src,
+        mdPath !== undefined ? undefined : commandBaseDir(sessionId, commandKey),
       );
       if ('error' in r) return r;
       shell.showItemInFolder(r.path);

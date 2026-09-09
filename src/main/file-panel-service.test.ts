@@ -489,6 +489,57 @@ describe('FilePanelService - openFileFromMarkdown (Feature B)', () => {
     expect(navigations).toEqual([{ sessionId: 's1', heading: 'Root Cause' }]);
   });
 
+  it('openFileFromBase(ADR-036 命令来源):相对 baseDir 解析,不要求 md 在面板', async () => {
+    await mkdir(join(dir, 'docs'));
+    await writeFile(join(dir, 'docs', 'target.md'), '# from command output');
+    // 不 openFile 任何文件(命令来源没有成员校验基准,也不需要)
+    const r = await svc.openFileFromBase('s1', join(dir, 'docs'), 'target.md');
+    expect(r.activePath).toBe(join(dir, 'docs', 'target.md'));
+  });
+
+  it('openFileFromBase:绝对路径 src 覆盖 baseDir;heading 透传', async () => {
+    await writeFile(join(dir, 'abs.md'), '# abs');
+    const navs: string[] = [];
+    svc.on('filePanelNavigationRequested', (p: { heading: string }) => navs.push(p.heading));
+    const r = await svc.openFileFromBase('s1', dir, join(dir, 'abs.md'), { heading: 'abs' });
+    expect(r.activePath).toBe(join(dir, 'abs.md'));
+    expect(navs).toEqual(['abs']);
+  });
+
+  it('openFileFromBase:baseDir 非绝对路径 → ResolveFailed(防相对基准漂移)', async () => {
+    await expect(svc.openFileFromBase('s1', 'docs', 'x.md')).rejects.toMatchObject({
+      code: 'ResolveFailed',
+    });
+  });
+
+  it('openFileFromBase:文件不存在 → NotFound', async () => {
+    await expect(svc.openFileFromBase('s1', dir, 'nope.md')).rejects.toMatchObject({
+      code: 'NotFound',
+    });
+  });
+
+  it('readImageAsset(命令来源 baseDir):相对基准读图;mdPath+baseDir 同时给报错', async () => {
+    await mkdir(join(dir, 'pics'));
+    await writeFile(join(dir, 'pics', 'dot.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const r = await svc.readImageAsset('s1', undefined, 'dot.png', join(dir, 'pics'));
+    expect('dataUrl' in r).toBe(true);
+    // 两个基准同时给 = 调用方 bug,显式报错而不是静默选一个
+    const both = await svc.readImageAsset('s1', join(dir, 'r.md'), 'dot.png', join(dir, 'pics'));
+    expect(both).toHaveProperty('error');
+  });
+
+  it('readImageAsset:mdPath 与 baseDir 都缺 → missing path base', async () => {
+    const r = await svc.readImageAsset('s1', undefined, 'dot.png');
+    expect(r).toEqual({ error: 'missing path base (mdPath or baseDir)' });
+  });
+
+  it('resolveGalleryImage(命令来源 baseDir):本地图相对基准解析', async () => {
+    await mkdir(join(dir, 'pics'));
+    await writeFile(join(dir, 'pics', 'g.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const r = await svc.resolveGalleryImage('s1', undefined, 'g.png', join(dir, 'pics'));
+    expect('dataUrl' in r).toBe(true);
+  });
+
   it('src 为空 → ResolveFailed', async () => {
     await writeFile(join(dir, 'r.md'), '# hi');
     await svc.openFile('s1', 'r.md');

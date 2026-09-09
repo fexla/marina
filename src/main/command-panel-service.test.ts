@@ -127,6 +127,36 @@ describe('CommandPanelService', () => {
     svc.attachScheduler(scheduler);
   });
 
+  describe('runCwd(ADR-036:命令输出相对路径的解析基准)', () => {
+    it('spawn 时记录 session 当前 cwd,getRunCwd 可查', async () => {
+      const snap = await svc.runCommand('s1', 'ls');
+      runner.emitOutput('r-1', 'stdout', 'out');
+      runner.emitExited('r-1', 0, null);
+      expect(snap.commands[0]!.runCwd).toBe('/tmp');
+      expect(svc.getRunCwd('s1', snap.commands[0]!.key)).toBe('/tmp');
+    });
+
+    it('重跑时 runCwd 跟随最新 cwd(终端 cd 后刷新,基准更新)', async () => {
+      const snap1 = await svc.runCommand('s1', 'pwd');
+      runner.emitOutput('r-1', 'stdout', '/tmp');
+      runner.emitExited('r-1', 0, null);
+      expect(snap1.commands[0]!.runCwd).toBe('/tmp');
+
+      // 换 lookup 模拟 cd,再 push 同命令(upsert 复用 entry,立即重跑)
+      const sessions2 = { s1: { currentCwd: '/other', pathId: 'local-1', ownerWindowId: 'w1' } };
+      svc.attachSessionLookup(makeLookup(sessions2));
+      await svc.runCommand('s1', 'pwd');
+      runner.emitOutput('r-2', 'stdout', '/other');
+      runner.emitExited('r-2', 0, null);
+      expect(svc.getRunCwd('s1', snap1.commands[0]!.key)).toBe('/other');
+    });
+
+    it('未知指令 / 未知 session 返回 null(调用方回退 session 当前 cwd)', () => {
+      expect(svc.getRunCwd('s1', 'nope')).toBeNull();
+      expect(svc.getRunCwd('ghost', 'x')).toBeNull();
+    });
+  });
+
   describe('runCommand', () => {
     it('推送新指令:加入列表 + 切 active + 立即跑 + emit updated', async () => {
       const events: unknown[] = [];

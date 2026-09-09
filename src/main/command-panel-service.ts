@@ -352,6 +352,16 @@ export class CommandPanelService extends EventEmitter {
     return this.getSnapshot(sessionId);
   }
 
+  /**
+   * v0.3.3 ADR-036:查某条指令最近一次运行时的 cwd(命令输出 Markdown 相对路径
+   * 的解析基准,main 端真值)。未找到指令 / 从未运行过(旧快照无 runCwd)返回
+   * null,调用方(ipc)回退 session 当前 cwd。只读查询,不发事件。
+   */
+  getRunCwd(sessionId: string, commandKey: string): string | null {
+    const entry = this.panels.get(sessionId)?.commands.find((c) => c.key === commandKey);
+    return entry?.runCwd ?? null;
+  }
+
   /** 关闭某条指令 tab。停其进行中的 run + 注销后台 task。 */
   closeCommand(sessionId: string, commandKey: string): CommandPanelSnapshot {
     const state = this.panels.get(sessionId);
@@ -605,6 +615,12 @@ export class CommandPanelService extends EventEmitter {
     // lastExitCode 与 output 同属“最近一次已完成结果”；running 期间保留，既能
     // 区分首次运行和“上次成功但空输出”，也避免刷新开始时丢失完成态信息。
     entry.lastRunAt = Date.now();
+    // v0.3.3 ADR-036:记录本次运行的 cwd 真值。命令输出 Markdown 的相对链接/
+    // 图片/gallery 以后以它为解析基准 —— 若用“点击时的 currentCwd”,终端 cd 后
+    // 旧输出的相对路径会静默漂移(指错文件或 404)。CodeBlockRunner 内部也是读
+    // session.currentCwd spawn,这里在 spawn 前同源取一次即可。SSH session 的
+    // currentCwd 是远端路径,照存:本地 fs 解析会失败并 toast(与 CLI show 一致)。
+    entry.runCwd = this.lookup?.get(sessionId)?.currentCwd ?? entry.runCwd ?? null;
     entry.status = 'running';
     this.emitUpdated(sessionId, { requestActivation: false, commandKey: entry.key });
 

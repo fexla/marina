@@ -10,11 +10,12 @@
  *   免去每次点击 spawn PowerShell 的 300ms+ 启动延迟与 env 注入(面板交互
  *   <300ms 的性能底线见 AGENTS.md 第 10 章)。子命令集合只收 show/run
  *   (用户可点的两个动词),解析见 src/shared/marina-link.ts。
- * - show 的路径基准:有 mdPath(「已打开」面板里的文件)→ 相对 md 文件目录
- *   + 成员校验(openFileFromMarkdown,与普通本地链接同防线);无 mdPath
- *   (命令面板输出)→ 相对 session.currentCwd(openFile,与 CLI show 一致 ——
- *   这是命令输出里开本地文件的第一条通道,权限面与 UI「打开文件」按钮的
- *   FILE_PANEL_OPEN 完全相同,不引入新边界)。
+ * - show 的路径基准(ADR-036):有 mdPath(「已打开」面板里的文件)→ 相对
+ *   md 文件目录 + 成员校验(openFileFromMarkdown,与普通本地链接同防线);
+ *   命令面板输出带 commandKey → 相对该命令**运行时** cwd(getRunCwd 真值,
+ *   openFileFromBase;终端 cd 后旧输出的相对路径不漂移);两者皆无(兼容
+ *   调用方)→ 相对 session.currentCwd(openFile,与 CLI show 一致)。权限面
+ *   与 UI「打开文件」按钮的 FILE_PANEL_OPEN 完全相同,不引入新边界。
  * - run:与 HTTP /run 网关路由同一条 CommandPanelService.runCommand。CLI 通道
  *   的 requestingClientId 传 null(service 兜底到 session owner);IPC 通道
  *   有明确发起窗口,传 windowId 让输出事件定向回点击的窗口。
@@ -39,8 +40,8 @@ const MODULE = 'MarinaLinkDispatch';
 
 /** 分发依赖的服务面(窄接口,便于单测注入 fake;真身由 ipc 装配传入)。 */
 export interface MarinaLinkDispatchDeps {
-  filePanelService: Pick<FilePanelService, 'openFile' | 'openFileFromMarkdown'>;
-  commandPanelService: Pick<CommandPanelService, 'runCommand'>;
+  filePanelService: Pick<FilePanelService, 'openFile' | 'openFileFromMarkdown' | 'openFileFromBase'>;
+  commandPanelService: Pick<CommandPanelService, 'runCommand' | 'getRunCwd'>;
 }
 
 /** 分发结果(renderer 只用来确认动作类别;面板状态经既有事件推送更新)。 */
@@ -66,9 +67,12 @@ export class MarinaLinkError extends Error {
  * @param sessionId 链接所在文档归属的 session(动作的作用域:show 开进该
  *   session 的面板,run 在该 session 的 cwd 下执行)。
  * @param mdPath 「已打开」面板来源的文档绝对路径;命令面板输出无文档路径传
- *   undefined(show 退化为按 session cwd 解析)。
+ *   undefined。
  * @param href 渲染层透传的链接原始值(含 marina: 前缀与 percent-encoding)。
  * @param requestingClientId 发起窗口(windowId);run 的事件定向用,可为 null。
+ * @param commandKey 命令面板来源的指令 key(ADR-036)。show 的相对路径按该命令
+ *   运行时 cwd(getRunCwd 真值)解析;mdPath/commandKey 都无时回退 session
+ *   当前 cwd(ADR-035 原语义,兼容无来源的调用方)。
  * @returns 动作类别;失败抛 MarinaLinkError(语法)或服务原生错误(状态机)。
  *
  * @副作用(按子命令):
@@ -82,6 +86,7 @@ export async function dispatchMarinaLink(
   mdPath: string | undefined,
   href: string,
   requestingClientId: string | null,
+  commandKey?: string,
 ): Promise<MarinaLinkDispatchResult> {
   const parsed = parseMarinaLinkHref(href);
   if (!parsed.ok) {
@@ -90,18 +95,23 @@ export async function dispatchMarinaLink(
   const command = parsed.command;
   logger.info(
     MODULE,
-    `dispatch: sid=${sessionId} kind=${command.kind} mdPath=${mdPath ?? '(none)'}`,
+    `dispatch: sid=${sessionId} kind=${command.kind} mdPath=${mdPath ?? '(none)'} cmdKey=${commandKey ?? '(none)'}`,
   );
 
   if (command.kind === 'show') {
+    const heading = command.heading === undefined ? {} : { heading: command.heading };
     if (mdPath !== undefined) {
-      await deps.filePanelService.openFileFromMarkdown(sessionId, mdPath, command.path, {
-        ...(command.heading === undefined ? {} : { heading: command.heading }),
-      });
+      await deps.filePanelService.openFileFromMarkdown(sessionId, mdPath, command.path, heading);
     } else {
-      await deps.filePanelService.openFile(sessionId, command.path, {
-        ...(command.heading === undefined ? {} : { heading: command.heading }),
-      });
+      // 命令面板来源优先用运行时 cwd 真值;查不到(旧快照/无 commandKey)回退
+      // session 当前 cwd(openFile 语义)。
+      const runCwd =
+        commandKey !== undefined ? deps.commandPanelService.getRunCwd(sessionId, commandKey) : null;
+      if (runCwd !== null) {
+        await deps.filePanelService.openFileFromBase(sessionId, runCwd, command.path, heading);
+      } else {
+        await deps.filePanelService.openFile(sessionId, command.path, heading);
+      }
     }
     return { kind: 'show' };
   }

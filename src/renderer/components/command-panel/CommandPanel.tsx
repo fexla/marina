@@ -11,8 +11,9 @@
  * - per-指令刷新拆成两个正交控件：前台/后台 toggle 只决定隐藏时是否继续，
  *   刷新间隔 select 只决定手动/5s/30s；面板可见性另行上报 demand。
  * - 输出正文复用“已打开”面板的 MarkdownDocument（主题 / GFM / 外链 / 代码块 /
- *   搜索同一实现）。命令输出只有内存字符串，所以只传稳定 command key 作缓存身份，
- *   不伪造文件路径；本地链接/图片/gallery 等路径能力仍只属于真实 OpenedFile。
+ *   搜索/目录同一实现,ADR-036 起本地链接/图片/gallery 同样复用）。命令输出
+ *   只有内存字符串,只传稳定 command key 作缓存身份,不伪造文件路径;路径解析
+ *   基准是该指令运行时 cwd(CommandEntry.runCwd,main 端真值)。
  *
  * @对应文档: ADR-028(docs/方案-命令面板-20260802.md)、ADR-023(CodeBlockRunner)。
  *
@@ -340,6 +341,7 @@ function CommandOutput({
           sessionId={sessionId}
           markdown={entry.output}
           documentIdentity={`command:${entry.key}`}
+          commandKey={entry.key}
           search={search}
         />
       ) : entry.status === 'running' && !hasCompletedResult ? (

@@ -1878,6 +1878,14 @@ export interface CommandEntry {
    * 可选以兼容旧快照(缺省 = false)。
    */
   sudo?: boolean;
+  /**
+   * v0.3.3 ADR-036:最近一次运行时 session 的 cwd(绝对路径)。命令输出的 Markdown
+   * 相对链接/图片/gallery 以它为解析基准(而非"点击时的 cwd"——终端 cd 之后旧输出
+   * 的相对路径不能跟着漂移)。main 端 spawn 时写入;持久化(与 command 字符串同
+   * 隐私级别)。可选以兼容旧快照;缺省时 main 回退到 session 当前 cwd。
+   * SSH session 存的是远端路径,本地 fs 解析会失败并 toast(与 CLI show 同语义)。
+   */
+  runCwd?: string | null;
 }
 
 /** 命令面板快照(与 FilePanelSnapshot 对称)。 */
@@ -1969,24 +1977,30 @@ export interface OpenFilePanelPayload extends FilePanelActionPayload {
 /** v0.3.3 Feature B cmd:file-panel:open-path payload。markdown 文档里的本地文件
  * 链接点击 → main 相对 mdPath 所在目录解析 src 为本地绝对路径后进面板只读查看。
  * mdPath 必须是该 session 已打开列表里的 md 文件(同 ReadImagePayload 成员校验防线),
- * 防 renderer 被诱导用任意 mdPath + src 打开磁盘任意文件。 */
+ * 防 renderer 被诱导用任意 mdPath + src 打开磁盘任意文件。
+ * v0.3.3 ADR-036:mdPath 与 commandKey 恰好给其一 —— 后者是命令面板输出来源
+ * (无文档路径),main 按 CommandEntry.runCwd(命令运行时 cwd 真值)为基准解析。 */
 export interface OpenPathFromMarkdownPayload {
   sessionId: string;
-  mdPath: string;
+  mdPath?: string;
   src: string;
+  commandKey?: string;
 }
 
 /**
  * v0.3.3 ADR-035 cmd:marina-link:run payload。markdown 文档里 [x](marina:...)
  * 动作链接点击 → main 解析子命令(show/run)后分发。href 是链接原始值(含
  * marina: 前缀与 percent-encoding,main 端统一解码,渲染层不解析)。
- * mdPath 仅「已打开」面板来源有(相对该 md 目录解析);命令面板输出无文档
- * 路径,show 的相对路径按 session cwd 解析(与 CLI 一致)。
+ * mdPath 仅「已打开」面板来源有(相对该 md 目录解析);命令面板输出
+ * (ADR-036)改带 commandKey —— show 的相对路径按该命令运行时的 cwd(runCwd
+ * 真值)解析,而非点击时的 session cwd(终端 cd 后旧输出不应漂移)。两者都无
+ * 的极端情况回退 session 当前 cwd。
  */
 export interface RunMarinaLinkPayload {
   sessionId: string;
   href: string;
   mdPath?: string;
+  commandKey?: string;
 }
 
 /** cmd:marina-link:run 返回。kind 仅供 renderer 确认;面板状态走既有事件。 */
@@ -2004,11 +2018,15 @@ export interface ReadFilePayload {
  * main 相对 mdPath 所在目录解析为本地绝对路径后读。网络/data:/blob: 不该走到这
  * (renderer 直接交给 <img>);传到这里会被拒。sessionId 用于成员校验:mdPath 必须
  * 是该 session 已打开列表里的 md 文件(与 readFile 同防线),防 renderer 被诱导
- * 用任意 mdPath 读磁盘任意目录的图片。 */
+ * 用任意 mdPath 读磁盘任意目录的图片。
+ * v0.3.3 ADR-036:mdPath 与 commandKey 恰好给其一 —— 后者是命令面板输出来源,
+ * main 按 CommandEntry.runCwd 为基准解析(成员校验只锚定文件来源;命令来源的
+ * 基准是 main 自己记录的运行时真值,renderer 伪造不了)。 */
 export interface ReadImagePayload {
   sessionId: string;
-  mdPath: string;
+  mdPath?: string;
   src: string;
+  commandKey?: string;
 }
 
 /** cmd:file-panel:read-image 返回。dataUrl 成功;base64 dataUrl 可直接喂 <img src>。
@@ -2021,8 +2039,11 @@ export type ReadImageResponse = { dataUrl: string } | { error: string };
  * renderer 被诱导读任意本地图。网络图在 daemon 下载落盘后转 dataUrl 返回。 */
 export interface GalleryResolveImagePayload {
   sessionId: string;
-  mdPath: string;
+  /** v0.3.3 ADR-036:mdPath(文件来源,成员校验)与 commandKey(命令面板输出
+   * 来源,runCwd 基准)恰好给其一。 */
+  mdPath?: string;
   src: string;
+  commandKey?: string;
 }
 
 /** cmd:gallery:resolve-image 返回。成功返 dataUrl(本地图直接读;网络图下载
@@ -2034,8 +2055,11 @@ export type GalleryResolveImageResponse = { dataUrl: string } | { error: string 
  * 调 shell.openPath 调系统图片查看器。不把绝对路径返给 renderer(防泄露)。 */
 export interface GalleryOpenImagePayload {
   sessionId: string;
-  mdPath: string;
+  /** v0.3.3 ADR-036:mdPath(文件来源,成员校验)与 commandKey(命令面板输出
+   * 来源,runCwd 基准)恰好给其一。 */
+  mdPath?: string;
   src: string;
+  commandKey?: string;
 }
 
 /** cmd:gallery:open-image 返回。ok=true 表示已触发系统查看器(具体是否打开成功
@@ -2047,8 +2071,11 @@ export type GalleryOpenImageResponse = { ok: true } | { error: string };
  * shell.showItemInFolder,同样不把绝对路径返给 renderer(防泄露)。 */
 export interface GalleryRevealImagePayload {
   sessionId: string;
-  mdPath: string;
+  /** v0.3.3 ADR-036:mdPath(文件来源,成员校验)与 commandKey(命令面板输出
+   * 来源,runCwd 基准)恰好给其一。 */
+  mdPath?: string;
   src: string;
+  commandKey?: string;
 }
 
 /** cmd:gallery:reveal-image 返回。ok=true 表示已触发资源管理器定位;error 时

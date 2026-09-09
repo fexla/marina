@@ -27,6 +27,7 @@ import { useTranslation } from '../LanguageProvider';
 import { useToast } from '../Toast';
 import { useContextMenuApi } from '../ContextMenu';
 import { buildImageActionMenu, revealMarkdownImageInExplorer } from './imageActions';
+import { mdSrcBasePayload, type MdSrcBase } from './md-src-base';
 
 /** 单张图的解析状态(懒加载 ±1 窗口内才 resolve)。 */
 type ResolvedImage = { dataUrl: string } | { error: string } | null;
@@ -34,11 +35,13 @@ type ResolvedImage = { dataUrl: string } | { error: string } | null;
 
 interface GalleryViewerProps {
   sessionId: string;
-  documentPath: string;
+  /** 来源路径基准(文件 mdPath / 命令 commandKey,ADR-036)。 */
+  srcBase: MdSrcBase | undefined;
   /** 代码块原文(每行一个图片引用)。 */
   code: string;
-  /** md 文件 mtimeMs:变化时重 resolve(防读到旧 dataUrl,与 MdImage 一致)。 */
-  mtimeMs: number;
+  /** md 文件 mtimeMs:变化时重 resolve(防读到旧 dataUrl,与 MdImage 一致)。
+   * 命令面板输出无文件 mtime,传 null(输出整体替换时组件重挂,无需 cache-bust)。 */
+  mtimeMs: number | null;
 }
 
 /** 主图区高度上限(px)。超出按比例缩小。 */
@@ -46,7 +49,7 @@ const MAIN_MAX_HEIGHT = 480;
 
 export function GalleryViewer({
   sessionId,
-  documentPath,
+  srcBase,
   code,
   mtimeMs,
 }: GalleryViewerProps): JSX.Element {
@@ -60,7 +63,7 @@ export function GalleryViewer({
   // 正在加载的 index 集合(用于显示骨架 loading,与 resolved 区分)
   const [loading, setLoading] = useState<Set<number>>(new Set());
   // mtimeMs 变化时清缓存(防读到旧 dataUrl)。用 ref 存上次 mtimeMs 比较。
-  const lastMtimeRef = useRef(mtimeMs);
+  const lastMtimeRef = useRef<number>(mtimeMs ?? 0);
   const containerRef = useRef<HTMLDivElement>(null);
   // 取消标志:组件卸载/切走时不让异步 setState
   const cancelledRef = useRef(false);
@@ -94,8 +97,8 @@ export function GalleryViewer({
       }
       const payload: GalleryResolveImagePayload = {
         sessionId,
-        mdPath: documentPath,
         src: item.src,
+        ...mdSrcBasePayload(srcBase),
       };
       window.api
         .invoke(
@@ -128,15 +131,16 @@ export function GalleryViewer({
           });
         });
     },
-    [items, resolved, loading, sessionId, documentPath],
+    [items, resolved, loading, sessionId, srcBase],
   );
 
   // 懒加载 ±1:current 变化时 resolve current ± 1。已 resolve 的不重发(resolveItem 幂等)。
   useEffect(() => {
     cancelledRef.current = false;
     // mtimeMs 变化:整体清缓存(防读到旧 dataUrl),然后重新 resolve 窗口。
-    if (lastMtimeRef.current !== mtimeMs) {
-      lastMtimeRef.current = mtimeMs;
+    const mtimeKey = mtimeMs ?? 0;
+    if (lastMtimeRef.current !== mtimeKey) {
+      lastMtimeRef.current = mtimeKey;
       setResolved(new Map());
       setLoading(new Set());
       // 清完缓存后下一帧再 resolve(让 state 更新生效)
@@ -211,8 +215,8 @@ export function GalleryViewer({
     // fire-and-forget:系统查看器是否打开由 OS 决定,无需等结果
     void window.api.invoke(COMMAND_CHANNELS.GALLERY_OPEN_IMAGE, {
       sessionId,
-      mdPath: documentPath,
       src: item.src,
+      ...mdSrcBasePayload(srcBase),
     });
   };
 
@@ -231,7 +235,7 @@ export function GalleryViewer({
           reveal: () => {
             revealMarkdownImageInExplorer({
               sessionId,
-              mdPath: documentPath,
+              srcBase,
               src: item.src,
               toast,
               tx,

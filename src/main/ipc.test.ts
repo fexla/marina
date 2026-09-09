@@ -1082,7 +1082,8 @@ describe('IPC v0.3.3 图片交互 (GALLERY_REVEAL_IMAGE / SYSTEM_CLIPBOARD_WRITE
     });
 
     expect(result).toEqual({ ok: true, result: { ok: true } });
-    expect(resolveSpy).toHaveBeenCalledWith('sess-owner', '/tmp/x.md', './a.gif');
+    // 第 4 参 baseDir:mdPath 来源(ADR-036)不传命令基准 → undefined。
+    expect(resolveSpy).toHaveBeenCalledWith('sess-owner', '/tmp/x.md', './a.gif', undefined);
     expect(mockShell.showItemInFolder).toHaveBeenCalledWith('/tmp/pics/a.gif');
   });
 

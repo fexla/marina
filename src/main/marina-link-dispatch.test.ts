@@ -21,6 +21,7 @@ function makeDeps() {
   const calls: {
     openFile?: unknown[];
     openFileFromMarkdown?: unknown[];
+    openFileFromBase?: unknown[];
     runCommand?: unknown[];
   } = {};
   const deps = {
@@ -33,6 +34,10 @@ function makeDeps() {
         calls.openFileFromMarkdown = args;
         return emptySnapshot();
       },
+      async openFileFromBase(...args: unknown[]): Promise<FilePanelSnapshot> {
+        calls.openFileFromBase = args;
+        return emptySnapshot();
+      },
     },
     commandPanelService: {
       // runCommand 的真身返回 CommandPanelSnapshot;fake 只需合法形状,这里
@@ -41,9 +46,13 @@ function makeDeps() {
         calls.runCommand = args;
         return emptySnapshot();
       },
+      getRunCwd(sessionId: string, commandKey: string): string | null {
+        return runCwdMap.get(`${sessionId}|${commandKey}`) ?? null;
+      },
     },
   } as unknown as Parameters<typeof dispatchMarinaLink>[0];
-  return { deps, calls };
+  const runCwdMap = new Map<string, string>();
+  return { deps, calls, runCwdMap };
 }
 
 describe('dispatchMarinaLink: show', () => {
@@ -78,11 +87,47 @@ describe('dispatchMarinaLink: show', () => {
     ]);
   });
 
-  it('无 mdPath(命令面板输出)→ openFile(session cwd 基准,与 CLI show 一致)', async () => {
+  it('无 mdPath 无 commandKey → openFile 回退(session 当前 cwd 基准,ADR-035 原语义)', async () => {
     const { deps, calls } = makeDeps();
     await dispatchMarinaLink(deps, 'sid-1', undefined, 'marina:show%20a%20b.md', 'win-1');
     expect(calls.openFile).toEqual(['sid-1', 'a b.md', {}]);
     expect(calls.openFileFromMarkdown).toBeUndefined();
+    expect(calls.openFileFromBase).toBeUndefined();
+  });
+
+  it('commandKey + runCwd 真值(ADR-036 命令面板输出)→ openFileFromBase(运行时 cwd 基准)', async () => {
+    const { deps, calls, runCwdMap } = makeDeps();
+    runCwdMap.set('sid-1|k-9', 'D:/ws/run-dir');
+    await dispatchMarinaLink(
+      deps,
+      'sid-1',
+      undefined,
+      'marina:show report.md --heading "Summary"',
+      'win-1',
+      'k-9',
+    );
+    expect(calls.openFileFromBase).toEqual([
+      'sid-1',
+      'D:/ws/run-dir',
+      'report.md',
+      { heading: 'Summary' },
+    ]);
+    expect(calls.openFile).toBeUndefined();
+  });
+
+  it('commandKey 但查不到 runCwd(旧快照)→ 回退 openFile(session 当前 cwd)', async () => {
+    const { deps, calls } = makeDeps();
+    await dispatchMarinaLink(deps, 'sid-1', undefined, 'marina:show x.md', 'win-1', 'old-key');
+    expect(calls.openFile).toEqual(['sid-1', 'x.md', {}]);
+    expect(calls.openFileFromBase).toBeUndefined();
+  });
+
+  it('mdPath 优先于 commandKey(文件来源不走命令基准)', async () => {
+    const { deps, calls, runCwdMap } = makeDeps();
+    runCwdMap.set('sid-1|k-9', 'D:/other');
+    await dispatchMarinaLink(deps, 'sid-1', 'D:/ws/a.md', 'marina:show b.md', 'win-1', 'k-9');
+    expect(calls.openFileFromMarkdown).toEqual(['sid-1', 'D:/ws/a.md', 'b.md', {}]);
+    expect(calls.openFileFromBase).toBeUndefined();
   });
 });
 

@@ -542,13 +542,18 @@ export class FilePanelService extends EventEmitter {
    * 安全:路径穿越(../)虽可指向 md 目录外,但 (1) 只读图片扩展名,非图片拒绝;
    * (2) dataUrl 只在本机用户自己屏幕渲染,marina 不外发 → 无内容泄露路径。
    */
-  async readImageAsset(sessionId: string, mdPath: string, src: string): Promise<ReadImageResponse> {
+  async readImageAsset(
+    sessionId: string,
+    mdPath: string | undefined,
+    src: string,
+    baseDir?: string,
+  ): Promise<ReadImageResponse> {
     if (!src || typeof src !== 'string') return { error: 'empty src' };
     // 网络 / data: / blob: → renderer 直接用 <img>,不经此通道(传进来也拒)
     if (isRemoteUrl(src)) {
       return { error: 'not a local image' };
     }
-    const resolved = await this.resolveLocalImageAbs(sessionId, mdPath, src);
+    const resolved = await this.resolveLocalImageAbs(sessionId, mdPath, src, baseDir);
     if ('error' in resolved) return { error: resolved.error };
     try {
       const buf = await fs.readFile(resolved.abs);
@@ -567,8 +572,9 @@ export class FilePanelService extends EventEmitter {
    */
   private async resolveLocalImageAbs(
     sessionId: string,
-    mdPath: string,
+    mdPath: string | undefined,
     src: string,
+    baseDir?: string,
   ): Promise<{ abs: string; mime: string } | { error: string }> {
     // renderer 预处理把空格转 %20 防 CommonMark 截断(用户自己 %20 转义的也兼容)。
     // decode 还原真实文件路径 —— fs.readFile 要真实路径,不认 %20。
@@ -578,14 +584,11 @@ export class FilePanelService extends EventEmitter {
     } catch {
       // % 后非 hex 等 malformed sequence,保留原值让 resolve 尝试
     }
-    // 成员校验:mdPath 必须是该 session 已打开列表里的 md 文件(与 readFile 同防线)。
-    // 防 renderer 被诱导用任意 mdPath + src 读磁盘任意目录的图片 —— 此前没这道门,
-    // 等于"main 按绝对路径读任意本地图"的 IPC 暴露给 renderer。
-    const state = this.panels.get(sessionId);
-    if (!state?.files.some((f) => f.path === mdPath)) {
-      return { error: 'md file not in this panel' };
-    }
-    const dir = dirname(mdPath);
+    // 解析基准(v0.3.3 ADR-036):mdPath(文件来源,成员校验)或 baseDir(命令
+    // 面板输出来源,main 端 runCwd 真值,ipc 层推导)恰好给其一。
+    const base = this.resolvePanelPathBase(sessionId, mdPath, baseDir);
+    if ('error' in base) return { error: base.error };
+    const dir = base.dir;
     let abs: string;
     try {
       abs = normalizePath(resolve(dir, decoded));
@@ -630,8 +633,9 @@ export class FilePanelService extends EventEmitter {
    */
   async resolveGalleryImage(
     sessionId: string,
-    mdPath: string,
+    mdPath: string | undefined,
     src: string,
+    baseDir?: string,
   ): Promise<GalleryResolveImageResponse> {
     if (!src || typeof src !== 'string') return { error: 'empty src' };
     // 网络图:http(s) 下载落盘。data:/blob: 在 gallery 语境无意义(无运行时生成),
@@ -642,7 +646,7 @@ export class FilePanelService extends EventEmitter {
       return { dataUrl: `data:${dl.mime};base64,${dl.buf.toString('base64')}` };
     }
     // 本地图(含 data:/blob:/无协议):复用 read-image 的解析路径
-    const resolved = await this.resolveLocalImageAbs(sessionId, mdPath, src);
+    const resolved = await this.resolveLocalImageAbs(sessionId, mdPath, src, baseDir);
     if ('error' in resolved) return { error: resolved.error };
     try {
       const buf = await fs.readFile(resolved.abs);
@@ -668,8 +672,9 @@ export class FilePanelService extends EventEmitter {
    */
   async openGalleryImage(
     sessionId: string,
-    mdPath: string,
+    mdPath: string | undefined,
     src: string,
+    baseDir?: string,
   ): Promise<{ path: string } | { error: string }> {
     if (!src || typeof src !== 'string') return { error: 'empty src' };
     if (isRemoteUrl(src) && /^https?:/i.test(src)) {
@@ -677,7 +682,7 @@ export class FilePanelService extends EventEmitter {
       if ('error' in dl) return { error: dl.error };
       return { path: dl.cachePath };
     }
-    const resolved = await this.resolveLocalImageAbs(sessionId, mdPath, src);
+    const resolved = await this.resolveLocalImageAbs(sessionId, mdPath, src, baseDir);
     if ('error' in resolved) return { error: resolved.error };
     return { path: resolved.abs };
   }
@@ -886,9 +891,87 @@ export class FilePanelService extends EventEmitter {
     this.panels.delete(sessionId);
   }
 
+  /**
+   * v0.3.3 ADR-036:命令面板输出的本地文件链接解析入口。与 openFileFromMarkdown
+   * 同构,唯一区别是解析基准 —— 命令输出没有文档路径,基准是该命令**运行时**的
+   * cwd(ipc 层从 CommandPanelService.getRunCwd 真值推导,renderer 提供不了伪造
+   * 值)。用运行时 cwd 而非点击时 cwd:终端 cd 之后,旧输出的相对路径不能跟着漂移。
+   *
+   * @throws FilePanelError ResolveFailed(src 空/畸形/baseDir 非绝对)/ SessionMissing /
+   *   NotFound / NotFile(经 openFile 的 resolveAndStat)。
+   */
+  async openFileFromBase(
+    sessionId: string,
+    baseDir: string,
+    src: string,
+    options: { heading?: string } = {},
+  ): Promise<FilePanelSnapshot> {
+    if (!src || typeof src !== 'string') {
+      throw new FilePanelError('ResolveFailed', '链接路径为空');
+    }
+    if (isRemoteUrl(src)) {
+      throw new FilePanelError('ResolveFailed', '远程链接不走本地文件打开');
+    }
+    if (!isAbsolute(baseDir)) {
+      throw new FilePanelError(
+        'ResolveFailed',
+        `baseDir 必须是绝对路径(收到 "${baseDir}")。调用方应传 CommandEntry.runCwd 或 session cwd。`,
+      );
+    }
+    let decoded = src;
+    try {
+      decoded = decodeURIComponent(src);
+    } catch {
+      // malformed % 序列,保留原值让 resolve 尝试(与 openFileFromMarkdown 一致)
+    }
+    let abs: string;
+    try {
+      abs = normalizePath(resolve(baseDir, decoded));
+    } catch (err) {
+      throw new FilePanelError(
+        'ResolveFailed',
+        `路径解析失败: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    // 绝对路径直接复用 openFile 的完整状态机(存在+isFile 校验/加 tab/切 active/
+    // watcher/requestActivation),与 openFileFromMarkdown 尾段零重复。
+    return this.openFile(sessionId, abs, {
+      ...(options.heading === undefined ? {} : { heading: options.heading }),
+    });
+  }
+
   // ────────────────────────────────────────────────────────────────
   // 内部:路径解析 / stat / watcher / emit
   // ────────────────────────────────────────────────────────────────
+
+  /**
+   * v0.3.3 ADR-036:相对路径解析基准(mdPath 与 baseDir 恰好给其一)。
+   * - mdPath(文件来源):成员校验(mdPath ∈ 该 session 已打开列表),基准 =
+   *   dirname(mdPath)。防 renderer 伪造 mdPath 把任意目录当基准 —— 这道门在
+   *   readImageAsset 引入时就有,文件来源保持不变。
+   * - baseDir(命令面板输出来源):必须绝对路径。值由 main 端从
+   *   CommandEntry.runCwd(ipc 层查 CommandPanelService 真值)推导,renderer
+   *   侧伪造不了;权限面与 UI「打开文件」按钮的 FILE_PANEL_OPEN 等价。
+   */
+  private resolvePanelPathBase(
+    sessionId: string,
+    mdPath: string | undefined,
+    baseDir: string | undefined,
+  ): { dir: string } | { error: string } {
+    if (mdPath !== undefined) {
+      if (baseDir !== undefined) return { error: 'mdPath 与 baseDir 只能给其一' };
+      const state = this.panels.get(sessionId);
+      if (!state?.files.some((f) => f.path === mdPath)) {
+        return { error: 'md file not in this panel' };
+      }
+      return { dir: dirname(mdPath) };
+    }
+    if (baseDir === undefined || baseDir.trim().length === 0) {
+      return { error: 'missing path base (mdPath or baseDir)' };
+    }
+    if (!isAbsolute(baseDir)) return { error: 'baseDir must be absolute' };
+    return { dir: baseDir };
+  }
 
   /**
    * 解析路径为规范化绝对路径并 stat。

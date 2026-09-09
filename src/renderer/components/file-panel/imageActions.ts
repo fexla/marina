@@ -7,9 +7,10 @@
  *   gallery 代码块 GalleryViewer)的"对这张图能做什么"收敛在这里:菜单形态
  *   一致,动作实现按 surface 注入 —— 与 fileListRowContextMenu.ts 的能力驱动
  *   模式同构(能力提供了才生成对应菜单项)。
- * - md 相对引用图(mdPath + src)的 open/reveal 共用 GALLERY_* 通道:main 端
- *   同一 resolver(成员校验 → 相对解析 → MIME/大小上限),绝对路径不回
- *   renderer。ImageViewer 自己持绝对路径(OpenedFile.path),走 SYSTEM_* 通道。
+ * - md 相对引用图(srcBase + src,ADR-036:文件 mdPath / 命令 commandKey)的
+ *   open/reveal 共用 GALLERY_* 通道:main 端同一 resolver(成员校验或运行时
+ *   cwd 基准 → 相对解析 → MIME/大小上限),绝对路径不回 renderer。ImageViewer
+ *   自己持绝对路径(OpenedFile.path),走 SYSTEM_* 通道。
  * - 复制图片本体走 SYSTEM_CLIPBOARD_WRITE_IMAGE(local-control):dataUrl 由
  *   调用方从已加载的 <img> 传入,复制的就是看到的那一帧;远程 http 直链的
  *   src 不是位图数据,调用方不提供 copyImageDataUrl 能力即可(不生成该项)。
@@ -23,6 +24,7 @@
  * - 不决定菜单何时弹出(由各 surface 的 onContextMenu 触发)。
  */
 import { COMMAND_CHANNELS } from '@shared/protocol';
+import { mdSrcBasePayload, type MdSrcBase } from './md-src-base';
 import type { ContextMenuItem } from '../ContextMenu';
 import type { ToastApi } from '../Toast';
 
@@ -34,14 +36,15 @@ export type ImageActionTx = (zh: string, en: string) => string;
  * GalleryViewer 既有的 openCurrent 行为一致(是否真的弹出由 OS 决定)。 */
 export function openMarkdownImageExternally(args: {
   sessionId: string;
-  mdPath: string;
+  /** 来源路径基准(文件 mdPath / 命令 commandKey,ADR-036)。 */
+  srcBase: MdSrcBase | undefined;
   src: string;
   toast: ToastApi;
   tx: ImageActionTx;
 }): void {
-  const { sessionId, mdPath, src, toast, tx } = args;
+  const { sessionId, srcBase, src, toast, tx } = args;
   window.api
-    .invoke(COMMAND_CHANNELS.GALLERY_OPEN_IMAGE, { sessionId, mdPath, src })
+    .invoke(COMMAND_CHANNELS.GALLERY_OPEN_IMAGE, { sessionId, src, ...mdSrcBasePayload(srcBase) })
     .then((res) => {
       if ('error' in res) {
         toast.push({
@@ -64,14 +67,15 @@ export function openMarkdownImageExternally(args: {
  * 与 open 共用同一 resolver(本地图原路径;网络图下载缓存路径)。 */
 export function revealMarkdownImageInExplorer(args: {
   sessionId: string;
-  mdPath: string;
+  /** 来源路径基准(文件 mdPath / 命令 commandKey,ADR-036)。 */
+  srcBase: MdSrcBase | undefined;
   src: string;
   toast: ToastApi;
   tx: ImageActionTx;
 }): void {
-  const { sessionId, mdPath, src, toast, tx } = args;
+  const { sessionId, srcBase, src, toast, tx } = args;
   window.api
-    .invoke(COMMAND_CHANNELS.GALLERY_REVEAL_IMAGE, { sessionId, mdPath, src })
+    .invoke(COMMAND_CHANNELS.GALLERY_REVEAL_IMAGE, { sessionId, src, ...mdSrcBasePayload(srcBase) })
     .then((res) => {
       if ('error' in res) {
         toast.push({
