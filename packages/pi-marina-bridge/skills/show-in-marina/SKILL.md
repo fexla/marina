@@ -310,8 +310,10 @@ Marina does not parse the command — it passes the whole string to bash.
   **off**. Your `run` pushes the command and fires one immediate run; the
   policy is the user's call.
 - Output renders as Markdown (plain text is valid Markdown, so raw output
-  still looks right). URLs are clickable; fenced code blocks get a Run button,
-  just like `show`.
+  still looks right). **All `show` document capabilities apply** (v0.3.3):
+  clickable local links / images / galleries / heading outline / marina: action
+  links — relative paths resolve against the **cwd the command ran in**, so
+  images and links next to the inspected files work naturally.
 
 Prereqs match `show`: needs `MARINA_SERVICE` / `MARINA_TOKEN` / `TERMINAL_ID`
 (see `ping`). **SSH sessions are unsupported** — the command panel does not
@@ -388,7 +390,10 @@ their **scheme** — use the right form so the click does what you intend:
   file's directory (or absolute). A click opens that file **read-only in the
   panel** as a new tab — point at another doc, a source file, a log, an image,
   etc. Relative paths resolve against the Markdown file's location, the same
-  rule Markdown images use.
+  rule Markdown images use. In **command-panel output** (`marina run`) the same
+  links are clickable too, resolving against the **cwd the command ran in**
+  (v0.3.3: capabilities are shared across both sources — only the path base
+  differs).
   ```markdown
   See [the design notes](./design-notes.md) and [main.ts](../src/main.ts).
   ```

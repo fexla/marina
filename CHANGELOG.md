@@ -7,6 +7,20 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+### Changed
+
+- **Markdown 能力默认全源复用(ADR-036,方案-面板能力默认复用-20260910)**:
+  命令面板输出与「已打开」面板文件共享**全部** Markdown 能力 —— 本地文件链接、
+  本地图片、gallery、标题大纲/章节折叠此前被 fileContext 门控(命令输出一律
+  降级),现在只差**路径解析基准**:文件来源 = md 文件目录 + 成员校验(不变);
+  命令来源 = **该命令运行时 cwd**(CommandEntry.runCwd,spawn 时 main 记录的
+  真值,终端 cd 后旧输出的相对路径不漂移;旧快照回退 session 当前 cwd)。
+  renderer 只传 commandKey 标识,基准值全程 main 端真值,伪造不了;权限面与
+  UI「打开文件」按钮等价,不引入新边界。插件管线单一化(heading-sections
+  不再文件专属,双分支废除),滚动容器选择器双认;FilePanelService 相对解析
+  收口 resolvePanelPathBase(mdPath XOR baseDir),新增 openFileFromBase;
+  marina:show 在命令输出里也按 runCwd 解析。skill 文档同步(bridge 0.3.10)。
+
 ## [0.3.3-dev.17] — 2026-09-09
 
 > Markdown 面板交互批:marina: 动作链接(ADR-035,文档内点击触发 CLI show/run)、
