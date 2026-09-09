@@ -152,8 +152,19 @@ function PanelStack({
   const dockBodyRef = useRef<HTMLDivElement | null>(null);
 
   const handleOpenSearch = useCallback((): void => {
+    // Ctrl+F 时若面板里有选中文本,预填为初始搜索词(浏览器 find bar 同款行为)。
+    // 只取选区的第一行:输入框是单行 input,且 useDomTextHighlight 按文本节点逐个
+    // 匹配,跨行搜索词大概率命中不了;对代码块里选了多行的情况,第一行也是最
+    // 有用的种子。必须在 focus 之前读 —— 焦点移入输入框后文档选区会被清掉。
+    const selected = window.getSelection()?.toString().trim() ?? '';
+    // 非空字符串 split 必有 [0],但 noUncheckedIndexedAccess 推不出来,?? 兜底
+    const firstLine = selected.split(/\r?\n/)[0] ?? '';
+    if (firstLine !== '') {
+      setSearchQuery(firstLine);
+    }
     setSearchVisible(true);
-    // setState 后立即 focus 太早,DOM 还没挂;用 raf 等下一帧
+    // setState 后立即 focus 太早,DOM 还没挂;用 raf 等下一帧。
+    // select() 全选预填词:用户直接输入即整体替换,不打字则原词续搜。
     requestAnimationFrame(() => {
       searchInputRef.current?.focus();
       searchInputRef.current?.select();
