@@ -1,7 +1,7 @@
 /**
  * @file command-panel-service.test.ts
  * @purpose 守护 CommandPanelService 的核心契约(AGENTS.md §5 状态机 + 核心管理器):
- *   - runCommand:同 command 去重 upsert + 新指令切 active + 立即跑
+ *   - runCommand:同 command 去重 upsert + 总是切 active + 立即跑 + spawn 前请求激活
  *   - closeCommand/showCommand/updateRefreshPolicy:tab 管理与两维刷新策略
  *   - 'commandPanelUpdated' 事件 emit(结构/状态变化)
  *   - output/exited 事件按 runId 路由回 entry(只处理自己的 runId)
@@ -179,10 +179,12 @@ describe('CommandPanelService', () => {
         requestingClientId: 'w1',
         sudo: false,
       });
-      // 新指令应请求激活(requestActivation)
+      // 激活事件在 spawn 前发出(长命令先跳面板看 running 占位);完成态 emit 是 false。
       expect(events.length).toBeGreaterThanOrEqual(1);
+      const firstEvt = events[0] as { requestActivation: boolean };
+      expect(firstEvt.requestActivation).toBe(true);
       const lastEvt = events[events.length - 1] as { requestActivation: boolean };
-      expect(lastEvt.requestActivation).toBe(true);
+      expect(lastEvt.requestActivation).toBe(false);
     });
 
     it('同 command 去重 upsert:不新增 tab,复用 key', async () => {
@@ -191,6 +193,23 @@ describe('CommandPanelService', () => {
       const snap = svc.getSnapshot('s1');
       expect(snap.commands).toHaveLength(1);
       expect(runner.run).toHaveBeenCalledTimes(2); // 但跑了两次(重跑)
+    });
+
+    it('重推已存在指令:切回该 tab + 请求激活(与 openFile 等价 show 对齐)', async () => {
+      const events: unknown[] = [];
+      svc.on('commandPanelUpdated', (e) => events.push(e));
+      await svc.runCommand('s1', 'git status', null, 'w1');
+      await svc.runCommand('s1', 'echo other', null, 'w1'); // active 被新指令抢走
+      expect(svc.getSnapshot('s1').activeKey).toBe(commandKeyFor('echo other'));
+      events.length = 0;
+
+      await svc.runCommand('s1', 'git status', null, 'w1'); // 重推已存在指令
+
+      const snap = svc.getSnapshot('s1');
+      expect(snap.commands).toHaveLength(2); // 不新增 tab
+      expect(snap.activeKey).toBe(commandKeyFor('git status')); // 但跳回它的 tab
+      const firstEvt = events[0] as { requestActivation: boolean };
+      expect(firstEvt.requestActivation).toBe(true);
     });
 
     it('pending spawn 被并发重跑取代后不得回写或混入输出', async () => {

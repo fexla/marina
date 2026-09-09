@@ -265,6 +265,10 @@ export class CommandPanelService extends EventEmitter {
    * 推送/重跑一条指令。同 command 字符串去重 upsert(复用 key),避免重复 tab。
    * upsert 后立即跑一次(无论策略;策略只影响后续自动重跑)。
    *
+   * @激活语义 与 file-panel openFile 对齐:无论 isNew,都切 activeKey 到该指令
+   * 并在 spawn 前发 requestActivation=true 事件(跳面板看 running 占位,不是等
+   * 跑完才跳)。后台调度器自动刷新不走这里(spawnRun 直跑),不会抢激活。
+   *
    * @throws 'SessionMissing' session 不存在
    * @throws 'CommandEmpty' command 为空
    * @throws CodeBlockError(SshProfileMissing|ShellMissing|SpawnFailed|CodeTooLarge|
@@ -325,13 +329,19 @@ export class CommandPanelService extends EventEmitter {
         if (evicted) this.disposeCommand(sessionId, evicted);
       }
     }
-    // 推新指令时自动切 active 到它
-    if (isNew) state.activeKey = key;
+    // 激活语义与 file-panel openFile 对齐(用户反馈 2026-09-09):「已存在则等价
+    // show」—— 无论新指令还是已存在指令的重推,都把 activeKey 切到它并请求面板
+    // 激活,marina run 与 marina show 行为一致(已在的 tab 也要跳过去看)。
+    // 激活事件在 spawn 前发出:长命令先跳面板看到 running 占位,而不是跑完才跳;
+    // spawnRun 与完成态的 emit 都是 requestActivation:false,不会覆盖这次激活。
+    // 注意:面板 rerun 按钮也走这里,但那时该 tab 本就是 active,激活是幂等 no-op。
+    state.activeKey = key;
 
     logger.info(
       MODULE,
       `runCommand: sid=${sessionId} key=${key} new=${isNew} status=${entry.status}`,
     );
+    this.emitUpdated(sessionId, { requestActivation: true, commandKey: key });
 
     // 先注册 task、再直接跑一次。直接 run 写入 lastRunAt 后才应用 demand，
     // scheduler 的首次 HOT 即使立即触发也会因“距上次不足一个 interval”而跳过，
@@ -344,10 +354,9 @@ export class CommandPanelService extends EventEmitter {
     this.lastDirectRunAt.set(this.commandRunKey(sessionId, key), entry.lastRunAt ?? Date.now());
     this.applySchedulerDemand(sessionId);
 
-    // 推送新指令时请求 renderer 激活命令面板(切到 command tab)。spawnRun 已 emit
-    // 过 running 态(requestActivation=false),这里再 emit 一次带 requestActivation=isNew,
-    // 让 reducer 在新指令时把 activePanel 切到 command(同 file-panel openFile 逻辑)。
-    this.emitUpdated(sessionId, { requestActivation: isNew, commandKey: key });
+    // 完成态快照送达(激活已在 spawn 前发过,这里 requestActivation 恒 false,
+    // 避免被 supersede 的旧调用再发激活)。
+    this.emitUpdated(sessionId, { requestActivation: false, commandKey: key });
 
     return this.getSnapshot(sessionId);
   }
