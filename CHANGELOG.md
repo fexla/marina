@@ -7,6 +7,12 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+## [0.3.3-dev.16] — 2026-09-09
+
+> pi-bridge skill 整合批(ADR-028 决策 8):show-in-marina skill 与「Marina 输出
+> 习惯」系统提示词随 pi-marina-bridge 在 Marina 终端内自动注入,装一次 bridge
+> 全项目生效、随版本自动更新;手动 skill 安装收窄为 claude/codex。
+
 ### Added
 
 - **pi 终端自动注入 show-in-marina skill + Marina 系统提示词(ADR-028 决策 8,
