@@ -51,10 +51,10 @@
 #   rule. English only, no BOM. Guarded by shipped-scripts-ascii.test.ts.
 #
 # @corresponding:
-#   src/skills/show-in-marina/marina.sh    POSIX client (Linux / macOS)
-#   src/skills/show-in-marina/marina.ps1   Windows client (PowerShell)
-#   src/skills/show-in-marina/marina.cmd   Windows cmd/PowerShell launcher
-#   src/skills/show-in-marina/SKILL.md     when to use which entry point
+#   ./marina.sh    POSIX client (Linux / macOS)
+#   ./marina.ps1   Windows client (PowerShell)
+#   ./marina.cmd   Windows cmd/PowerShell launcher
+#   ./SKILL.md     when to use which entry point
 
 # Locate the directory of THIS script (side by side with marina.ps1 and
 # marina.sh). BUILTIN-ONLY on purpose (see @zero-external-tooling above):

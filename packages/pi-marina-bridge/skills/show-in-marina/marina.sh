@@ -53,9 +53,9 @@
 #   shipped-scripts-ascii.test.ts (marina.sh is in LOCALE_SENSITIVE_FILES).
 #
 # @corresponding:
-#   src/skills/show-in-marina/marina.ps1   Windows client -- SAME HTTP contract
-#   src/skills/show-in-marina/marina       platform dispatcher (calls this on Linux)
-#   src/skills/show-in-marina/marina.cmd   Windows cmd/PowerShell launcher
+#   ./marina.ps1   Windows client -- SAME HTTP contract
+#   ./marina       platform dispatcher (calls this on Linux)
+#   ./marina.cmd   Windows cmd/PowerShell launcher
 #   src/main/file-panel-service.ts         the backend (single source of truth)
 #   src/main/marina-cli-mock-server.py     contract test fixture
 #

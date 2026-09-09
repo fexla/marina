@@ -28,8 +28,8 @@ REM   current (setlocal) scope before running endlocal, so %errorlevel% is
 REM   captured while it still holds the child's code. The same pattern is
 REM   used on the not-found branch with an explicit literal (127).
 REM
-REM @corresponding: src/skills/show-in-marina/marina.ps1 (the real CLI logic).
-REM @see-also: src/skills/show-in-marina/marina (a bash wrapper for agents
+REM @corresponding: ./marina.ps1 (the real CLI logic).
+REM @see-also: ./marina (a bash wrapper for agents
 REM   whose tool shell is Git Bash / MSYS on Windows). Use THAT wrapper, not
 REM   this .cmd, when invoking from bash: `cmd /c "marina.cmd ..."` is unsafe
 REM   in MSYS because it rewrites the `/c` flag to the path `C:/`, silently

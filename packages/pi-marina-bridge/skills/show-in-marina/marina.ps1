@@ -66,7 +66,7 @@
     src/main/file-panel-service.ts  routes: GET /health (auth-free, returns
         the exact marker {ok:true, marina:true}), GET /opening-files,
         POST /open-file | /close-file
-    src/skills/show-in-marina/marina.cmd  the launcher that calls this file
+    ./marina.cmd  the launcher that calls this file
 #>
 
 # Args are parsed manually from $args below, NOT via a param() block.

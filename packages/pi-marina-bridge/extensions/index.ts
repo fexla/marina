@@ -4,6 +4,8 @@
  *   (a) 自动绑定 pi 对话 ↔ workspace（切对话即切 workspace）；
  *   (b) 精准化侧栏指示灯（pi 工作完成但未查看 → 警告色）；
  *   (c) 把 pi 对话名反映到 Marina 终端显示名。
+ *   并在 Marina 环境下自动注入 show-in-marina skill + Marina 系统提示词
+ *   （方案-pibridge-skill与提示词注入-20260909，ADR-028 决策 8）。
  *
  * @设计(ADR-028)：本 extension 是**哑转发器**。
  *   - 检测注入的 Marina env（MARINA_SERVICE / MARINA_TOKEN / TERMINAL_ID）；
@@ -11,6 +13,15 @@
  *   - **不读 Marina 设置、不做 workspace 决策**——决策全在 Marina 侧
  *     （settings.piIntegration 控制做不做）。
  *   - 非 Marina 环境（env 缺失）→ 完全 no-op，可安全全局安装。
+ *
+ * @注入(方案 20260909)：同为「检测到 Marina env 才生效」，但方向与转发相反 ——
+ *   不问 Marina、不依赖 piIntegration 开关（那是 workspace 绑定/指示灯的行为开关，
+ *   文件面板是独立功能）：只要终端是 Marina 的（env 三件套在），skill 与提示词就注入。
+ *   - resources_discover → 贡献 <pkg>/skills 为 skillPaths（休眠目录被唤醒，
+ *     非 Marina 会话零污染；见 inject.ts 关键设计第 1 条）。
+ *   - before_agent_start → 幂等追加 MARINA_SYSTEM_PROMPT（见 inject.ts）。
+ *   两者都 gated on skills/ 目录存在（inject.ts skillsDirExists 的注释说明为什么
+ *   提示词也跟着 gate）。
  *
  * @事件映射：
  *   pi session_start   {reason}     → event=session_start   (workspace 绑定/切换 + 身份声明)
@@ -33,13 +44,20 @@
  *   - 不阻塞 pi：除 session_start(需要响应里的 workspaceId)外,事件入后台
  *     promise 链保序发送,handler 立刻返回(pi 的 ExtensionRunner 串行 await
  *     每个 handler,见 enqueuePost 注释——曾因 await POST 导致 Marina 卡时 pi 连锁卡死)。
+ *   - 注入不走 Marina HTTP 往返(见 @注入):pi 的 ExtensionAPI 原生钩子就够了,
+ *     Marina 不通时 skill/提示词照样注入(展示是终端本地 CLI 行为)。
  */
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+// ExtensionAPI 类型:本地最小结构化声明(./pi-types.ts),不 import
+// '@earendil-works/pi-coding-agent' —— Marina 仓不装 pi 依赖,远端类型 import
+// 会让 Marina 仓 typecheck TS2307 级联报错(48ec329 起就红,方案 20260909 修掉)。
+// 运行时由 pi 传入真实对象,jiti 擦除类型,结构化声明零影响。
+import type { ExtensionAPI } from './pi-types';
 import {
   MARINA_WORKSPACE_CUSTOM_TYPE,
   readBranchWorkspaceId,
   readLastWorkspaceBinding,
 } from './binding';
+import { appendMarinaPrompt, resolveSkillsDir, skillsDirExists } from './inject';
 
 /** Marina 注入终端子进程的 env 名（见 Marina session-manager.ts env 注入）。 */
 const ENV_SERVICE = 'MARINA_SERVICE';
@@ -141,6 +159,36 @@ export default function (pi: ExtensionAPI): void {
     return;
   }
 
+  // ── Skill + 系统提示词注入(方案 20260909,细节见 inject.ts 头注释) ──
+  // skills/ 目录是注入的物理载体;缺失(打包遗漏/复制损坏)时 skill 与提示词
+  // 两个注入都不做(见 skillsDirExists 注释),extension 其余转发功能照常。
+  const marinaSkillsDir = resolveSkillsDir(import.meta.url);
+  const marinaSkillsReady = skillsDirExists(marinaSkillsDir);
+  if (!marinaSkillsReady) {
+    console.warn(
+      `[marina-bridge] skills dir missing at ${marinaSkillsDir}; ` +
+        'skill + system prompt injection disabled (event forwarding still active). ' +
+        'Possible causes: partial copy of the package, or packaging omitted skills/.',
+    );
+  }
+
+  // resources_discover(startup + reload 各一次):贡献包内 skills/ 为 skill 目录。
+  // pi 对该目录做与 ~/.pi/agent/skills 相同的递归发现(skills/show-in-marina/
+  // SKILL.md 被加载,名字+描述进系统提示词,正文按需 read —— 渐进披露)。
+  // 老 pi(<0.50.8)没有此事件:on() 只是把 handler 存进 Map,永不触发,静默降级。
+  pi.on('resources_discover', async () => {
+    if (!marinaSkillsReady) return undefined;
+    return { skillPaths: [marinaSkillsDir] };
+  });
+
+  // before_agent_start(用户提交 prompt 后、agent 循环前):幂等追加 Marina 提示词。
+  // pi 每轮从 base prompt 重建,不会跨轮累积(inject.ts 头注释有源码依据);
+  // handler 同步返回,不做任何 IO,不会拖慢 pi 启动/回合。
+  pi.on('before_agent_start', async (event) => {
+    if (!marinaSkillsReady) return undefined;
+    return { systemPrompt: appendMarinaPrompt(event.systemPrompt) };
+  });
+
   /**
    * 后台发送队列:promise 链串行化,保证事件按发生顺序送达 Marina(working 必须先于
    * settled,否则 Marina 侧栏状态会错)。
@@ -158,12 +206,15 @@ export default function (pi: ExtensionAPI): void {
    */
   let postQueue: Promise<unknown> = Promise.resolve();
   /** 入队发送(保序、不阻塞 pi handler)。postEvent 内部 catch 一切错误,链不会 reject。 */
+  // marinaEnv 别名:把 env 的 null 分支在闭包外收窄掉(function 声明提升,
+  // TS 对提升函数里的 env 不保留 const 收窄,曾报 TS2345)。
+  const marinaEnv = env;
   function enqueuePost(
     piSessionId: string,
     event: PiBridgeEvent,
     extra: Parameters<typeof postEvent>[3],
   ): void {
-    postQueue = postQueue.then(() => postEvent(env, piSessionId, event, extra));
+    postQueue = postQueue.then(() => postEvent(marinaEnv, piSessionId, event, extra));
   }
 
   pi.on('session_start', async (event, ctx) => {
@@ -178,9 +229,7 @@ export default function (pi: ExtensionAPI): void {
     let parentSessionFile: string | null = null;
     let parentBinding: string | null = null;
     try {
-      const header = ctx.sessionManager.getHeader?.() as
-        | { parentSession?: unknown }
-        | undefined;
+      const header = ctx.sessionManager.getHeader?.() as { parentSession?: unknown } | undefined;
       if (header && typeof header.parentSession === 'string' && header.parentSession) {
         parentSessionFile = header.parentSession;
         parentBinding = await readLastWorkspaceBinding(parentSessionFile);
