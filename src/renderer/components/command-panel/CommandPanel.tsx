@@ -30,7 +30,7 @@
  * - 不缓存指令列表到 localStorage(状态由 main 真值源推;切面板 <16ms 靠 store
  *   快照本身,LayoutHost 卸载组件但 store 不丢)。
  */
-import { useState } from 'react';
+import { useRef, useState, type RefObject } from 'react';
 import {
   COMMAND_CHANNELS,
   type CommandEntry,
@@ -38,6 +38,7 @@ import {
   type CommandRefreshPolicy,
 } from '@shared/protocol';
 import type { PanelSearchProps } from '../layout/panel-registry';
+import { useFileViewerScroll } from '../../hooks/useFileViewerScroll';
 import { useToast } from '../Toast';
 import { useTranslation } from '../LanguageProvider';
 import { HighlightedText } from '../common/HighlightedText';
@@ -241,6 +242,7 @@ export function CommandPane({
   search,
   isSsh,
   sshProfileId,
+  scrollRef,
 }: {
   sessionId: string;
   entry: CommandEntry;
@@ -248,13 +250,15 @@ export function CommandPane({
   /** SSH session 才渲染 sudo 密码条 / sudo toggle(本地 bash 无 sudo 语义)。 */
   isSsh: boolean;
   sshProfileId: string;
+  /** 文档级滚动容器(.file-panel-body),FilePanel 持有;滚动记忆经它保存/恢复。 */
+  scrollRef: RefObject<HTMLElement | null>;
 }): JSX.Element {
   return (
     <>
       {entry.status === 'awaiting-sudo-password' && isSsh ? (
         <SudoPasswordBar sshProfileId={sshProfileId} onSubmit={() => rerunCommand(sessionId, entry, true)} />
       ) : null}
-      <CommandOutput sessionId={sessionId} entry={entry} search={search} />
+      <CommandOutput sessionId={sessionId} entry={entry} search={search} scrollRef={scrollRef} />
     </>
   );
 }
@@ -268,18 +272,36 @@ function CommandOutput({
   sessionId,
   entry,
   search,
+  scrollRef,
 }: {
   sessionId: string;
   entry: CommandEntry;
   search: PanelSearchProps;
+  scrollRef: RefObject<HTMLElement | null>;
 }): JSX.Element {
   const { tx } = useTranslation();
+  // 滚动记忆(与文件侧 MarkdownViewer 同一 hook):identity = 'command:<key>'。
+  // restoreVersion 用 entry.key(常量)而非 lastRunAt —— 自动刷新/重跑会高频换
+  // output,若 version 跟着变,每次刷新都会把视口拉回旧保存点,读不了长输出;
+  // 只有 identity 切换(换 tab / 切走再切回触发 remount)才恢复。
+  const contentRef = useRef<HTMLDivElement>(null);
+  useFileViewerScroll({
+    sessionId,
+    path: `command:${entry.key}`,
+    kind: 'command',
+    scrollRef,
+    layoutRef: contentRef,
+    // 尚无完成结果(等待首次/无输出占位)时没有可滚内容,!ready 分支清零。
+    ready: entry.output.length > 0,
+    restoreVersion: entry.key,
+    searchActive: search.visible && search.query.length > 0,
+  });
   // 空字符串既可能是"从未完成过",也可能是上一轮成功但确实没有输出。
   // running 期间 main 保留上一轮 lastExitCode,让这里能保持"无输出"完成态,
   // 不会错误闪回"等待首次结果"。有文本的 spawn/signal 错误自然走 output 分支。
   const hasCompletedResult = entry.output.length > 0 || entry.lastExitCode !== null;
   return (
-    <div className="command-output">
+    <div className="command-output" ref={contentRef}>
       {entry.output ? (
         <MarkdownDocument
           sessionId={sessionId}

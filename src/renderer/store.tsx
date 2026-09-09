@@ -70,9 +70,14 @@ import type {
 import type { RegisteredPanelId } from './components/layout/panel-registry';
 import { restoreWorkspaceSnapshot, scheduleWorkspaceSnapshotWrite } from './workspace-snapshot';
 
+/** 滚动条目的内容类型:文件的 FileKind,或命令输出(ADR-037 整合后的内存源,
+ * 无 FileKind;identity 路径约定 'command:<key>',与 MarkdownDocument 的
+ * documentIdentity 同约定 —— 真实文件路径不会以 'command:' 开头,天然无冲突)。 */
+export type FileViewerScrollKind = FileKind | 'command';
+
 /** 右侧文件预览的像素滚动位置；按 sessionId + file.path + kind 隔离。 */
 export interface FileViewerScrollPosition {
-  kind: FileKind;
+  kind: FileViewerScrollKind;
   scrollTop: number;
   scrollLeft: number;
 }
@@ -253,8 +258,9 @@ export type AppAction =
   | {
       type: 'view/file-viewer-scroll';
       sessionId: string;
+      /** 文件绝对路径,或 'command:<key>'(命令输出滚动记忆)。 */
       path: string;
-      kind: FileKind;
+      kind: FileViewerScrollKind;
       scrollTop: number;
       scrollLeft: number;
     }
@@ -516,8 +522,14 @@ function reducer(state: AppState, action: AppAction): AppState {
       const previousScroll = state.fileViewerScroll.get(action.sessionId);
       if (previousScroll) {
         const allowed = new Map(action.files.map((file) => [file.path, file.kind]));
+        // command: 条目属于命令面板(ADR-037 后同 session 同 bucket 共存),
+        // 文件列表变化不裁它们 —— 它们的裁剪在 command-panel/updated 里做。
         const kept = new Map(
-          [...previousScroll].filter(([path, position]) => allowed.get(path) === position.kind),
+          [...previousScroll].filter(([path, position]) =>
+            path.startsWith('command:')
+              ? position.kind === 'command'
+              : allowed.get(path) === position.kind,
+          ),
         );
         if (kept.size !== previousScroll.size) {
           fileViewerScroll = new Map(state.fileViewerScroll);
@@ -582,6 +594,23 @@ function reducer(state: AppState, action: AppAction): AppState {
         commands: action.commands,
         activeKey: action.activeKey,
       });
+      // 关闭命令 tab 时同步裁掉它的滚动记忆(镜像 file-panel/updated 对文件的
+      // 裁剪;文件条目不受这里影响)。
+      let fileViewerScroll = state.fileViewerScroll;
+      const previousScroll = state.fileViewerScroll.get(action.sessionId);
+      if (previousScroll) {
+        const commandKeys = new Set(action.commands.map((c) => `command:${c.key}`));
+        const kept = new Map(
+          [...previousScroll].filter(
+            ([path, position]) => !path.startsWith('command:') || (position.kind === 'command' && commandKeys.has(path)),
+          ),
+        );
+        if (kept.size !== previousScroll.size) {
+          fileViewerScroll = new Map(state.fileViewerScroll);
+          if (kept.size > 0) fileViewerScroll.set(action.sessionId, kept);
+          else fileViewerScroll.delete(action.sessionId);
+        }
+      }
       // ADR-037:命令面板整合进「已打开」后,runCommand 的 requestActivation 不再
       // 切到独立 command dock(已不存在),而是 1) 激活 file-panel dock +
       // 2) 记录面板内正在看「命令」侧 —— main 端 activeKey 已指向该指令,FilePanel
@@ -591,9 +620,9 @@ function reducer(state: AppState, action: AppAction): AppState {
         activePanels.set(action.sessionId, 'file-panel');
         const openPanelViews = new Map(state.openPanelViews);
         openPanelViews.set(action.sessionId, 'command');
-        return { ...state, commandPanels, activePanels, openPanelViews };
+        return { ...state, commandPanels, activePanels, openPanelViews, fileViewerScroll };
       }
-      return { ...state, commandPanels };
+      return { ...state, commandPanels, fileViewerScroll };
     }
     case 'workspace/snapshot-restored': {
       // 文件列表/active 已由有完整 stat 元数据的 file-panel/updated 更新；这里仅补
@@ -744,12 +773,20 @@ function reducer(state: AppState, action: AppAction): AppState {
     }
 
     case 'view/file-viewer-scroll': {
-      // late cleanup 防线:只有当前 snapshot 里仍打开且 kind 相同的文件能写。
+      // late cleanup 防线:只有当前 snapshot 里仍存在的条目能写。
       // 文件已关闭/session 已清时直接拒绝,避免 unmount flush 复活陈旧条目。
-      const file = state.filePanels
-        .get(action.sessionId)
-        ?.files.find((candidate) => candidate.path === action.path);
-      if (!file || file.kind !== action.kind) return state;
+      // 命令条目('command:<key>')按 commandPanels 当前列表校验,同理。
+      if (action.path.startsWith('command:')) {
+        const commandExists = state.commandPanels
+          .get(action.sessionId)
+          ?.commands.some((candidate) => `command:${candidate.key}` === action.path);
+        if (!commandExists || action.kind !== 'command') return state;
+      } else {
+        const file = state.filePanels
+          .get(action.sessionId)
+          ?.files.find((candidate) => candidate.path === action.path);
+        if (!file || file.kind !== action.kind) return state;
+      }
       if (!Number.isFinite(action.scrollTop) || !Number.isFinite(action.scrollLeft)) {
         return state;
       }

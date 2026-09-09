@@ -467,6 +467,7 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
               search={search}
               isSsh={isSsh}
               sshProfileId={sshProfileId}
+              scrollRef={bodyScrollRef}
             />
           ) : (
             <div className="command-panel-empty">

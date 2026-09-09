@@ -4,20 +4,21 @@
  *
  * @关键设计:
  * - 位置是一等 renderer view state,写入 AppState.fileViewerScroll；不用模块级 Map。
- * - identity = sessionId + OpenedFile.path + kind。切文件/面板/session remount 后恢复。
+ * - identity = sessionId + path + kind。切文件/命令 tab/面板/session remount 后恢复
+ *   (ADR-037 起命令输出也走这里,path='command:<key>'、kind='command')。
  * - scroll 事件 120ms trailing debounce,unmount/identity 变化立即 flush。
  * - 异步内容用双 RAF + ResizeObserver fence；当前内容太短时等待布局增长(最多 4s)。
  * - wheel/mouse/touch/key、非空搜索或标题导航出现后取消待恢复，绝不和新的
  *   scrollIntoView 抢；标题跳转在下一帧反写当前位置，watcher 刷新也不会回到旧位置。
  *
  * @不要在这里做的事:
- * - 不持久化到 localStorage/main；这是重启可丢的 L1 工作态。
- * - 不规范化 path；OpenedFile.path 是 main 的唯一身份。
+ * - 不持久化到 localStorage/main；这是重启可丢的 L1 工作态(workspace 快照写盘
+ *   由 workspace-snapshot.ts 过滤 command: 条目,命令本身不跨重启)。
+ * - 不规范化 path；OpenedFile.path 是 main 的唯一身份,命令用 'command:<key>'。
  * - 不保存 Markdown 内每个 pre/table 的局部横向滚动。
  */
 import { useLayoutEffect, useRef, type RefObject } from 'react';
-import type { FileKind } from '@shared/types';
-import { useAppDispatch, useAppStateRef } from '../store';
+import { useAppDispatch, useAppStateRef, type FileViewerScrollKind } from '../store';
 
 const SAVE_DEBOUNCE_MS = 120;
 const RESTORE_DEADLINE_MS = 4000;
@@ -33,8 +34,9 @@ export interface FileViewerNavigationResult {
 
 interface UseFileViewerScrollOptions {
   sessionId: string;
+  /** 文件绝对路径,或 'command:<key>'(命令输出)。 */
   path: string;
-  kind: FileKind;
+  kind: FileViewerScrollKind;
   /** 必须指向真正拥有 overflow 的元素。 */
   scrollRef: RefObject<HTMLElement | null>;
   /** 内容尺寸变化的观察目标；省略时观察 scroll element 自身。 */
@@ -73,7 +75,7 @@ export function useFileViewerScroll({
   const navigationRestoreBlockRef = useRef<{
     sessionId: string;
     path: string;
-    kind: FileKind;
+    kind: FileViewerScrollKind;
     restoreVersion: unknown;
   } | null>(null);
   const existingBlock = navigationRestoreBlockRef.current;

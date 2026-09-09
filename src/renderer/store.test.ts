@@ -313,4 +313,61 @@ describe('renderer open panel view(ADR-037 命令面板整合进「已打开」)
     state = __appReducerForTest(state, { type: 'file-panel/clear', sessionId: 's2' });
     expect(state.openPanelViews.has('s2')).toBe(false);
   });
+
+  it('命令输出滚动记忆:存在的命令可写,关掉的命令被裁,文件更新不误删', () => {
+    let state = makeDefaultState('w1', 1);
+    state = __appReducerForTest(state, commandSnapshot(false));
+
+    // 命令存在 → 可写 'command:<key>' 条目。
+    state = __appReducerForTest(state, {
+      type: 'view/file-viewer-scroll',
+      sessionId: 's1',
+      path: 'command:k1',
+      kind: 'command',
+      scrollTop: 300,
+      scrollLeft: 0,
+    });
+    expect(state.fileViewerScroll.get('s1')?.get('command:k1')?.scrollTop).toBe(300);
+
+    // 不存在的命令 / kind 不符 → 拒绝(late flush 防线)。
+    const before = state;
+    state = __appReducerForTest(state, {
+      type: 'view/file-viewer-scroll',
+      sessionId: 's1',
+      path: 'command:gone',
+      kind: 'command',
+      scrollTop: 1,
+      scrollLeft: 0,
+    });
+    expect(state).toBe(before);
+    state = __appReducerForTest(state, {
+      type: 'view/file-viewer-scroll',
+      sessionId: 's1',
+      path: 'command:k1',
+      kind: 'markdown',
+      scrollTop: 1,
+      scrollLeft: 0,
+    });
+    expect(state).toBe(before);
+
+    // 文件列表更新(开/关/换 active)不裁命令条目。
+    state = __appReducerForTest(state, {
+      type: 'file-panel/updated',
+      sessionId: 's1',
+      files: [opened('C:\\a.md', 'markdown')],
+      activePath: 'C:\\a.md',
+      requestActivation: false,
+    });
+    expect(state.fileViewerScroll.get('s1')?.has('command:k1')).toBe(true);
+
+    // 命令关闭(commandPanelUpdated 不再含它)→ 滚动条目被裁(bucket 空则整删)。
+    state = __appReducerForTest(state, {
+      type: 'command-panel/updated',
+      sessionId: 's1',
+      commands: [],
+      activeKey: null,
+      requestActivation: false,
+    });
+    expect(state.fileViewerScroll.get('s1')?.has('command:k1') ?? false).toBe(false);
+  });
 });

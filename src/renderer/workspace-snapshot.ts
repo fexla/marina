@@ -152,6 +152,9 @@ async function doWriteSnapshot(
   const scroll: Record<string, { scrollTop: number; scrollLeft: number }> = {};
   if (scrollRaw) {
     for (const [path, pos] of scrollRaw) {
+      // 命令输出滚动记忆不落盘:命令列表本身是内存态(不跨重启),落盘只会
+      // 留下永远无人消费的孤儿条目。文件条目照旧持久化。
+      if (path.startsWith('command:')) continue;
       const external = !wsDir || isAbsoluteOutside(path, wsDir);
       const storedPath = !external && wsDir ? (toRelative(path, wsDir) ?? path) : path;
       scroll[storedPath] = { scrollTop: pos.scrollTop, scrollLeft: pos.scrollLeft };
