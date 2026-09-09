@@ -1,16 +1,17 @@
 ---
 name: show-in-marina
-description: Use Marina's terminal-side file panel to show the user Markdown, text, code, or image results; or push a shell command whose output renders in the command panel via `marina run`. Use after producing a report, plan, review, research result, or other artifact worth reading outside chat. Markdown files shown this way can include fenced code blocks (bash/powershell/cmd) that the user runs with one click — write actionable docs (setup guides, "try these" command menus, fix-verification steps). Requires Marina (the CLI checks; never read service/token vars yourself; use the workspace command for scratch paths).
+description: Use Marina's terminal-side file panel to show the user Markdown, text, code, or image results; or push a shell command whose output renders in the command panel via `marina run`. Use after producing a report, plan, review, research result, or other artifact worth reading outside chat. Markdown files shown this way can include fenced code blocks (bash/powershell/cmd) that the user runs with one click, and `marina:` action links that act as clickable `marina show`/`marina run` commands — write actionable docs (setup guides, cross-referenced issue sets, "try these" command menus, fix-verification steps). Requires Marina (the CLI checks; never read service/token vars yourself; use the workspace command for scratch paths).
 ---
 
 # Show files in Marina
 
 > **在你写 Markdown 文档之前，先读本目录的 `MARKDOWN-CAPABILITIES.md`** —— 那是面板
 > 渲染 Markdown 的**完整能力清单**（标准格式）：可点击的本地文件链接/网页链接/页内锚点、
+> `marina:` 动作链接（文档内点击等价于跑 `marina show`/`marina run`）、
 > 可一键运行的代码块（bash/powershell/cmd）、` ```gallery ` 图片画廊、本地图片、目录导航，
 > 以及硬性约束（只读查看器、>2MB 截断、**原始 HTML 被禁用**等）。按它写才能让文档在
-> 面板里真正可交互，而不是纯文本。下文只摘最关键的两条（链接、可运行代码块）；
-> gallery / 图片 / sudo / 文件类型见那份文档。
+> 面板里真正可交互，而不是纯文本。下文只摘最关键的三条（链接、marina: 动作链接、
+> 可运行代码块）；gallery / 图片 / sudo / 文件类型见那份文档。
 
 Place a result in the active terminal's Marina file panel instead of pasting a
 long document into chat. This skill ships a small CLI that handles env
@@ -401,16 +402,75 @@ their **scheme** — use the right form so the click does what you intend:
   Marina assigns stable Unicode-aware heading ids and `-1`, `-2`, ... suffixes to duplicates.
 
 Rules of thumb:
-- **Anything that is not a full `http(s)://` / `mailto:` URL and not a `#`
-  anchor is treated as a local file.** So a bare `example.com/x` (no scheme)
-  or a `data:`/`tel:`/`file:` target is read as a local path and opened in the
-  panel — usually failing with a toast if it doesn't resolve. Always write the
-  full scheme for web links.
+- **Anything that is not a full `http(s)://` / `mailto:` URL, not a `#`
+  anchor, and not a `marina:` action link is treated as a local file.** So a
+  bare `example.com/x` (no scheme) or a `data:`/`tel:`/`file:` target is read
+  as a local path and opened in the panel — usually failing with a toast if it
+  doesn't resolve. Always write the full scheme for web links.
 - **Pointing at a missing/non-file path** shows a toast error; the panel is
   unchanged. Paths are resolved and checked on the Marina side (the Markdown's
   own directory is the base), so relative links keep working after the file is
   moved as long as the relative layout is preserved.
 - Local links open **read-only**; Marina's panel is a viewer, not an editor.
+
+## `marina:` action links — clickable CLI actions inside the document (v0.3.3)
+
+A link whose target starts with `marina:` is an **action link**: clicking it
+does what running the corresponding `marina` CLI subcommand would do — same
+services, same session context, **no confirmation dialog** (you authored the
+document; that carries your authority). They render as a distinct pill-shaped
+chip with an icon (▶ run / 📄 show), and hovering shows the exact command.
+
+Two verbs are available:
+
+- **`marina:show <path> [--heading <title>]`** — open a file in this
+  terminal's Open panel (read-only tab), exactly like `marina show`. The path
+  resolves **relative to the Markdown file's directory**; in command-panel
+  output (no file path) it resolves relative to the session cwd.
+- **`marina:run [--title <label>] <command...>`** — push the command to the
+  command panel and run it, exactly like `marina run`. `--title` must come
+  **before** the command; anything after the command starts (including
+  `--flags`) is part of the command.
+
+```markdown
+See [issue #42](<marina:show issue-42.md>) or jump to
+[the repro section](<marina:show report.md --heading "Repro Steps">).
+[Refresh the list](<marina:run gh issue list --limit 20>) anytime,
+or [watch the build](<marina:run --title "build" make test>).
+```
+
+**Syntax rules (important):**
+
+- **Wrap the target in angle brackets `<>` whenever it contains spaces.**
+  CommonMark does not allow spaces in a bare link target:
+  `[x](marina:show a.md)` does **not** parse as a link at all (it renders as
+  plain text). `[x](<marina:show a.md>)` is the correct form. Inside `<>`
+  you can write spaces and quotes naturally.
+- Alternative: percent-encode every space as `%20`
+  (`[x](marina:show%20a.md)`). The whole target is URL-decoded once before
+  parsing.
+- **Quote multi-word `--heading` / `--title` values**
+  (`--heading "Repro Steps"`); an unquoted second word would be joined into
+  the path/command instead.
+- Backslashes are literal (Windows paths like `D:\ws\x.md` survive); the only
+  escape is `\` immediately before the same quote character inside a quoted
+  value. Positional tokens are joined with single spaces, so
+  `marina:show%20my%20report.md` and `marina:show "my report.md"` both mean
+  the path `my report.md`.
+
+**When to use them:**
+
+- **Cross-reference menus** — you fetched/preprocessed a set of documents
+  (issues, specs, reports); link them to each other so the user browses the
+  whole set from the panel without asking you to `show` each one.
+- **Menu-style docs** — a dashboard where each entry opens a detail doc
+  (`show`) or runs an inspection command (`run`), letting the user choose
+  what to look at.
+- Prefer `show` for reading and `run` for live output; don't embed
+  destructive commands — the user clicks these without a prompt.
+- Only `show` and `run` exist as document actions. Everything else
+  (`workspace`, `list`, `close`, `screenshot`) stays a terminal-side CLI
+  command.
 
 ## Other commands
 

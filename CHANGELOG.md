@@ -7,6 +7,29 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+### Added
+
+- **marina: 动作链接(ADR-035,方案-marina动作链接-20260909)**:Markdown 文档里的
+  `[x](<marina:show a.md>)` / `[x](<marina:run gh issue list>)` 点击后等价于跑
+  marina CLI 对应子命令 —— main 端直接分发到 CLI 同源服务路径(show 进「已打开」
+  面板,run 进命令面板),无确认弹窗(安全模型同 ADR-023 可运行代码块:能让用户
+  看到文档的 agent 本就有跑 CLI 的权限,内嵌动作不扩大权限面;任意来源 md 的
+  一键执行能力是 ADR-023 既成事实)。文件面板与命令面板两种文档来源都可用;
+  show 相对 md 文件目录解析(无 mdPath 时相对 session cwd,与 CLI 一致)。
+  渲染为动作 chip(药丸形 + 动词图标 ▶/📄,hover 显示将执行的参数原文),颜色
+  currentColor 派生(透明垫底契约同 .md-code-block,global-css.test.ts 守护)。
+  语法要点:CommonMark 裸目标不容空格,含参数必须 `<>` 包裹或 `%20`;位置参数
+  按单空格拼接;`--title` 只在命令前识别(命令自身 flag 不误吞);解析器
+  src/shared/marina-link.ts,分发 src/main/marina-link-dispatch.ts,IPC 通道
+  MARINA_LINK_RUN;micromark→消毒→解析全链有集成测试钉住各合法写法。
+- **Markdown 普通链接统一下划线样式**:三套 markdown 主题(marina/github/custom)
+  统一「低调常驻下划线(currentColor 派生)+ hover 加深」,弥补 marina 主题原先
+  无 hover 反馈、github 主题下划线行为不一致的问题。marina: 动作 chip 不吃
+  这套(有自己的按钮样式)。
+- **skill 文档同步(bridge 0.3.8 → 0.3.9)**:SKILL.md 新增 marina: 动作链接节
+  (语法/写法规则/使用场景),MARKDOWN-CAPABILITIES.md 新增 §2.4 + 速查
+  checklist 条目;ensureUpToDate 靠版本差把新文档推给已装用户。
+
 ## [0.3.3-dev.16] — 2026-09-09
 
 > pi-bridge skill 整合批(ADR-028 决策 8):show-in-marina skill 与「Marina 输出

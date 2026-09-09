@@ -13,15 +13,17 @@
 > - `src/renderer/components/file-panel/GalleryViewer.tsx`（gallery，ADR-026）
 > - `src/renderer/components/file-panel/FileViewer.tsx`（文件类型分发）
 > - `src/shared/markdown-command.ts`（运行按钮语言判定）
+> - `src/shared/marina-link.ts`（marina: 动作链接解析，ADR-035）
 > - `src/shared/gallery-parser.ts`（gallery 语法）
 
 ---
 
 ## 0. 一句话
 
-面板把 Markdown 当**可交互文档**渲染：链接可点击、代码块可一键运行、图片可直接看图、
-还能做画廊和目录导航。但这些能力大部分**只在「已打开」面板里打开真实文件的 Markdown
-才完整可用**；命令输出（无文件路径）只有部分能力。
+面板把 Markdown 当**可交互文档**渲染：链接可点击、`marina:` 动作链接可在文档内
+触发 show/run、代码块可一键运行、图片可直接看图、还能做画廊和目录导航。但这些能力
+大部分**只在「已打开」面板里打开真实文件的 Markdown 才完整可用**；命令输出
+（无文件路径）只有部分能力（`marina:` 动作链接在两种来源里都可用）。
 
 ---
 
@@ -77,8 +79,40 @@
 [跳到上面的「链接」](#2-链接texttarget-按-scheme-分流)
 ```
 
-### 2.4 关键规则
-- **不是完整 `http(s):/mailto:` 且不是 `#` 的，一律按本地文件处理**。所以：
+### 2.4 `marina:` 动作链接（v0.3.3 / ADR-035，文档内的可点击 CLI 动作）
+
+目标以 `marina:` 开头的链接是**动作链接**：点击等价于 agent 在终端跑对应的
+`marina` CLI 子命令（同一服务路径、同一 session、**无确认弹窗** —— 文档作者
+的授权随文档传递）。渲染成带图标的药丸形 chip（▶=run / 📄=show），hover 显示
+将执行的参数原文。命令面板渲染的输出里同样可用。
+
+只有两个动词：
+
+```markdown
+[issue #42](<marina:show issue-42.md>)                     ← 打开文件（同 marina show）
+[跳到复现步骤](<marina:show report.md --heading "Repro">)  ← 打开并定位标题
+[刷新列表](<marina:run gh issue list --limit 20>)          ← 命令面板执行（同 marina run）
+[看构建](<marina:run --title "build" make test>)           ← --title 必须在命令前
+```
+
+**写法规则（照做才有效）：**
+
+- **目标含空格必须用 `<>` 包裹**：CommonMark 裸目标不容空格，
+  `[x](marina:show a.md)` **根本不会解析成链接**（整体变纯文本）。
+  `[x](<marina:show a.md>)` 才对。`<>` 内空格、引号都能自然写。
+- 备选：空格全部写 `%20`（`[x](marina:show%20a.md)`）。
+- `show` 的路径相对 **md 文件所在目录**（命令面板输出则相对 session cwd）；
+  `run` 在 session cwd 下执行、输出进命令面板。
+- **多词的 `--heading` / `--title` 值要加引号**，否则第二个词会拼进路径/命令。
+- 反斜杠是字面字符（`D:\ws\x.md` 不受损）；位置参数按单空格拼接。
+- 只支持 `show` / `run`；`workspace`/`list`/`close`/`screenshot` 是终端侧命令，
+  不进文档。**不要嵌入破坏性命令** —— 用户点击无提示。
+
+适合：互链文档集（拉下来的 issue/spec 互相关联）、菜单式看板（每项打开详情或
+跑检查命令）。
+
+### 2.5 关键规则
+- **不是完整 `http(s):/mailto:`、不是 `#`、也不是 `marina:` 动作链接的，一律按本地文件处理**。所以：
   - 裸 `example.com/x`（无 scheme）、`data:`、`tel:`、`file:` → 被当本地路径，通常 toast 失败。
   - **网页链接永远要写完整 scheme**。
 - 本地链接在面板里是**只读查看**，面板不是编辑器。
@@ -183,6 +217,8 @@ https://example.com/hero.png
 写 Markdown 文档到面板前，逐条自问：
 
 - [ ] 要引用别的文档 / 源码 / 文件？→ 用**本地相对路径链接**（`[x](./a.md)`），它会在面板点开。
+- [ ] 要让用户在文档里**按需打开关联文档 / 跑查看命令**（issue 互链、菜单式看板）？
+      → 用 **`marina:` 动作链接**（`[x](<marina:show a.md>)`，含空格必须 `<>` 包裹）。
 - [ ] 要引用网页？→ 写**完整 `http(s)://`** URL。
 - [ ] 要展示一份操作步骤？→ 每个步骤一个**可运行代码块**（bash/powershell/cmd），让用户点跑。
 - [ ] 要展示一组图？→ 用 **` ```gallery `** 块，每行一张。
