@@ -16,6 +16,8 @@
  *   会把 "C:"/"D:" 当未知协议把 href 剥空(2026-08-23 修复,详见该文件头)。
  * - 裸盘符路径经 remarkMarinaPathAutolink 自动链接("read D:\\a.png" 这类无链接
  *   语法的正文也能点,2026-08 修复);点击分流仍走同一个 MdLink seam。
+ * - YAML frontmatter(文档开头 `---` 块)经 remarkFrontmatter 识别为 yaml 节点后
+ *   隐藏,不参与渲染/搜索/大纲(2026-09)。
  *
  * @对应文档: docs/方案-命令面板-20260802.md D5；软件定义书 ADR-018、ADR-028。
  *
@@ -38,6 +40,7 @@ import {
 } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkFrontmatter from 'remark-frontmatter';
 import { COMMAND_CHANNELS, type FilePanelHeadingNavigationPayload } from '@shared/protocol';
 import {
   createMarkdownHeadingIdFactory,
@@ -469,11 +472,16 @@ export function MarkdownDocument({
     ],
   );
 
+  // remarkFrontmatter(语法扩展,加在数组前部):把文档开头的 `---` YAML 块解析成
+  // mdast 的 yaml 节点。mdast→hast 没有 yaml 的 handler,该节点被静默跳过 ——
+  // frontmatter 因此"识别并隐藏":不渲染、不进 Ctrl+F 的 DOM 文本、不进标题大纲,
+  // 裸路径自动链接也碰不到它(它是叶子节点,无 text children)。自定义插件安全:
+  // heading-sections 只认 heading,path-autolink 只改 text 子节点,yaml 均原样透传。
   const remarkPlugins = useMemo(
     () =>
       filePath === undefined
-        ? [remarkGfm, remarkMarinaPathAutolink]
-        : [remarkGfm, remarkMarinaHeadingSections, remarkMarinaPathAutolink],
+        ? [remarkGfm, remarkFrontmatter, remarkMarinaPathAutolink]
+        : [remarkGfm, remarkFrontmatter, remarkMarinaHeadingSections, remarkMarinaPathAutolink],
     [filePath],
   );
 
