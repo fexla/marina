@@ -4355,7 +4355,7 @@ html[data-maximized='true'] .app-root.with-shell {
 
 /* v0.3.3:文档正文链接统一「低调常驻下划线 + hover 加深」(三套 markdown 主题
  * 一致;github-markdown-css 默认无下划线 hover 才出现,marina 主题原先连 hover
- * 反馈都没有)。下划线颜色从 currentColor 派生 —— 链接色随主题走,下划线自动
+ * 反馈都没有)。下划线颜色从 currentcolor 派生 —— 链接色随主题走,下划线自动
  * 可读,不引入新 token。md-marina-link 动作 chip 不吃这套(它有自己的按钮样式)。
  *
  * ⚠ 样式契约(同下方 .md-code-block,global-css.test.ts 守护):本段两条规则
@@ -4363,7 +4363,7 @@ html[data-maximized='true'] .app-root.with-shell {
 .file-markdown-viewer a:not(.md-marina-link),
 .panel-dock .markdown-body a:not(.md-marina-link) {
   text-decoration: underline;
-  text-decoration-color: color-mix(in srgb, currentColor 28%, transparent);
+  text-decoration-color: color-mix(in srgb, currentcolor 28%, transparent);
   text-decoration-thickness: 1px;
   text-underline-offset: 2.5px;
   transition: text-decoration-color 0.12s ease;
@@ -4371,7 +4371,7 @@ html[data-maximized='true'] .app-root.with-shell {
 
 .file-markdown-viewer a:not(.md-marina-link):hover,
 .panel-dock .markdown-body a:not(.md-marina-link):hover {
-  text-decoration-color: color-mix(in srgb, currentColor 78%, transparent);
+  text-decoration-color: color-mix(in srgb, currentcolor 78%, transparent);
 }
 
 /* v0.3.3 ADR-035:marina: 动作链接 —— [x](marina:show a.md) 点击等价于跑
@@ -4382,7 +4382,7 @@ html[data-maximized='true'] .app-root.with-shell {
  * ⚠ 样式契约(同上,global-css.test.ts 守护):禁用 var(--color-bg-*) token
  * 当背景/边框基色 —— 三套 markdown 主题(marina / github-light / github-dark /
  * custom)下垫的背景未知,固定 bg 在深色主题渲染成黑块。一律
- * color-mix(in srgb, currentColor N%, transparent) 派生:currentColor 是链接
+ * color-mix(in srgb, currentcolor N%, transparent) 派生:currentcolor 是链接
  * 主题色(随主题可读),混合透明后在任何背景上都成立,明暗自适应。 */
 a.md-marina-link {
   display: inline-flex;
@@ -4390,9 +4390,9 @@ a.md-marina-link {
   gap: 4px;
   margin: 0 1px;
   padding: 0 7px;
-  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  border: 1px solid color-mix(in srgb, currentcolor 30%, transparent);
   border-radius: 999px;
-  background-color: color-mix(in srgb, currentColor 7%, transparent);
+  background-color: color-mix(in srgb, currentcolor 7%, transparent);
   font-weight: 500;
   text-decoration: none;
   text-underline-offset: 0;
@@ -4403,13 +4403,13 @@ a.md-marina-link {
 }
 
 a.md-marina-link:hover {
-  background-color: color-mix(in srgb, currentColor 15%, transparent);
-  border-color: color-mix(in srgb, currentColor 55%, transparent);
+  background-color: color-mix(in srgb, currentcolor 15%, transparent);
+  border-color: color-mix(in srgb, currentcolor 55%, transparent);
   text-decoration: none;
 }
 
 a.md-marina-link:active {
-  background-color: color-mix(in srgb, currentColor 20%, transparent);
+  background-color: color-mix(in srgb, currentcolor 20%, transparent);
 }
 
 /* chip 内动词图标(lucide svg 是 flex item,统一尺寸并稍降调) */
@@ -4431,8 +4431,8 @@ a.md-marina-link svg {
  * 本段所有规则禁止用 var(--color-bg-*) 系列 token 当背景 —— 这些 token 是
  * 按“应用主背景”调色的,而代码块外壳是透明的,真正垫在下面的背景随面板/
  * 主题未知(深色主题下 --color-bg-hover 会渲染成黑块,实测翻车过)。
- * hover/选中反馈一律用 color-mix(in srgb, currentColor N%, transparent),
- * currentColor 是元素自己的文字色,与任何背景都可读,永不变黑。 */
+ * hover/选中反馈一律用 color-mix(in srgb, currentcolor N%, transparent),
+ * currentcolor 是元素自己的文字色,与任何背景都可读,永不变黑。 */
 .md-code-block {
   position: relative;
   margin: 8px 0;
@@ -4488,7 +4488,7 @@ a.md-marina-link svg {
 .md-code-block-btn:hover {
   /* 通用 hover 反馈:用元素自身文字色的半透明 tint,而不是主题 bg token。
    * 代码块外壳透明,底下背景未知;--color-bg-hover 绑定应用主背景,在深色
-   * 主题下渲染成黑块(实测)。currentColor = 按钮自己的颜色(run 是绿色、
+   * 主题下渲染成黑块(实测)。currentcolor = 按钮自己的颜色(run 是绿色、
    * stop 是红色、复制是正文色),任何主题下都与背景可读 → tint 永不变黑。
    * 用 color-mix 而非 opacity,避免按钮文字本身变半透明。 */
   background-color: color-mix(in srgb, currentcolor 12%, transparent);
