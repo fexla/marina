@@ -7,6 +7,31 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+### Changed
+
+- **命令面板整合进「已打开」面板(ADR-037,方案-面板整合-20260909)**:
+  命令面板与文件面板同构(program-push + 多 tab + markdown),独立 dock 面板
+  只剩"多一次 tab 切换"的成本 —— dock 面板 4→3,「已打开」面板渲染统一
+  tab 列表(文件 tab 在前、命令 tab 在后带状态点,细分隔线),搜索过滤
+  同时作用于两侧,徽章计两侧总数。main 服务层(IPC/事件/调度器/持久化)
+  原样保留,纯 UI 归属变更;store 新增 openPanelViews 记录面板内正在看
+  文件侧/命令侧(openFile/runCommand 的 requestActivation 分别写
+  'file'/'command' 并都激活已打开 dock,用户点 tab 走 view/set-open-panel-view,
+  resolveOpenPanelView 兜底一侧清空回退另一侧)。调度 demand(ADR-021)改为
+  「已打开面板激活 + dock 未折叠 + 正在看命令侧」才报 HOT,顺带修复 dock
+  折叠仍报 HOT 的旧问题。skill 文档同步(bridge 0.3.11)。
+
+### Added
+
+- **marina run 重推已存在指令也跳转**(与 marina show 的"已存在则等价 show"
+  对齐):runCommand 无论新指令还是重推都切 activeKey 并请求激活,且激活
+  事件移到 spawn 前发出 —— 长命令先跳面板看到 running 占位,而非跑完才跳。
+  后台调度器自动刷新不经 runCommand,不抢激活。
+- **命令输出记忆浏览位置**:复用文件侧 useFileViewerScroll
+  (identity=`command:<key>`),切命令 tab / 切走再切回复到上次浏览位置;
+  restoreVersion 恒为 key(不用 lastRunAt,避免自动刷新把视口反复拉回旧
+  保存点);命令关闭裁剪条目,workspace 快照写盘过滤(命令不跨重启)。
+
 ## [0.3.3-dev.18] — 2026-09-09
 
 > Markdown 能力复用批(ADR-036):命令面板输出补齐本地链接/本地图片/gallery/

@@ -1,6 +1,6 @@
 {
   "name": "@marina/pi-marina-bridge",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "description": "pi extension that bridges pi conversation/work lifecycle events to Marina (workspace binding + sidebar indicator), and injects the show-in-marina skill + Marina system prompt inside Marina terminals. No-op outside a Marina terminal.",
   "keywords": [
     "pi-package"

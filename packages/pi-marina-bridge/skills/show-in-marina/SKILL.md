@@ -1,6 +1,6 @@
 ---
 name: show-in-marina
-description: Use Marina's terminal-side file panel to show the user Markdown, text, code, or image results; or push a shell command whose output renders in the command panel via `marina run`. Use after producing a report, plan, review, research result, or other artifact worth reading outside chat. Markdown files shown this way can include fenced code blocks (bash/powershell/cmd) that the user runs with one click, and `marina:` action links that act as clickable `marina show`/`marina run` commands — write actionable docs (setup guides, cross-referenced issue sets, "try these" command menus, fix-verification steps). Requires Marina (the CLI checks; never read service/token vars yourself; use the workspace command for scratch paths).
+description: Use Marina's terminal-side file panel to show the user Markdown, text, code, or image results; or push a shell command whose output renders as a command tab in the Opened panel via `marina run`. Use after producing a report, plan, review, research result, or other artifact worth reading outside chat. Markdown files shown this way can include fenced code blocks (bash/powershell/cmd) that the user runs with one click, and `marina:` action links that act as clickable `marina show`/`marina run` commands — write actionable docs (setup guides, cross-referenced issue sets, "try these" command menus, fix-verification steps). Requires Marina (the CLI checks; never read service/token vars yourself; use the workspace command for scratch paths).
 ---
 
 # Show files in Marina
@@ -273,8 +273,9 @@ each turn).
 
 `show` is for a **finished document you wrote**. `run` is the other channel:
 hand Marina a **shell command** and it executes that command, then renders the
-**output** in a separate panel — the **command panel** (the 4th dock panel,
-beside Open / Git / File-tree). Use it when the user wants to *watch a
+**output** as a command tab in the **Opened panel** (the same dock panel that
+shows `marina show` files — command tabs sit after the file tabs, with a status
+dot). Use it when the user wants to *watch a
 command's output* without reclaiming the terminal (which you are usually
 occupying): `gh issue list`, `git log`, a build status, a wayfinder map. The
 command runs via **bash in the current session's cwd**, not through the
@@ -297,7 +298,7 @@ Marina does not parse the command — it passes the whole string to bash.
 
 - A **document you authored** that is done → `show` a file (Open panel).
 - A **command's current output** that may differ on rerun → `run` the command
-  (Command panel).
+  (command tab in the Opened panel).
 
 **Tabs and refresh are panel-side, not CLI options:**
 
@@ -433,7 +434,8 @@ Two verbs are available:
   resolves **relative to the Markdown file's directory**; in command-panel
   output (no file path) it resolves relative to the session cwd.
 - **`marina:run [--title <label>] <command...>`** — push the command to the
-  command panel and run it, exactly like `marina run`. `--title` must come
+  command tab (Opened panel) and run it, exactly like `marina run`. Re-pushing
+  an existing command jumps to its tab and reruns it. `--title` must come
   **before** the command; anything after the command starts (including
   `--flags`) is part of the command.
 

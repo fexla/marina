@@ -70,13 +70,17 @@
   owner 切换 / 窗口关闭 / 远程断线分别走 `onSessionOwnerChanged` /
   `removePollingConsumer`，与 Git 同构。
 
-### I.7 命令面板按指令刷新（v0.3.3，2026-08-07 勘误）
+### I.7 命令面板按指令刷新（v0.3.3，2026-08-07 勘误；ADR-037 修订 demand 上报）
 
 - 每条指令的刷新策略必须拆成两个独立维度：`scope=foreground|background` 与
   `interval=manual|5s|30s`。UI 和 main 数据模型都不得再把“后台 30s”混成一个选项。
-- `foreground`：仅 active command tab 且面板可见时为 HOT；其他状态为 NONE。
-- `background`：active+可见时为 HOT；tab/面板隐藏但 session 仍有 owner 时为 WARM；
+- `foreground`：仅 active command tab 且输出可见时为 HOT；其他状态为 NONE。
+- `background`：active+可见时为 HOT；tab 隐藏但 session 仍有 owner 时为 WARM；
   owner 释放、窗口关闭、session 销毁时清 demand/task。
+- **“输出可见”的判定（ADR-037 起）**：命令面板不再是独立 dock 面板，demand 由
+  「已打开」面板（FilePanel）上报 —— 面板挂载（= 已打开面板是 active dock 面板）
+  **且** dock 未折叠 **且** 面板内视图在命令侧才报 `hot`，否则 `none`。
+  main 端仍结合 activeKey（哪条指令 tab 在看）做 per-task 映射，语义不变。
 - HOT/WARM 的 interval 都取该指令同一个用户选择；两级只表达优先级/可见性，不暗改频率。
 - program-push 和“立即刷新”直接执行一次；紧随其后的首次 HOT 建 demand 在 1 秒内只去重
   一次，避免同一命令肉眼可见地连跑两遍。普通 WARM→HOT 仍必须立即刷新，不能因去重逻辑

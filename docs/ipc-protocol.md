@@ -310,7 +310,7 @@ v2.0 引入 `clientId` 后,两个字段名容易混淆,明确边界:
 | `cmd:command-panel:close` | 关闭命令 tab 并清 run/task |
 | `cmd:command-panel:show` | 切换 active 命令 tab |
 | `cmd:command-panel:update-refresh-policy` | 独立 patch scope 或 interval |
-| `cmd:command-panel:set-demand` | 上报当前 client 的命令面板 HOT/WARM/NONE |
+| `cmd:command-panel:set-demand` | 上报当前 client 的命令输出可见性 HOT/NONE(ADR-037:由「已打开」面板上报,= 面板激活 + dock 未折叠 + 正在看命令侧;main 端再结合 activeKey 映射 WARM) |
 | `cmd:bookmark:add` | 添加收藏路径 |
 | `cmd:bookmark:remove` | 移除收藏 |
 | `cmd:bookmark:rename` | 重命名收藏的显示名 |
