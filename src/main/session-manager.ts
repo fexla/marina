@@ -147,15 +147,14 @@ const DOCK_LAYOUT_RULES: Readonly<Record<string, { minWidth: number; maxWidth: n
  * gitAvailable=true 时在 file-tree 与 file-panel 之间插入 git leaf;否则不出现
  * Git tab。该值由 SessionManager 在 session 创建 + 每次 shell prompt / cwd 变更后调
  * gitAvailabilityProvider 异步评估,flip 时重建 tree 并 emit state-changed。
+ *
+ * v0.3.3 ADR-037:命令面板不再是独立 dock leaf —— 它的 tab/输出整合进 file-panel
+ * (「已打开」)内部,布局树只有 3 个 dock 面板(file-tree / [git] / file-panel)。
  */
-function createSessionLayoutTree(gitAvailable: boolean, commandAvailable = true): LayoutNode {
+function createSessionLayoutTree(gitAvailable: boolean): LayoutNode {
   const stackChildren: LayoutNode[] = [{ kind: 'leaf', panelId: 'file-tree' }];
   if (gitAvailable) stackChildren.push({ kind: 'leaf', panelId: 'git' });
   stackChildren.push({ kind: 'leaf', panelId: 'file-panel' });
-  // v0.3.3 ADR-027:命令面板(第 4 dock 面板)。自远程 sudo 起 SSH session 也生成
-  // command leaf(经 ssh exec 执行);仅 git leaf 受 gitAvailable 控制。
-  // commandAvailable 参数保留供未来「禁用命令面板」设置,当前恒 true。
-  if (commandAvailable) stackChildren.push({ kind: 'leaf', panelId: 'command' });
   return {
     kind: 'split',
     direction: 'horizontal',
@@ -163,7 +162,7 @@ function createSessionLayoutTree(gitAvailable: boolean, commandAvailable = true)
       { kind: 'leaf', panelId: 'terminal' },
       {
         kind: 'stack',
-        // git 被移除时,LayoutHost 的 storedPanelId-not-in-panelIds 兑底
+        // git 被移除时,LayoutHost 的 storedPanelId-not-in-panelIds 兜底
         // 自动回退 file-tree,这里 defaultActivePanelId 保持稳定即可。
         defaultActivePanelId: 'file-tree',
         children: stackChildren,
@@ -172,20 +171,19 @@ function createSessionLayoutTree(gitAvailable: boolean, commandAvailable = true)
   };
 }
 
-/** 旧名保留:不带 git 的初始保守 tree(createSession 同步路径用)。
- * commandAvailable:SSH session 传 false(命令面板拒 SSH,ADR-027 D7)。 */
-function createDefaultSessionLayoutTree(commandAvailable = true): LayoutNode {
-  return createSessionLayoutTree(false, commandAvailable);
+/** 旧名保留:不带 git 的初始保守 tree(createSession 同步路径用)。 */
+function createDefaultSessionLayoutTree(): LayoutNode {
+  return createSessionLayoutTree(false);
 }
 
 const DEFAULT_DOCK_LAYOUTS: Readonly<Record<string, DockLayoutState>> = {
   right: { width: 440, collapsed: false },
 };
 
-function createDefaultSessionUiLayout(commandAvailable = true): SessionUiLayout {
+function createDefaultSessionUiLayout(): SessionUiLayout {
   return {
     version: 2,
-    tree: createDefaultSessionLayoutTree(commandAvailable),
+    tree: createDefaultSessionLayoutTree(),
     docks: Object.fromEntries(
       Object.entries(DEFAULT_DOCK_LAYOUTS).map(([dockId, state]) => [dockId, { ...state }]),
     ),
@@ -1202,7 +1200,7 @@ export class SessionManager extends EventEmitter {
       state: 'idle',
       createdAt: Date.now(),
       hasUnviewedWork: false,
-      uiLayout: createDefaultSessionUiLayout(true),
+      uiLayout: createDefaultSessionUiLayout(),
     };
 
     const disposables: IDisposable[] = [];
@@ -1367,7 +1365,7 @@ export class SessionManager extends EventEmitter {
       );
     }
 
-    const current = managed.info.uiLayout ?? createDefaultSessionUiLayout(true);
+    const current = managed.info.uiLayout ?? createDefaultSessionUiLayout();
     const next: SessionUiLayout = {
       version: current.version,
       tree: current.tree,
@@ -2567,10 +2565,10 @@ export class SessionManager extends EventEmitter {
     const prev = this.gitAvailabilityBySession.get(managed.info.id) ?? false;
     if (prev === available) return; // 无变化,不 emit
     this.gitAvailabilityBySession.set(managed.info.id, available);
-    const current = managed.info.uiLayout ?? createDefaultSessionUiLayout(true);
+    const current = managed.info.uiLayout ?? createDefaultSessionUiLayout();
     const next: SessionUiLayout = {
       version: current.version,
-      tree: createSessionLayoutTree(available, true),
+      tree: createSessionLayoutTree(available),
       docks: current.docks, // 几何不变,只换 tree
     };
     managed.info.uiLayout = next;

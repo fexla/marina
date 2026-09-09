@@ -168,6 +168,18 @@ export interface AppState {
   activePanels: Map<string, RegisteredPanelId>;
 
   /**
+   * v0.3.3 ADR-037:「已打开」面板内部正在看哪一侧 —— 'file'(打开文件)或
+   * 'command'(AI 推送指令的输出)。命令面板整合进 file-panel 后,dock 级
+   * activePanels 只能表达「面板本身」,面板内文件/命令两侧的切换由这里记录。
+   *
+   * 写入点:openFile / runCommand 的 requestActivation 事件(reducer 侧随
+   * activePanels 一起写),以及用户点 tab(view/set-open-panel-view)。读取方
+   * (FilePanel / LayoutHost SearchBar gate)用 resolveOpenPanelView 兜底:
+   * 记录的一侧已空时回退另一侧。session 销毁 / file-panel/clear 清理。
+   */
+  openPanelViews: Map<string, 'file' | 'command'>;
+
+  /**
    * 每个 session 最后被选中(成为本窗口正在看的终端)的时间戳(ms)。本窗口私有
    * view state(不上 main)。用于「关闭当前终端后自动续看」时在同目录多个无主
    * orphan 候选里按「最近使用的优先」排序(见 useCloseSession),而不是按侧栏/
@@ -288,6 +300,12 @@ export type AppAction =
       type: 'view/set-active-panel';
       sessionId: string;
       panelId: RegisteredPanelId;
+    }
+  | {
+      /** ADR-037:用户在「已打开」面板内点文件/命令 tab 时记录正在看哪一侧。 */
+      type: 'view/set-open-panel-view';
+      sessionId: string;
+      view: 'file' | 'command';
     }
   | {
       /**
@@ -459,6 +477,8 @@ function reducer(state: AppState, action: AppAction): AppState {
       fileViewerScroll.delete(action.sessionId);
       const activePanels = new Map(state.activePanels);
       activePanels.delete(action.sessionId);
+      const openPanelViews = new Map(state.openPanelViews);
+      openPanelViews.delete(action.sessionId);
       const lastSelectedAt = new Map(state.lastSelectedAt);
       lastSelectedAt.delete(action.sessionId);
       const terminalScroll = new Map(state.terminalScroll);
@@ -471,6 +491,7 @@ function reducer(state: AppState, action: AppAction): AppState {
         commandPanels,
         fileViewerScroll,
         activePanels,
+        openPanelViews,
         lastSelectedAt,
         terminalScroll,
       };
@@ -522,15 +543,19 @@ function reducer(state: AppState, action: AppAction): AppState {
       // 读到正确值(不抢用户手动切回的焦点),PanelStack 卸载期间(设置页/简易模式)
       // 发生的新请求也不丢。LayoutHost 解析时再校验 file-panel 是否属于当前 stack,
       // 不属于则回退。幂等:已是 file-panel 则只更新 filePanels。
-      if (action.requestActivation && state.activePanels.get(action.sessionId) !== 'file-panel') {
+      // ADR-037:同时记录面板内正在看「文件」侧(openFile 语义上选中一个文件)。
+      if (action.requestActivation) {
         const activePanels = new Map(state.activePanels);
         activePanels.set(action.sessionId, 'file-panel');
+        const openPanelViews = new Map(state.openPanelViews);
+        openPanelViews.set(action.sessionId, 'file');
         return {
           ...state,
           filePanels,
           fileViewerScroll,
           filePanelHeadingNavigations,
           activePanels,
+          openPanelViews,
         };
       }
       return { ...state, filePanels, fileViewerScroll, filePanelHeadingNavigations };
@@ -557,12 +582,16 @@ function reducer(state: AppState, action: AppAction): AppState {
         commands: action.commands,
         activeKey: action.activeKey,
       });
-      // requestActivation=true(推送新指令)时把活动面板设为「命令」(同 file-panel
-      // requestActivation 逻辑)。幂等:已是 command 则只更新 commandPanels。
-      if (action.requestActivation && state.activePanels.get(action.sessionId) !== 'command') {
+      // ADR-037:命令面板整合进「已打开」后,runCommand 的 requestActivation 不再
+      // 切到独立 command dock(已不存在),而是 1) 激活 file-panel dock +
+      // 2) 记录面板内正在看「命令」侧 —— main 端 activeKey 已指向该指令,FilePanel
+      // 据此渲染命令 tab。幂等:同值只更新 commandPanels。
+      if (action.requestActivation) {
         const activePanels = new Map(state.activePanels);
-        activePanels.set(action.sessionId, 'command');
-        return { ...state, commandPanels, activePanels };
+        activePanels.set(action.sessionId, 'file-panel');
+        const openPanelViews = new Map(state.openPanelViews);
+        openPanelViews.set(action.sessionId, 'command');
+        return { ...state, commandPanels, activePanels, openPanelViews };
       }
       return { ...state, commandPanels };
     }
@@ -583,12 +612,13 @@ function reducer(state: AppState, action: AppAction): AppState {
       return { ...state, fileViewerScroll };
     }
     case 'file-panel/clear': {
-      // 快照、导航、viewer scroll、active panel 任一有记录都统一清理。
+      // 快照、导航、viewer scroll、active panel、面板内视图任一有记录都统一清理。
       if (
         !state.filePanels.has(action.sessionId) &&
         !state.filePanelHeadingNavigations.has(action.sessionId) &&
         !state.fileViewerScroll.has(action.sessionId) &&
-        !state.activePanels.has(action.sessionId)
+        !state.activePanels.has(action.sessionId) &&
+        !state.openPanelViews.has(action.sessionId)
       ) {
         return state;
       }
@@ -600,12 +630,15 @@ function reducer(state: AppState, action: AppAction): AppState {
       fileViewerScroll.delete(action.sessionId);
       const activePanels = new Map(state.activePanels);
       activePanels.delete(action.sessionId);
+      const openPanelViews = new Map(state.openPanelViews);
+      openPanelViews.delete(action.sessionId);
       return {
         ...state,
         filePanels,
         filePanelHeadingNavigations,
         fileViewerScroll,
         activePanels,
+        openPanelViews,
       };
     }
 
@@ -617,6 +650,16 @@ function reducer(state: AppState, action: AppAction): AppState {
       const activePanels = new Map(state.activePanels);
       activePanels.set(action.sessionId, action.panelId);
       return { ...state, activePanels };
+    }
+
+    case 'view/set-open-panel-view': {
+      // 用户点「已打开」面板内的文件/命令 tab。与 view/set-active-panel 同款幂等。
+      // 程序推送(openFile / runCommand)不走这里,走各自 updated reducer 的
+      // requestActivation 分支(那里同时切 activePanels 和本字段)。
+      if (state.openPanelViews.get(action.sessionId) === action.view) return state;
+      const openPanelViews = new Map(state.openPanelViews);
+      openPanelViews.set(action.sessionId, action.view);
+      return { ...state, openPanelViews };
     }
 
     case 'md-themes/update':
@@ -838,6 +881,7 @@ export function makeDefaultState(myWindowId: string, myWindowNumber: number): Ap
     commandPanels: new Map(),
     fileViewerScroll: new Map(),
     activePanels: new Map(),
+    openPanelViews: new Map(),
     lastSelectedAt: new Map(),
     terminalScroll: new Map(),
     mdThemes: [],

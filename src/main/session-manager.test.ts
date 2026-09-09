@@ -2775,7 +2775,7 @@ describe('SessionManager — dynamic Git LayoutNode (v0.3.0)', () => {
     const stack = (tree as { children: unknown[] }).children?.[1] as {
       children: { panelId: string }[];
     };
-    expect(stack.children.map((c) => c.panelId)).toEqual(['file-tree', 'file-panel', 'command']);
+    expect(stack.children.map((c) => c.panelId)).toEqual(['file-tree', 'file-panel']);
   });
 
   it('注入 provider 后,cwd 在仓库内的 session 异步出现 git leaf', async () => {
@@ -2802,12 +2802,7 @@ describe('SessionManager — dynamic Git LayoutNode (v0.3.0)', () => {
       const stack = (tree as { children: unknown[] }).children?.[1] as {
         children: { panelId: string }[];
       };
-      expect(stack.children.map((c) => c.panelId)).toEqual([
-        'file-tree',
-        'git',
-        'file-panel',
-        'command',
-      ]);
+      expect(stack.children.map((c) => c.panelId)).toEqual(['file-tree', 'git', 'file-panel']);
     });
   });
 
@@ -2826,7 +2821,7 @@ describe('SessionManager — dynamic Git LayoutNode (v0.3.0)', () => {
       const stack = (tree as { children: unknown[] }).children?.[1] as {
         children: { panelId: string }[];
       };
-      expect(stack.children.map((c) => c.panelId)).toEqual(['file-tree', 'file-panel', 'command']);
+      expect(stack.children.map((c) => c.panelId)).toEqual(['file-tree', 'file-panel']);
     });
   });
 

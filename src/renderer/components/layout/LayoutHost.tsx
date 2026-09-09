@@ -31,6 +31,7 @@ import { usePanelSearchShortcut } from '../../hooks/usePanelSearchShortcut';
 import { useGitPollingDemand } from '../../hooks/useGitPollingDemand';
 import { useFileTreePollingDemand } from '../../hooks/useFileTreePollingDemand';
 import { isRegisteredPanelId, PANEL_REGISTRY, type RegisteredPanelId } from './panel-registry';
+import { resolveOpenPanelView } from '../file-panel/open-panel-view';
 
 const RIGHT_DOCK_MIN_WIDTH = 280;
 const RIGHT_DOCK_MAX_WIDTH = 900;
@@ -111,10 +112,19 @@ function PanelStack({
   const persisted = session.uiLayout?.docks.right ?? { width: 440, collapsed: false };
   const [pendingWidth, setPendingWidth] = useState<number | null>(null);
   const dragCleanupRef = useRef<(() => void) | null>(null);
-  const openedCount = appState.filePanels.get(session.id)?.files.length ?? 0;
+  const fileCount = appState.filePanels.get(session.id)?.files.length ?? 0;
   const commandSnapshot = appState.commandPanels.get(session.id);
+  const commandCount = commandSnapshot?.commands.length ?? 0;
+  // ADR-037:「已打开」面板承载文件 + 命令两侧,徽章计两侧 tab 总数。
+  const openedCount = fileCount + commandCount;
   const activeCommandHasOutput = Boolean(
     commandSnapshot?.commands.find((entry) => entry.key === commandSnapshot.activeKey)?.output,
+  );
+  // 面板内正在看哪一侧(与 FilePanel 同一份兜底判定,见 open-panel-view.ts)。
+  const openPanelView = resolveOpenPanelView(
+    appState.openPanelViews.get(session.id),
+    fileCount,
+    commandCount,
   );
   const width = pendingWidth ?? persisted.width;
 
@@ -341,8 +351,10 @@ function PanelStack({
             onToggleCase={() => setSearchCaseSensitive((v) => !v)}
             inputRef={searchInputRef}
             showNavigator={
-              (activePanelId === 'file-panel' && openedCount > 0) ||
-              (activePanelId === 'command' && activeCommandHasOutput)
+              // ADR-037:命令面板整合进 file-panel 后,导航器(文件内查找跳转)的
+              // 可用性按面板内当前视图判定 —— 文件侧要有打开文件,命令侧要有输出。
+              activePanelId === 'file-panel' &&
+              (openPanelView === 'file' ? fileCount > 0 : activeCommandHasOutput)
             }
             matches={searchMatches}
             current={searchCurrent}

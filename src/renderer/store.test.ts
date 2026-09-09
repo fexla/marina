@@ -19,6 +19,7 @@ import {
   type AppState,
 } from './store';
 import type { AppSnapshot, FileKind, OpenedFile, PathNode, SessionInfo } from '@shared/types';
+import type { AppAction } from './store';
 
 function pathNode(): PathNode {
   return {
@@ -205,5 +206,111 @@ describe('renderer file viewer scroll state', () => {
     });
     state = __appReducerForTest(state, { type: 'sessions/destroyed', sessionId: 's2' });
     expect(state.fileViewerScroll.has('s2')).toBe(false);
+  });
+});
+
+describe('renderer open panel view(ADR-037 命令面板整合进「已打开」)', () => {
+  function commandSnapshot(activation: boolean): AppAction {
+    return {
+      type: 'command-panel/updated',
+      sessionId: 's1',
+      commands: [
+        {
+          key: 'k1',
+          command: 'git status',
+          title: null,
+          refreshPolicy: { scope: 'foreground', interval: '30s' },
+          lastRunId: null,
+          lastExitCode: 0,
+          status: 'exited',
+          output: '',
+          lastRunAt: null,
+          sudo: false,
+        },
+      ],
+      activeKey: 'k1',
+      requestActivation: activation,
+    };
+  }
+
+  it('runCommand 的 requestActivation 激活 file-panel dock + 记录面板内看命令侧', () => {
+    let state = makeDefaultState('w1', 1);
+    state = __appReducerForTest(
+      state,
+      {
+        type: 'view/set-active-panel',
+        sessionId: 's1',
+        panelId: 'git',
+      } as never,
+    );
+
+    state = __appReducerForTest(state, commandSnapshot(true));
+
+    expect(state.activePanels.get('s1')).toBe('file-panel');
+    expect(state.openPanelViews.get('s1')).toBe('command');
+  });
+
+  it('openFile 的 requestActivation 记录面板内看文件侧(把视图从命令侧拉回)', () => {
+    let state = makeDefaultState('w1', 1);
+    state = __appReducerForTest(state, commandSnapshot(true));
+
+    state = __appReducerForTest(state, {
+      type: 'file-panel/updated',
+      sessionId: 's1',
+      files: [opened('C:\\a.md', 'markdown')],
+      activePath: 'C:\\a.md',
+      requestActivation: true,
+    });
+
+    expect(state.activePanels.get('s1')).toBe('file-panel');
+    expect(state.openPanelViews.get('s1')).toBe('file');
+  });
+
+  it('无 requestActivation 的常规更新不动 activePanels / openPanelViews', () => {
+    let state = makeDefaultState('w1', 1);
+    state = __appReducerForTest(
+      state,
+      { type: 'view/set-active-panel', sessionId: 's1', panelId: 'git' } as never,
+    );
+    state = __appReducerForTest(state, commandSnapshot(false));
+    state = __appReducerForTest(state, {
+      type: 'file-panel/updated',
+      sessionId: 's1',
+      files: [opened('C:\\a.md', 'markdown')],
+      activePath: 'C:\\a.md',
+      requestActivation: false,
+    });
+
+    expect(state.activePanels.get('s1')).toBe('git');
+    expect(state.openPanelViews.has('s1')).toBe(false);
+  });
+
+  it('view/set-open-panel-view 记录用户选择且幂等;destroy/clear 清理', () => {
+    let state = makeDefaultState('w1', 1);
+    const first = __appReducerForTest(state, {
+      type: 'view/set-open-panel-view',
+      sessionId: 's1',
+      view: 'command',
+    });
+    expect(first.openPanelViews.get('s1')).toBe('command');
+    // 幂等:同值返回原 state 引用(避免无谓 re-render)。
+    expect(
+      __appReducerForTest(first, {
+        type: 'view/set-open-panel-view',
+        sessionId: 's1',
+        view: 'command',
+      }),
+    ).toBe(first);
+
+    state = __appReducerForTest(state, { type: 'sessions/destroyed', sessionId: 's1' });
+    expect(state.openPanelViews.has('s1')).toBe(false);
+
+    state = __appReducerForTest(state, {
+      type: 'view/set-open-panel-view',
+      sessionId: 's2',
+      view: 'file',
+    });
+    state = __appReducerForTest(state, { type: 'file-panel/clear', sessionId: 's2' });
+    expect(state.openPanelViews.has('s2')).toBe(false);
   });
 });

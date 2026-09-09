@@ -14,9 +14,13 @@ import type { ComponentType } from 'react';
 import { FilePanel } from '../file-panel/FilePanel';
 import { FileTreePanel } from '../file-tree/FileTreePanel';
 import { GitPanel } from '../git/GitPanel';
-import { CommandPanel } from '../command-panel/CommandPanel';
 
-export type RegisteredPanelId = 'file-tree' | 'git' | 'file-panel' | 'command';
+/**
+ * v0.3.3 ADR-037:命令面板不再是独立 dock 面板 —— 指令 tab 与输出整合进
+ * file-panel(「已打开」)内部(FilePanel 渲染统一 tab 列表,命令侧由
+ * command-panel/CommandPanel.tsx 的 CommandTabStrip / CommandPane 提供)。
+ */
+export type RegisteredPanelId = 'file-tree' | 'git' | 'file-panel';
 
 /**
  * v0.3.1:面板搜索状态(dock 级共享 SearchBar 驱动)。LayoutHost 持有唯一一份,
@@ -70,25 +74,12 @@ export const PANEL_REGISTRY: Readonly<Record<RegisteredPanelId, PanelDefinition>
     id: 'file-panel',
     label: { zh: '已打开', en: 'Opened' },
     trigger: 'program-push',
+    // ADR-037:这里同时承载打开文件与 AI 推送指令的输出(统一 tab 列表)。
     Component: FilePanel,
-  },
-  command: {
-    id: 'command',
-    label: { zh: '命令', en: 'Command' },
-    // v0.3.3 ADR-027:program-push。AI 经 marina run / HTTP /run 推任意命令字符串,
-    // Marina 跑它、输出渲染 markdown 进面板。与 file-panel 同构(program-push),
-    // 区别在内层:这里推的是「指令」而非「文件」。
-    trigger: 'program-push',
-    Component: CommandPanel,
   },
 };
 
 /** LayoutNode 由 main 生成,非法/未知 leaf 在 renderer 直接忽略而不是猜测渲染。 */
 export function isRegisteredPanelId(panelId: string): panelId is RegisteredPanelId {
-  return (
-    panelId === 'file-tree' ||
-    panelId === 'git' ||
-    panelId === 'file-panel' ||
-    panelId === 'command'
-  );
+  return panelId === 'file-tree' || panelId === 'git' || panelId === 'file-panel';
 }

@@ -262,7 +262,7 @@ export function MarkdownDocument({
       if (!heading) return false;
       expandHeadingSections(heading);
       // 文件面板与命令面板的滚动容器不同(ADR-036 后目录能力全源,两处都要认)。
-      const scrollOwner = root.closest('.file-panel-body, .command-panel-body');
+      const scrollOwner = root.closest('.file-panel-body');
       scrollOwner?.dispatchEvent(new Event(FILE_VIEWER_PROGRAMMATIC_NAVIGATION_EVENT));
       heading.scrollIntoView({ block: 'start' });
       return true;
@@ -322,7 +322,7 @@ export function MarkdownDocument({
                   requestAnimationFrame(() => {
                     if (!section.isConnected || section.open) return;
                     const summary = section.querySelector('summary');
-                    const scrollOwner = section.closest<HTMLElement>('.file-panel-body, .command-panel-body');
+                    const scrollOwner = section.closest<HTMLElement>('.file-panel-body');
                     if (!summary || !scrollOwner) return;
                     const summaryRect = summary.getBoundingClientRect();
                     const ownerRect = scrollOwner.getBoundingClientRect();
@@ -537,7 +537,7 @@ export function MarkdownDocument({
    */
   useLayoutEffect(() => {
     const root = containerRef.current;
-    const scrollOwner = root?.closest<HTMLElement>('.file-panel-body, .command-panel-body');
+    const scrollOwner = root?.closest<HTMLElement>('.file-panel-body');
     const rail = root?.querySelector<HTMLElement>('.markdown-heading-rail');
     if (!root || !scrollOwner || !rail) return undefined;
 

@@ -2432,34 +2432,25 @@ html[data-maximized='true'] .app-root.with-shell {
 /* body 里是自带背景的 .markdown-body 时,去掉本容器 padding,让 .markdown-body
  * 撑满整个可视区 —— 它的自带背景(github 白/深、custom 用户的米黄…)覆盖整片,
  * 不再"内容区周围一圈 marina 主题色",短内容时下方也不露 marina。
- * file-panel 与 command-panel 共用 MarkdownDocument,两种 adapter 必须应用同一
- * 内容面契约；text / image / placeholder 没有 .markdown-body 子节点,padding 保留。
- * 不认风格名,对所有 markdown 风格统一生效。 */
-.file-panel-body:has(.markdown-body),
-.command-panel-body:has(.markdown-body) {
+ * 文件侧与命令侧(ADR-037 起同宿 .file-panel-body)共用 MarkdownDocument,必须
+ * 应用同一内容面契约;text / image / placeholder 没有 .markdown-body 子节点,
+ * padding 保留。不认风格名,对所有 markdown 风格统一生效。 */
+.file-panel-body:has(.markdown-body) {
   padding: 0;
 }
 
-/* ── CommandPanel (v0.3.3 ADR-028):AI 推送命令、输出渲染 markdown ── */
-.command-panel-content {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 0;
-  min-height: 0;
-  min-width: 0;
+/* 文件 tab 与命令 tab(ADR-037 统一进 .file-panel-tabs)之间的细分隔线。 */
+.file-panel-tab-divider {
+  align-self: center;
+  width: 1px;
+  height: 14px;
+  margin: 0 3px;
+  background-color: var(--color-border, #f0f);
+  flex: 0 0 auto;
 }
 
-.command-panel-tabs {
-  display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  gap: 2px;
-  padding: 4px 6px;
-  border-bottom: 1px solid var(--color-bg-elevated, #f0f);
-  flex: 0 0 auto;
-  max-height: 120px;
-  overflow-y: auto;
-}
+/* ── 命令侧 UI(v0.3.3 ADR-028;ADR-037 起整合进「已打开」面板):
+   tab 段直接渲染在 .file-panel-tabs 里,工具条/输出区由 FilePanel 组合 ── */
 
 .command-tab {
   display: inline-flex;
@@ -2677,18 +2668,6 @@ html[data-maximized='true'] .app-root.with-shell {
 .sudo-password-submit:disabled {
   opacity: 0.5;
   cursor: default;
-}
-
-.command-panel-body {
-  flex: 1 1 0;
-  overflow: auto;
-  padding: 8px 10px;
-  font-size: 12px;
-
-  /* body 为终端拖拽默认禁用选区；命令输出复用 MarkdownCodeBlock 的“运行选中”
-   * 交互，必须在内容容器恢复文本选择。toolbar/tab 仍保持不可选。 */
-  user-select: text;
-  -webkit-user-select: text;
 }
 
 .command-panel-empty {
