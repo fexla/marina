@@ -7,6 +7,39 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+### Added
+
+- **pi 终端自动注入 show-in-marina skill + Marina 系统提示词(ADR-028 决策 8,
+  方案-pibridge-skill与提示词注入-20260909)**:skill 物理上移入
+  pi-marina-bridge package(`packages/pi-marina-bridge/skills/show-in-marina/`),
+  extension 检测到 Marina env 三件套后经 pi 的 `resources_discover` 钩子贡献该
+  目录为 skillPaths(skill 只在 Marina 终端内出现,非 Marina 会话零污染),并经
+  `before_agent_start` 幂等追加「Marina 输出习惯」系统提示词(大段输出走文件面板
+  /瀑布式排版/grilling 批量澄清,内容源自开发者项目 CLAUDE.md 的 Marina 三节)。
+  bridge package 版本 0.3.7 → 0.3.8(ensureUpToDate 靠它把新内容推给已装用户)。
+  真实 pi 0.84.4 端到端验证:有 env 时 skill 被发现(`show-in-marina` 进 skill
+  列表、location 指向包内路径)+ 提示词恰好追加一次;无 env 时两者皆零。
+  `piIntegration` 开关不 gate 注入(它管 workspace 绑定/指示灯;文件面板是独立
+  功能,注入只依赖「是否 Marina 终端」)。
+
+### Changed
+
+- **手动 skill 安装不再有 pi 目标**:右键「安装 Marina Skill」只剩 Claude Code /
+  Codex(pi 由 bridge 自动注入,无需逐项目安装)。pi 目标移除的原因:pi 对同名
+  skill 先加载者胜,项目级 `.pi/skills` 旧副本会遮蔽 bridge 随版本更新的新副本。
+  SkillInstaller 源目录改为 bridge 包内的 skills/show-in-marina(与注入同一份
+  物理内容,单一真相源),electron-builder 相应去掉独立的 `src/skills` 打包项。
+  旧项目里已装的 `.pi/skills/show-in-marina` 不主动清理(不碰用户项目目录),
+  如被遮蔽重装 skill 或删该目录即可。
+
+### Fixed
+
+- **typecheck 红(48ec329 起)**:`packages/pi-marina-bridge/extensions/index.ts`
+  对 `@earendil-works/pi-coding-agent` 的 type-only import 在 Marina 仓不可解析
+  (TS2307)并级联 16 个 implicit-any/TS2345。改为包内本地最小结构化类型
+  `pi-types.ts`(只声明实际使用的 `on` 9 事件重载 + `appendEntry` + ctx 切片,
+  对照 pi 0.84.4 types.d.ts 核对),jiti 运行时擦除类型、零影响。
+
 ## [0.3.3-dev.15] — 2026-09-03
 
 > WebViewer 批:「已打开」面板支持本地 HTML 网页预览(ADR-034)。archify 类 skill
