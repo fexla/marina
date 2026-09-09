@@ -7,8 +7,22 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+## [0.3.3-dev.17] — 2026-09-09
+
+> Markdown 面板交互批:marina: 动作链接(ADR-035,文档内点击触发 CLI show/run)、
+> 链接样式统一、Ctrl+F 选区预填、YAML frontmatter 识别隐藏。
+
 ### Added
 
+- **面板 Ctrl+F 搜索支持选区预填**:面板里有选中文本时按 Ctrl+F,搜索框直接
+  写入选中内容的第一行(浏览器 find bar 同款行为;输入框单行且高亮按文本节点
+  匹配,跨行搜索词命中不了,取第一行作种子最稳)。读选区发生在 focus 之前 ——
+  焦点移入输入框会清掉文档选区;预填后全选,直接输入即整体替换。
+- **Markdown YAML frontmatter 识别并隐藏**:引入 remark-frontmatter 5.0.0,
+  文档开头的 `---` YAML 块解析为 mdast yaml 节点后静默跳过 —— 不渲染、不进
+  Ctrl+F 的 DOM 文本、不进标题大纲、不影响裸路径自动链接(此前渲染成两条
+  `<hr>` 夹原始 YAML 文本)。CRLF 与含 Windows 路径的 frontmatter 均正确隐藏;
+  正文中间 `---` 保持 CommonMark 原语义。
 - **marina: 动作链接(ADR-035,方案-marina动作链接-20260909)**:Markdown 文档里的
   `[x](<marina:show a.md>)` / `[x](<marina:run gh issue list>)` 点击后等价于跑
   marina CLI 对应子命令 —— main 端直接分发到 CLI 同源服务路径(show 进「已打开」
