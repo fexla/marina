@@ -39,3 +39,19 @@ const WINDOWS_DRIVE_PATH_ENCODED_RE = /^[A-Za-z]:%5c/i;
 export function isWindowsDrivePath(url: string): boolean {
   return WINDOWS_DRIVE_PATH_RE.test(url) || WINDOWS_DRIVE_PATH_ENCODED_RE.test(url);
 }
+
+/**
+ * v0.3.3 ADR-035:true = marina: 动作链接([x](marina:show a.md))。
+ * 上游 defaultUrlTransform 会把 marina 当未知协议剥空整条 href,所以渲染层
+ * (markdown-url-transform)要原样放行;点击分流与命令解析见
+ * src/shared/marina-link.ts 与 main 端 marina-link-dispatch.ts。
+ *
+ * scheme 按规范大小写不敏感(MARINA:show x 同样有效)。
+ * 注意 marinax: 这类更长前缀不会误命中(要求第 7 个字符是 ':')。
+ */
+const MARINA_ACTION_HREF_RE = /^marina:/i;
+
+/** true = marina: 动作链接(文档内触发 CLI 语义的按钮式链接)。 */
+export function isMarinaActionHref(url: string): boolean {
+  return MARINA_ACTION_HREF_RE.test(url);
+}

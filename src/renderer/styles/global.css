@@ -4353,6 +4353,73 @@ html[data-maximized='true'] .app-root.with-shell {
   color: var(--color-accent-special, #f0f);
 }
 
+/* v0.3.3:文档正文链接统一「低调常驻下划线 + hover 加深」(三套 markdown 主题
+ * 一致;github-markdown-css 默认无下划线 hover 才出现,marina 主题原先连 hover
+ * 反馈都没有)。下划线颜色从 currentColor 派生 —— 链接色随主题走,下划线自动
+ * 可读,不引入新 token。md-marina-link 动作 chip 不吃这套(它有自己的按钮样式)。
+ *
+ * ⚠ 样式契约(同下方 .md-code-block,global-css.test.ts 守护):本段两条规则
+ * 禁用 var(--color-bg-*) 系列 token —— 垫底背景随面板/主题未知。 */
+.file-markdown-viewer a:not(.md-marina-link),
+.panel-dock .markdown-body a:not(.md-marina-link) {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 28%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2.5px;
+  transition: text-decoration-color 0.12s ease;
+}
+
+.file-markdown-viewer a:not(.md-marina-link):hover,
+.panel-dock .markdown-body a:not(.md-marina-link):hover {
+  text-decoration-color: color-mix(in srgb, currentColor 78%, transparent);
+}
+
+/* v0.3.3 ADR-035:marina: 动作链接 —— [x](marina:show a.md) 点击等价于跑
+ * marina CLI(打开文件 / 命令面板执行)。它不是导航是动作,渲染成内联动作 chip:
+ * 药丸形 + 动词图标(run=▶ / show=📄)+ hover 加深,与普通链接明确区分;
+ * title 是解码后的参数原文(MdLink 注入,hover 即知会执行什么)。
+ *
+ * ⚠ 样式契约(同上,global-css.test.ts 守护):禁用 var(--color-bg-*) token
+ * 当背景/边框基色 —— 三套 markdown 主题(marina / github-light / github-dark /
+ * custom)下垫的背景未知,固定 bg 在深色主题渲染成黑块。一律
+ * color-mix(in srgb, currentColor N%, transparent) 派生:currentColor 是链接
+ * 主题色(随主题可读),混合透明后在任何背景上都成立,明暗自适应。 */
+a.md-marina-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 1px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-radius: 999px;
+  background-color: color-mix(in srgb, currentColor 7%, transparent);
+  font-weight: 500;
+  text-decoration: none;
+  text-underline-offset: 0;
+  line-height: 1.55;
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease;
+}
+
+a.md-marina-link:hover {
+  background-color: color-mix(in srgb, currentColor 15%, transparent);
+  border-color: color-mix(in srgb, currentColor 55%, transparent);
+  text-decoration: none;
+}
+
+a.md-marina-link:active {
+  background-color: color-mix(in srgb, currentColor 20%, transparent);
+}
+
+/* chip 内动词图标(lucide svg 是 flex item,统一尺寸并稍降调) */
+a.md-marina-link svg {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  opacity: 0.8;
+}
+
 /* v0.3.3:Markdown 代码块可交互外壳(ADR-023)。三套 markdown 风格
  * (marina / github-light / github-dark / custom)共享这套样式。
  * 背景策略:外壳与 toolbar / output 全部透明,只靠 border 分层 —— 代码区背景

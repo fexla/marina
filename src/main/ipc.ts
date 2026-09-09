@@ -43,6 +43,7 @@ import type { PiBridgeInstaller } from './pi-bridge-installer';
 import type { MarkdownThemeManager } from './markdown-theme-manager';
 import type { CodeBlockRunner } from './code-block-runner';
 import type { CommandPanelService, CommandPanelUpdateEvent } from './command-panel-service';
+import { dispatchMarinaLink } from './marina-link-dispatch';
 import type { SudoPasswordStore } from './sudo-password-store';
 import {
   getExplorerIntegrationStatus,
@@ -96,6 +97,8 @@ import {
   type FilePanelHeadingNavigationPayload,
   type OpenFilePanelPayload,
   type OpenPathFromMarkdownPayload,
+  type RunMarinaLinkPayload,
+  type RunMarinaLinkResponse,
   type GetFileTreeRootsPayload,
   type GetFileTreeRootsResponse,
   type ListFileTreeDirectoryPayload,
@@ -2241,6 +2244,27 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
         envelope.payload.sessionId,
         envelope.payload.mdPath,
         envelope.payload.src,
+      );
+    },
+  );
+
+  // v0.3.3 ADR-035:markdown 文档里的 marina: 动作链接([x](marina:show a.md))
+  // → 解析子命令后分发到 file-panel(show)/command-panel(run),与 CLI 同源
+  // (marina-link-dispatch.ts)。owner 校验与其它面板操作一致;错误(含语法错)
+  // 上抛,renderer MdLink 捕获后 toast。
+  registerHandle(
+    COMMAND_CHANNELS.MARINA_LINK_RUN,
+    async (
+      _e,
+      envelope: CommandEnvelope<RunMarinaLinkPayload>,
+    ): Promise<RunMarinaLinkResponse> => {
+      requireFilePanelOwner(sessionManager, envelope.payload.sessionId, envelope.windowId);
+      return dispatchMarinaLink(
+        { filePanelService, commandPanelService: deps.commandPanelService },
+        envelope.payload.sessionId,
+        envelope.payload.mdPath,
+        envelope.payload.href,
+        envelope.windowId,
       );
     },
   );

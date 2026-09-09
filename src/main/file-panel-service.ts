@@ -835,6 +835,7 @@ export class FilePanelService extends EventEmitter {
     sessionId: string,
     mdPath: string,
     src: string,
+    options: { heading?: string } = {},
   ): Promise<FilePanelSnapshot> {
     if (!src || typeof src !== 'string') {
       throw new FilePanelError('ResolveFailed', '链接路径为空');
@@ -871,7 +872,11 @@ export class FilePanelService extends EventEmitter {
     // 校验存在 + 是文件(目录拒,与 openFile 的 resolveAndStat 一致)。直接复用
     // openFile(sessionId, abs):绝对路径会忽略 currentCwd base,走完整状态机
     // (加/更新 tab、切 active、ensureWatcher、requestActivation),零重复逻辑。
-    return this.openFile(sessionId, abs);
+    // options.heading(v0.3.3 ADR-035,marina:show 链接用)透传给 openFile:打开后
+    // 单发一次 filePanelNavigationRequested 导航意图。
+    return this.openFile(sessionId, abs, {
+      ...(options.heading === undefined ? {} : { heading: options.heading }),
+    });
   }
 
   /** session 销毁:清掉该 session 全部 watcher + 状态(ipc wireEventBroadcasts 调)。 */

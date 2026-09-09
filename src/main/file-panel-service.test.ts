@@ -472,6 +472,23 @@ describe('FilePanelService - openFileFromMarkdown (Feature B)', () => {
     expect(r.activePath).toBe(abs);
   });
 
+  it('options.heading 透传(ADR-035 marina:show 链接)→ 发一次导航意图', async () => {
+    await writeFile(join(dir, 'r.md'), '# hi');
+    await writeFile(join(dir, 'target.md'), '# Target\n\n## Root Cause\n');
+    await svc.openFile('s1', 'r.md');
+    const mdPath = join(dir, 'r.md');
+
+    const navigations: Array<{ sessionId: string; heading: string }> = [];
+    svc.on('filePanelNavigationRequested', (p: { sessionId: string; heading: string }) => {
+      navigations.push({ sessionId: p.sessionId, heading: p.heading });
+    });
+    const r = await svc.openFileFromMarkdown('s1', mdPath, 'target.md', {
+      heading: 'Root Cause',
+    });
+    expect(r.activePath).toBe(join(dir, 'target.md'));
+    expect(navigations).toEqual([{ sessionId: 's1', heading: 'Root Cause' }]);
+  });
+
   it('src 为空 → ResolveFailed', async () => {
     await writeFile(join(dir, 'r.md'), '# hi');
     await svc.openFile('s1', 'r.md');

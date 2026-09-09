@@ -170,6 +170,8 @@ import type {
   FilePanelSnapshot,
   ReadFileResponse,
   ReadImageResponse,
+  RunMarinaLinkPayload,
+  RunMarinaLinkResponse,
   GalleryResolveImageResponse,
   GalleryOpenImageResponse,
   GalleryRevealImageResponse,
@@ -545,6 +547,11 @@ export interface CommandContractMap {
   [COMMAND_CHANNELS.FILE_PANEL_OPEN_PATH]: {
     payload: OpenPathFromMarkdownPayload;
     response: FilePanelSnapshot;
+  };
+  /** v0.3.3 ADR-035:markdown 文档里的 marina: 动作链接点击(show/run 分发)。 */
+  [COMMAND_CHANNELS.MARINA_LINK_RUN]: {
+    payload: RunMarinaLinkPayload;
+    response: RunMarinaLinkResponse;
   };
   [COMMAND_CHANNELS.FILE_PANEL_SHOW]: {
     payload: FilePanelActionPayload;

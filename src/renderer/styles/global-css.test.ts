@@ -87,6 +87,22 @@ describe('global.css 样式契约', () => {
     expect(hover!.body).not.toMatch(/var\(\s*--color-bg-/);
   });
 
+  it('a.md-marina-link 动作 chip 规则禁用 var(--color-bg-*) token(透明垫底组件)', () => {
+    // v0.3.3 ADR-035:marina: 动作链接 chip 与代码块外壳同处境 —— 三套 markdown
+    // 主题下垫底背景未知,主题 bg token 会渲染成黑块;反馈色必须 currentColor 派生。
+    const offenders = rules
+      .filter((r) => r.selector.includes('.md-marina-link'))
+      .filter((r) => /var\(\s*--color-bg-/.test(r.body))
+      .map((r) => r.selector);
+    expect(offenders).toEqual([]);
+  });
+
+  it('a.md-marina-link:hover 反馈色必须由 currentColor 派生', () => {
+    const hover = rules.find((r) => r.selector.includes('a.md-marina-link:hover'));
+    expect(hover, '未找到 a.md-marina-link:hover 规则').toBeDefined();
+    expect(hover!.body).toMatch(/color-mix\(\s*in srgb,\s*currentcolor/i);
+  });
+
   it('命令面板不得引用未声明的 --color-* token', () => {
     // 2026-08-07 回归：CommandPanel 写了 var(--color-border, #f0f)，但三层
     // token API 从未定义 --color-border，导致下拉框和 Markdown 表格全变亮粉。

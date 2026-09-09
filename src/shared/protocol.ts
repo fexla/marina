@@ -284,6 +284,12 @@ export const COMMAND_CHANNELS = {
   /** 读 markdown 里的本地图片为 dataUrl(相对 md 文件目录解析,绕开 CSP 对 file:// 的禁) */
   FILE_PANEL_READ_IMAGE: 'cmd:file-panel:read-image',
 
+  // Marina 动作链接域 —— markdown 文档里的 [x](marina:show a.md) 点击(v0.3.3
+  // ADR-035)。文件面板与命令面板两种文档来源共用(所以独立于上面两个域名);
+  // main 端解析子命令(show/run)后分发到 file-panel / command-panel 服务。
+  /** 执行一次 marina: 动作链接(payload {sessionId, href, mdPath?}) */
+  MARINA_LINK_RUN: 'cmd:marina-link:run',
+
   // Command panel 域 —— AI 经 HTTP /run(或此 IPC)推送任意命令字符串,Marina 跑它
   // 并把 markdown 输出渲染进第 4 个 dock 面板(ADR-028 / Feature G)。trigger=
   // program-push,与 file-panel 同构;区别在内层:这里推的是「指令」而非「文件」,
@@ -1968,6 +1974,24 @@ export interface OpenPathFromMarkdownPayload {
   sessionId: string;
   mdPath: string;
   src: string;
+}
+
+/**
+ * v0.3.3 ADR-035 cmd:marina-link:run payload。markdown 文档里 [x](marina:...)
+ * 动作链接点击 → main 解析子命令(show/run)后分发。href 是链接原始值(含
+ * marina: 前缀与 percent-encoding,main 端统一解码,渲染层不解析)。
+ * mdPath 仅「已打开」面板来源有(相对该 md 目录解析);命令面板输出无文档
+ * 路径,show 的相对路径按 session cwd 解析(与 CLI 一致)。
+ */
+export interface RunMarinaLinkPayload {
+  sessionId: string;
+  href: string;
+  mdPath?: string;
+}
+
+/** cmd:marina-link:run 返回。kind 仅供 renderer 确认;面板状态走既有事件。 */
+export interface RunMarinaLinkResponse {
+  kind: 'show' | 'run';
 }
 
 /** cmd:file-panel:read payload。path 必须是已打开列表里的规范化绝对路径。 */

@@ -16,6 +16,9 @@
  *   会把 "C:"/"D:" 当未知协议把 href 剥空(2026-08-23 修复,详见该文件头)。
  * - 裸盘符路径经 remarkMarinaPathAutolink 自动链接("read D:\\a.png" 这类无链接
  *   语法的正文也能点,2026-08 修复);点击分流仍走同一个 MdLink seam。
+ * - marina: 动作链接(ADR-035):[x](marina:show a.md) 渲染成动作 chip,点击经
+ *   MARINA_LINK_RUN 由 main 分发到 CLI 同源路径(show 进面板 / run 命令面板),
+ *   无确认弹窗(安全模型同 ADR-023 可运行代码块)。
  * - YAML frontmatter(文档开头 `---` 块)经 remarkFrontmatter 识别为 yaml 节点后
  *   隐藏,不参与渲染/搜索/大纲(2026-09)。
  *
@@ -46,13 +49,14 @@ import {
   createMarkdownHeadingIdFactory,
   resolveMarkdownHeadingTarget,
 } from '@shared/markdown-heading';
-import { isRemoteUrl } from '@shared/url-scheme';
+import { isRemoteUrl, isMarinaActionHref } from '@shared/url-scheme';
+import { marinaLinkDisplayCommand, peekMarinaLinkKind } from '@shared/marina-link';
 import { getPanelUiState, setPanelUiState } from '@shared/panel-ui-cache';
 import { readPanelPreference, writePanelPreference } from '@shared/panel-preferences';
 import { useDomTextHighlight } from '../../hooks/useDomTextHighlight';
 import { FILE_VIEWER_PROGRAMMATIC_NAVIGATION_EVENT } from '../../hooks/useFileViewerScroll';
 import { useAppState } from '../../store';
-import { Icon } from '../icons';
+import { Icon, ICON_SIZE_SMALL } from '../icons';
 import { useTranslation } from '../LanguageProvider';
 import type { PanelSearchProps } from '../layout/panel-registry';
 import { useToast } from '../Toast';
@@ -747,10 +751,13 @@ interface MdLinkProps extends AnchorHTMLAttributes<HTMLAnchorElement> {
  * Markdown 链接按能力分流：
  * - http(s)/mailto 外链 → 系统浏览器；
  * - #anchor → 当前 Markdown 根内定位；
+ * - marina: 动作链接(ADR-035)→ MARINA_LINK_RUN,main 解析 show/run 后分发
+ *   (与 CLI 同源;无确认弹窗,安全模型同可运行代码块 ADR-023);
  * - 其余本地路径 → 仅在有真实 mdPath 时交给 FilePanelService 解析并打开。
  *
- * 命令输出没有文档路径，本地链接会被阻止而不是猜 cwd。这样既保持 Electron SPA
- * 不导航，也不把 command key 伪装成受 main 信任的文件成员。
+ * 命令输出没有文档路径,本地链接会被阻止而不是猜 cwd(marina:show 例外:main
+ * 按 session cwd 解析,与 CLI show 同语义)。这样既保持 Electron SPA 不导航,
+ * 也不把 command key 伪装成受 main 信任的文件成员。
  */
 function MdLink({
   href,
@@ -762,6 +769,10 @@ function MdLink({
 }: MdLinkProps): JSX.Element {
   const { tx } = useTranslation();
   const toast = useToast();
+  // marina: 动作链接渲染成 chip:图标按动词区分(run=▶ show=📄),title 是解码后
+  // 的参数原文 —— 用户 hover 即知点击会执行什么,这是动作链接的知情通道。
+  const marinaCommandText = marinaLinkDisplayCommand(href ?? '');
+  const marinaKind = peekMarinaLinkKind(href ?? '');
   const handle = (event: React.MouseEvent<HTMLAnchorElement>): void => {
     if (!href) return;
     if (href.startsWith('#')) {
@@ -773,6 +784,26 @@ function MdLink({
         // 畸形 percent-encoding 保留原串；找不到目标时安全 no-op。
       }
       onNavigateAnchor(id);
+      return;
+    }
+    // marina: 动作链接:原始 href 直接交给 main(解析在 main 端,渲染层不解析,
+    // 防 renderer 侧逻辑被伪造文档绕过)。失败 toast 与本地链接同 UX。
+    if (isMarinaActionHref(href)) {
+      event.preventDefault();
+      window.api
+        .invoke(COMMAND_CHANNELS.MARINA_LINK_RUN, {
+          sessionId,
+          href,
+          ...(mdPath === undefined ? {} : { mdPath }),
+        })
+        .catch((err: unknown) => {
+          console.warn('[md] marina link failed', err);
+          const reason = err instanceof Error ? err.message : String(err);
+          toast.push({
+            kind: 'error',
+            message: `${tx('marina: 链接执行失败:', 'marina: link failed: ')}${reason}`,
+          });
+        });
       return;
     }
     event.preventDefault();
@@ -807,10 +838,26 @@ function MdLink({
       {...anchorProps}
       href={href}
       onClick={handle}
+      className={
+        marinaCommandText === null
+          ? anchorProps.className
+          : ['md-marina-link', anchorProps.className].filter(Boolean).join(' ')
+      }
+      title={marinaCommandText ?? anchorProps.title}
       target={isExternalLink(href ?? '') ? '_blank' : undefined}
       rel={isExternalLink(href ?? '') ? 'noopener noreferrer' : undefined}
     >
-      {children}
+      {marinaCommandText === null ? (
+        children
+      ) : (
+        <>
+          <Icon
+            name={marinaKind === 'run' ? 'play' : marinaKind === 'show' ? 'file' : 'alertTriangle'}
+            size={ICON_SIZE_SMALL}
+          />
+          {children}
+        </>
+      )}
     </a>
   );
 }
