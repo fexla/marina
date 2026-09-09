@@ -25,10 +25,10 @@
  *
  * Scope:
  *   All Windows script files (.ps1 / .cmd / .bat) under src/shell-hooks/,
- *   src/skills/show-in-marina/, and scripts/ that get bundled into the
- *   installer via extraResources in electron-builder.yml. If you add a new
- *   .ps1 / .cmd / .bat to that pipeline, add it to LOCALE_SENSITIVE_FILES
- *   below.
+ *   packages/pi-marina-bridge/skills/show-in-marina/, and scripts/ that get
+ *   bundled into the installer via extraResources in electron-builder.yml.
+ *   If you add a new .ps1 / .cmd / .bat to that pipeline, add it to
+ *   LOCALE_SENSITIVE_FILES below.
  *
  *   .sh / .fish files are out of scope — POSIX shells treat `#` comments
  *   as opaque until newline, so non-ASCII bytes in comments cannot
@@ -57,18 +57,19 @@ const LOCALE_SENSITIVE_FILES = [
   'src/shell-hooks/cmd.bat',
   'scripts/install-context-menu.ps1',
   'scripts/uninstall-context-menu.ps1',
-  // show-in-marina skill ships to user projects via skill-installer (cp of
-  // src/skills/show-in-marina) and is parsed by powershell.exe / cmd.exe.
+  // show-in-marina skill ships inside the pi-marina-bridge package (v0.3.3
+  // 方案 20260909: bridge 在 Marina 终端内注入;claude/codex 手动安装也以它为源)
+  // and is parsed by powershell.exe / cmd.exe.
   // The extensionless `marina` is a bash dispatcher; it is kept ASCII-only to
   // match the rest of the skill bundle and to avoid any surprises when the
   // skill-installer / electron-builder copies it across (and so a non-ASCII
   // byte can never sneak into a shebang line on a misconfigured box).
   // `marina.sh` is the native POSIX client (Linux / macOS); same ASCII rule so
   // a stray byte can never corrupt its shebang / comments on any box.
-  'src/skills/show-in-marina/marina.ps1',
-  'src/skills/show-in-marina/marina.cmd',
-  'src/skills/show-in-marina/marina',
-  'src/skills/show-in-marina/marina.sh',
+  'packages/pi-marina-bridge/skills/show-in-marina/marina.ps1',
+  'packages/pi-marina-bridge/skills/show-in-marina/marina.cmd',
+  'packages/pi-marina-bridge/skills/show-in-marina/marina',
+  'packages/pi-marina-bridge/skills/show-in-marina/marina.sh',
 ] as const;
 
 const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
@@ -110,7 +111,10 @@ describe('show-in-marina bash dispatcher must be zero-external-tooling', () => {
   //   `#!/usr/bin/env bash` → "/usr/bin/env: 'bash': No such file or directory"
   //   dirname/uname 等任何 /usr/bin 工具 → "command not found"
   // dispatcher 在 exec 客户端之前只允许 bash 内建(直到 powershell.exe 接手)。
-  const content = readFileSync(resolve(REPO_ROOT, 'src/skills/show-in-marina/marina'), 'utf8');
+  const content = readFileSync(
+    resolve(REPO_ROOT, 'packages', 'pi-marina-bridge', 'skills', 'show-in-marina', 'marina'),
+    'utf8',
+  );
 
   it('shebang 是 #!/bin/bash(env 形式在裸 MSYS 下找不到 bash)', () => {
     const firstLine = content.split('\n')[0];

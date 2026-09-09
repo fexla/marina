@@ -40,13 +40,11 @@ afterPack: scripts/filter-node-pty-after-pack.cjs
 extraResources:
   - from: src/shell-hooks
     to: shell-hooks
-  # 内置 show-in-marina skill 由主进程复制到用户选中的项目级 agent 目录；外部
-  # agent 进程需要真实文件，不能从 app.asar 读取。
-  - from: src/skills
-    to: skills
-  # v0.3.3 ADR-028：pi 集成 package（pi-marina-bridge）。同上理由：pi 的 extension
+  # v0.3.3 ADR-028：pi 集成 package（pi-marina-bridge）。pi 的 extension
   # loader (jiti) 需真实文件，不能从 asar 读。由 PiBridgeInstaller 复制到用户目录
-  # 稳定位置后 `pi install` 引用。
+  # 稳定位置后 `pi install` 引用。v0.3.3(方案 20260909)起包内还携带
+  # skills/show-in-marina（bridge 在 Marina 终端内自动注入的 skill；claude/codex
+  # 的手动安装也以它为唯一源 —— 因此不再单独打包 src/skills，那条目已删除）。
   - from: packages/pi-marina-bridge
     to: pi-marina-bridge
   # Win11 新右键菜单(IExplorerCommand)资源 —— 仅 installed 形态使用,

@@ -1159,8 +1159,10 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
     },
   );
 
-  // 收藏路径右键的“安装 Marina Skill”。它写的是当前 backend 上所选项目的
-  // agent 目录，因此在远程 backend 窗口中会由 daemon 执行，不能标为 local-control。
+  // 收藏路径右键的“安装 Marina Skill”(claude/codex 目标;pi 由 pi-marina-bridge
+  // 自动注入,不走这里,见 skill-installer.ts 头注释)。它写的是当前 backend 上
+  // 所选项目的 agent 目录，因此在远程 backend 窗口中会由 daemon 执行，不能标为
+  // local-control。
   registerHandle(
     COMMAND_CHANNELS.SKILL_INSTALL_MARINA,
     async (
@@ -1743,10 +1745,7 @@ function registerCommandHandlers(deps: IpcLayerDeps): void {
           const win = BrowserWindow.fromWebContents(_e.sender);
           if (win && !win.isDestroyed()) {
             const img = await win.webContents.capturePage();
-            await fs.writeFile(
-              joinPath(logsDir, `shift-capture-${now}.png`),
-              img.toPNG(),
-            );
+            await fs.writeFile(joinPath(logsDir, `shift-capture-${now}.png`), img.toPNG());
           }
         }
       } catch (err) {

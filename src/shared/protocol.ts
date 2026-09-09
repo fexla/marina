@@ -146,7 +146,8 @@ export const COMMAND_CHANNELS = {
   BOOKMARK_GROUP_RENAME: 'cmd:bookmark:group:rename',
   BOOKMARK_GROUP_REMOVE: 'cmd:bookmark:group:remove',
   PATH_REMOVE_FROM_RECENT: 'cmd:path:remove-from-recent',
-  /** 将内置 show-in-marina skill 安装到所选收藏项目的 agent 目录。 */
+  /** 将内置 show-in-marina skill 安装到所选收藏项目的 agent 目录(claude/codex)。
+   *  pi 不在此列:由 pi-marina-bridge 在 Marina 终端内自动注入(方案 20260909)。 */
   SKILL_INSTALL_MARINA: 'cmd:skill:install-marina',
   /** v0.3.3 ADR-028：安装 pi-marina-bridge package（全局或项目级）。 */
   PI_BRIDGE_INSTALL: 'cmd:pi-bridge:install',
@@ -764,17 +765,21 @@ export interface RenameSessionPayload {
   newDisplayName: string;
 }
 
-/** cmd:skill:install-marina payload。projectPath 必须是本地收藏目录。 */
+/**
+ * cmd:skill:install-marina payload。projectPath 必须是本地收藏目录。
+ * v0.3.3(方案 20260909)起无 pi 目标:pi 的 skill 由 pi-marina-bridge 在
+ * Marina 终端内自动注入,不再手动安装到 .pi/skills。
+ */
 export interface InstallMarinaSkillPayload {
   projectPath: string;
-  targets: Array<'pi' | 'claude' | 'codex'>;
+  targets: Array<'claude' | 'codex'>;
   /** true 仅由 renderer 经用户覆盖确认后传入。 */
   overwrite?: boolean;
 }
 
 export interface InstallMarinaSkillResponse {
-  installed: Array<{ target: 'pi' | 'claude' | 'codex'; destination: string }>;
-  conflicts: Array<{ target: 'pi' | 'claude' | 'codex'; destination: string }>;
+  installed: Array<{ target: 'claude' | 'codex'; destination: string }>;
+  conflicts: Array<{ target: 'claude' | 'codex'; destination: string }>;
 }
 
 /** v0.3.3 ADR-028：cmd:pi-bridge:install payload。scope='project' 需 projectPath。 */

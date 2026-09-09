@@ -1,11 +1,11 @@
 /**
  * @file src/main/marina-sh.test.ts
- * @purpose 契约测试:跑真实 src/skills/show-in-marina/marina.sh(POSIX 客户端,
- *   bash + curl),对内存 mock 的 file-panel 服务,断言端到端行为(ping /
- *   workspace / show / run / close / list / screenshot 的退出码、stdout、
- *   请求体)。这是 marina.ps1(由 marina-cli.test.ts 覆盖)在 Linux / macOS 上
- *   的对等客户端 —— 两者实现同一 HTTP 契约(file-panel-service.ts),所以这里
- *   复用同一个 Python mock server(marina-cli-mock-server.py)。
+ * @purpose 契约测试:跑真实 packages/pi-marina-bridge/skills/show-in-marina/
+ *   marina.sh(POSIX 客户端, bash + curl),对内存 mock 的 file-panel 服务,断言
+ *   端到端行为(ping / workspace / show / run / close / list / screenshot 的
+ *   退出码、stdout、请求体)。这是 marina.ps1(由 marina-cli.test.ts 覆盖)在
+ *   Linux / macOS 上的对等客户端 —— 两者实现同一 HTTP 契约(file-panel-service.ts),
+ *   所以这里复用同一个 Python mock server(marina-cli-mock-server.py)。
  *
  * @被测对象: marina.sh。用真实文件而非内联代码,是为了覆盖 shebang、可执行位
  *   兜底(`exec bash marina.sh`)、curl 调用、awk JSON 解析这些只在整文件运行时
@@ -23,9 +23,10 @@
  *   powershell.exe,所以它在 Linux CI 上也能覆盖 marina.sh。
  *
  * @对应:
- *   src/skills/show-in-marina/marina.sh        (被测 POSIX 客户端)
- *   src/skills/show-in-marina/marina           (调度器;本测试不直接覆盖,但它的
- *                                               Linux 分支 exec 的就是这个 sh)
+ *   packages/pi-marina-bridge/skills/show-in-marina/marina.sh (被测 POSIX 客户端)
+ *   packages/pi-marina-bridge/skills/show-in-marina/marina    (调度器;本测试不
+ *                                               直接覆盖,但它的 Linux 分支 exec 的
+ *                                               就是这个 sh)
  *   src/main/marina-cli-mock-server.py          (契约 mock fixture,与 ps1 测试共享)
  *   src/main/marina-cli.test.ts                 (ps1 客户端的等价测试)
  */
@@ -35,7 +36,16 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-const SKILL_DIR = resolve(__dirname, '..', 'skills', 'show-in-marina');
+// v0.3.3(方案 20260909)起 skill 物理上随 pi-marina-bridge package 分发。
+const SKILL_DIR = resolve(
+  __dirname,
+  '..',
+  '..',
+  'packages',
+  'pi-marina-bridge',
+  'skills',
+  'show-in-marina',
+);
 // 被测对象:真实的 marina.sh(POSIX 客户端)。
 const SH = join(SKILL_DIR, 'marina.sh');
 const MOCK_SERVER = resolve(__dirname, 'marina-cli-mock-server.py');

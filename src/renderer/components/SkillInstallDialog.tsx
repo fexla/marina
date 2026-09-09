@@ -1,7 +1,9 @@
 /**
  * @file SkillInstallDialog.tsx
  * @purpose 让用户选择将 Marina 内置 show-in-marina skill 安装到当前收藏项目的
- *   Pi、Claude Code、Codex 项目级目录。
+ *   Claude Code、Codex 项目级目录。（v0.3.3 起 pi 不在此列:pi 的 skill 由
+ *   pi-marina-bridge package 在 Marina 终端内自动注入,无需手动安装,见
+ *   方案-pibridge-skill与提示词注入-20260909。）
  *
  * @关键设计:
  * - 只由本地收藏路径的右键菜单打开；SSH 路径没有本机文件系统语义，不能安装。
@@ -15,7 +17,6 @@ import { COMMAND_CHANNELS } from '@shared/protocol';
 import { useModal } from './Modal';
 
 const TARGETS = [
-  { id: 'pi', title: 'Pi', path: '.pi/skills/show-in-marina' },
   { id: 'claude', title: 'Claude Code', path: '.claude/skills/show-in-marina' },
   { id: 'codex', title: 'Codex', path: '.agents/skills/show-in-marina' },
 ] as const;
@@ -37,7 +38,7 @@ export function SkillInstallDialog({
   onError,
 }: SkillInstallDialogProps): JSX.Element {
   const modal = useModal();
-  const [selected, setSelected] = useState<Set<TargetId>>(() => new Set(['pi', 'claude', 'codex']));
+  const [selected, setSelected] = useState<Set<TargetId>>(() => new Set(['claude', 'codex']));
   const [installing, setInstalling] = useState(false);
   const firstInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -71,7 +72,11 @@ export function SkillInstallDialog({
     }
     setInstalling(true);
     try {
-      const result = await window.api.invoke(COMMAND_CHANNELS.SKILL_INSTALL_MARINA, { projectPath, targets, overwrite });
+      const result = await window.api.invoke(COMMAND_CHANNELS.SKILL_INSTALL_MARINA, {
+        projectPath,
+        targets,
+        overwrite,
+      });
       if (result.conflicts.length > 0 && !overwrite) {
         const preview = result.conflicts
           .map((conflict) => `${conflict.target}: ${conflict.destination}`)
@@ -110,7 +115,8 @@ export function SkillInstallDialog({
           安装 Marina Skill
         </div>
         <div className="app-modal-message">
-          将内置 <code>show-in-marina</code> 安装到收藏项目“{projectName}”的对应 agent 目录。
+          将内置 <code>show-in-marina</code> 安装到收藏项目“{projectName}”的对应 agent 目录。 Pi
+          无需手动安装——安装 pi 集成 package 后，Marina 终端里的 pi 会自动获得该 skill。
         </div>
         <div className="skill-install-options">
           {TARGETS.map((target, index) => (

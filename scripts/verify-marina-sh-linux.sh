@@ -28,7 +28,8 @@
 set -u
 
 ROOT="${1:-$(pwd)}"
-SKILL_DIR="$ROOT/src/skills/show-in-marina"
+# v0.3.3 (plan 20260909): the skill ships inside the pi-marina-bridge package.
+SKILL_DIR="$ROOT/packages/pi-marina-bridge/skills/show-in-marina"
 SH="$SKILL_DIR/marina.sh"
 DISPATCHER="$SKILL_DIR/marina"
 MOCK="$ROOT/src/main/marina-cli-mock-server.py"

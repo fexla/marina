@@ -1374,10 +1374,7 @@ function TemplateEditor({
           shellFirst: draft.shellFirst,
           postExitAction: draft.postExitAction,
         };
-        await window.api.invoke(
-          COMMAND_CHANNELS.TEMPLATE_ADD,
-          payload,
-        );
+        await window.api.invoke(COMMAND_CHANNELS.TEMPLATE_ADD, payload);
       } else {
         const payload: UpdateTemplatePayload = {
           id: draft.id,
@@ -1391,10 +1388,7 @@ function TemplateEditor({
             postExitAction: draft.postExitAction,
           },
         };
-        await window.api.invoke(
-          COMMAND_CHANNELS.TEMPLATE_UPDATE,
-          payload,
-        );
+        await window.api.invoke(COMMAND_CHANNELS.TEMPLATE_UPDATE, payload);
       }
       onClose();
     } catch (err: unknown) {
@@ -1846,10 +1840,7 @@ function DataPanel({ setError }: { setError: (msg: string | null) => void }): JS
     setLastExportPath(null);
     setBusy('export');
     try {
-      const res = await window.api.invoke(
-        COMMAND_CHANNELS.SETTINGS_EXPORT,
-        undefined,
-      );
+      const res = await window.api.invoke(COMMAND_CHANNELS.SETTINGS_EXPORT, undefined);
       if (res.filePath) setLastExportPath(res.filePath);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1862,10 +1853,7 @@ function DataPanel({ setError }: { setError: (msg: string | null) => void }): JS
     setError(null);
     setBusy('import');
     try {
-      const res = await window.api.invoke(
-        COMMAND_CHANNELS.SETTINGS_IMPORT,
-        undefined,
-      );
+      const res = await window.api.invoke(COMMAND_CHANNELS.SETTINGS_IMPORT, undefined);
       if (res.status === 'error') {
         setError(
           tx(
@@ -1923,10 +1911,9 @@ function DataPanel({ setError }: { setError: (msg: string | null) => void }): JS
         setError(tx('请先选择 WSL 发行版', 'Select a WSL distro first'));
         return;
       }
-      const result = await window.api.invoke(
-        COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER,
-        { defaultPath: toWslUncPath(distro, wslPath) },
-      );
+      const result = await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER, {
+        defaultPath: toWslUncPath(distro, wslPath),
+      });
       if (!result.path) return;
       setWslPickedUncPath(result.path);
       setWslPath(formatDisplayPath(result.path));
@@ -2188,30 +2175,27 @@ function RemotePanel({ setError }: { setError: (msg: string | null) => void }): 
             partial.password = '';
           }
         }
-        await window.api.invoke(
-          COMMAND_CHANNELS.SSH_PROFILE_UPDATE,
-          { id: editingProfileId, partial },
-        );
+        await window.api.invoke(COMMAND_CHANNELS.SSH_PROFILE_UPDATE, {
+          id: editingProfileId,
+          partial,
+        });
         resetSshForm();
       } else {
-        const res = await window.api.invoke(
-          COMMAND_CHANNELS.SSH_PROFILE_ADD,
-          {
-            name: sshName,
-            host: sshHost,
-            port,
-            username: sshUser,
-            authType: sshAuthType,
-            ...(sshAuthType === 'keyFile' && sshKeyFile.trim()
-              ? { keyFilePath: sshKeyFile.trim() }
-              : {}),
-            ...(sshAuthType === 'password' && sshSavePassword && sshPassword
-              ? { password: sshPassword }
-              : {}),
-            defaultRemoteCwd: remotePath || '~',
-            proxyJump,
-          },
-        );
+        const res = await window.api.invoke(COMMAND_CHANNELS.SSH_PROFILE_ADD, {
+          name: sshName,
+          host: sshHost,
+          port,
+          username: sshUser,
+          authType: sshAuthType,
+          ...(sshAuthType === 'keyFile' && sshKeyFile.trim()
+            ? { keyFilePath: sshKeyFile.trim() }
+            : {}),
+          ...(sshAuthType === 'password' && sshSavePassword && sshPassword
+            ? { password: sshPassword }
+            : {}),
+          defaultRemoteCwd: remotePath || '~',
+          proxyJump,
+        });
         setRemoteProfileId(res.profile.id);
         resetSshForm();
       }
@@ -2223,10 +2207,9 @@ function RemotePanel({ setError }: { setError: (msg: string | null) => void }): 
   const handlePickSshKeyFile = async (): Promise<void> => {
     setError(null);
     try {
-      const res = await window.api.invoke(
-        COMMAND_CHANNELS.SSH_PROFILE_PICK_KEY_FILE,
-        { ...(sshKeyFile.trim() ? { defaultPath: sshKeyFile.trim() } : {}) },
-      );
+      const res = await window.api.invoke(COMMAND_CHANNELS.SSH_PROFILE_PICK_KEY_FILE, {
+        ...(sshKeyFile.trim() ? { defaultPath: sshKeyFile.trim() } : {}),
+      });
       if (res.path) setSshKeyFile(res.path);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -2739,10 +2722,7 @@ function SystemIntegrationPanel({
         kind === 'classic'
           ? COMMAND_CHANNELS.EXPLORER_INTEGRATION_SET_CLASSIC
           : COMMAND_CHANNELS.EXPLORER_INTEGRATION_SET_MODERN;
-      const res = await window.api.invoke(
-        channel,
-        { enabled },
-      );
+      const res = await window.api.invoke(channel, { enabled });
       setStatus(res.status);
       if (!res.ok) {
         setError(res.message || `操作失败 (${kind})`);
@@ -2979,10 +2959,7 @@ function AiPanel({ setError }: { setError: (msg: string | null) => void }): JSX.
     setError(null);
     setPiInstalling(true);
     try {
-      const r = await window.api.invoke(
-        COMMAND_CHANNELS.PI_BRIDGE_INSTALL,
-        { scope: 'global' },
-      );
+      const r = await window.api.invoke(COMMAND_CHANNELS.PI_BRIDGE_INSTALL, { scope: 'global' });
       setPiStatus((s) => (s ? { ...s, globallyInstalled: true } : s));
       toast.push({
         kind: 'success',
@@ -3004,10 +2981,7 @@ function AiPanel({ setError }: { setError: (msg: string | null) => void }): JSX.
     setError(null);
     setTesting(true);
     try {
-      const res = await window.api.invoke(
-        COMMAND_CHANNELS.AI_TEST_CONNECTION,
-        undefined,
-      );
+      const res = await window.api.invoke(COMMAND_CHANNELS.AI_TEST_CONNECTION, undefined);
       toast.push({
         kind: res.ok ? 'success' : 'error',
         message:
@@ -3031,12 +3005,13 @@ function AiPanel({ setError }: { setError: (msg: string | null) => void }): JSX.
     <section className="settings-panel">
       <h2 className="settings-panel-title">{tx('AI 助手', 'AI Assistant')}</h2>
 
-      {/* v0.3.3 ADR-028：pi 集成。pi 跑在终端里时自动绑定 workspace + 指示灯精准化。 */}
+      {/* v0.3.3 ADR-028：pi 集成。pi 跑在终端里时自动绑定 workspace + 指示灯精准化
+          + 自动注入 show-in-marina skill 与 Marina 系统提示词(方案 20260909)。 */}
       <SettingRow
         label={tx('pi 集成', 'pi integration')}
         hint={tx(
-          '通过 Marina 打开 pi(@earendil-works/pi-coding-agent)时，每个对话绑定独立临时 workspace；切对话即切 workspace。pi 工作完成但未查看时，侧栏指示灯转警告色。需安装 pi package。',
-          'When you run pi (@earendil-works/pi-coding-agent) inside a Marina terminal, each conversation binds its own temporary workspace; switching conversations switches workspace. When pi finishes work you have not viewed, the sidebar indicator turns a warning color. Requires the pi package.',
+          '通过 Marina 打开 pi(@earendil-works/pi-coding-agent)时，每个对话绑定独立临时 workspace；切对话即切 workspace。pi 工作完成但未查看时，侧栏指示灯转警告色。安装 pi package 后，Marina 终端里的 pi 还会自动获得 show-in-marina skill 与 Marina 输出习惯提示词(大段输出走文件面板等)，无需逐项目手动安装。',
+          'When you run pi (@earendil-works/pi-coding-agent) inside a Marina terminal, each conversation binds its own temporary workspace; switching conversations switches workspace. When pi finishes work you have not viewed, the sidebar indicator turns a warning color. Once the pi package is installed, pi inside Marina terminals also automatically gets the show-in-marina skill and the Marina output-conventions system prompt (long outputs go to the file panel, etc.) — no per-project manual install needed.',
         )}
       >
         <label className="settings-checkbox">
@@ -3055,8 +3030,8 @@ function AiPanel({ setError }: { setError: (msg: string | null) => void }): JSX.
       <SettingRow
         label={tx('安装 pi 集成 package（全局）', 'Install pi integration package (global)')}
         hint={tx(
-          '把内置 pi-marina-bridge package 注册到全局 pi（~/.pi/agent），所有项目生效。需先安装 pi。项目级安装见侧栏收藏路径右键。',
-          'Register the built-in pi-marina-bridge package with global pi (~/.pi/agent), effective in all projects. Requires pi installed first. For per-project install, use the sidebar bookmark right-click menu.',
+          '把内置 pi-marina-bridge package 注册到全局 pi（~/.pi/agent），所有项目生效：workspace 绑定、指示灯精准化、show-in-marina skill 与 Marina 提示词自动注入。需先安装 pi。项目级安装见侧栏收藏路径右键。',
+          'Register the built-in pi-marina-bridge package with global pi (~/.pi/agent), effective in all projects: workspace binding, precise indicators, and automatic injection of the show-in-marina skill + Marina system prompt. Requires pi installed first. For per-project install, use the sidebar bookmark right-click menu.',
         )}
       >
         {piStatus?.piInstalled === false ? (
@@ -3367,10 +3342,7 @@ function AdvancedPanel({ setError }: { setError: (msg: string | null) => void })
     setError(null);
     setPerformanceBusy('report');
     try {
-      const status = await window.api.invoke(
-        COMMAND_CHANNELS.PERFORMANCE_WRITE_REPORT,
-        undefined,
-      );
+      const status = await window.api.invoke(COMMAND_CHANNELS.PERFORMANCE_WRITE_REPORT, undefined);
       setPerformanceStatus(status);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -3390,7 +3362,9 @@ function AdvancedPanel({ setError }: { setError: (msg: string | null) => void })
     setError(null);
     setPerformanceBusy('profile');
     try {
-      const result = await window.api.invoke(COMMAND_CHANNELS.PERFORMANCE_CAPTURE_CPU_PROFILE, { durationSeconds: 15 });
+      const result = await window.api.invoke(COMMAND_CHANNELS.PERFORMANCE_CAPTURE_CPU_PROFILE, {
+        durationSeconds: 15,
+      });
       refreshPerformanceStatus();
       await window.api.invoke(COMMAND_CHANNELS.PERFORMANCE_OPEN_REPORTS_DIR, undefined);
       window.alert(tx(`CPU Profile 已生成：${result.path}`, `CPU Profile created: ${result.path}`));

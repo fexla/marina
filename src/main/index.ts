@@ -48,10 +48,7 @@ import type { WorkspaceOps } from './file-panel-service';
 import { LocalHttpGateway } from './http/local-http-gateway';
 import { FileTreeService } from './file-tree-service';
 import { FileTreePollingService } from './file-tree-polling-service';
-import {
-  WEB_FILE_SCHEME_PRIVILEGES,
-  WebFileProtocol,
-} from './web-file-protocol';
+import { WEB_FILE_SCHEME_PRIVILEGES, WebFileProtocol } from './web-file-protocol';
 import { WEB_FILE_SCHEME } from '@shared/web-file-url';
 import { EVENT_CHANNELS } from '@shared/protocol';
 import { GitService } from './git-service';
@@ -238,10 +235,13 @@ function bootstrap(): void {
   const localHttpGateway = new LocalHttpGateway(filePanelService);
   // 内置 skill 在 dev 从源码读取、installed 包从 extraResources 读取。安装器只会
   // 复制这一份受控内容到用户明确选择的本地收藏项目。
+  // v0.3.3(方案 20260909)起 skill 的物理来源 = pi-marina-bridge package 内的
+  // skills/show-in-marina —— 与 bridge 在 Marina 终端内注入的同一份,单一真相源,
+  // 不再维护 src/skills 平行副本。claude/codex 手动安装与 pi 自动注入内容永远一致。
   const skillInstaller = new SkillInstaller({
     sourceDir: app.isPackaged
-      ? join(process.resourcesPath, 'skills', 'show-in-marina')
-      : join(__dirname, '..', '..', 'src', 'skills', 'show-in-marina'),
+      ? join(process.resourcesPath, 'pi-marina-bridge', 'skills', 'show-in-marina')
+      : join(__dirname, '..', '..', 'packages', 'pi-marina-bridge', 'skills', 'show-in-marina'),
   });
   // v0.3.3 ADR-028：pi-marina-bridge package 安装器。dev 从源码读、installed 从
   // extraResources(pi-marina-bridge/)读。复制到 ~/.pi/agent/packages 稳定位置后

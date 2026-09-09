@@ -1,15 +1,20 @@
 /**
  * @file skill-installer.ts
  * @purpose 将 Marina 内置的 show-in-marina skill 安装到用户选中的本地项目，供
- *   Pi、Claude Code 或 Codex 自动发现。
+ *   Claude Code 或 Codex 自动发现。（v0.3.3 起不再有 pi 目标：pi 的 skill 由
+ *   pi-marina-bridge package 在 Marina 终端内经 resources_discover 自动注入，
+ *   见方案-pibridge-skill与提示词注入-20260909；项目级 .pi/skills 手动副本会与
+ *   bridge 注入的同名 skill 冲突——pi 先加载者胜，旧副本会遮蔽 bridge 的新内容。）
  *
  * @关键设计:
- * - 收藏路径是安装目标项目根目录；内置 skill 是唯一来源，用户无需另选文件。
- * - 三个目标使用各自的官方项目级发现目录：.pi/skills、.claude/skills、
- *   .agents/skills；复制而非符号链接，项目可独立提交、打包和迁移。
- * - 先完整预检冲突，避免“Pi 装成功、Claude 因已有目录失败”的半完成状态。
+ * - 收藏路径是安装目标项目根目录；内置 skill 是唯一来源（pi-marina-bridge
+ *   package 内的 skills/show-in-marina，与 bridge 注入共用同一份物理内容），
+ *   用户无需另选文件。
+ * - 两个目标使用各自的官方项目级发现目录：.claude/skills、.agents/skills；
+ *   复制而非符号链接，项目可独立提交、打包和迁移。
+ * - 先完整预检冲突，避免“Claude 装成功、Codex 因已有目录失败”的半完成状态。
  *
- * @对应文档章节: Pi docs/skills.md、Claude Code skills docs、OpenAI Codex skills docs。
+ * @对应文档章节: Claude Code skills docs、OpenAI Codex skills docs。
  *
  * @不要在这里做的事:
  * - 不安装任意用户提供的脚本或目录（降低从 UI 写入不可信代码的风险）。
@@ -23,7 +28,7 @@ import { logger } from './logger';
 const MODULE = 'SkillInstaller';
 export const MARINA_SKILL_NAME = 'show-in-marina' as const;
 
-export type SkillInstallTarget = 'pi' | 'claude' | 'codex';
+export type SkillInstallTarget = 'claude' | 'codex';
 
 export interface SkillInstallRequest {
   /** 收藏路径对应的本地项目根目录。 */
@@ -49,7 +54,6 @@ export interface SkillInstallerOptions {
 }
 
 const TARGET_DIRS: Record<SkillInstallTarget, readonly string[]> = {
-  pi: ['.pi', 'skills'],
   claude: ['.claude', 'skills'],
   codex: ['.agents', 'skills'],
 };
@@ -171,7 +175,7 @@ export class SkillInstaller {
 
 function normalizeTargets(input: SkillInstallTarget[]): SkillInstallTarget[] {
   if (!Array.isArray(input) || input.length === 0) {
-    throw new Error(`[${MODULE}] Select at least one target: Pi, Claude Code, or Codex.`);
+    throw new Error(`[${MODULE}] Select at least one target: Claude Code or Codex.`);
   }
   const unique = [...new Set(input)];
   for (const target of unique) {

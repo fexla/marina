@@ -1,8 +1,9 @@
 /**
  * @file src/main/marina-cli.test.ts
- * @purpose 集成测试:跑真实 src/skills/show-in-marina/marina.cmd(Windows
- *   启动器壳)→ marina.ps1,断言端到端行为(ping/workspace/show/close/list 退出码、
- *   env 严格性、健康标记严格匹配、相对路径启动器调用、退出码穿透)。
+ * @purpose 集成测试:跑真实 packages/pi-marina-bridge/skills/show-in-marina/
+ *   marina.cmd(Windows 启动器壳)→ marina.ps1,断言端到端行为(ping/workspace/
+ *   show/close/list 退出码、env 严格性、健康标记严格匹配、相对路径启动器调用、
+ *   退出码穿透)。
  *
  * @被测对象: marina.cmd 启动器 + 它调用的 marina.ps1。用真实 .cmd 而非
  *   直接调 .ps1,是为了覆盖启动器本身的退出码穿透(`endlocal & exit /b
@@ -26,8 +27,8 @@
  *   - env 严格:MARINA_SERVICE/TOKEN/TERMINAL_ID 缺一即 exit 1,不端口
  *     扫描、不地址回退、不改 PATH。
  *
- * @对应: src/skills/show-in-marina/marina.cmd(被测启动器)
- *          src/skills/show-in-marina/marina.ps1(被测真身)
+ * @对应: packages/pi-marina-bridge/skills/show-in-marina/marina.cmd(被测启动器)
+ *          packages/pi-marina-bridge/skills/show-in-marina/marina.ps1(被测真身)
  *          src/main/marina-cli-mock-server.py(mock server)
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
@@ -36,7 +37,16 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-const SKILL_DIR = resolve(__dirname, '..', 'skills', 'show-in-marina');
+// v0.3.3(方案 20260909)起 skill 物理上随 pi-marina-bridge package 分发。
+const SKILL_DIR = resolve(
+  __dirname,
+  '..',
+  '..',
+  'packages',
+  'pi-marina-bridge',
+  'skills',
+  'show-in-marina',
+);
 // 被测对象是真实的 marina.cmd 启动器(不是 marina.ps1 本身)。这样退出码
 // 穿透(`endlocal & exit /b %errorlevel%`)和 %~dp0 解析都被覆盖。
 const CMD = join(SKILL_DIR, 'marina.cmd');
