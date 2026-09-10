@@ -9,15 +9,25 @@
  *   给 SessionManager 实现,它有自己的 ManagedSession 上下文,不用把状态机内部
  *   暴露给 coordinator(封装不破)。
  * - 主 piSessionId 锁定(v0.3.3 ADR-028):每个 Marina terminal 同一时刻只绑定一个
- *   「主 pi 对话」,subagent 等临时子 session 的事件全部忽略,不污染主终端。
+ *   「主 pi 对话」,subagent 等临时子 session 的 workspace/名字事件全部忽略,
+ *   不污染主终端。
+ * - subagent 聚合状态(v0.3.4,重开 方案-20260817 的 L3,开发者 2026-09-10 裁决):
+ *   子 session 事件不再纯丢弃 —— workspace/名字污染照旧拦截,但**工作状态聚合**:
+ *   终端「工作中」= 主 agent 在干 ∨ 任一注册子 agent 在干。前台(task 工具阻塞)子
+ *   agent 期间主 agent 本就未 settled,天然覆盖;本聚合真正修的是**后台/async 子
+ *   agent**(工具立即返回、主 agent 可先 settled)导致的错显空闲。全部收工时走
+ *   既有 notifyAgentSettled 路径(idle + hasUnviewedWork,语义与主 agent 收工一致:
+ *   Marina 只关心「pi 进程树是否在工作、是否干完了用户还没看」)。
  * - 依赖:SessionWorkspaceCoordinator(做 workspace 操作)+ PiSessionHooks(状态副作用)
  *   + PiSettingsSource(读 settings.piIntegration)。全程不碰 ManagedSession。
  *
- * @对应文档章节:v0.3.3 ADR-028 + M2 设计(pi 业务层独立)
+ * @对应文档章节:v0.3.3 ADR-028 + v0.3.4 subagent 聚合(方案-pibridge-fork与子会话
+ *   适配-20260817 第 3.3 节 L3)+ M2 设计(pi 业务层独立)
  *
  * @不要在这里做的事:
  * - 不要碰 ManagedSession / markActive / emitStateChanged(那是 SessionManager 的 hooks)
  * - 不要持久化映射(内存态,workspace 走 retentionDays 回收)
+ * - 不要把子 agent 事件放进 workspace/名字决策(ADR-028 防污染不动摇,只聚合状态)
  */
 import { logger } from '../logger';
 import type { Settings } from '@shared/types';
@@ -51,6 +61,52 @@ export interface PiSettingsSource {
   get(): { piIntegration: Settings['piIntegration'] };
 }
 
+/**
+ * 已注册 subagent 子会话的跟踪状态。
+ *
+ * pi-subagents 的子 agent 是独立 pi 子进程(spawn 时继承 TERMINAL_ID/MARINA env,
+ * bridge 照常发事件),Marina 侧靠 child piSessionId 区分。
+ */
+interface TrackedChildAgent {
+  /** 该子 agent 当前是否在干(bridge 的 agent_working / agent_settled 驱动)。 */
+  working: boolean;
+  /** 最后一次收到该子任意事件的时间戳(ms)。泄露回收依据,见 CHILD_STALE_MS。 */
+  lastEventAt: number;
+}
+
+/**
+ * 每个 Marina terminal 的 pi 聚合状态(主 agent + subagent 子进程)。
+ * 「终端工作中」= mainWorking ∨ 任一 child.working —— Marina 只关心 pi 进程树
+ * 是否在工作,不区分是谁在干(2026-09-10 开发者裁决)。
+ */
+interface TerminalPiAggregate {
+  /** 主 pi 对话的 agent 是否 working。 */
+  mainWorking: boolean;
+  /**
+   * 主 pi 已 session_shutdown 但仍有子 agent 在干 → teardown(unbind/isPiAgent=false)
+   * 延迟到子排空。期间子事件继续驱动状态;若用户在终端里起新 pi(session_start),
+   * 该标志清除(新主接管,延迟 teardown 取消)。
+   */
+  mainGone: boolean;
+  /** 已注册子会话(child piSessionId → 状态)。注册 = 事件被主锁拦截过 session_start。 */
+  children: Map<string, TrackedChildAgent>;
+}
+
+/**
+ * 子 agent 泄露回收宽限期:超过此时长无任何事件的注册子视为已死,直接移除。
+ *
+ * 为什么需要:子进程被 hard-kill(超时强杀/崩溃)不会发 session_shutdown,
+ * working 子会永远卡住「工作中」。为什么是 15 分钟而不是更短:单个 agent turn
+ * 期间(working → settled 之间)bridge 不发任何事件,思考/工具重的子 agent 单轮
+ * 超过 10 分钟并不罕见 —— TTL 太短会把活着的子误判成死(状态错翻 idle)。15 分钟
+ * 是「最长静默 turn」与「卡死状态的最长忍受时间」的折中,误判的代价只是提前
+ * idle(真 settled 事件随后到达时按未注册忽略,不会二次翻转)。
+ */
+const CHILD_STALE_MS = 15 * 60_000;
+
+/** 泄露回收扫描间隔(生产 sweeper;测试直接调 sweepStaleChildren)。 */
+const CHILD_SWEEP_INTERVAL_MS = 60_000;
+
 export class PiSessionCoordinator {
   /**
    * v0.3.3 ADR-028：Marina sessionId → 当前活跃 pi 对话 id 的反查(主锁)。
@@ -72,10 +128,19 @@ export class PiSessionCoordinator {
    * SessionManager 的 notifyAgentWorking/notifyAgentSettled(applyState)。
    */
   private readonly agentGetters = new Map<string, AgentStateGetter>();
+  /**
+   * 每个 Marina terminal 的 pi 聚合状态(subagent 聚合,v0.3.4)。session_start(main)
+   * 懒创建;session_shutdown(main) 无 working 子时删除;销毁时无条件删。
+   */
+  private readonly aggregates = new Map<string, TerminalPiAggregate>();
+  /** 泄露回收 sweeper(懒启动:首个子注册时起,全排空时停;unref 不阻塞退出)。 */
+  private sweeperTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly workspaceCoordinator: SessionWorkspaceCoordinator,
     private readonly settingsManager: PiSettingsSource,
+    /** 可注入时钟(测试泄露回收);生产缺省 Date.now。 */
+    private readonly now: () => number = () => Date.now(),
   ) {}
 
   /** 注入 SessionManager 实现的 hooks(状态副作用)。 */
@@ -143,21 +208,26 @@ export class PiSessionCoordinator {
     }
     // v0.3.3 ADR-028「主 piSessionId 锁定」:每个 Marina terminal 同一时刻只绑定
     // 一个「主 pi 对话」。subagent tool 等机制起的临时子 session 有独立 piSessionId,
-    // 其事件全部忽略 —— 子 agent 是临时辅助,不该污染主终端的 workspace/名字/状态
-    // (实测:子 agent 的 name_changed 会把终端名改成 "subagent-worker-xxx")。
+    // 其 workspace/名字事件全部忽略 —— 子 agent 是临时辅助,不该污染主终端的
+    // workspace/名字/状态(实测:子 agent 的 name_changed 会把终端名改成 "subagent-worker-xxx")。
     //
     // 规则(纯靠 piSessionId 比对,不依赖任何第三方 subagent package 的 env 约定):
-    //   - currentMain===null(初始 / 旧主已 session_shutdown):接受,session_start 据此
-    //     绑定新主;零星的其它事件也接受(启动竞态,无害)。
-    //   - 否则 piSessionId!==currentMain:子 agent 事件,忽略。
+    //   - currentMain===null(初始 / 旧主已 session_shutdown)且非注册子:接受,session_start
+    //     据此绑定新主;零星的其它事件也接受(启动竞态,无害)。
+    //   - 否则 piSessionId!==currentMain:子 agent 事件,交给 handleChildAgentEvent
+    //     (v0.3.4:workspace/名字照旧拦截,工作状态进聚合)。
     //   - 合法主切换(/new /resume /fork /重启 pi)前 pi 必先发 session_shutdown 清空
     //     主绑定,随后的 session_start 才能绑定新主 → 「关闭 pi 或 /new 后新 pi 正常工作」。
+    //   - 注册过的子永不升级为主:主 shutdown 后(currentMain null),已注册子的
+    //     session_start 仍按子处理,防止后台子 agent 把自己绑成主对话抢 workspace。
     const currentMainPiSid = this.sessionToPiSession.get(sessionId) ?? null;
-    if (currentMainPiSid !== null && payload.piSessionId !== currentMainPiSid) {
-      logger.info(
-        'PiSessionCoordinator',
-        `pi-event 忽略(子agent) sid=${sessionId} piSid=${payload.piSessionId} main=${currentMainPiSid} event=${payload.event}`,
-      );
+    const term = this.aggregates.get(sessionId);
+    const isRegisteredChild = term?.children.has(payload.piSessionId) ?? false;
+    if (
+      (currentMainPiSid !== null && payload.piSessionId !== currentMainPiSid) ||
+      isRegisteredChild
+    ) {
+      this.handleChildAgentEvent(sessionId, payload, term);
       return;
     }
     const settings = this.settingsManager.get().piIntegration;
@@ -171,6 +241,10 @@ export class PiSessionCoordinator {
         // 声明 pi 身份(无论开关，isPiAgent 总是准确反映“终端在跑 pi”)。
         this.hooks?.onPiAgentChanged(sessionId, true);
         this.sessionToPiSession.set(sessionId, payload.piSessionId);
+        const term = this.ensureTerm(sessionId);
+        // 新主接管:若旧主 shutdown 时因子 agent 未排空而延迟了 teardown,现在取消
+        // (teardown 责任移交给「新主自己的 session_shutdown」)。
+        term.mainGone = false;
         // 亲缘可见性(方案 20260817 L1):fork/子会话文件带 parentSessionFile,
         // 记进日志供诊断(谁是谁的儿子、父 workspace 是哪个)。
         if (payload.parentSessionFile) {
@@ -179,11 +253,11 @@ export class PiSessionCoordinator {
             `pi-lineage: sid=${sessionId} piSid=${payload.piSessionId} parent=${payload.parentSessionFile} parentWs=${payload.parentBinding ?? '-'}`,
           );
         }
-        // 终端状态分层:创建 AgentStateGetter 并 bind —— stateGetter 换成 agent
-        // getter,字节流检测旁路。pi 的 working/settled 经 getter 权威驱动状态。
-        const agentGetter = new AgentStateGetter();
-        this.agentGetters.set(sessionId, agentGetter);
-        this.hooks?.bindAgent(sessionId, agentGetter);
+        // 终端状态分层:AgentStateGetter bind —— stateGetter 换成 agent getter,
+        // 字节流检测旁路。聚合 working(后台子 agent 跨主切换仍在干)时种子为
+        // working,bind 后 applyState 立即拉到 active,不闪 idle。getter 已存在
+        // (旧主延迟 teardown 保留的)则复用,种子 onWorking 幂等。
+        this.ensureAgentBound(sessionId, this.isAggregateWorking(term));
         // 返回 { workspaceId }：新建的 workspace id 交回 bridge 存进对话 entry
         // (appendEntry),下次 resume 同一对话时 bridge 读出随事件带上 → Marina 切回。
         return await this.handlePiConversationSwitch(
@@ -195,31 +269,55 @@ export class PiSessionCoordinator {
         );
       }
 
-      case 'session_shutdown':
+      case 'session_shutdown': {
         // pi 进程要退出了。workspace 按现有生命周期(Marina session 销毁时 release)；
         // 这里不提前 release(与销毁路径竞争)。
         this.sessionToPiSession.delete(sessionId);
-        this.hooks?.onPiAgentChanged(sessionId, false);
-        // 终端状态分层:unbind agent getter → stateGetter 回退到 byteStream fallback,
-        // 字节流检测恢复(接管终态判断)。
-        this.hooks?.unbindAgent(sessionId);
-        this.agentGetters.delete(sessionId);
+        const term = this.ensureTerm(sessionId);
+        const anyChildWorking = [...term.children.values()].some((c) => c.working);
+        if (anyChildWorking) {
+          // 后台/async 子 agent 还在干 → 状态机继续由子事件驱动,teardown 延迟到
+          // 子排空(fireAggregateFallingEdge 里补)。此刻不发 settled —— 工作没完。
+          term.mainGone = true;
+          term.mainWorking = false;
+          logger.info(
+            'PiSessionCoordinator',
+            `pi 主退出但子agent仍在干,延迟 teardown sid=${sessionId} children=${term.children.size}`,
+          );
+        } else {
+          // 无子在干:与旧行为一致,立即 teardown(isPiAgent=false + 回退字节流)。
+          this.teardownAgentBinding(sessionId, term);
+        }
         break;
+      }
 
       case 'agent_working': {
-        // pi 重新开始工作 → agent getter 标记 working(getter 权威),
-        // SessionManager 清 hasUnviewedWork + applyState(getter → active)。
+        // pi 重新开始工作 → 主槽置 working。聚合原已 working(后台子 agent 在干)时
+        // getter.onWorking / notifyAgentWorking 幂等(状态不变,hasUnviewedWork 已清)。
         const getter = this.agentGetters.get(sessionId);
-        getter?.onWorking();
+        // 无 agent 绑定的游离事件(teardown 后迟到的子事件 / 乱序):没有可驱动的
+        // 状态机,忽略。不存在「Marina 重启后 pi 还在」(session 不持久化,重启即
+        // 全灭),所以游离 working 一定是噪声。
+        if (!getter) break;
+        this.ensureTerm(sessionId).mainWorking = true;
+        getter.onWorking();
         this.hooks?.notifyAgentWorking(sessionId);
         break;
       }
 
       case 'agent_settled': {
-        // pi 这轮完成 → agent getter 标记 settled(getter → idle,立即,agent 权威),
-        // SessionManager applyState + 标 hasUnviewedWork(未看)。
+        // 主 agent 这轮完成。聚合语义下「真收工」= 主 + 所有子都空闲:后台子 agent
+        // 仍在干时抑制 settled(状态保持 active;hasUnviewedWork 等子排空时由下降沿
+        // 统一标 —— 「干完了用户还没看」以整棵 pi 进程树为准)。
         const getter = this.agentGetters.get(sessionId);
-        getter?.onSettled();
+        if (!getter) break; // 游离 settled(同上),忽略 —— 防止幻影 hasUnviewedWork
+        const term = this.ensureTerm(sessionId);
+        term.mainWorking = false;
+        if (this.isAggregateWorking(term)) {
+          logger.info('PiSessionCoordinator', `agent_settled 抑制(子agent仍在干) sid=${sessionId}`);
+          break;
+        }
+        getter.onSettled();
         this.hooks?.notifyAgentSettled(sessionId);
         break;
       }
@@ -228,6 +326,226 @@ export class PiSessionCoordinator {
         // pi 对话名 → 终端显示名(受 manuallyRenamed 保护)。
         this.hooks?.onPiName(sessionId, payload.name ?? null);
         break;
+    }
+  }
+
+  /**
+   * 子 agent 事件处理(主锁拦截后不再纯丢弃,v0.3.4)。
+   *
+   * 职责边界:workspace/名字污染照旧拦截(ADR-028 不动摇)——本方法**只**维护
+   * 聚合工作状态:注册子会话、跟踪 working/settled、状态变更后经
+   * applyAggregateTransition 在边沿上通知(上升沿 → active + 清未看标记;下降沿
+   * → idle + 标 hasUnviewedWork,与主 agent 收工同一路径)。
+   *
+   * 注册时机:子 session_start 被主锁拦截即注册(working=false);若 agent_working
+   * 先于注册到达(启动竞态),兜底注册。session_shutdown 注销。未注册子的
+   * settled/shutdown(已回收/乱序)无状态可改,忽略(防重复下降沿)。
+   *
+   * @param term 聚合状态;guard 分支保证非 null(锁存在 ⟹ session_start 已建)。
+   */
+  private handleChildAgentEvent(
+    sessionId: string,
+    payload: {
+      piSessionId: string;
+      event:
+        | 'session_start'
+        | 'session_shutdown'
+        | 'agent_working'
+        | 'agent_settled'
+        | 'name_changed';
+      parentSessionFile?: string | null;
+    },
+    term: TerminalPiAggregate | undefined,
+  ): void {
+    if (!term) return; // 防御:主从未 start(理论不可达,guard 已保证)
+    const piSid = payload.piSessionId;
+    switch (payload.event) {
+      case 'session_start': {
+        // 注册/刷新(子进程重试同一会话文件 → 同 piSid 重复 start,重置即可)。
+        term.children.set(piSid, { working: false, lastEventAt: this.now() });
+        this.ensureSweeper();
+        logger.info(
+          'PiSessionCoordinator',
+          `subagent 注册 sid=${sessionId} piSid=${piSid} parent=${payload.parentSessionFile ?? '-'} children=${term.children.size}`,
+        );
+        break;
+      }
+      case 'agent_working': {
+        const wasWorking = this.isAggregateWorking(term);
+        const child = term.children.get(piSid);
+        if (child) {
+          child.working = true;
+          child.lastEventAt = this.now();
+        } else {
+          // 竞态兜底:working 先于 start 到达(或 start 被 Marina 重启吞掉)。
+          // 不注册则该子的 settled 也无从跟踪,状态机会漏边沿。
+          term.children.set(piSid, { working: true, lastEventAt: this.now() });
+          this.ensureSweeper();
+        }
+        this.applyAggregateTransition(sessionId, term, wasWorking);
+        break;
+      }
+      case 'agent_settled': {
+        const child = term.children.get(piSid);
+        if (!child) break; // 未注册 → 无状态可改
+        const wasWorking = this.isAggregateWorking(term);
+        child.working = false;
+        child.lastEventAt = this.now();
+        this.applyAggregateTransition(sessionId, term, wasWorking);
+        break;
+      }
+      case 'session_shutdown': {
+        // 子进程退出。working=true 的子被 kill(没发 settled)也可能构成下降沿。
+        if (!term.children.has(piSid)) break;
+        const wasWorking = this.isAggregateWorking(term);
+        term.children.delete(piSid);
+        this.applyAggregateTransition(sessionId, term, wasWorking);
+        this.maybeStopSweeper();
+        break;
+      }
+      case 'name_changed': {
+        // 语义仍忽略(ADR-028:name_changed 会把终端名改成 "subagent-worker-xxx"),
+        // 但它证明子进程活着 → 刷新 lastEventAt,免费的泄露防护 keep-alive。
+        const child = term.children.get(piSid);
+        if (child) child.lastEventAt = this.now();
+        break;
+      }
+    }
+  }
+
+  /**
+   * 聚合状态边沿通知。只在 wasWorking ≠ 当前聚合值时触发(调用方传**变更前**的值):
+   *
+   * - 上升沿(idle → working):典型 = 主 agent 收工后,后台子 agent 开干。getter
+   *   置 working(缺失则重建 bind,见 ensureAgentBound)+ notifyAgentWorking
+   *   (active + 清 hasUnviewedWork)。
+   * - 下降沿(working → idle):主 + 所有子全空闲 = 「真收工」。getter settled +
+   *   notifyAgentSettled(idle + 标 hasUnviewedWork,SessionManager 侧判断用户
+   *   是否在看)。若主 pi 已退(mainGone)→ 补做延迟 teardown。
+   *
+   * 无边沿时静默(幂等):重复 settled/working 不重复 notify,避免把用户已查看
+   * 后清掉的 hasUnviewedWork 又被乱序事件标回去。
+   */
+  private applyAggregateTransition(
+    sessionId: string,
+    term: TerminalPiAggregate,
+    wasWorking: boolean,
+  ): void {
+    const nowWorking = this.isAggregateWorking(term);
+    if (nowWorking === wasWorking) return;
+    if (nowWorking) {
+      // getter 理论必在:child 分支可达 ⟹ 注册过子 ⟹ 主 session_start 建过 getter
+      // 且尚未 teardown(teardown 会把聚合条目一起删)。防御性 ?. 不破坏该假设。
+      this.agentGetters.get(sessionId)?.onWorking();
+      this.hooks?.notifyAgentWorking(sessionId);
+      logger.info('PiSessionCoordinator', `聚合开干(子agent拉起) sid=${sessionId}`);
+      return;
+    }
+    const getter = this.agentGetters.get(sessionId);
+    getter?.onSettled();
+    this.hooks?.notifyAgentSettled(sessionId);
+    logger.info('PiSessionCoordinator', `聚合收工(主+子全空闲) sid=${sessionId}`);
+    if (term.mainGone) this.teardownAgentBinding(sessionId, term);
+  }
+
+  /** 聚合 working = 主 agent 在干 ∨ 任一注册子 agent 在干。 */
+  private isAggregateWorking(term: TerminalPiAggregate): boolean {
+    return term.mainWorking || [...term.children.values()].some((c) => c.working);
+  }
+
+  /** 懒创建终端聚合条目(session_start / 主 agent 事件路径共用)。 */
+  private ensureTerm(sessionId: string): TerminalPiAggregate {
+    let term = this.aggregates.get(sessionId);
+    if (!term) {
+      term = { mainWorking: false, mainGone: false, children: new Map() };
+      this.aggregates.set(sessionId, term);
+    }
+    return term;
+  }
+
+  /**
+   * 确保该终端有已 bind 的 AgentStateGetter(仅 session_start 主路径使用)。
+   * 已存在(旧主延迟 teardown 保留的)则复用;不存在则创建并 bind —— seedWorking
+   * 时先 onWorking 再 bind,让 bindAgent 的立即 applyState 拉到 active,不闪 idle。
+   */
+  private ensureAgentBound(sessionId: string, seedWorking: boolean): AgentStateGetter {
+    let getter = this.agentGetters.get(sessionId);
+    if (getter) {
+      if (seedWorking) getter.onWorking();
+      return getter;
+    }
+    getter = new AgentStateGetter();
+    if (seedWorking) getter.onWorking();
+    this.agentGetters.set(sessionId, getter);
+    this.hooks?.bindAgent(sessionId, getter);
+    return getter;
+  }
+
+  /**
+   * agent 绑定 teardown:unbind(回退字节流 getter)+ 撤 pi 身份 + 删 getter +
+   * 删聚合条目。主 shutdown 无 working 子时立即调;延迟场景(mainGone)在子排空
+   * 的下降沿补调。幂等:重复调无害(hooks 对不存在的 managed 是 no-op)。
+   */
+  private teardownAgentBinding(sessionId: string, term: TerminalPiAggregate): void {
+    this.hooks?.unbindAgent(sessionId);
+    this.hooks?.onPiAgentChanged(sessionId, false);
+    this.agentGetters.delete(sessionId);
+    this.aggregates.delete(sessionId);
+    if (term.children.size > 0) {
+      // children 非空仍 teardown(仅当无 working 子):注册表随条目一起清,
+      // 之后这些子的零星事件回到「currentMain===null 且未注册」的既有路径(无害)。
+      logger.info(
+        'PiSessionCoordinator',
+        `teardown 丢弃 idle 子注册 sid=${sessionId} children=${term.children.size}`,
+      );
+    }
+    this.maybeStopSweeper();
+  }
+
+  /**
+   * 泄露回收:移除超过 CHILD_STALE_MS 无任何事件的注册子(hard-kill 的子进程
+   * 不会发 session_shutdown,不回收则终端永远卡「工作中」)。若移除的是最后一个
+   * working 子且主不在干 → 构成聚合下降沿(走 settled + 可能的延迟 teardown)。
+   * 误判代价有限:活着的子被误回收后,它后续的 settled/shutdown 按未注册忽略,
+   * 不会二次翻转状态;唯一影响是 turn 极长时状态提前 idle。
+   *
+   * 生产由 sweeper 定时调;测试直接调(注入时钟控时间)。
+   */
+  sweepStaleChildren(): void {
+    for (const [sessionId, term] of this.aggregates) {
+      for (const [piSid, child] of term.children) {
+        if (this.now() - child.lastEventAt < CHILD_STALE_MS) continue;
+        const wasWorking = this.isAggregateWorking(term);
+        term.children.delete(piSid);
+        logger.info(
+          'PiSessionCoordinator',
+          `subagent 泄露回收 sid=${sessionId} piSid=${piSid}(${Math.round(CHILD_STALE_MS / 60000)}min 无事件)`,
+        );
+        this.applyAggregateTransition(sessionId, term, wasWorking);
+      }
+      // 防御:mainGone 且子已清空但没经过下降沿(最后一个子是 idle 移除)→ 补
+      // teardown。正常路径在 applyAggregateTransition 的下降沿里已处理。
+      if (term.mainGone && term.children.size === 0 && this.aggregates.has(sessionId)) {
+        this.teardownAgentBinding(sessionId, term);
+      }
+    }
+    this.maybeStopSweeper();
+  }
+
+  /** 懒启动泄露回收 sweeper(首个子注册时;unref 不阻塞进程退出/测试)。 */
+  private ensureSweeper(): void {
+    if (this.sweeperTimer) return;
+    this.sweeperTimer = setInterval(() => this.sweepStaleChildren(), CHILD_SWEEP_INTERVAL_MS);
+    this.sweeperTimer.unref?.();
+  }
+
+  /** 全部终端无注册子 → 停 sweeper(零空闲开销)。 */
+  private maybeStopSweeper(): void {
+    if (!this.sweeperTimer) return;
+    const anyChildren = [...this.aggregates.values()].some((t) => t.children.size > 0);
+    if (!anyChildren) {
+      clearInterval(this.sweeperTimer);
+      this.sweeperTimer = null;
     }
   }
 
@@ -360,6 +678,10 @@ export class PiSessionCoordinator {
    */
   onSessionDestroyed(sessionId: string): void {
     this.sessionToPiSession.delete(sessionId);
+    // subagent 聚合:终端没了,主/子跟踪一起清(子进程可能还活着,但它们的事件
+    // 已无处可去 —— lookup.hasSession 会静默丢弃)。
+    this.aggregates.delete(sessionId);
+    this.maybeStopSweeper();
     // 终端状态分层:防御性 unbind(session 销毁时若 pi 仍在 bind,回退 getter)。
     // SessionManager.destroySession 会清 managed,unbind 无害(session 不存在则 no-op)。
     if (this.agentGetters.has(sessionId)) {
