@@ -1506,7 +1506,7 @@ html[data-maximized='true'] .app-root.with-shell {
 }
 
 .sidebar-group-header:hover {
-  background: var(--color-hover, rgba(255, 255, 255, 0.05));
+  background: var(--color-bg-hover, rgba(255, 255, 255, 0.05));
 }
 
 /* v0.3.3 用户裁决:组头可聚焦,F2 重命名 / Delete 解散。焦点环保持克制。 */
@@ -1650,7 +1650,7 @@ html[data-maximized='true'] .app-root.with-shell {
 
 .sidebar-group-action:hover {
   opacity: 1;
-  background: var(--color-hover, rgba(255, 255, 255, 0.08));
+  background: var(--color-bg-hover, rgba(255, 255, 255, 0.08));
 }
 
 /* v0.3.3:组动作全部收敛到 ⋯/右键菜单,旧的 hover 铅笔/垃圾桶样式保留为
@@ -1661,9 +1661,9 @@ html[data-maximized='true'] .app-root.with-shell {
   font-size: 11px;
   font-weight: 600;
   padding: 1px 4px;
-  border: 1px solid var(--color-border, #444);
+  border: 1px solid var(--color-bg-elevated, #444);
   border-radius: 3px;
-  background: var(--color-bg-input, inherit);
+  background: var(--color-bg-primary, inherit);
   color: inherit;
 }
 
@@ -2363,7 +2363,7 @@ html[data-maximized='true'] .app-root.with-shell {
   gap: 4px;
   flex: 0 0 auto;
   padding: 2px 8px;
-  border-bottom: 1px solid var(--color-border, #f0f);
+  border-bottom: 1px solid var(--color-bg-elevated, #f0f);
   background-color: var(--color-bg-secondary, #f0f);
 }
 
@@ -2416,7 +2416,7 @@ html[data-maximized='true'] .app-root.with-shell {
 
 .file-web-viewer-action {
   appearance: none;
-  border: 1px solid var(--color-border, #f0f);
+  border: 1px solid var(--color-bg-elevated, #f0f);
   background: var(--color-bg-primary, #f0f);
   color: var(--color-text-primary, #f0f);
   font-size: 12px;
@@ -2439,14 +2439,28 @@ html[data-maximized='true'] .app-root.with-shell {
   padding: 0;
 }
 
-/* 文件 tab 与命令 tab(ADR-037 统一进 .file-panel-tabs)之间的细分隔线。 */
-.file-panel-tab-divider {
-  align-self: center;
+/* 文件 tab 与命令 tab(ADR-037 统一进 .file-panel-tabs)之间的细分隔线。
+ * 挂在第一个命令 tab 的 ::before 上而不是独立 flex item —— 独立元素在 tab
+ * 换行时会留在上一行末尾,::before 始终跟着命令 tab 组走。CSS 没有"首个具
+ * 类者"选择器,取"全部画线 + 抹掉前面还有同类的"经典技巧;两侧 tab 都可见
+ * 时 FilePanel 才加 .has-mixed-tabs(只有命令 tab 时不画)。 */
+.file-panel-tabs.has-mixed-tabs .command-tab {
+  position: relative;
+}
+
+.file-panel-tabs.has-mixed-tabs .command-tab::before {
+  content: '';
+  position: absolute;
+  left: -4px;
+  top: 50%;
+  transform: translateY(-50%);
   width: 1px;
   height: 14px;
-  margin: 0 3px;
-  background-color: var(--color-border, #f0f);
-  flex: 0 0 auto;
+  background-color: var(--color-bg-elevated, #f0f);
+}
+
+.file-panel-tabs.has-mixed-tabs .command-tab ~ .command-tab::before {
+  content: none;
 }
 
 /* ── 命令侧 UI(v0.3.3 ADR-028;ADR-037 起整合进「已打开」面板):
@@ -2634,7 +2648,7 @@ html[data-maximized='true'] .app-root.with-shell {
   gap: 6px;
   padding: 8px 10px;
   background: var(--color-bg-elevated, #1f2430);
-  border-bottom: 1px solid var(--color-border, #333);
+  border-bottom: 1px solid var(--color-bg-elevated, #333);
   align-items: center;
 }
 
@@ -2644,9 +2658,9 @@ html[data-maximized='true'] .app-root.with-shell {
   padding: 4px 8px;
   font-size: 12px;
   font-family: inherit;
-  background: var(--color-bg-input, #0d1117);
-  color: var(--color-text, inherit);
-  border: 1px solid var(--color-border, #333);
+  background: var(--color-bg-primary, #0d1117);
+  color: var(--color-text-primary, inherit);
+  border: 1px solid var(--color-bg-elevated, #333);
   border-radius: 3px;
 }
 
@@ -3151,7 +3165,7 @@ html[data-maximized='true'] .app-root.with-shell {
 }
 
 .git-summary-untracked .git-summary-num {
-  color: var(--color-accent, #c4a7e7);
+  color: var(--color-accent-special, #c4a7e7);
 }
 
 .git-summary-conflict .git-summary-num {
@@ -3345,7 +3359,7 @@ html[data-maximized='true'] .app-root.with-shell {
  * 与 DiffViewer 的 .diff-line-body .hljs-* 同一套规则(此处为 TextViewer 的平铺)。 */
 .file-text-line-content .hljs-keyword,
 .file-text-line-content .hljs-selector-tag {
-  color: var(--color-accent, #c4a7e7);
+  color: var(--color-info, #b89cd9);
 }
 
 .file-text-line-content .hljs-string,
@@ -3459,7 +3473,7 @@ html[data-maximized='true'] .app-root.with-shell {
 }
 
 .diff-viewer-toolbar-btn:focus-visible {
-  outline: 2px solid var(--color-accent, #4aa);
+  outline: 2px solid var(--color-accent-special, #4aa);
   outline-offset: 1px;
 }
 
@@ -4415,7 +4429,7 @@ a.md-marina-link svg {
 .md-code-block {
   position: relative;
   margin: 8px 0;
-  border: 1px solid var(--color-border, rgba(128, 128, 128, 0.3));
+  border: 1px solid color-mix(in srgb, currentcolor 30%, transparent);
   border-radius: 6px;
   overflow: hidden;
   max-width: 100%;
@@ -4429,7 +4443,7 @@ a.md-marina-link svg {
 
   /* 透明:不额外上色,继承面板背景(避免明暗主题下出现“黑条”)。 */
   background: transparent;
-  border-bottom: 1px solid var(--color-border, rgba(128, 128, 128, 0.2));
+  border-bottom: 1px solid color-mix(in srgb, currentcolor 20%, transparent);
   font-size: 11px;
 }
 
@@ -4510,7 +4524,7 @@ a.md-marina-link svg {
 /* 输出区:透明背景(继承面板背景),仅顶部 border 分隔。 */
 .md-code-block-output {
   background: transparent;
-  border-top: 1px solid var(--color-border, rgba(128, 128, 128, 0.2));
+  border-top: 1px solid color-mix(in srgb, currentcolor 20%, transparent);
 }
 
 .md-code-block-output pre {
@@ -4586,7 +4600,7 @@ a.md-marina-link svg {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  border-top: 1px solid var(--color-border, rgba(128, 128, 128, 0.15));
+  border-top: 1px solid color-mix(in srgb, currentcolor 15%, transparent);
 }
 
 .md-code-block-exitcode {
@@ -7270,7 +7284,7 @@ button:focus-visible,
  * ═══════════════════════════════════════════════════════════════════ */
 .gallery-viewer {
   margin: var(--md-block-margin, 12px) 0;
-  border: 1px solid var(--color-border, var(--rp-highlight-med, #403d52));
+  border: 1px solid color-mix(in srgb, currentcolor 30%, transparent);
   border-radius: 8px;
   background: var(--color-bg-primary, var(--rp-base, #191724));
   overflow: hidden;

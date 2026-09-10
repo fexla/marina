@@ -70,7 +70,10 @@ describe('global.css 样式契约', () => {
 
   it('.md-code-block 透明外壳规则禁用 var(--color-bg-*) token 作背景', () => {
     // 透明外壳组件:代码块。主题 bg token 按应用主背景调色,垫在未知背景上
-    // 会出错(2026-08-01 实测黑块)。反馈色必须走 currentColor 派生。
+    // 会出错(2026-08-01 实测黑块)。反馈色/边框必须走 currentColor 派生。
+    // 注:.gallery-viewer 不在本禁令内 —— 它的 bg-primary 是刻意衬底(透明 PNG
+    // 需要确定背景),但其边框同属透明外壳契约,已改 currentColor 派生
+    // (2026-09-09,原 --color-border 恒回落 rp-highlight-med,非 rp 主题下写死深色)。
     const offenders = rules
       .filter((r) => r.selector.includes('.md-code-block'))
       .filter((r) => /var\(\s*--color-bg-/.test(r.body))
@@ -103,13 +106,15 @@ describe('global.css 样式契约', () => {
     expect(hover!.body).toMatch(/color-mix\(\s*in srgb,\s*currentcolor/i);
   });
 
-  it('命令面板不得引用未声明的 --color-* token', () => {
+  it('所有规则不得引用未声明的 --color-* token', () => {
     // 2026-08-07 回归：CommandPanel 写了 var(--color-border, #f0f)，但三层
     // token API 从未定义 --color-border，导致下拉框和 Markdown 表格全变亮粉。
-    // #f0f fallback 是故障探针，不是可发布颜色；本测试在该模块的样式 seam 拦住它。
+    // #f0f fallback 是故障探针，不是可发布颜色。当时守护测试只盯 .command-
+    // 选择器，2026-09-09 ADR-037 的 tab 分隔线（.file-panel-tab-divider）再次
+    // 漏网（还有网页查看器工具条一直在显示粉边），遂扩大到全部选择器：
+    // 凡 global.css 引用的 --color-* 必须在同一文件里有声明。
     const declared = new Set([...css.matchAll(/(--color-[\w-]+)\s*:/g)].map((match) => match[1]!));
     const referenced = rules
-      .filter((rule) => rule.selector.includes('.command-'))
       .flatMap((rule) => [...rule.body.matchAll(/var\(\s*(--color-[\w-]+)\s*,/g)])
       .map((match) => match[1]!);
     const missing = [...new Set(referenced.filter((token) => !declared.has(token)))];

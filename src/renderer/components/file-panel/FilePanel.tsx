@@ -337,7 +337,15 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
 
   return (
     <div className="file-panel-content">
-      <div className="file-panel-tabs">
+      {/* has-mixed-tabs:文件 tab 与命令 tab 都可见时加,分隔线(CSS ::before 挂在
+          首个命令 tab 上)才画 —— 用条件类而非独立分隔线元素,换行时线跟着命令
+          tab 组走,不会留在上一行末尾。搜索过滤后某侧为空则不加(不可见就不分)。 */}
+      <div
+        className={
+          'file-panel-tabs' +
+          (filteredFiles.length > 0 && filteredCommands.length > 0 ? ' has-mixed-tabs' : '')
+        }
+      >
         {nothingOpen ? (
           <span className="file-panel-empty-hint">
             {tx(
@@ -429,10 +437,6 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
                 />
               );
             })}
-            {/* 文件 tab 与命令 tab 之间的细分隔线:两侧都有内容时才出现。 */}
-            {snapshot.files.length > 0 && filteredCommands.length > 0 && (
-              <span className="file-panel-tab-divider" aria-hidden />
-            )}
             <CommandTabStrip
               commands={filteredCommands}
               activeKey={view === 'command' ? commandSnapshot.activeKey : null}

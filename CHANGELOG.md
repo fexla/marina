@@ -7,6 +7,21 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+### Fixed
+
+- **已打开面板 tab 分隔线两处问题(ADR-037 勘误)**:① 亮粉色竖线 —— 用了未声明
+  token `var(--color-border, #f0f)`,fallback 故障探针色直接显示;② 命令 tab
+  换行时竖线(独立 flex item)留在上一行末尾。改为挂在首个命令 tab 的
+  `::before` 上(跟随命令 tab 组换行),颜色用 `--color-bg-elevated`(面板
+  边框事实标准 token),两侧 tab 都可见时才画。
+- **清扫全部未声明 --color-* token(5 个 / 18 处)并把守护测试扩大到全部
+  选择器**:原测试只盯 `.command-` 前缀,`--color-border`(×11)、
+  `--color-hover`(×2)、`--color-accent`(×3)、`--color-bg-input`(×2)、
+  `--color-text`(×1)全部漏网 —— 其中网页查看器工具条/超限按钮的边框
+  一直在显示粉色(ADR-034 起的既有 bug)。统一换最近似已声明 token;
+  md-code-block 家族与 gallery 边框按透明外壳契约改 `color-mix(currentcolor)`
+  派生(gallery 的 bg-primary 衬底是刻意设计,保留)。
+
 ## [0.3.3-dev.19] — 2026-09-09
 
 > 面板整合批(ADR-037):命令面板并入「已打开」面板(统一 tab 列表,dock 4→3)、
