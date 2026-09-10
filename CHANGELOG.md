@@ -7,6 +7,19 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+### Added
+
+- **pi subagent 工作状态聚合(ADR-038)**:后台/async 子 agent 运行期间终端状态
+  不再错翻空闲。pi-subagents 的子 agent 是独立 pi 子进程,其 bridge 事件早已到达
+  Marina、此前被 ADR-028 主锁纯丢弃;现在 workspace/名字污染照旧拦截,但工作状态
+  进聚合——终端「工作中」= 主 agent ∨ 任一注册子 agent 在干(同一个绿灯),全部
+  收工 → idle + hasUnviewedWork(与主 agent 收工同一路径);主 `agent_settled`
+  在子仍在干时抑制。配套:主 pi 退出但子在干 → teardown 延迟到子排空(期间新起
+  pi 则取消);已注册子永不升级为主(封掉后台子 session_start 劫持主对话的竞态);
+  泄露回收(hard-kill 子不发 shutdown,15min 无事件视为死,`name_changed` 等被
+  忽略的事件作免费保活)。前台(task 工具阻塞)子 agent 期间主本就未 settled,
+  行为不变。bridge 与 pi 侧零改动。
+
 ## [0.3.3-dev.20] — 2026-09-09
 
 > ADR-037 勘误批:tab 分隔线粉色/换行残留修复 + 全部未声明 --color-* token 清扫。

@@ -192,8 +192,12 @@ entry)。这同时治了「跨终端 resume 同一文件」的共享。同终端
   为 L2 铺路,不引入任何新行为。
 - **L2(快照继承,backlog 候选)**:resume 子会话时,Marina 从父对话的 workspace
   **复制快照**作为初始面板状态——「从父视角看这个子 agent 动了哪些文件」。
-- **L3(运行时可见性,backlog 候选)**:子 agent 运行期间主终端的聚合指示
-  (如「2 个子 agent 运行中」)。ADR-028 当时有意识地砍掉,重开需明示。
+- **L3(运行时可见性,**已实现 v0.3.4 / ADR-038,2026-09-10 开发者明示重开**)**:
+  子 agent 运行期间终端状态聚合。最终落地比本节原案**窄**:不做「N 个子 agent
+  运行中」聚合文案,只取状态灯语义——终端「工作中」= 主 agent 在干 ∨ 任一注册
+  子 agent 在干(沿用同一个绿灯),全部收工 → idle + hasUnviewedWork;配泄露
+  回收(15min 无事件视为死)与延迟 teardown。实现见
+  `src/main/coordinators/pi-session-coordinator.ts` 的 TerminalPiAggregate。
 
 ### 3.4 升级分发
 
