@@ -2152,6 +2152,17 @@ html[data-maximized='true'] .app-root.with-shell {
   overflow: hidden;
 }
 
+/* 勘误②(20260913):dock 持久宽度(默认 440)此前渲染期不按容器钳制 —— 窗口
+ * 缩窄时终端 leaf 被挤成残渣(CDP 实测 w=750 时 xterm 只剩 30px),w<720 时
+ * dock 直接溢出 main-pane。这里按分割容器宽度钳制:dock 最多占 容器-360
+ * (给终端留 ~360px 可用地板),下限 280(拖拽钳制值,RIGHT_DOCK_MIN_WIDTH);
+ * 容器本身 <280 的极端窄退到 100%(不再溢出)。只影响显示,持久宽度不动 ——
+ * 窗口恢复后 dock 自动回到用户设定的宽度。折叠态(22px 定宽)不参与。 */
+.panel-dock:not(.panel-dock-collapsed) {
+  max-width: calc(100% - 360px);
+  min-width: min(280px, 100%);
+}
+
 .panel-dock-collapsed {
   width: 22px;
   border-left: 1px solid var(--color-bg-elevated, #f0f);
