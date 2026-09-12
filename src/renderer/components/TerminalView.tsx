@@ -1221,7 +1221,10 @@ export function TerminalView({
       // 都只在用户交互时(构造完成后)触发,闭包捕获安全。
       linkHandler: {
         allowNonHttpProtocols: true,
-        activate: (_event: MouseEvent, uri: string) => {
+        // 勘误①(20260913):xterm 对 OSC 8 的 mouseup 激活不过滤鼠标键,右键也会
+        // 进这里 —— 只认左键,右键留给上下文菜单。
+        activate: (event: MouseEvent, uri: string) => {
+          if (event.button !== 0) return;
           hideTerminalLinkTooltip(term);
           routeTerminalUri(uri, terminalLinkActions);
         },
@@ -1246,7 +1249,11 @@ export function TerminalView({
     // 自定义 handler 走 IPC SYSTEM_OPEN_EXTERNAL(main 侧已白名单 http/https/mailto)，
     // 绕开脆弱的 window.open 链路。setWindowOpenHandler 保留作 OSC 8 / 其他
     // window.open 的安全兼底（拒 file:// / javascript: 等）。
-    const webLinksAddon = new WebLinksAddon((_event, url) => {
+    // 20260913 勘误①:xterm Linkifier._handleMouseUp 不过滤鼠标键 —— mousedown/mouseup
+    // 落在同一链接上时任何键(含右键)都会触发 activate。右键应归上下文菜单,
+    // 所有 activate 入口统一加 button===0(左键)守卫。
+    const webLinksAddon = new WebLinksAddon((event, url) => {
+      if (event.button !== 0) return;
       window.api
         .invoke(COMMAND_CHANNELS.SYSTEM_OPEN_EXTERNAL, { url })
         .catch((err) => console.warn('[terminal] WebLinksAddon link open failed:', err));
@@ -1296,7 +1303,9 @@ export function TerminalView({
                   end: { x: ex, y: ey + 1 },
                 },
                 text: det.raw,
-                activate: () => {
+                activate: (event: MouseEvent) => {
+                  // 勘误①:只认左键(xterm mouseup 激活不过滤鼠标键,存量同病)。
+                  if (event.button !== 0) return;
                   // 传 pathCandidates:raw 以 @ 开头时为 [剥@, 带@],点击逐个试首个有效。
                   openPathFromTerminalRef.current?.(det.pathCandidates, det.line);
                 },
@@ -1342,7 +1351,9 @@ export function TerminalView({
               end: { x: ex, y: ey + 1 },
             },
             text: win.text.slice(det.start, det.end),
-            activate: () => {
+            activate: (event: MouseEvent) => {
+              // 勘误①:只认左键,右键留给上下文菜单。
+              if (event.button !== 0) return;
               routeTerminalUri(href, terminalLinkActions);
             },
             hover: (event: MouseEvent) => {
