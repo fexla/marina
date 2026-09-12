@@ -7,6 +7,20 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+### Fixed
+
+- **右键终端链接不再触发左键操作**:xterm `Linkifier._handleMouseUp` 不过滤鼠标键,
+  mousedown/mouseup 落在同一链接上时任何键(含右键)都会触发 activate——存量
+  问题(文件路径 provider / WebLinksAddon 同病),新链接让它显眼。全部四个
+  activate 入口(OSC 8 linkHandler / []() provider / 文件路径 provider /
+  WebLinks handler)统一加 `event.button !== 0` 守卫,右键归还上下文菜单。
+- **窗口缩窄时文件面板 dock 不再把终端挤成残渣**:dock 持久宽度(默认 440px)
+  此前渲染期不按容器钳制,窗口缩窄时终端被挤到 30px 以下、窗口 <720px 时 dock
+  直接溢出主区(CDP 逐档实测定位;非终端链接功能引入,但该功能驱动「开着面板
+  用终端」暴露了它)。`.panel-dock` 渲染期 CSS 钳制:最多占分割容器宽 −360px
+  (终端可用地板),下限 280px,极端窄退到 100%(不再溢出);持久宽度不动,
+  窗口恢复后 dock 自动回到用户设定宽度,折叠态不受影响。
+
 ### Added
 
 - **终端可交互链接(ADR-041,方案-终端可交互链接-20260912)**:终端正文的可点击
@@ -36,6 +50,11 @@
   `marina:run` 无确认,同 ADR-035。配套 bridge 系统提示词(0.3.15)新增「链接用
   []() 写」一节:引导模型对网页/文件优先用 markdown 链接形式输出,而非裸 URL/
   裸路径 —— []() 在 pi TUI(OSC 8)与面板文档两条展示面都可点,不受终端折行影响。
+  勘误③(0.3.16):`marina:` 链接目标宽容解析 —— 终端 []() 检测器认尖括号形态
+  `[x](<a b.md>)`(CommonMark 标准)与 `marina:` 裸空格形态(scheme 锚定,误报
+  面≈零);bridge transformer 把宽容形态归一化成 %20 再交 marked 渲染;提示词补
+  marina: 动作链接写法教学(冒号必须、空格用 `<>` 包裹或 %20)。无冒号的
+  `[x](marina run y)` 仍不认(不是 scheme)。
 - **pi bridge 事件乱序根治——「AI 已开始工作但终端 tab 不显示工作中」(双层修复)**:
   根因:bridge 的 `session_start` 为拿 workspaceId 响应不走发送队列(直发),其余
   事件走 `postQueue` 串行链;`/new` `/resume` `/fork` 时 pi 先发旧主
