@@ -68,6 +68,15 @@ export interface BeforeAgentStartResult {
   systemPrompt: string;
 }
 
+/** registerMarkdownTransformer 的上下文(pi types.d.ts 0.85.1 :880-884)。 */
+export interface MarkdownTransformContext {
+  messageType: 'user' | 'assistant' | 'assistant-thinking';
+  /** 流式中每个 chunk 都会以全文重跑(true);最终/恢复消息为 false。 */
+  isStreaming: boolean;
+  /** pi 渲染区内容宽度(列)。 */
+  availableWidth: number;
+}
+
 /* ── ctx(只含本 bridge 读取的字段) ────────────────────────────────── */
 
 export interface ExtensionContext {
@@ -89,6 +98,15 @@ export type ExtensionHandler<E, R = void> = (
 export interface ExtensionAPI {
   /** 向当前对话分支追加 custom entry(session_start 存回 Marina 分配的 workspaceId)。 */
   appendEntry(customType: string, data: unknown): void;
+  /**
+   * 注册 markdown 显示变换器(pi ≥ 0.8x,types.d.ts :966-967):在 pi 自己的
+   * marked 解析**之前**拿到完整 markdown 原文,返回改写后的显示文本。
+   * display-only —— 不动会话持久化与 LLM 上下文;流式/最终/恢复会话都会跑。
+   * 老 pi 无此方法 → index.ts 里 typeof 守卫跳过(声明为可选与守卫一致)。
+   */
+  registerMarkdownTransformer?(
+    transformer: (markdown: string, context: MarkdownTransformContext) => string,
+  ): void;
   on(event: 'session_start', handler: ExtensionHandler<SessionStartEvent>): void;
   on(event: 'session_shutdown', handler: ExtensionHandler<SessionShutdownEvent>): void;
   on(event: 'agent_start', handler: ExtensionHandler<MarkerOnlyEvent>): void;

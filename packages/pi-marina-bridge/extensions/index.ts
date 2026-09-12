@@ -57,6 +57,7 @@ import {
   readBranchWorkspaceId,
   readLastWorkspaceBinding,
 } from './binding';
+import { linkifyMarkdown } from './linkify';
 import { appendMarinaPrompt, resolveSkillsDir, skillsDirExists } from './inject';
 
 /** Marina 注入终端子进程的 env 名（见 Marina session-manager.ts env 注入）。 */
@@ -188,6 +189,17 @@ export default function (pi: ExtensionAPI): void {
     if (!marinaSkillsReady) return undefined;
     return { systemPrompt: appendMarinaPrompt(event.systemPrompt) };
   });
+
+  // ── Markdown 链接化 transformer(方案-终端可交互链接-20260912)──
+  // 在 pi 自己的 marked 渲染之前改写显示文本:裸路径 → marina:show 动作链接、
+  // 裸 URL → 可点链接、超长 URL label 缩短。pi 渲染链接输出 OSC 8(依赖
+  // Marina 注入的 PI_HYPERLINKS=1),xterm 原生可点、跨软折行不断链。
+  // display-only + 纯函数(流式每 chunk 全文重跑,见 linkify.ts 头注释);
+  // throw 时 pi 保留当前值继续,这里不额外兜底。
+  // 老 pi 无此方法(typeof 守卫)→ 静默跳过,pi 原生 []() → OSC 8 仍生效。
+  if (typeof pi.registerMarkdownTransformer === 'function') {
+    pi.registerMarkdownTransformer((markdown, context) => linkifyMarkdown(markdown, context));
+  }
 
   /**
    * 后台发送队列:promise 链串行化,保证事件按发生顺序送达 Marina(working 必须先于
