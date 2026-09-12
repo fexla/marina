@@ -40,7 +40,10 @@ const MODULE = 'MarinaLinkDispatch';
 
 /** 分发依赖的服务面(窄接口,便于单测注入 fake;真身由 ipc 装配传入)。 */
 export interface MarinaLinkDispatchDeps {
-  filePanelService: Pick<FilePanelService, 'openFile' | 'openFileFromMarkdown' | 'openFileFromBase'>;
+  filePanelService: Pick<
+    FilePanelService,
+    'openFile' | 'openFileFromMarkdown' | 'openFileFromBase'
+  >;
   commandPanelService: Pick<CommandPanelService, 'runCommand' | 'getRunCwd'>;
 }
 
@@ -99,18 +102,27 @@ export async function dispatchMarinaLink(
   );
 
   if (command.kind === 'show') {
-    const heading = command.heading === undefined ? {} : { heading: command.heading };
+    // heading(--heading,markdown)/ line(--line,text 类,终端链接方案 20260912)
+    // 只在有意义时展开;openFile* 对无效组合有自己的防御(heading+非 md 抛
+    // InvalidHeadingTarget;line+非 text 忽略照常打开)。
+    const navigation =
+      command.heading === undefined && command.line === undefined
+        ? {}
+        : {
+            ...(command.heading === undefined ? {} : { heading: command.heading }),
+            ...(command.line === undefined ? {} : { line: command.line }),
+          };
     if (mdPath !== undefined) {
-      await deps.filePanelService.openFileFromMarkdown(sessionId, mdPath, command.path, heading);
+      await deps.filePanelService.openFileFromMarkdown(sessionId, mdPath, command.path, navigation);
     } else {
       // 命令面板来源优先用运行时 cwd 真值;查不到(旧快照/无 commandKey)回退
       // session 当前 cwd(openFile 语义)。
       const runCwd =
         commandKey !== undefined ? deps.commandPanelService.getRunCwd(sessionId, commandKey) : null;
       if (runCwd !== null) {
-        await deps.filePanelService.openFileFromBase(sessionId, runCwd, command.path, heading);
+        await deps.filePanelService.openFileFromBase(sessionId, runCwd, command.path, navigation);
       } else {
-        await deps.filePanelService.openFile(sessionId, command.path, heading);
+        await deps.filePanelService.openFile(sessionId, command.path, navigation);
       }
     }
     return { kind: 'show' };

@@ -351,6 +351,44 @@ describe('FilePanelService - heading navigation request', () => {
     });
     expect(svc.getOpenFiles('s1')).toEqual({ files: [], activePath: null });
   });
+
+  it('text 文件带 --line 时发 line 导航(终端链接方案 20260912)', async () => {
+    const filePath = join(dir, 'src.ts');
+    await writeFile(filePath, 'a\nb\nc\n');
+    const navigations: Array<{ sessionId: string; path: string; line: number; requestId: string }> =
+      [];
+    svc.on('filePanelNavigationRequested', (payload) => navigations.push(payload));
+
+    await svc.openFile('s1', filePath, { line: 42 });
+
+    expect(navigations).toEqual([
+      { sessionId: 's1', path: filePath, line: 42, requestId: expect.any(String) },
+    ]);
+  });
+
+  it('非 text 文件(markdown)带 --line 时忽略 line 照常打开(bridge 对 md 路径也生成 --line)', async () => {
+    const filePath = join(dir, 'report.md');
+    await writeFile(filePath, '# T\n');
+    const navigations: unknown[] = [];
+    svc.on('filePanelNavigationRequested', (payload) => navigations.push(payload));
+
+    await expect(svc.openFile('s1', filePath, { line: 3 })).resolves.toMatchObject({
+      activePath: filePath,
+    });
+    expect(navigations).toEqual([]);
+  });
+
+  it('非法 line(0 / 负数 / 非整数)忽略且不抛', async () => {
+    const filePath = join(dir, 'src2.ts');
+    await writeFile(filePath, 'x\n');
+    const navigations: unknown[] = [];
+    svc.on('filePanelNavigationRequested', (payload) => navigations.push(payload));
+
+    await expect(svc.openFile('s1', filePath, { line: 0 })).resolves.toMatchObject({
+      activePath: filePath,
+    });
+    expect(navigations).toEqual([]);
+  });
 });
 
 describe('FilePanelService - readFile', () => {

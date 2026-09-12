@@ -5,9 +5,12 @@
  *   `./marina show other.md` —— 文档变成可交互菜单/导航的载体。
  *
  * @语法规范(与 skill 的 CLI 子命令对齐,只收用户可点的两个动词):
- * - `marina:show <path> [--heading <标题文字>]`
+ * - `marina:show <path> [--heading <标题文字>] [--line <N>]`
  *     在本 session 的「已打开」面板里只读打开目标文件(相对 md 文件目录;命令
  *     面板输出等无 mdPath 来源则相对 session cwd,与 CLI show 一致)。
+ *     --heading 只对 Markdown 生效(跳到可见标题);--line(v0.3.3 终端链接
+ *     方案 20260912)只对 text 类文件生效(滚动到行),其它 kind 忽略该 flag
+ *     照常打开。两者同用时按文件 kind 各自生效,不冲突(kind 互斥)。
  * - `marina:run [--title <标签>] <command...>`
  *     把命令推给命令面板执行并渲染输出(与 CLI run 同一条 CommandPanelService
  *     路径)。--title 必须写在命令之前(与 CLI 文档示例同位);命令自身的
@@ -47,7 +50,7 @@ const MAX_PARAMS_LENGTH = 4096;
 
 /** 解析成功得到的动作命令(renderer 只透传 href,结构化结果只给 main 用)。 */
 export type MarinaLinkCommand =
-  | { kind: 'show'; path: string; heading?: string }
+  | { kind: 'show'; path: string; heading?: string; line?: number }
   | { kind: 'run'; command: string; title?: string };
 
 /** 解析结果:ok=false 时 error 是可直接 toast 给用户的中文说明。 */
@@ -129,9 +132,9 @@ function tokenizeParams(params: string): string[] {
  * - run 只认「命令开始之前」的 --title(与 CLI 文档示例 `run --title X "cmd"`
  *   同位)。一旦出现第一个位置参数,后续一切 token(含 --flag/-q)都是命令内容
  *   —— `marina:run gh issue list --limit 5` 里的 --limit 属于 gh。
- * - show 只认 --heading(出现在路径前后都行,与 CLI 示例 `show x.md --heading Y`
- *   同形),其余 token 一律拼进路径。误写的参数会以「文件不存在: <完整名>」
- *   自然浮错,不需要前置校验。
+ * - show 只认 --heading / --line(出现在路径前后都行,与 CLI 示例
+ *   `show x.md --heading Y` 同形),其余 token 一律拼进路径。误写的参数会以
+ *   「文件不存在: <完整名>」自然浮错,不需要前置校验。
  */
 export function parseMarinaLinkHref(href: string): MarinaLinkParseResult {
   if (!isMarinaActionHref(href)) {
@@ -155,6 +158,7 @@ export function parseMarinaLinkHref(href: string): MarinaLinkParseResult {
     // 引号包住的参数保留内部精确空格。多个独立 token 当一个含空格路径处理。
     const parts: string[] = [];
     let heading: string | undefined;
+    let line: number | undefined;
     for (let i = 1; i < tokens.length; i += 1) {
       const token = tokens[i]!;
       if (token === '--heading') {
@@ -163,6 +167,17 @@ export function parseMarinaLinkHref(href: string): MarinaLinkParseResult {
           return { ok: false, error: 'marina:show 的 --heading 需要一个值(标题文字,可加引号)。' };
         }
         heading = value;
+        i += 1;
+      } else if (token === '--line') {
+        const value = tokens[i + 1];
+        // 行号必须是正整数(1-based);终端 path:123 语义平移,不容 0/负数/小数。
+        if (value === undefined || !/^\d+$/.test(value) || Number(value) < 1) {
+          return {
+            ok: false,
+            error: 'marina:show 的 --line 需要一个正整数行号(1-based),如 --line 42。',
+          };
+        }
+        line = Number(value);
         i += 1;
       } else {
         parts.push(token);
@@ -174,7 +189,12 @@ export function parseMarinaLinkHref(href: string): MarinaLinkParseResult {
     }
     return {
       ok: true,
-      command: heading === undefined ? { kind: 'show', path } : { kind: 'show', path, heading },
+      command: {
+        kind: 'show',
+        path,
+        ...(heading === undefined ? {} : { heading }),
+        ...(line === undefined ? {} : { line }),
+      },
     };
   }
 

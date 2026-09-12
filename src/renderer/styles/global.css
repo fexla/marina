@@ -2028,6 +2028,28 @@ html[data-maximized='true'] .app-root.with-shell {
   min-height: 0;
 }
 
+/* 终端链接 hover tooltip(方案-终端可交互链接-20260912,terminal-link-tooltip.ts)。
+ * 挂在 .xterm 元素内(position:relative 由 xterm.css 提供)。
+ * pointer-events:none 是关键:tooltip 永不吞鼠标,不会顶掉 linkHandler.leave
+ * 造成闪烁;max-width 防超长 URL 撑爆终端宽度,overflow ellipsis + title 兜底。 */
+.marina-terminal-link-tooltip {
+  position: absolute;
+  z-index: 30;
+  max-width: min(480px, 90%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: var(--terminal-font-family, monospace);
+  color: var(--color-text-primary, #d4d4d4);
+  background: var(--color-bg-elevated, #2a2a2a);
+  border: 1px solid var(--color-bg-active, #444);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 35%);
+  pointer-events: none;
+}
+
 .layout-host,
 .layout-split,
 .layout-terminal-leaf {

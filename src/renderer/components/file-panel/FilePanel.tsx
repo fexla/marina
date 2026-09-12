@@ -574,7 +574,9 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
         ref={bodyScrollRef}
         className="file-panel-body"
         data-viewer-kind={view === 'command' ? 'command' : (activeFile?.kind ?? 'none')}
-        data-viewer-path={view === 'command' ? (activeCommand?.key ?? '') : (activeFile?.path ?? '')}
+        data-viewer-path={
+          view === 'command' ? (activeCommand?.key ?? '') : (activeFile?.path ?? '')
+        }
       >
         <div
           ref={backgroundProbeRef}
@@ -608,7 +610,7 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
             search={search}
             outerScrollRef={bodyScrollRef}
             {...(pendingHeadingNavigation?.path === activeFile.path
-              ? { headingNavigation: pendingHeadingNavigation }
+              ? { navigationRequest: pendingHeadingNavigation }
               : {})}
           />
         ) : (

@@ -717,8 +717,14 @@ export function MarkdownDocument({
 
   // 外部标题请求只处理一次。使用 layout effect 保证文件激活后首帧就落到目标，且
   // 在 scrollIntoView 前显式取消 useFileViewerScroll 仍等待布局的旧位置恢复。
+  // heading 为 undefined 的 payload(--line 行导航)不会传到 markdown viewer,
+  // 这里仍做防御窄化(payload 类型上 heading 可选)。
   useLayoutEffect(() => {
-    if (!headingNavigation || handledNavigationRequestRef.current === headingNavigation.requestId) {
+    if (
+      !headingNavigation ||
+      headingNavigation.heading === undefined ||
+      handledNavigationRequestRef.current === headingNavigation.requestId
+    ) {
       return;
     }
     handledNavigationRequestRef.current = headingNavigation.requestId;

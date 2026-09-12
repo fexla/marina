@@ -102,6 +102,10 @@ export interface OpenFileOptions {
   origin?: OpenedFileOrigin;
   /** 可见 Markdown 标题文字；只触发一次性 owner 定向导航，不进入 OpenedFile。 */
   heading?: string;
+  /** 1-based 行号(终端链接方案 20260912,marina:show --line);仅 text 类文件
+   *  触发一次性导航,其余 kind 忽略该 flag 照常打开(markdown 的导航语义是
+   *  --heading,源码行号与渲染输出无对应)。不进入 OpenedFile。 */
+  line?: number;
   /**
    * IPC 发起者在请求开始时的 owner id。文件系统 await 完成后、修改 PanelState 前
    * 必须再校验一次，防止旧窗口的迟到请求污染新 owner。HTTP program-push 省略。
@@ -318,6 +322,7 @@ export class FilePanelService extends EventEmitter {
    * @param options.origin 真正掌握来源的上游可附带语义元数据；重复普通打开同一路径
    *   时保留已有 origin，避免一次 show/open 刷新把 Git diff 的导航真值抹掉。
    * @param options.heading 可选可见标题文字；打开状态发出后再单独发一次导航请求。
+   * @param options.line 可选 1-based 行号(text 类文件)；同样单独发一次导航请求。
    * @param options.expectedOwnerWindowId IPC 请求开始时的 owner；异步解析后原子重验。
    * @throws FilePanelError NotFound / NotFile / SessionMissing / ResolveFailed /
    *   InvalidHeadingTarget / NotOwner
@@ -344,6 +349,19 @@ export class FilePanelService extends EventEmitter {
           'Open a .md/.markdown file or omit --heading, then retry.',
       );
     }
+    // --line 只对 text 类文件发导航;其它 kind(markdown/diff/image/…)忽略该 flag
+    // 照常打开 —— bridge transformer 对任何带 :行号 的路径都会生成 --line,md 文件
+    // 不该因此整链失败。异常类型防御:parse 层已保证正整数,这里再拦非整数。
+    const line =
+      typeof options.line === 'number' && Number.isInteger(options.line) && options.line >= 1
+        ? options.line
+        : undefined;
+    if (options.line !== undefined && line === undefined) {
+      logger.warn(
+        'FilePanelService',
+        `openFile ignored invalid line=${String(options.line)} for path="${abs}" (must be integer >= 1)`,
+      );
+    }
     if (!state) {
       state = { files: [], activePath: null, watchers: new Map(), watchTimers: new Map() };
       this.panels.set(sessionId, state);
@@ -367,6 +385,14 @@ export class FilePanelService extends EventEmitter {
         path: abs,
         heading,
         // 相同 path + heading 连续请求仍需让 renderer 的 effect 再执行一次。
+        requestId: randomUUID(),
+      });
+    } else if (line !== undefined && opened.kind === 'text') {
+      // --line 导航:text 类文件,TextViewer 消费(滚动到行)。requestId 语义同上。
+      this.emit('filePanelNavigationRequested', {
+        sessionId,
+        path: abs,
+        line,
         requestId: randomUUID(),
       });
     }
@@ -845,7 +871,7 @@ export class FilePanelService extends EventEmitter {
     sessionId: string,
     mdPath: string,
     src: string,
-    options: { heading?: string } = {},
+    options: { heading?: string; line?: number } = {},
   ): Promise<FilePanelSnapshot> {
     if (!src || typeof src !== 'string') {
       throw new FilePanelError('ResolveFailed', '链接路径为空');
@@ -882,10 +908,11 @@ export class FilePanelService extends EventEmitter {
     // 校验存在 + 是文件(目录拒,与 openFile 的 resolveAndStat 一致)。直接复用
     // openFile(sessionId, abs):绝对路径会忽略 currentCwd base,走完整状态机
     // (加/更新 tab、切 active、ensureWatcher、requestActivation),零重复逻辑。
-    // options.heading(v0.3.3 ADR-035,marina:show 链接用)透传给 openFile:打开后
-    // 单发一次 filePanelNavigationRequested 导航意图。
+    // options.heading/--line(v0.3.3 ADR-035 / 终端链接方案 20260912,marina:show
+    // 链接用)透传给 openFile:打开后单发一次 filePanelNavigationRequested 导航意图。
     return this.openFile(sessionId, abs, {
       ...(options.heading === undefined ? {} : { heading: options.heading }),
+      ...(options.line === undefined ? {} : { line: options.line }),
     });
   }
 
@@ -909,7 +936,7 @@ export class FilePanelService extends EventEmitter {
     sessionId: string,
     baseDir: string,
     src: string,
-    options: { heading?: string } = {},
+    options: { heading?: string; line?: number } = {},
   ): Promise<FilePanelSnapshot> {
     if (!src || typeof src !== 'string') {
       throw new FilePanelError('ResolveFailed', '链接路径为空');
@@ -942,6 +969,7 @@ export class FilePanelService extends EventEmitter {
     // watcher/requestActivation),与 openFileFromMarkdown 尾段零重复。
     return this.openFile(sessionId, abs, {
       ...(options.heading === undefined ? {} : { heading: options.heading }),
+      ...(options.line === undefined ? {} : { line: options.line }),
     });
   }
 

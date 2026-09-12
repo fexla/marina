@@ -8,11 +8,7 @@
  *   链接静默变义 —— 用例直接钉住「AI 文档怎么写 → 解析成什么」。
  */
 import { describe, expect, it } from 'vitest';
-import {
-  marinaLinkDisplayCommand,
-  parseMarinaLinkHref,
-  peekMarinaLinkKind,
-} from './marina-link';
+import { marinaLinkDisplayCommand, parseMarinaLinkHref, peekMarinaLinkKind } from './marina-link';
 
 describe('parseMarinaLinkHref: show', () => {
   it('基础形式:相对路径', () => {
@@ -62,6 +58,39 @@ describe('parseMarinaLinkHref: show', () => {
       ok: true,
       command: { kind: 'show', path: 'a.md --quiet' },
     });
+  });
+
+  it('--line 提取(终端链接方案 20260912;正整数行号,与 path:line 语义平移)', () => {
+    expect(parseMarinaLinkHref('marina:show src/x.ts --line 42')).toEqual({
+      ok: true,
+      command: { kind: 'show', path: 'src/x.ts', line: 42 },
+    });
+    // bridge transformer 生成形态:percent-encoded 引号路径 + 行号
+    expect(
+      parseMarinaLinkHref('marina:show%20%22C%3A%5Cproj%5Cdemo%5Csrc%5Cx.ts%22%20--line%201867'),
+    ).toEqual({
+      ok: true,
+      command: { kind: 'show', path: 'C:\\proj\\demo\\src\\x.ts', line: 1867 },
+    });
+    // --heading 与 --line 可同现(kind 互斥,各自生效,由服务层分发)
+    expect(parseMarinaLinkHref('marina:show a.md --heading T --line 3')).toEqual({
+      ok: true,
+      command: { kind: 'show', path: 'a.md', heading: 'T', line: 3 },
+    });
+  });
+
+  it('--line 非正整数报可读错误(0 / 负数 / 小数 / 缺值 / 非数字)', () => {
+    for (const href of [
+      'marina:show a.md --line 0',
+      'marina:show a.md --line -3',
+      'marina:show a.md --line 1.5',
+      'marina:show a.md --line',
+      'marina:show a.md --line abc',
+    ]) {
+      const r = parseMarinaLinkHref(href);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toContain('--line');
+    }
   });
 
   it('两个引号并排 = 保留各自内容;唯一转义是反斜杠+同款引号', () => {

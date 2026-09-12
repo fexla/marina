@@ -41,9 +41,11 @@ export default defineConfig({
       // file-panel/markdown-heading-sections.test.ts(H1-H6 章节重组纯 AST 变换) +
       // file-panel/markdown-url-transform.test.ts(盘符路径放行/危险协议剥空,纯函数) +
       // file-panel/markdown-path-autolink.test.ts(裸盘符路径自动链接,纯 AST + 端到端静态渲染) +
+      // terminal-link-router.test.ts(终端链接点击分类路由,纯函数无 DOM) +
       // workspace-snapshot.test.ts(ADR-039 快照恢复推导纯函数,无 DOM/window.api)。
       'src/renderer/store.test.ts',
       'src/renderer/workspace-snapshot.test.ts',
+      'src/renderer/terminal-link-router.test.ts',
       'src/renderer/components/common/**/*.test.ts',
       'src/renderer/components/file-panel/markdown-rail-pixel-snap.test.ts',
       'src/renderer/components/file-panel/markdown-heading-sections.test.ts',

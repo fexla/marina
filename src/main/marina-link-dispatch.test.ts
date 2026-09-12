@@ -87,6 +87,28 @@ describe('dispatchMarinaLink: show', () => {
     ]);
   });
 
+  it('--line 透传(终端链接方案 20260912;bridge transformer 的绝对路径 + 行号形态)', async () => {
+    const { deps, calls } = makeDeps();
+    // 终端来源:无 mdPath/commandKey → openFile 回退 session cwd 基准(路径已绝对)
+    await dispatchMarinaLink(
+      deps,
+      'sid-1',
+      undefined,
+      'marina:show%20%22C%3A%5Cproj%5Cdemo%5Csrc%5Cx.ts%22%20--line%201867',
+      'win-1',
+    );
+    expect(calls.openFile).toEqual(['sid-1', 'C:\\proj\\demo\\src\\x.ts', { line: 1867 }]);
+    // 文档来源(mdPath)同样透传
+    await dispatchMarinaLink(
+      deps,
+      'sid-2',
+      'D:/ws/report.md',
+      'marina:show a.ts --line 7',
+      'win-1',
+    );
+    expect(calls.openFileFromMarkdown).toEqual(['sid-2', 'D:/ws/report.md', 'a.ts', { line: 7 }]);
+  });
+
   it('无 mdPath 无 commandKey → openFile 回退(session 当前 cwd 基准,ADR-035 原语义)', async () => {
     const { deps, calls } = makeDeps();
     await dispatchMarinaLink(deps, 'sid-1', undefined, 'marina:show%20a%20b.md', 'win-1');
@@ -155,12 +177,12 @@ describe('dispatchMarinaLink: run', () => {
 describe('dispatchMarinaLink: 错误', () => {
   it('语法错抛 MarinaLinkError(message 可直接 toast)', async () => {
     const { deps } = makeDeps();
-    await expect(dispatchMarinaLink(deps, 'sid', undefined, 'marina:close --all', null)).rejects.toThrow(
-      MarinaLinkError,
-    );
     await expect(
-      dispatchMarinaLink(deps, 'sid', undefined, 'marina:show', null),
-    ).rejects.toThrow(/需要一个文件路径/);
+      dispatchMarinaLink(deps, 'sid', undefined, 'marina:close --all', null),
+    ).rejects.toThrow(MarinaLinkError);
+    await expect(dispatchMarinaLink(deps, 'sid', undefined, 'marina:show', null)).rejects.toThrow(
+      /需要一个文件路径/,
+    );
   });
 
   it('非 marina: href 拒绝(renderer 误传常规链接时防误执行)', async () => {

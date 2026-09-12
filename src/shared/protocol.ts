@@ -2123,13 +2123,19 @@ export interface FilePanelUpdatedPayload {
 /**
  * evt:file-panel:heading-navigation-requested payload。
  *
- * requestId 让同一路径/同一标题的连续调用仍会触发两次；renderer 成功或失败处理后
+ * requestId 让同一路径/同一目标的连续调用仍会触发两次；renderer 成功或失败处理后
  * 立即消费。该 payload 只发给当前 owner，永不进入持久/可重放快照。
+ *
+ * heading 与 line 恰好其一(终端链接方案 20260912):heading 只由 Markdown
+ * viewer 消费(--heading 跳标题);line 只由 TextViewer 消费(--line 滚到行)。
  */
 export interface FilePanelHeadingNavigationPayload {
   sessionId: string;
   path: string;
-  heading: string;
+  /** Markdown 可见标题文字(--heading)。 */
+  heading?: string;
+  /** 1-based 行号(--line,text 类文件)。 */
+  line?: number;
   requestId: string;
 }
 

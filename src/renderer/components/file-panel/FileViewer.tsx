@@ -25,8 +25,9 @@ interface FileViewerProps {
   search: PanelSearchProps;
   /** Markdown/Image/Unknown 的真实文档滚动容器(.file-panel-body)。 */
   outerScrollRef: RefObject<HTMLDivElement | null>;
-  /** 仅 Markdown 可消费的一次性可见标题跳转。 */
-  headingNavigation?: FilePanelHeadingNavigationPayload;
+  /** 一次性导航请求(--heading 跳标题 → MarkdownDocument;--line 滚到行 →
+   *  TextViewer;终端链接方案 20260912)。heading 与 line 恰好其一。 */
+  navigationRequest?: FilePanelHeadingNavigationPayload;
 }
 
 export function FileViewer({
@@ -34,11 +35,25 @@ export function FileViewer({
   file,
   search,
   outerScrollRef,
-  headingNavigation,
+  navigationRequest,
 }: FileViewerProps): JSX.Element {
   switch (file.kind) {
     case 'text':
-      return <TextViewer sessionId={sessionId} file={file} search={search} />;
+      return (
+        <TextViewer
+          sessionId={sessionId}
+          file={file}
+          search={search}
+          {...(navigationRequest?.line !== undefined
+            ? {
+                lineNavigation: {
+                  line: navigationRequest.line,
+                  requestId: navigationRequest.requestId,
+                },
+              }
+            : {})}
+        />
+      );
     case 'markdown':
       return (
         <MarkdownViewer
@@ -46,7 +61,9 @@ export function FileViewer({
           file={file}
           search={search}
           scrollRef={outerScrollRef}
-          {...(headingNavigation ? { headingNavigation } : {})}
+          {...(navigationRequest?.heading !== undefined
+            ? { headingNavigation: navigationRequest }
+            : {})}
         />
       );
     case 'image':

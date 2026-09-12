@@ -89,6 +89,8 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { Check, Maximize2, Minimize2, Plus, X } from 'lucide-react';
 import { COMMAND_CHANNELS, EVENT_CHANNELS, type SessionOutputPayload } from '@shared/protocol';
+import { routeTerminalUri, terminalLinkTooltipText } from '../terminal-link-router';
+import { hideTerminalLinkTooltip, showTerminalLinkTooltip } from '../terminal-link-tooltip';
 // [DEBUG-shift2] 临时诊断挂载(终端左移 bug),结案后删
 import { attachShiftCapture } from '../shift-capture-debug';
 import type { SessionInfo, ThemeId } from '@shared/types';
@@ -1181,6 +1183,45 @@ export function TerminalView({
             },
           }
         : {}),
+      // OSC 8 超链接接管(方案-终端可交互链接-20260912)。pi(bridge transformer +
+      // PI_HYPERLINKS=1)输出的 [text](url) 渲染成 OSC 8,点击/hover 走这里。
+      // 必须显式 allowNonHttpProtocols:true —— 否则 marina: 这类自定义 scheme 的
+      // 链接会被 xterm 整体丢弃(不可点、无 hover,见 OscLinkProvider 源码)。
+      // activate 路由见 terminal-link-router.ts(https 外开 / marina: 动作 / 路径
+      // 进文件面板);hover tooltip 是长 URL 缩短与 marina:run 的知情通道。
+      // 注:下方引用的 term 在此对象字面量求值期尚未赋值,但 activate/hover/leave
+      // 都只在用户交互时(构造完成后)触发,闭包捕获安全。
+      linkHandler: {
+        allowNonHttpProtocols: true,
+        activate: (_event: MouseEvent, uri: string) => {
+          hideTerminalLinkTooltip(term);
+          routeTerminalUri(uri, {
+            openExternal: (url) => {
+              window.api
+                .invoke(COMMAND_CHANNELS.SYSTEM_OPEN_EXTERNAL, { url })
+                .catch((err: unknown) => console.warn('[terminal] OSC8 link open failed:', err));
+            },
+            runMarinaLink: (href) => {
+              window.api
+                .invoke(COMMAND_CHANNELS.MARINA_LINK_RUN, { sessionId: session.id, href })
+                .catch((err: unknown) => {
+                  const msg = err instanceof Error ? err.message : String(err);
+                  console.warn('[terminal] marina link dispatch failed:', msg);
+                  toastRef.current.push({ kind: 'error', message: msg });
+                });
+            },
+            openPath: (candidates, line) => {
+              openPathFromTerminalRef.current?.(candidates, line);
+            },
+          });
+        },
+        hover: (event: MouseEvent, uri: string) => {
+          showTerminalLinkTooltip(term, event, terminalLinkTooltipText(uri));
+        },
+        leave: () => {
+          hideTerminalLinkTooltip(term);
+        },
+      },
     });
     // cc-switch / lazygit 这类远端 TUI 常按现代 wcwidth 把 emoji 当 2 列。
     // xterm 5.5 默认 UnicodeV6 会把很多 emoji 当 1 列,导致 cursor advance
@@ -2019,6 +2060,9 @@ export function TerminalView({
       searchResultsDisposable?.dispose();
       // v0.3.3 Feature F:释放文件路径 link provider。
       fileLinkDisposable?.dispose();
+      // 终端链接 tooltip(方案 20260912):节点挂在 term.element 里,随宿主移除,
+      // 这里显式清一次保持 invariant(与上方 paste listener 同理)。
+      hideTerminalLinkTooltip(term);
       scrollMemoryDisposable.dispose();
       window.removeEventListener('marina:smoke-terminal-scroll', onSmokeScroll);
       // 滚动位置记忆:卸载前立即 flush 最后一帧(取消 pending debounce timer,

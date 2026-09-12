@@ -22,6 +22,7 @@ import { useFileContent } from './useFileContent';
 import { useDomTextHighlight } from '../../hooks/useDomTextHighlight';
 import { useFileViewerScroll } from '../../hooks/useFileViewerScroll';
 import { useTranslation } from '../LanguageProvider';
+import { useAppDispatch } from '../../store';
 import { highlightLine, detectLanguageByExt } from './highlight';
 import { consumePendingLineJump } from '../../pending-line-jump';
 
@@ -30,6 +31,10 @@ interface ViewerProps {
   file: OpenedFile;
   /** dock 级搜索状态(C3 文件内查找)。 */
   search: PanelSearchProps;
+  /** 一次性 --line 导航请求(marina:show --line,终端链接方案 20260912)。
+   *  与 pending-line-jump(终端 :行号 链接)双通道并存:本通道事件驱动、
+   *  requestId 键控,文件已打开不 remount 也能重复跳。 */
+  lineNavigation?: { line: number; requestId: string };
 }
 
 /**
@@ -39,8 +44,9 @@ interface ViewerProps {
  */
 const MAX_RENDER_LINES = 1000;
 
-export function TextViewer({ sessionId, file, search }: ViewerProps): JSX.Element {
+export function TextViewer({ sessionId, file, search, lineNavigation }: ViewerProps): JSX.Element {
   const { tx } = useTranslation();
+  const dispatch = useAppDispatch();
   const content = useFileContent(sessionId, file.path, file.mtimeMs);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const linesRef = useRef<HTMLDivElement | null>(null);
@@ -101,8 +107,7 @@ export function TextViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
     // 搜索 或 带初始跳行 时都不恢复旧 scrollTop:前者让搜索 scrollIntoView 主导,
     // 后者让本组件的 scrollToLine 生效(否则 useFileViewerScroll 的 restore fence
     // 会把滚动拉回旧位置,见 scrollToLine 注释)。
-    searchActive:
-      (search.visible && search.query.length > 0) || jumpLine !== undefined,
+    searchActive: (search.visible && search.query.length > 0) || jumpLine !== undefined,
   });
 
   // 中键自动滚动:走 Chromium 原生 autoscroll(点中键出现圆圈图标、鼠标移动持续
@@ -116,6 +121,25 @@ export function TextViewer({ sessionId, file, search }: ViewerProps): JSX.Elemen
   //  必须用 scrollIntoView 而非算像素。目标行超出截断(MAX_RENDER_LINES/2MB)时
   //  querySelector 返回 null,no-op(ADR 只要求跳转,不强保证超长文件可达)。
   const jumpedRef = useRef(false);
+
+  // —— --line 导航请求消费(marina:show --line,终端链接方案 20260912)——
+  // requestId 键控一次,消费模式与 MarkdownDocument 的 headingNavigation 同构。
+  // 重置 jumpedRef:它默认「每次挂载只跳一次」,同一挂载内再次导航需要清标记,
+  // 下方 layout effect 才会为新 jumpLine 重新滚动。
+  const lineNavHandledRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!lineNavigation || lineNavHandledRef.current === lineNavigation.requestId) return;
+    lineNavHandledRef.current = lineNavigation.requestId;
+    jumpedRef.current = false;
+    setJumpLine(lineNavigation.line);
+    // 消费队列条目:FilePanel 的 FIFO 不许被本请求长期占位挡住后续导航。
+    dispatch({
+      type: 'file-panel/heading-navigation-consumed',
+      sessionId,
+      requestId: lineNavigation.requestId,
+    });
+  }, [lineNavigation, sessionId, dispatch]);
+
   useLayoutEffect(() => {
     if (jumpLine === undefined || jumpedRef.current) return;
     if (!content || content.kind !== 'text') return;
