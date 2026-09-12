@@ -9,6 +9,22 @@
 
 ### Added
 
+- **「已打开」面板 tab 右键菜单完善(三种 tab 形态补齐)**:① 普通文件 tab 新增
+  「打开 diff」——文件 tab 只有绝对路径,`cmd:git:open-diff` 增加 `absolutePath`
+  互斥变体,main 端 realpath 文件后从其**自身位置**向上找 `.git` 定位仓库(与
+  session cwd 无关,文件可以属于别的仓库),换算 repo 相对路径后走与 Git 面板
+  完全相同的 diff 管线(owner/SSH 校验、symlink/junction 逃逸拦截照旧;symlink
+  目标按真实位置判定所属仓库,仓库外内容不会借该入口进 diff)。僵尸 tab(missing)
+  禁用该项;二进制 tab(image/unknown)不提供——main 对二进制的处理就是重开文件
+  本身,无意义往返。② 受管 git-diff tab 菜单改为围绕源文件:「打开源文件」
+  (origin 真值 + repoIdentity,与 DiffViewer 工具栏同通道;sourceMissing 禁用)、
+  「复制相对路径」(源文件 repo 相对路径),隐藏指向 `__marina_diff__` 临时文件的
+  「在 Explorer 中显示 / 用默认应用打开 / 复制绝对路径」;外部打开的裸 .diff
+  保持原菜单。③ 命令 tab 此前完全没有右键,新增「重新运行(运行中禁用)/ 关闭 /
+  关闭其他 / 关闭所有 / 复制命令」,菜单由 FilePanel 构建(与文件 tab 同宿主,
+  IPC/dispatch 边界不变),CommandTabStrip 只负责弹出。统一菜单生成器
+  (buildFileEntryMenu)操作族拆为查看族(primary/openFile/openDiff)与关闭族,
+  相邻非空组间加 divider;既有调用方(git/file-tree)菜单形态不变。
 - **pi resume 恢复命令页(ADR-039,命令与文档同一快照)**:`marina run` 推的
   命令 tab 此前是纯内存态,resume pi 会话只恢复文档不恢复命令。现在命令作为
   workspace 快照(file-panel.json)的 `commandPanel` 切片与文档同一条管线:
