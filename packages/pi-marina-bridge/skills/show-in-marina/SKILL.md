@@ -304,6 +304,10 @@ Marina does not parse the command — it passes the whole string to bash.
 
 - Each distinct command opens its own tab. Pushing the **same** command again
   does **not** add a tab — it re-runs the existing one (dedup).
+- Command tabs are **remembered per pi conversation** (v0.3.3): when the user
+  resumes this conversation later (`pi --resume`), the tabs come back with their
+  last output and refresh policies — exactly like documents shown with
+  `marina show`. You do not need to re-push them after a resume.
 - Refresh policy is per-tab and is chosen by the **user in the panel toolbar**,
   not by the CLI. Default is **foreground-only** (runs while the user views
   that tab; stops when they switch away, to save resources). The user may

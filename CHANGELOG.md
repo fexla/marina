@@ -9,6 +9,14 @@
 
 ### Added
 
+- **pi resume 恢复命令页(ADR-039,命令与文档同一快照)**:`marina run` 推的
+  命令 tab 此前是纯内存态,resume pi 会话只恢复文档不恢复命令。现在命令作为
+  workspace 快照(file-panel.json)的 `commandPanel` 切片与文档同一条管线:
+  debounce 落盘(main 在写边界合并内存真值,单一真相源)、resume/new/fork 切换
+  workspace 时与文档一起恢复(带离开时的最后输出,刷新策略照常运转,不立即
+  重跑)、fork 继承(runCwd 重写指向新目录)。命令输出的滚动位置(`command:`
+  条目)同步落盘恢复;新增 `panelView` 切片记住当时在看文件侧还是命令侧。
+  接通了 ADR-028 D6 预留的 CommandPanelService.restoreSnapshot/exportSnapshot。
 - **pi subagent 工作状态聚合(ADR-038)**:后台/async 子 agent 运行期间终端状态
   不再错翻空闲。pi-subagents 的子 agent 是独立 pi 子进程,其 bridge 事件早已到达
   Marina、此前被 ADR-028 主锁纯丢弃;现在 workspace/名字污染照旧拦截,但工作状态
