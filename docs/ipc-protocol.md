@@ -990,7 +990,13 @@ type GetGitStatusResponse =
   | { groups: GitStatusGroup[]; truncated: boolean }              // 仓库可用
   | { unavailable: GitUnavailableReason };                        // 不可用(Git tab 不出现)
 
-interface OpenGitDiffPayload { sessionId: string; relativePath: string }
+// v0.3.3:open-diff 两个互斥变体。relativePath = Git 面板变更条目回传(仓库取自
+// session currentCwd);absolutePath = 「已打开」文件 tab 右键「打开 diff」(tab 只有
+// 绝对路径,main realpath 文件后从其自身位置向上找 .git 定位仓库,换算 repo 相对
+// 路径,再走同一 diff 管线)。两个变体的 owner/SSH/enableGitPanel 前置校验一致。
+type OpenGitDiffPayload =
+  | { sessionId: string; relativePath: string; absolutePath?: undefined }
+  | { sessionId: string; relativePath?: undefined; absolutePath: string };
 interface OpenGitFilePayload {
   sessionId: string;
   relativePath: string;
@@ -1019,6 +1025,7 @@ Demand 只影响周期刷新；用户显式 `get-status` 仍立即返回。
 - 每次请求验证 `ownerWindowId === envelope.windowId`；接管后旧 owner 立即失权。
 - SSH session 一律拒绝(不引入远端 git 协议)，返回 `unavailable: 'ssh-unsupported'`。
 - `relativePath` 拒绝 `..` / 绝对路径 / NUL。任何会读取 worktree 内容的 `open-diff` / `open-file` / `resolve-path` 都在词法校验后做 `realpath` + 路径段包含校验，拒绝 symlink / Windows junction 逃逸。`open-diff` 仅在 porcelain 已确认 deleted/conflict 且目标为 ENOENT 时允许缺失路径，此时 Git 只从 HEAD/index 生成删除 diff，不读取根外工作区内容。
+- v0.3.3 `absolutePath` 变体（「已打开」文件 tab 右键「打开 diff」）：文件本体必须能 `realpath`（僵尸 tab 兜底 → `InvalidPath`），仓库从 canonical 文件位置向上找 `.git` 得出——不存在「越出 cwd 仓库」的攻击面，因为 repoRoot 与文件同源；symlink/junction 目标按其**真实位置**判定所属仓库（指向仓库外的链接解析后落在仓库外 → `NotARepo`，仓库外内容不会借该入口进入 diff）。换算出的相对路径再做段边界包含断言 + 既有 `produceDiff` 逃逸校验。已知边缘：文件属于 cwd 之外的另一仓库时 diff 正常打开，但其「打开源文件」会被下一条 repoIdentity 校验拒绝（文案可辨识）。
 - DiffViewer 从 `OpenedFile.origin` 回传 `repoIdentity` 时，main 必须确认 session 当前 repo 指纹仍一致；不一致说明终端已 cd 到别的仓库，拒绝把旧 relativePath 解析到新仓库的同名文件。指纹是规范化 repoRoot 的 SHA-256，不暴露绝对路径。
 - `runGit` spawn 限 5s 超时 + 8MB stdout 上限防恶意大输出。
 

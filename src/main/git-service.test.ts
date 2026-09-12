@@ -13,7 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { BackgroundWorkScheduler } from './background-work-scheduler';
 import { FilePanelService } from './file-panel-service';
 import { PerformanceMetrics } from './performance-metrics';
@@ -518,6 +518,108 @@ describe('GitService', () => {
     await expect(service.openDiff('s1', 'intruder', 'x.txt')).rejects.toMatchObject({
       code: 'NotOwner',
     });
+  });
+
+  // ── v0.3.3 openDiffByAbsolutePath:「已打开」文件 tab 右键「打开 diff」入口 ──
+  // 与 openDiff 的唯一差别:仓库按文件自身位置定位,与 session currentCwd 无关。
+  // 这里用 s2(cwd 在 nonRepoDir)打开 repoDir 内的文件,证明仓库不是从 cwd 推的。
+  it('openDiffByAbsolutePath:按文件自身位置定位仓库(cwd 不在 repo 也能打开)', async () => {
+    await writeFile(join(repoDir, 'modified.txt'), 'source\n');
+    const statusSample = '1 .M N... 100644 100644 100644 aaaa bbbb modified.txt\0';
+    const diffText = 'diff --git a/modified.txt b/modified.txt\n+hello\n';
+    const spy = vi
+      .spyOn(service as unknown as { runGit: (...a: never[]) => Promise<unknown> }, 'runGit')
+      .mockResolvedValueOnce({ stdout: Buffer.from(statusSample, 'utf8'), stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: Buffer.from(diffText, 'utf8'), stderr: '', exitCode: 0 });
+
+    const snap = await service.openDiffByAbsolutePath(
+      's2',
+      'owner-2',
+      join(repoDir, 'modified.txt'),
+    );
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(snap.files).toHaveLength(1);
+    const opened = snap.files[0]!;
+    expect(opened.path).toContain('__marina_diff__');
+    expect(opened.origin).toEqual({
+      kind: 'git-diff',
+      relativePath: 'modified.txt',
+      repoIdentity: expect.any(String),
+      sourceMissing: false,
+    });
+  });
+
+  it('openDiffByAbsolutePath:子目录文件换算出 repo 相对路径(平台分隔符)', async () => {
+    await mkdir(join(repoDir, 'sub'));
+    await writeFile(join(repoDir, 'sub', 'nested.ts'), 'source\n');
+    const statusSample = '1 .M N... 100644 100644 100644 aaaa bbbb sub/nested.ts\0';
+    const diffText = 'diff --git a/sub/nested.ts b/sub/nested.ts\n+hello\n';
+    vi.spyOn(service as unknown as { runGit: (...a: never[]) => Promise<unknown> }, 'runGit')
+      .mockResolvedValueOnce({ stdout: Buffer.from(statusSample, 'utf8'), stderr: '', exitCode: 0 })
+      .mockResolvedValueOnce({ stdout: Buffer.from(diffText, 'utf8'), stderr: '', exitCode: 0 });
+
+    const snap = await service.openDiffByAbsolutePath(
+      's2',
+      'owner-2',
+      join(repoDir, 'sub', 'nested.ts'),
+    );
+
+    // relativePath 由 canonical repoRoot 派生,期望值用同一 API 计算(不硬编码分隔符)
+    const expectedRelative = relative(
+      await realpath(repoDir),
+      await realpath(join(repoDir, 'sub', 'nested.ts')),
+    );
+    expect(snap.files[0]?.origin).toMatchObject({
+      kind: 'git-diff',
+      relativePath: expectedRelative,
+    });
+  });
+
+  it('openDiffByAbsolutePath:文件不在任何 Git 仓库 → NotARepo', async () => {
+    await writeFile(join(nonRepoDir, 'plain.txt'), 'no repo here\n');
+    await expect(
+      service.openDiffByAbsolutePath('s2', 'owner-2', join(nonRepoDir, 'plain.txt')),
+    ).rejects.toMatchObject({ code: 'NotARepo' });
+  });
+
+  it('openDiffByAbsolutePath:文件不存在(僵尸 tab 竞态兜底)→ InvalidPath', async () => {
+    await expect(
+      service.openDiffByAbsolutePath('s1', 'owner-1', join(repoDir, 'vanished.txt')),
+    ).rejects.toMatchObject({ code: 'InvalidPath' });
+  });
+
+  it('openDiffByAbsolutePath:symlink/junction 目标在仓库外 → 按真实位置判定,不进 diff', async () => {
+    // repo 内 link 指向仓库外目录:realpath 把文件解析到真实位置,再从那里找
+    // 仓库 → 找不到 → NotARepo。仓库外内容不会借 abs 入口进入 diff。
+    await writeFile(join(nonRepoDir, 'secret.txt'), 'TOP_SECRET_OUTSIDE');
+    const escapedLink = join(repoDir, 'escaped-link');
+    try {
+      await symlink(nonRepoDir, escapedLink, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EPERM') return;
+      throw err;
+    }
+    const spy = vi.spyOn(
+      service as unknown as { runGit: (...a: never[]) => Promise<unknown> },
+      'runGit',
+    );
+    await expect(
+      service.openDiffByAbsolutePath('s1', 'owner-1', join(escapedLink, 'secret.txt')),
+    ).rejects.toMatchObject({ code: 'NotARepo' });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('openDiffByAbsolutePath:SSH 拒绝(不进入任何文件系统访问)', async () => {
+    await expect(
+      service.openDiffByAbsolutePath('ssh1', 'owner-ssh', resolve(repoDir, 'x.txt')),
+    ).rejects.toMatchObject({ code: 'SshUnsupported' });
+  });
+
+  it('openDiffByAbsolutePath:非 owner 拒绝', async () => {
+    await expect(
+      service.openDiffByAbsolutePath('s1', 'intruder', join(repoDir, 'x.txt')),
+    ).rejects.toMatchObject({ code: 'NotOwner' });
   });
 
   // ── v0.3.1 openFile:打开文件本身(不走 diff) ──────────────────────

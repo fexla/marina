@@ -2543,14 +2543,22 @@ function registerGitHandlers(deps: IpcLayerDeps): void {
     },
   );
 
+  // v0.3.3 payload 有两个互斥变体(见 OpenGitDiffPayload):Git 面板回传 repo
+  // 相对路径;「已打开」文件 tab 传绝对路径,main 按文件自身位置定位仓库。
   registerHandle(
     COMMAND_CHANNELS.GIT_OPEN_DIFF,
     async (_e, envelope: CommandEnvelope<OpenGitDiffPayload>): Promise<FilePanelSnapshot> =>
-      gitService.openDiff(
-        envelope.payload.sessionId,
-        envelope.windowId,
-        envelope.payload.relativePath,
-      ),
+      envelope.payload.absolutePath !== undefined
+        ? gitService.openDiffByAbsolutePath(
+            envelope.payload.sessionId,
+            envelope.windowId,
+            envelope.payload.absolutePath,
+          )
+        : gitService.openDiff(
+            envelope.payload.sessionId,
+            envelope.windowId,
+            envelope.payload.relativePath,
+          ),
   );
 
   // v0.3.1 勘误:Git 面板右键「打开文件本身」+「复制绝对路径 / 在 Explorer 显示」。

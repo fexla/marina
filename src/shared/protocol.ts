@@ -2361,11 +2361,16 @@ export type GetGitStatusResponse =
   | (GitStatusSnapshot & { unavailable?: undefined })
   | { unavailable: GitUnavailableReason };
 
-/** cmd:git:open-diff payload。relativePath 由 getStatus 返回,renderer 原样回传。 */
-export interface OpenGitDiffPayload {
-  sessionId: string;
-  relativePath: string;
-}
+/**
+ * cmd:git:open-diff payload。两个互斥变体(TS 联合强制二选一):
+ * - `relativePath`:Git 面板变更条目回传(getStatus 返回,renderer 原样回传),
+ *   仓库取自 session currentCwd;
+ * - `absolutePath`(v0.3.3):「已打开」面板文件 tab 右键「打开 diff」——tab 只有
+ *   绝对路径,main 端按文件自身位置定位所在仓库后换算 repo 相对路径,走同一管线。
+ */
+export type OpenGitDiffPayload =
+  | { sessionId: string; relativePath: string; absolutePath?: undefined }
+  | { sessionId: string; relativePath?: undefined; absolutePath: string };
 
 /** v0.3.1 cmd:git:open-file payload(与 open-diff 同形,语义不同)。 */
 export interface OpenGitFilePayload {

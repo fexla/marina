@@ -40,7 +40,7 @@ import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promises as fs, statSync } from 'node:fs';
-import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import type { BackgroundDemandLevel, FilePanelSnapshot } from '@shared/protocol';
 import { resolveDiffOpenFileState } from '@shared/diff-path';
 import { detectFileKind, isBinaryLikeKind } from '@shared/file-kind';
@@ -469,7 +469,11 @@ export class GitService extends EventEmitter {
   }
 
   /**
-   * 产出某文件的 unified diff 并交给 FilePanelService 打开预览。
+   * 产出某文件的 unified diff 并交给 FilePanelService 打开预览(repo 相对路径入口)。
+   *
+   * 仓库取自 session currentCwd —— 这是 Git 面板变更条目的语义(relativePath 由
+   * getStatus 返回,renderer 原样回传,天然属于 cwd 仓库)。「已打开」面板文件 tab
+   * 只有绝对路径,走 openDiffByAbsolutePath(仓库按文件自身位置定位)。
    *
    * diff 写入 session 的 MARINA_WORKSPACE/__marina_diff__/<sha>.diff,作为
    * 普通 .diff 文件走既有 openFile 路径。这样:tab 管理 / watcher 自动刷新 /
@@ -502,9 +506,93 @@ export class GitService extends EventEmitter {
     if (!repoRoot) {
       throw new GitError('NotARepo', '当前目录不在 Git 仓库内,无法生成 diff。');
     }
-    // 先做不触碰文件系统的词法校验；produceDiff 查明 status tone 后，会在任何
+    return this.openDiffInsideRepo(sessionId, repoRoot, relativePath);
+  }
+
+  /**
+   * v0.3.3:「已打开」面板文件 tab 右键「打开 diff」入口(绝对路径变体)。
+   *
+   * 与 openDiff 的差别只在仓库定位:文件 tab 只有绝对路径(OpenedFile.path),
+   * 且它可能不属于 session currentCwd 的仓库(多根文件树 / 终端程序推送的外部
+   * 文件)。这里 realpath 文件本体后,从**文件自身位置**向上找 .git 得出仓库,
+   * 换算成 repo 相对路径,再走与 openDiff 完全相同的 diff 管线(共享
+   * openDiffInsideRepo)。
+   *
+   * 安全模型与 openDiff 同级:owner-only + SSH 拒绝 + enableGitPanel 开关;
+   * repoRoot 与文件路径都是 realpath 后的 canonical 形态,相对路径由二者派生,
+   * 构造上必在仓库内(isWithinRoot 段边界断言兜底);produceDiff 内对所有
+   * worktree 内容读取的 realpath + 包含校验(symlink/junction 逃逸)照旧生效。
+   *
+   * 已知边缘(不在本方法修):文件在 cwd 之外的另一仓库时,diff 正常打开,但该
+   * diff tab 的「打开源文件」会因 origin.repoIdentity ≠ cwd 仓库指纹被
+   * openFile 的既有防错拦截(防 cwd 变化后错开同名文件),报错文案可辨识。
+   *
+   * @param absolutePath 文件 tab 的绝对路径(main 端规范化过的 OpenedFile.path)
+   * @throws GitError InvalidPath(文件已不存在/不可读,如僵尸 tab 竞态)/
+   *   NotARepo(文件不在任何 Git 仓库内)/ 其余同 openDiff
+   */
+  async openDiffByAbsolutePath(
+    sessionId: string,
+    requesterId: string,
+    absolutePath: string,
+  ): Promise<FilePanelSnapshot> {
+    const session = this.requireOwnerSession(sessionId, requesterId);
+    if (pathKindFromPathId(session.pathId) === 'ssh') {
+      throw new GitError(
+        'SshUnsupported',
+        'SSH 会话不支持 Git 面板。请在远程终端中使用 git 命令。',
+      );
+    }
+    if (!this.runtimeConfig.enableGitPanel) {
+      throw new GitError('GitFailed', 'Git 面板已在设置中禁用。');
+    }
+    // realpath 文件本体。菜单已对僵尸 tab(missing)禁用此项,这里兜底拦截
+    // 删除事件与右键之间的竞态 / 不可读目标。不走 realpathOrThrow —— 那个
+    // 错误文案是 cwd 语义,这里要文件语义。
+    let realAbs: string;
+    try {
+      realAbs = await fs.realpath(absolutePath);
+    } catch (err) {
+      throw new GitError(
+        'InvalidPath',
+        `文件不可访问,无法生成 diff。可能原因:(1)文件已被删除(标签是残留的僵尸 tab),` +
+          `(2)无读取权限,(3)symlink/junction 目标已失效。原始错误:${
+            err instanceof Error ? err.message : String(err)
+          }`,
+      );
+    }
+    const repoRoot = await findRepoRoot(dirname(realAbs));
+    if (!repoRoot) {
+      throw new GitError('NotARepo', '该文件不在 Git 仓库内,无法生成 diff。');
+    }
+    // canonical repoRoot + canonical 文件路径,相对关系构造上安全;isWithinRoot
+    // 做段边界断言(findRepoRoot/realpath 意外行为兜底,不是正常路径)。
+    if (!isWithinRoot(repoRoot, realAbs)) {
+      throw new GitError(
+        'OutsideRepoRoot',
+        '文件路径解析后位于其所在仓库之外,已拒绝。请刷新后重试。',
+      );
+    }
+    logger.info(
+      MODULE,
+      `openDiffByAbsolutePath: sid=${sessionId} file resolved into repo (relative=${relative(repoRoot, realAbs)})`,
+    );
+    return this.openDiffInsideRepo(sessionId, repoRoot, relative(repoRoot, realAbs));
+  }
+
+  /**
+   * openDiff / openDiffByAbsolutePath 的共享尾部:词法校验 → 二进制直开判断 →
+   * produceDiff → 写受管临时 .diff → FilePanelService.openFile(带 git-diff origin)。
+   * 调用方负责:owner/SSH/enableGitPanel 前置校验 + repoRoot 定位(canonical)。
+   */
+  private async openDiffInsideRepo(
+    sessionId: string,
+    repoRoot: string,
+    relativePath: string,
+  ): Promise<FilePanelSnapshot> {
+    // 先做不触碰文件系统的词法校验;produceDiff 查明 status tone 后,会在任何
     // worktree 内容读取前 realpath + 包含校验。只有 confirmed deleted/conflict 且
-    // 目标确实不存在时允许跳过 realpath，以保留删除文件 diff。
+    // 目标确实不存在时允许跳过 realpath,以保留删除文件 diff。
     this.resolveLexicallyInsideRepo(repoRoot, relativePath);
 
     // v0.3.3:二进制文件没有可读的文本 diff —— git 只会输出一行
@@ -541,8 +629,8 @@ export class GitService extends EventEmitter {
 
     const tempPath = await this.writeDiffTemp(sessionId, relativePath, produced.text);
     // GitService 是 repo-relative path 的真值源。把原始路径作为 OpenedFile origin
-    // 交给 FilePanelService 保存；DiffViewer 不再从 Git 的展示文本反推导航目标
-    // （中文路径默认会被 core.quotePath 写成 C 风格八进制转义）。
+    // 交给 FilePanelService 保存;DiffViewer 不再从 Git 的展示文本反推导航目标
+    // (中文路径默认会被 core.quotePath 写成 C 风格八进制转义)。
     return this.filePanelService.openFile(sessionId, tempPath, {
       origin: {
         kind: 'git-diff',
