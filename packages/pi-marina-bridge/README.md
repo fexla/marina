@@ -61,12 +61,13 @@ pi install -l ./relative/path/to/packages/pi-marina-bridge
 ## How it works
 
 ```
-Marina terminal (TERMINAL_ID)
+Marina terminal (TERMINAL_ID, PI_HYPERLINKS=1)
   └─ pi process
        └─ this extension
             • detects MARINA_SERVICE / MARINA_TOKEN / TERMINAL_ID
             • resources_discover → contributes <pkg>/skills (show-in-marina)
             • before_agent_start → appends Marina system prompt (idempotent)
+            • registerMarkdownTransformer → linkify (see below)
             • subscribes to pi events
             • POST /pi-session-event  →  Marina main (decision maker)
                                           ├─ workspace bind/switch (ADR-024 infra)
@@ -90,6 +91,30 @@ hooks never do IO either — if the bundled `skills/` directory is missing
 (broken install), both injections are skipped with a warning and event
 forwarding continues to work.
 
+### Markdown linkify transformer (0.3.14, terminal interactive links)
+
+Registered via pi's official `registerMarkdownTransformer` (display-only; runs
+before pi's own markdown rendering for streaming chunks, final messages and
+restored sessions — must be a pure function, no IO):
+
+- bare file paths (STRICT detection, vendored from Marina
+  `src/shared/terminal-path-detector.ts` with a corpus-parity test) →
+  `[原文](marina:show "<abs>" [--line N])`; relative paths resolved against
+  pi's cwd, `~` expanded, truncated `D:/x` drive prefixes restored;
+- bare URLs → wrapped as links; labels longer than `max(28, width/2)` are
+  shortened to `host…tail` (href stays complete);
+- fenced code blocks, inline code, existing `[label](href)` links and images
+  are passed through untouched.
+
+pi renders the resulting links as **OSC 8 hyperlinks** (enabled by the
+`PI_HYPERLINKS=1` env Marina injects into every PTY); Marina's xterm renders
+them natively and they survive soft line wraps — detection happens at the
+source-text level, so terminal wrapping can no longer break a link. Clicks are
+routed by Marina (`marina:` actions reuse the ADR-035 dispatch; see
+`docs/方案-终端可交互链接-20260912.md` / ADR-041). Requires a pi version that
+has the transformer API; older versions silently skip it (pi's native
+`[]()` → OSC 8 still works via `PI_HYPERLINKS=1`).
+
 ## Requirements
 
 - Marina v0.3.3+ (adds the `/pi-session-event` endpoint + `piIntegration` settings)
@@ -99,6 +124,7 @@ forwarding continues to work.
 
 ## Design reference
 
-See Marina's `docs/软件定义书.md` **ADR-028** (decision 8),
+See Marina's `docs/软件定义书.md` **ADR-028** (decision 8) / **ADR-041**
+(terminal interactive links), `docs/方案-终端可交互链接-20260912.md`,
 `docs/方案-pibridge-skill与提示词注入-20260909.md`, and
 `docs/方案-pi对话绑定workspace-20260805.md`.

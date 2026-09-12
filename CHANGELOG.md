@@ -9,6 +9,31 @@
 
 ### Added
 
+- **终端可交互链接(ADR-041,方案-终端可交互链接-20260912)**:终端正文的可点击
+  内容从「buffer 正则单行检测」升级为双通道——
+  ① **pi 插件侧检测(源文本层,根治换行问题)**:PTY env 注入 `PI_HYPERLINKS=1`
+  开启 pi 原生 OSC 8 超链接输出;bridge 0.3.14 注册官方 `registerMarkdownTransformer`
+  (display-only,流式/最终/恢复会话全跑)——裸文件路径(vendored STRICT 检测,
+  corpus 一致性测试防漂移;相对路径按 pi cwd 绝对化、`~` 展开、`D:/x` 盘符截断
+  补回)生成 `marina:show "绝对路径" --line N` 动作链接;裸 URL 包成可点链接,
+  超长(> max(28, 宽/2))label 缩为「域名+尾段」、href 完整;fenced code / inline
+  code / 已有链接 / 图片不透明透传。OSC 8 落 buffer 后 xterm 原生跨软折行不断链
+  ——路径被折行劈断检测不出的问题从根上消失。
+  ② **终端级 []() 解析(裸 markdown 文本)**:新增 shared 检测器(语义对齐
+  marked:图片排除、一层嵌套括号 href、转义 label)+ TerminalView provider,
+  覆盖 `pi -p` 打印模式 / `cat xx.md` / 其它工具输出;点击与 OSC 8 同一条路由
+  (`terminal-link-router.ts`:https/mailto 系统浏览器外开、`marina:` 复用
+  ADR-035 分发(session 作用域)、其余按路径进文件面板;`#anchor` no-op;SSH
+  session 只留 http/marina: 类 href)。
+  配套:`marina:show` 新增 `--line N`(text 类文件行跳转,导航事件 line 变体,
+  TextViewer requestId 键控消费、已打开不 remount 也可重复跳;非 text kind 忽略
+  line 照常打开);OSC 8 点击经 `linkHandler.allowNonHttpProtocols` 接管(不设则
+  `marina:` 链接被 xterm 整体丢弃);hover tooltip 展示 marina: 命令原文 / 完整
+  URL(知情通道);**文件路径 provider 升级为跨折行窗口检测**(移植官方
+  addon-web-links 的 `_getWindowedLineStrings`+`_mapStrIdx`),修掉 ADR-027 的
+  折行盲区,非 pi 终端同样受益。已知降级:SerializeAddon 不保留 OSC 8,scrollback
+  回放后旧链接退化为纯文本,自研检测兜底(marina: 动作语义丢失);信任模型:终端
+  `marina:run` 无确认,同 ADR-035。
 - **pi bridge 事件乱序根治——「AI 已开始工作但终端 tab 不显示工作中」(双层修复)**:
   根因:bridge 的 `session_start` 为拿 workspaceId 响应不走发送队列(直发),其余
   事件走 `postQueue` 串行链;`/new` `/resume` `/fork` 时 pi 先发旧主
