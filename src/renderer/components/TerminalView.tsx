@@ -82,15 +82,20 @@ import {
   type MouseEvent as ReactMouseEvent,
   type WheelEvent as ReactWheelEvent,
 } from 'react';
-import { Terminal, type ITheme } from '@xterm/xterm';
+import { Terminal, type ILink, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { Check, Maximize2, Minimize2, Plus, X } from 'lucide-react';
 import { COMMAND_CHANNELS, EVENT_CHANNELS, type SessionOutputPayload } from '@shared/protocol';
-import { routeTerminalUri, terminalLinkTooltipText } from '../terminal-link-router';
+import {
+  routeTerminalUri,
+  terminalLinkTooltipText,
+  type TerminalLinkActions,
+} from '../terminal-link-router';
 import { hideTerminalLinkTooltip, showTerminalLinkTooltip } from '../terminal-link-tooltip';
+import { getWindowedLine, mapStrIdx } from '../terminal-line-window';
 // [DEBUG-shift2] 临时诊断挂载(终端左移 bug),结案后删
 import { attachShiftCapture } from '../shift-capture-debug';
 import type { SessionInfo, ThemeId } from '@shared/types';
@@ -104,6 +109,7 @@ import {
 import { isDeviceAttributesResponse } from '@shared/terminal-input-filter';
 import { activateMarinaUnicodeWidth } from '@shared/terminal-unicode-width';
 import { detectFileLinks, parsePathWithLineCol } from '@shared/terminal-path-detector';
+import { detectMdLinks } from '@shared/terminal-md-link-detector';
 import { setPendingLineJump, movePendingLineJump } from '../pending-line-jump';
 import { useAppDispatch, useAppState, useAppStateRef } from '../store';
 import { useCloseSession } from '../hooks/useCloseSession';
@@ -1152,6 +1158,28 @@ export function TerminalView({
     const container = containerRef.current;
     if (!container) return undefined;
 
+    // 终端链接的统一动作集(方案-终端可交互链接-20260912):OSC 8 linkHandler
+    // 与自研 []() provider 共用同一份路由(terminal-link-router.ts)。
+    const terminalLinkActions: TerminalLinkActions = {
+      openExternal: (url) => {
+        window.api
+          .invoke(COMMAND_CHANNELS.SYSTEM_OPEN_EXTERNAL, { url })
+          .catch((err: unknown) => console.warn('[terminal] link open failed:', err));
+      },
+      runMarinaLink: (href) => {
+        window.api
+          .invoke(COMMAND_CHANNELS.MARINA_LINK_RUN, { sessionId: session.id, href })
+          .catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn('[terminal] marina link dispatch failed:', msg);
+            toastRef.current.push({ kind: 'error', message: msg });
+          });
+      },
+      openPath: (candidates, line) => {
+        openPathFromTerminalRef.current?.(candidates, line);
+      },
+    };
+
     const term = new Terminal({
       fontFamily,
       fontSize,
@@ -1195,25 +1223,7 @@ export function TerminalView({
         allowNonHttpProtocols: true,
         activate: (_event: MouseEvent, uri: string) => {
           hideTerminalLinkTooltip(term);
-          routeTerminalUri(uri, {
-            openExternal: (url) => {
-              window.api
-                .invoke(COMMAND_CHANNELS.SYSTEM_OPEN_EXTERNAL, { url })
-                .catch((err: unknown) => console.warn('[terminal] OSC8 link open failed:', err));
-            },
-            runMarinaLink: (href) => {
-              window.api
-                .invoke(COMMAND_CHANNELS.MARINA_LINK_RUN, { sessionId: session.id, href })
-                .catch((err: unknown) => {
-                  const msg = err instanceof Error ? err.message : String(err);
-                  console.warn('[terminal] marina link dispatch failed:', msg);
-                  toastRef.current.push({ kind: 'error', message: msg });
-                });
-            },
-            openPath: (candidates, line) => {
-              openPathFromTerminalRef.current?.(candidates, line);
-            },
-          });
+          routeTerminalUri(uri, terminalLinkActions);
         },
         hover: (event: MouseEvent, uri: string) => {
           showTerminalLinkTooltip(term, event, terminalLinkTooltipText(uri));
@@ -1258,53 +1268,94 @@ export function TerminalView({
     // 为什么只做正则不发 IPC(ADR 决策 3):hover 探盘每个命中发 N 次 IPC,性能不可
     // 接受。这里 provideLinks 只跑正则(零 IO),点击才发 IPC,失败 toast。
     //
-    // 坐标:provideLinks 的 y 是 1-based buffer 行;translateToString(true) 拿 trimmed
-    // 文本;detectFileLinks 返回字符 index(0-based)。字符 index 不能直接当 cell 列号 ——
-    // CJK 全角字符 / emoji 在终端占 2 cell、字符串里只算 1 字符,直接用会导致链接前有
-    // 中文时下划线/hover 框整体偏左。下方 charIdxToCellCol 逐 cell 走 getWidth() 换算修正。
+    // ── 20260912 升级:单行 → 跨折行窗口 ──
+    // 旧实现只读 provideLinks(y) 的单行文本,长路径被 xterm 软折行劈成两段后
+    // STRICT 正则两段都匹配不上(ADR-027 盲区)。现在用 terminal-line-window
+    // (移植自官方 addon-web-links 的 _getWindowedLineStrings + _mapStrIdx)把
+    // 折行拼回完整逻辑行再检测,字符 index 经 mapStrIdx(宽字符感知)映射回
+    // 多行 buffer 坐标。range 约定不变:start.x = 首 cell +1(1-based,含)、
+    // end.x = 末字符后 cell(0-based,不含)、y 均为 buffer 行 +1。
     const isSshSession = session.pathId.startsWith('ssh:');
     const fileLinkDisposable = isSshSession
       ? undefined
       : term.registerLinkProvider({
           provideLinks(y, callback) {
-            const line = term.buffer.active.getLine(y - 1);
-            if (!line) {
+            const win = getWindowedLine(term, y - 1);
+            if (!win) {
               callback(undefined);
               return;
             }
-            const text = line.translateToString(true);
-            // 复用一个 null cell 作 getCell 缓冲(xterm 约定,避免逐 cell alloc)。
-            const cell = term.buffer.active.getNullCell();
-            // 字符 index(0-based) → 0-based cell 列号:遍历 cell 累加"已消耗字符数",
-            // width 1/2 各贡献 1 字符,width 0(宽字符占位第二格)不贡献。宽字符占 2 cell,
-            // 其后 cell 列号 > 字符 index,正好修正 CJK 偏移。对齐官方 addon-web-links 的 _mapStrIdx。
-            const charIdxToCellCol = (charIdx: number): number => {
-              let col = 0;
-              let consumed = 0;
-              while (col < line.length && consumed < charIdx) {
-                line.getCell(col, cell);
-                if (cell.getWidth() > 0) consumed += 1;
-                col += 1;
-              }
-              return col;
-            };
-            const links = detectFileLinks(text).map((det) => ({
-              range: {
-                // xterm range 约定(对齐官方 addon-web-links):start.x = 首字符 cell +1
-                // (1-based,含);end.x = 末字符之后的 cell 列号(0-based,不含)。det.end 本就是
-                // exclusive 字符 index,换算后即 exclusive cell 列号,直接用(不再 +1,修掉旧版多一格)。
-                start: { x: charIdxToCellCol(det.start) + 1, y },
-                end: { x: charIdxToCellCol(det.end), y },
-              },
-              text: det.raw,
-              activate: () => {
-                // 传 pathCandidates:raw 以 @ 开头时为 [剥@, 带@],点击逐个试首个有效。
-                openPathFromTerminalRef.current?.(det.pathCandidates, det.line);
-              },
-            }));
+            const links: ILink[] = [];
+            for (const det of detectFileLinks(win.text)) {
+              const [sy, sx] = mapStrIdx(term, win.topIndex, 0, det.start);
+              const [ey, ex] = mapStrIdx(term, win.topIndex, 0, det.end);
+              if (sy === -1 || sx === -1 || ey === -1 || ex === -1) continue;
+              links.push({
+                range: {
+                  start: { x: sx + 1, y: sy + 1 },
+                  end: { x: ex, y: ey + 1 },
+                },
+                text: det.raw,
+                activate: () => {
+                  // 传 pathCandidates:raw 以 @ 开头时为 [剥@, 带@],点击逐个试首个有效。
+                  openPathFromTerminalRef.current?.(det.pathCandidates, det.line);
+                },
+                hover: (event: MouseEvent) => {
+                  // 知情通道:tooltip 显示将打开的路径(候选多时列全部)+ 行号。
+                  const lineSuffix = det.line !== undefined ? `:${det.line}` : '';
+                  showTerminalLinkTooltip(term, event, det.pathCandidates.join(' / ') + lineSuffix);
+                },
+                leave: () => {
+                  hideTerminalLinkTooltip(term);
+                },
+              });
+            }
             callback(links.length > 0 ? links : undefined);
           },
         });
+
+    // ── []() markdown 链接 provider(方案-终端可交互链接-20260912 第二通道)──
+    // pi TUI 的输出走 bridge transformer(OSC 8);这里覆盖**裸 markdown 文本**:
+    // pi -p 打印模式、cat 一个 .md、其它工具输出里的 [label](href)。检测在跨折行
+    // 窗口文本上跑(terminal-md-link-detector),点击走与 OSC 8 同一条路由
+    // (terminal-link-router:marina: 动作 / https 外开 / 路径进文件面板)。
+    // #anchor 无终端语义,检测后过滤。SSH session 只保留 http/marina: 类 href
+    // (裸路径在本机不可达,点了必 toast)。
+    const mdLinkDisposable = term.registerLinkProvider({
+      provideLinks(y, callback) {
+        const win = getWindowedLine(term, y - 1);
+        if (!win) {
+          callback(undefined);
+          return;
+        }
+        const links: ILink[] = [];
+        for (const det of detectMdLinks(win.text)) {
+          if (det.href.startsWith('#')) continue;
+          if (isSshSession && !/^(https?|mailto:|marina:)/i.test(det.href)) continue;
+          const [sy, sx] = mapStrIdx(term, win.topIndex, 0, det.start);
+          const [ey, ex] = mapStrIdx(term, win.topIndex, 0, det.end);
+          if (sy === -1 || sx === -1 || ey === -1 || ex === -1) continue;
+          const href = det.href;
+          links.push({
+            range: {
+              start: { x: sx + 1, y: sy + 1 },
+              end: { x: ex, y: ey + 1 },
+            },
+            text: win.text.slice(det.start, det.end),
+            activate: () => {
+              routeTerminalUri(href, terminalLinkActions);
+            },
+            hover: (event: MouseEvent) => {
+              showTerminalLinkTooltip(term, event, terminalLinkTooltipText(href));
+            },
+            leave: () => {
+              hideTerminalLinkTooltip(term);
+            },
+          });
+        }
+        callback(links.length > 0 ? links : undefined);
+      },
+    });
 
     // PER-1 / XTM-1:装 WebGL 渲染器替代默认 DOM renderer。
     // 性能 10-50× 提升,长瀑布输出 (npm install / find / Claude Code 流式
@@ -2060,6 +2111,8 @@ export function TerminalView({
       searchResultsDisposable?.dispose();
       // v0.3.3 Feature F:释放文件路径 link provider。
       fileLinkDisposable?.dispose();
+      // []() markdown link provider(方案 20260912)。
+      mdLinkDisposable.dispose();
       // 终端链接 tooltip(方案 20260912):节点挂在 term.element 里,随宿主移除,
       // 这里显式清一次保持 invariant(与上方 paste listener 同理)。
       hideTerminalLinkTooltip(term);
