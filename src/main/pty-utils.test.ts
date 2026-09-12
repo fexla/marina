@@ -85,7 +85,7 @@ describe('buildSpawnEnv', () => {
 });
 
 describe('injectTerminalHintEnv', () => {
-  it('默认写出四件套:TERM=xterm-256color / COLORTERM=truecolor / TERM_PROGRAM / TERM_PROGRAM_VERSION', () => {
+  it('默认写出五件套:TERM / COLORTERM / TERM_PROGRAM / TERM_PROGRAM_VERSION / PI_HYPERLINKS', () => {
     const env: Record<string, string> = {};
     injectTerminalHintEnv(env, { programName: 'Marina', appVersion: '0.1.0' });
     expect(env).toEqual({
@@ -93,7 +93,14 @@ describe('injectTerminalHintEnv', () => {
       COLORTERM: 'truecolor',
       TERM_PROGRAM: 'Marina',
       TERM_PROGRAM_VERSION: '0.1.0',
+      PI_HYPERLINKS: '1',
     });
+  });
+
+  it('PI_HYPERLINKS 强制覆盖继承值 —— Marina 的 xterm 支持 OSC 8,不让上游终端的旧值干扰 pi 的能力判断', () => {
+    const env: Record<string, string> = { PI_HYPERLINKS: '0' };
+    injectTerminalHintEnv(env, { programName: 'Marina' });
+    expect(env.PI_HYPERLINKS).toBe('1');
   });
 
   it('覆盖父进程继承的 TERM_PROGRAM —— 从 VS Code 终端启动 Marina 不应让子 shell 看到 vscode', () => {

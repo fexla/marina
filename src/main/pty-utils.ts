@@ -49,6 +49,13 @@ export function buildSpawnEnv(
  * - TERM_PROGRAM_VERSION:伴随 TERM_PROGRAM。若 appVersion 未给,主动 delete
  *                        从父终端继承下来的旧值(避免 Marina 从 VS Code 终端
  *                        启动时,子 shell 看到 `vscode` 的版本号)。
+ * - PI_HYPERLINKS:       pi CLI(pi-coding-agent)的终端超链接强制开关。pi 的
+ *                        能力检测白名单(WT_SESSION/kitty/vscode 等)不认识
+ *                        Marina,但不设时 pi 把 [text](url) 回退渲染成
+ *                        `text (url)` 明文;Marina 的 xterm 完整支持 OSC 8,
+ *                        这里强制开启,pi-marina-bridge 的 linkify transformer
+ *                        (方案 20260912)依赖它输出 OSC 8。pi 官方 env,其他
+ *                        程序不读它,零副作用;模板 env 仍可覆盖(如 =0 关闭)。
  *
  * 调用方应该在 buildSpawnEnv 之后、合并 launchParams.env / template.env 之前
  * 调用,这样自定义启动模板仍能覆盖(例如调试时硬塞 `TERM=dumb`)。
@@ -72,6 +79,7 @@ export function injectTerminalHintEnv(
   env.TERM = options.term ?? 'xterm-256color';
   env.COLORTERM = options.colorTerm ?? 'truecolor';
   env.TERM_PROGRAM = options.programName;
+  env.PI_HYPERLINKS = '1';
   if (options.appVersion && options.appVersion.length > 0) {
     env.TERM_PROGRAM_VERSION = options.appVersion;
   } else {
