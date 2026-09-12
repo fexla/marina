@@ -42,6 +42,7 @@ import { useFileViewerScroll } from '../../hooks/useFileViewerScroll';
 import { useToast } from '../Toast';
 import { useTranslation } from '../LanguageProvider';
 import { HighlightedText } from '../common/HighlightedText';
+import { useContextMenuApi, type ContextMenuItem } from '../ContextMenu';
 import { MarkdownDocument } from '../file-panel/MarkdownDocument';
 import { Icon } from '../icons';
 
@@ -82,6 +83,8 @@ export function rerunCommand(
  * 统一 tab 列表里的命令 tab 段。纯展示 + 回调:列表数据 / activeKey 由 FilePanel
  * 从 store 传入,点击(切 tab+切面板内视图)与关闭走回调 —— IPC 与 dispatch 都在
  * FilePanel,保持命令侧交互入口与文件侧(同在 FilePanel)一致。
+ * v0.3.3 起支持右键菜单:菜单项由 FilePanel 构建(buildContextMenu,同文件 tab 的
+ * buildFileEntryMenu 宿主模式),这里只负责弹出 —— 触发模式对齐 FileListRow。
  */
 export function CommandTabStrip({
   commands,
@@ -89,6 +92,7 @@ export function CommandTabStrip({
   onSelect,
   onClose,
   search,
+  buildContextMenu,
 }: {
   commands: CommandEntry[];
   activeKey: string | null;
@@ -96,8 +100,11 @@ export function CommandTabStrip({
   onClose: (key: string) => void;
   /** dock 级搜索状态;visible 时按标题/命令文本过滤并高亮(FilePanel 预过滤,这里只高亮)。 */
   search: PanelSearchProps;
+  /** 右键菜单构建器(由 FilePanel 注入:重新运行/关闭族/复制命令)。可选,未注入则无右键。 */
+  buildContextMenu?: (entry: CommandEntry) => ContextMenuItem[];
 }): JSX.Element | null {
   const { tx } = useTranslation();
+  const ctxMenu = useContextMenuApi();
   if (commands.length === 0) return null;
   const isSearching = search.visible && search.query.length > 0;
   return (
@@ -107,6 +114,13 @@ export function CommandTabStrip({
           key={entry.key}
           className={'command-tab' + (entry.key === activeKey ? ' command-tab-active' : '')}
           onClick={() => onSelect(entry.key)}
+          onContextMenu={(e) => {
+            if (!buildContextMenu) return;
+            const items = buildContextMenu(entry);
+            if (items.length === 0) return;
+            e.preventDefault();
+            ctxMenu.open({ x: e.clientX, y: e.clientY, items });
+          }}
           title={entry.command}
         >
           <span className={'command-tab-status command-status-' + entry.status} aria-hidden />

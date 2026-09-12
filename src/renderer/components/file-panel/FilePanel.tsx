@@ -55,7 +55,12 @@ import type { ContextMenuItem } from '../ContextMenu';
 import { FileViewer } from './FileViewer';
 import { markdownSurfaceClass } from './markdown-surface';
 import { resolveOpenPanelView } from './open-panel-view';
-import { CommandTabStrip, CommandToolbar, CommandPane } from '../command-panel/CommandPanel';
+import {
+  CommandTabStrip,
+  CommandToolbar,
+  CommandPane,
+  rerunCommand,
+} from '../command-panel/CommandPanel';
 
 interface FilePanelProps {
   /** 绑定的终端 session id；父级按 session 切换重新挂载。 */
@@ -338,6 +343,51 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
     for (const f of snapshot.files) handleClose(f.path);
   };
 
+  // 命令侧同款(逐个 close,理由同上;closeCommand 快照由 main 推事件回 store)。
+  const handleCloseOtherCommands = (keepKey: string): void => {
+    for (const c of commandSnapshot.commands) {
+      if (c.key !== keepKey) handleCloseCommand(c.key);
+    }
+  };
+
+  const handleCloseAllCommands = (): void => {
+    for (const c of commandSnapshot.commands) handleCloseCommand(c.key);
+  };
+
+  /**
+   * v0.3.3:命令 tab 右键菜单(此前命令 tab 完全没有右键)。与文件 tab 同宿主构建
+   * —— IPC / dispatch 留在 FilePanel,对齐 CommandPanel.tsx 头注声明的组件边界。
+   * 形态与文件 tab 对齐:查看族(重新运行)→ 关闭族 → 复制命令。
+   * 重新运行复用工具栏 ↻ 的 rerunCommand,running 态同样禁用(防并发重跑)。
+   */
+  const buildCommandContextMenu = (entry: CommandEntry): ContextMenuItem[] => [
+    {
+      label: tx('重新运行', 'Run again'),
+      onSelect: () => rerunCommand(sessionId, entry),
+      disabled: entry.status === 'running',
+    },
+    { divider: true, label: '' },
+    {
+      label: tx('关闭', 'Close'),
+      onSelect: () => handleCloseCommand(entry.key),
+    },
+    {
+      label: tx('关闭其他', 'Close others'),
+      onSelect: () => handleCloseOtherCommands(entry.key),
+      disabled: commandSnapshot.commands.length <= 1,
+    },
+    {
+      label: tx('关闭所有', 'Close all'),
+      onSelect: () => handleCloseAllCommands(),
+      disabled: commandSnapshot.commands.length === 0,
+    },
+    { divider: true, label: '' },
+    {
+      label: tx('复制命令', 'Copy command'),
+      onSelect: () => copyToClipboard(entry.command, '命令'),
+    },
+  ];
+
   // 远程 sudo 仅对 SSH session 有意义:pathId = ssh:<profileId>:<remotePath>。
   // 本地 session 不显 sudo 控件(命令在本机 bash 跑,无 sudo 语义)。
   const sessionPathId = state.sessions.get(sessionId)?.pathId ?? '';
@@ -512,6 +562,7 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
               onSelect={handleSelectCommand}
               onClose={handleCloseCommand}
               search={search}
+              buildContextMenu={buildCommandContextMenu}
             />
           </>
         )}
