@@ -370,42 +370,100 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
           <>
             {filteredFiles.map((file) => {
               const isActive = view === 'file' && file.path === snapshot.activePath;
+              // 受管 git-diff tab(GitService 写入 origin)与普通文件 tab 菜单分化:
+              // diff tab 围绕"源文件"组织(打开源文件 / 复制源文件相对路径),不暴露
+              // 指向 __marina_diff__ 临时文件的路径族(reveal/默认应用/绝对路径无使用
+              // 价值);外部打开的裸 .diff(无 origin)保持普通文件 tab 形态。
+              const diffOrigin = file.origin?.kind === 'git-diff' ? file.origin : null;
+              // 关闭族两种形态共用(同一 tab 列表,同一套 close IPC)。
+              const closeCapability = {
+                close: () => handleClose(file.path),
+                closeOthers: () => handleCloseOthers(file.path),
+                closeAll: () => handleCloseAll(),
+                closeOthersDisabled: snapshot.files.length <= 1,
+                closeAllDisabled: snapshot.files.length === 0,
+              };
               const buildContextMenu = (): ContextMenuItem[] =>
                 buildFileEntryMenu(
-                  {
-                    // file-panel tab 无强主操作(左键已切 active),不提供 primary。
-                    close: {
-                      close: () => handleClose(file.path),
-                      closeOthers: () => handleCloseOthers(file.path),
-                      closeAll: () => handleCloseAll(),
-                      closeOthersDisabled: snapshot.files.length <= 1,
-                      closeAllDisabled: snapshot.files.length === 0,
-                    },
-                    // OpenedFile.path 是 main 端规范化的绝对路径(file-panel HTTP
-                    // 在 SSH 上架构性失效 → 能看到 tab 一定是本地路径,不担心 SSH 灰显)。
-                    resolveAbsolutePath: async () => file.path,
-                    reveal: () => {
-                      window.api
-                        .invoke(COMMAND_CHANNELS.SYSTEM_SHOW_IN_EXPLORER, { path: file.path })
-                        .catch((err: unknown) =>
-                          toast.push({
-                            kind: 'error',
-                            message: `打开 Explorer 失败:${err instanceof Error ? err.message : String(err)}`,
-                          }),
-                        );
-                    },
-                    // v0.3.2:用系统默认应用打开(调关联程序,如图片/PDF)。
-                    openExternal: () => {
-                      window.api
-                        .invoke(COMMAND_CHANNELS.SYSTEM_OPEN_PATH, { path: file.path })
-                        .catch((err: unknown) =>
-                          toast.push({
-                            kind: 'error',
-                            message: `打开失败:${err instanceof Error ? err.message : String(err)}`,
-                          }),
-                        );
-                    },
-                  },
+                  diffOrigin
+                    ? {
+                        // 与 DiffViewer 工具栏「打开源文件」同通道同参数(origin 真值,
+                        // repoIdentity 让 main 校验 session 仍在生成该 diff 的仓库)。
+                        openFile: {
+                          label: tx('打开源文件', 'Open source file'),
+                          run: () => {
+                            window.api
+                              .invoke(COMMAND_CHANNELS.GIT_OPEN_FILE, {
+                                sessionId,
+                                relativePath: diffOrigin.relativePath,
+                                repoIdentity: diffOrigin.repoIdentity,
+                              })
+                              .catch((err: unknown) =>
+                                toast.push({
+                                  kind: 'error',
+                                  message: `打开源文件失败:${err instanceof Error ? err.message : String(err)}`,
+                                }),
+                              );
+                          },
+                          // 生成 diff 时源文件已删(deleted 变更)→ 打开必失败,禁用。
+                          disabled: diffOrigin.sourceMissing,
+                        },
+                        relativePath: diffOrigin.relativePath,
+                        close: closeCapability,
+                      }
+                    : {
+                        // file-panel tab 无强主操作(左键已切 active),不提供 primary。
+                        // 查看族:文本类 tab 提供「打开 diff」—— absolutePath 变体让
+                        // main 按文件自身位置定位仓库(文件可能不属于 session cwd 的
+                        // 仓库)。二进制(image/unknown)不提供:main 对二进制的处理
+                        // 就是重新打开文件本身,对已打开的 tab 是无意义往返。
+                        ...(file.kind === 'text' || file.kind === 'markdown' || file.kind === 'web'
+                          ? {
+                              openDiff: {
+                                run: () => {
+                                  window.api
+                                    .invoke(COMMAND_CHANNELS.GIT_OPEN_DIFF, {
+                                      sessionId,
+                                      absolutePath: file.path,
+                                    })
+                                    .catch((err: unknown) =>
+                                      toast.push({
+                                        kind: 'error',
+                                        message: `打开 diff 失败:${err instanceof Error ? err.message : String(err)}`,
+                                      }),
+                                    );
+                                },
+                                // 僵尸 tab:磁盘文件已删,main realpath 必失败 → 禁用而非点击报错。
+                                disabled: file.missing === true,
+                              },
+                            }
+                          : {}),
+                        close: closeCapability,
+                        // OpenedFile.path 是 main 端规范化的绝对路径(file-panel HTTP
+                        // 在 SSH 上架构性失效 → 能看到 tab 一定是本地路径,不担心 SSH 灰显)。
+                        resolveAbsolutePath: async () => file.path,
+                        reveal: () => {
+                          window.api
+                            .invoke(COMMAND_CHANNELS.SYSTEM_SHOW_IN_EXPLORER, { path: file.path })
+                            .catch((err: unknown) =>
+                              toast.push({
+                                kind: 'error',
+                                message: `打开 Explorer 失败:${err instanceof Error ? err.message : String(err)}`,
+                              }),
+                            );
+                        },
+                        // v0.3.2:用系统默认应用打开(调关联程序,如图片/PDF)。
+                        openExternal: () => {
+                          window.api
+                            .invoke(COMMAND_CHANNELS.SYSTEM_OPEN_PATH, { path: file.path })
+                            .catch((err: unknown) =>
+                              toast.push({
+                                kind: 'error',
+                                message: `打开失败:${err instanceof Error ? err.message : String(err)}`,
+                              }),
+                            );
+                        },
+                      },
                   {
                     copyToClipboard,
                     toastError: (m) => toast.push({ kind: 'error', message: m }),

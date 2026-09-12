@@ -16,9 +16,11 @@
  * - 路径解析保持各面板特色:reveal / openFile / resolveAbsolutePath 是**注入的能力**,
  *   不强制统一实现。file-tree 走 rootId 抽象(不暴露绝对路径),git 走 repoRoot IPC,
  *   file-panel 直接持有绝对路径 —— 三套路径来源本质不同,硬统一会引入不必要的抽象层。
- * - 菜单顺序统一(对所有面板):
- *     操作族(primary / openFile / close) → divider → 路径族(copyRelative / copyAbsolute / reveal / openExternal)
- *   两组都非空才插 divider,尾部不插。
+ * - 菜单顺序统一(对所有面板,v0.3.3 起三分组):
+ *     查看族(primary / openFile / openDiff) → 关闭族 → 路径族(copyRelative /
+ *     copyAbsolute / reveal / openExternal),相邻两组都非空才插 divider,尾部不插。
+ *   查看族是"导航去看内容",关闭族是"管理 tab 本身",语义分层;旧调用方
+ *   (git: primary+openFile 无 close;file-tree: 仅 primary)分组不变、形态不变。
  * - 文案统一(label 由 deps.tx 双语),消除了之前三面板各写各的"复制路径"/"复制相对路径"等。
  *
  * @对应文档:ADR-018 文件条目统一菜单抽象;docs/方案-文件条目统一菜单-20260719.md
@@ -61,11 +63,28 @@ export interface FileEntryContext {
    * 仅当与 primary 语义不同时才提供:
    * - git:primary=打开 diff,另需"打开文件"看文件本身 → 提供
    * - file-tree:primary 已是"打开"(= 预览文件) → 不提供(重复)
-   * - file-panel:文件已打开,无意义 → 不提供
+   * - file-panel:普通文件 tab 已打开不提供;**受管 diff tab 提供**(label 覆盖为
+   *   "打开源文件",跳回源码本体)
    */
   openFile?: {
+    /** 覆盖默认文案"打开文件"。diff tab 用"打开源文件"更准确(目标是源码而非 diff 临时文件)。 */
+    label?: string;
     run: () => void;
     /** 如 deleted 文件工作区已删,打开会失败 → 禁用此项而非报错。 */
+    disabled?: boolean;
+  };
+
+  /**
+   * v0.3.3:打开该文件相对其所在 git 仓库 HEAD 的改动 diff。
+   *
+   * 与 openFile 语义相反:openFile 看"文件本体",openDiff 看"改了什么"。
+   * - file-panel 普通文件 tab 提供(main 端按文件绝对路径定位仓库;
+   *   二进制类 tab 不提供 —— main 的处理就是重新打开文件本身,无意义往返)
+   * - git 面板用 primary 表达同一动作(变更条目左键即 diff),不另提供
+   */
+  openDiff?: {
+    run: () => void;
+    /** 如僵尸 tab(磁盘文件已删)→ 禁用而非点击报错。 */
     disabled?: boolean;
   };
 
@@ -120,11 +139,12 @@ export function dividerItem(): ContextMenuItem {
  *
  * @param ctx 条目能力上下文
  * @param deps 复制 / toast / i18n 依赖
- * @returns ContextMenuItem[] —— 顺序:操作族 → divider → 路径族
+ * @returns ContextMenuItem[] —— 顺序:查看族 → 关闭族 → 路径族(相邻非空组间 divider)
  *
  * @能力→项映射:
  *   primary            → 主操作(label 由 ctx 给)
- *   openFile           → "打开文件"
+ *   openFile           → "打开文件"(label 可覆盖,如 diff tab 的"打开源文件")
+ *   openDiff           → "打开 diff"
  *   close              → "关闭" / "关闭其他" / "关闭所有"
  *   relativePath       → "复制相对路径"
  *   resolveAbsolutePath→ "复制绝对路径"
@@ -133,21 +153,32 @@ export function dividerItem(): ContextMenuItem {
  */
 export function buildFileEntryMenu(ctx: FileEntryContext, deps: FileMenuDeps): ContextMenuItem[] {
   const { tx, copyToClipboard, toastError } = deps;
-  const actionItems: ContextMenuItem[] = [];
+  const viewItems: ContextMenuItem[] = [];
+  const closeItems: ContextMenuItem[] = [];
   const pathItems: ContextMenuItem[] = [];
 
-  // ── 操作族 ──
+  // ── 查看族(导航去看内容)──
   if (ctx.primary) {
-    actionItems.push({ label: ctx.primary.label, onSelect: ctx.primary.run });
+    viewItems.push({ label: ctx.primary.label, onSelect: ctx.primary.run });
   }
   if (ctx.openFile) {
     const item: ContextMenuItem = {
-      label: tx('打开文件', 'Open file'),
+      label: ctx.openFile.label ?? tx('打开文件', 'Open file'),
       onSelect: ctx.openFile.run,
     };
     if (ctx.openFile.disabled) item.disabled = true;
-    actionItems.push(item);
+    viewItems.push(item);
   }
+  if (ctx.openDiff) {
+    const item: ContextMenuItem = {
+      label: tx('打开 diff', 'Open diff'),
+      onSelect: ctx.openDiff.run,
+    };
+    if (ctx.openDiff.disabled) item.disabled = true;
+    viewItems.push(item);
+  }
+
+  // ── 关闭族(tab 管理,file-panel 语义;其他面板无此能力)──
   if (ctx.close) {
     const closeOthersItem: ContextMenuItem = {
       label: tx('关闭其他', 'Close others'),
@@ -159,7 +190,7 @@ export function buildFileEntryMenu(ctx: FileEntryContext, deps: FileMenuDeps): C
       onSelect: ctx.close.closeAll,
     };
     if (ctx.close.closeAllDisabled) closeAllItem.disabled = true;
-    actionItems.push(
+    closeItems.push(
       { label: tx('关闭', 'Close'), onSelect: ctx.close.close },
       closeOthersItem,
       closeAllItem,
@@ -200,11 +231,12 @@ export function buildFileEntryMenu(ctx: FileEntryContext, deps: FileMenuDeps): C
     });
   }
 
-  // ── 合并:操作族 + (divider 如果两组都非空) + 路径族 ──
-  const items: ContextMenuItem[] = [...actionItems];
-  if (actionItems.length > 0 && pathItems.length > 0) {
-    items.push(dividerItem());
+  // ── 合并:查看族 → 关闭族 → 路径族,相邻两组都非空才插 divider ──
+  const items: ContextMenuItem[] = [...viewItems];
+  for (const group of [closeItems, pathItems]) {
+    if (group.length === 0) continue;
+    if (items.length > 0) items.push(dividerItem());
+    items.push(...group);
   }
-  items.push(...pathItems);
   return items;
 }
