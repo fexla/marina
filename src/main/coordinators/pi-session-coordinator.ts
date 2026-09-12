@@ -218,14 +218,33 @@ export class PiSessionCoordinator {
     //     (v0.3.4:workspace/名字照旧拦截,工作状态进聚合)。
     //   - 合法主切换(/new /resume /fork /重启 pi)前 pi 必先发 session_shutdown 清空
     //     主绑定,随后的 session_start 才能绑定新主 → 「关闭 pi 或 /new 后新 pi 正常工作」。
+    //     例外(2026-09-12):start 抢在 shutdown 前乱序到达时,reason=new/resume/fork
+    //     的 start 直接按主切换放行(见下方 isOvertakenMainSwitch)。
     //   - 注册过的子永不升级为主:主 shutdown 后(currentMain null),已注册子的
     //     session_start 仍按子处理,防止后台子 agent 把自己绑成主对话抢 workspace。
     const currentMainPiSid = this.sessionToPiSession.get(sessionId) ?? null;
     const term = this.aggregates.get(sessionId);
     const isRegisteredChild = term?.children.has(payload.piSessionId) ?? false;
+    // 乱序主切换防御(2026-09-12 修复「tab 不显示正在工作」):/new /resume /fork
+    // 时 pi 先发旧主 session_shutdown 再发新主 session_start;旧版 bridge 的 start
+    // 不走发送队列,队列里有慢 POST 在飞时会抢在 shutdown 之前到达这里。若按子会话
+    // 处理:新主被注册进 children,随后旧主 shutdown 的 teardown 把聚合条目(含
+    // 误注册的新主)和 getter 连根拆掉 → 新主的 agent_working/agent_settled 全部
+    // 因 !getter 被静默丢弃 → tab 整个 pi 会话期永远不显示工作中。
+    // 识别依据:reason 是 pi 原生用户命令(new/resume/fork),subagent 子进程只会
+    // 以 startup 启动、不会发这三种 reason → 可安全视为用户发起的主切换,放行到
+    // 主路径重绑新主(旧主迟到的 shutdown 因 piSid≠新主且非注册子,被
+    // handleChildAgentEvent 的未注册分支忽略)。startup 抢跑不在此防御(无法与
+    // subagent 启动区分),由新版 bridge 的发送队列根治。
+    const isOvertakenMainSwitch =
+      payload.event === 'session_start' &&
+      currentMainPiSid !== null &&
+      payload.piSessionId !== currentMainPiSid &&
+      !isRegisteredChild &&
+      (payload.reason === 'new' || payload.reason === 'resume' || payload.reason === 'fork');
     if (
-      (currentMainPiSid !== null && payload.piSessionId !== currentMainPiSid) ||
-      isRegisteredChild
+      !isOvertakenMainSwitch &&
+      ((currentMainPiSid !== null && payload.piSessionId !== currentMainPiSid) || isRegisteredChild)
     ) {
       this.handleChildAgentEvent(sessionId, payload, term);
       return;
@@ -245,6 +264,11 @@ export class PiSessionCoordinator {
         // 新主接管:若旧主 shutdown 时因子 agent 未排空而延迟了 teardown,现在取消
         // (teardown 责任移交给「新主自己的 session_shutdown」)。
         term.mainGone = false;
+        // 主切换(piSid 变了,正常顺序或乱序抢跑都算):新对话从 idle 起跑,旧主的
+        // working 残留不带入(乱序时旧主 shutdown 尚未到达,mainWorking 可能仍
+        // true)。同 piSid 重复 start(reload)不动 working,避免工作中被误翻 idle。
+        // 子 agent 聚合不受影响(children 独立,ensureAgentBound 仍按聚合种子)。
+        if (currentMainPiSid !== payload.piSessionId) term.mainWorking = false;
         // 亲缘可见性(方案 20260817 L1):fork/子会话文件带 parentSessionFile,
         // 记进日志供诊断(谁是谁的儿子、父 workspace 是哪个)。
         if (payload.parentSessionFile) {

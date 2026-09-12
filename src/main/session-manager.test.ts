@@ -3593,12 +3593,13 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
       reason: 'startup',
     });
     const base = created.length;
-    // 主 agent working 中 subagent 起 session_start(子 piSid)
+    // 主 agent working 中 subagent 起 session_start(子 piSid;子进程 reason=startup,
+    // 见 pi-session-coordinator.test.ts 主锁 describe 的注释)
     await pi.handlePiSessionEvent(sid, { piSessionId: 'pi-main', event: 'agent_working' });
     await pi.handlePiSessionEvent(sid, {
       piSessionId: 'subagent-1',
       event: 'session_start',
-      reason: 'fork',
+      reason: 'startup',
     });
     expect(created.length).toBe(base); // 子 session_start 没建 workspace
   });

@@ -201,11 +201,23 @@ export default function (pi: ExtensionAPI): void {
    * pi 的收尾路径连续阻塞 10s+,TUI 完全无响应,只能退出重开(用户实测)。
    * 入队后 handler 立刻返回,pi 永不被 Marina 的快慢拖累。
    *
-   * session_start 是例外:它需要响应里的 workspaceId(appendEntry 存回对话),
-   * 必须等结果;且它发生在 pi 启动/resume 时,用户对这几秒的敏感度低。
+   * session_start 是唯一 await 自己 POST 的例外:它需要响应里的 workspaceId
+   * (appendEntry 存回对话),且 appendEntry 必须在 handler 内完成——此时 ctx 才
+   * 保证是当前对话(pi 的 runner 串行 await,handler 未返回就不会切到下一事件)。
+   * v0.3.13 起它也走本队列(同样 await):/new /resume /fork 时 pi 先发旧主
+   * session_shutdown(入队)再发新主 session_start,若 start 直发绕过队列,会
+   * 抢在排队的 shutdown 之前到达 Marina → Marina 主锁把新主误判为 subagent,
+   * 旧主 shutdown 的 teardown 随后把聚合态连根拆掉 → 新主的 agent_working 全部
+   * 被丢弃,终端 tab 永远不显示「正在工作」(实测 2026-09-12)。入队后顺序与
+   * pi 内发生顺序严格一致,Marina 侧另有一层 reason 主切换防御(见
+   * pi-session-coordinator.ts 的乱序修复)。
    */
   let postQueue: Promise<unknown> = Promise.resolve();
-  /** 入队发送(保序、不阻塞 pi handler)。postEvent 内部 catch 一切错误,链不会 reject。 */
+  /**
+   * 入队发送(保序)。postEvent 内部 catch 一切错误,链不会 reject。
+   * 返回本次 POST 的 promise(仅 session_start 用:等响应拿 workspaceId);
+   * 其它事件 fire-and-forget,不接返回值,handler 立刻返回不阻塞 pi。
+   */
   // marinaEnv 别名:把 env 的 null 分支在闭包外收窄掉(function 声明提升,
   // TS 对提升函数里的 env 不保留 const 收窄,曾报 TS2345)。
   const marinaEnv = env;
@@ -213,8 +225,10 @@ export default function (pi: ExtensionAPI): void {
     piSessionId: string,
     event: PiBridgeEvent,
     extra: Parameters<typeof postEvent>[3],
-  ): void {
-    postQueue = postQueue.then(() => postEvent(marinaEnv, piSessionId, event, extra));
+  ): Promise<{ workspaceId?: string } | null> {
+    const p = postQueue.then(() => postEvent(marinaEnv, piSessionId, event, extra));
+    postQueue = p; // postEvent 不抛 → 链恒 resolve,后续入队照常接在后面
+    return p;
   }
 
   pi.on('session_start', async (event, ctx) => {
@@ -241,7 +255,12 @@ export default function (pi: ExtensionAPI): void {
         }`,
       );
     }
-    const resp = await postEvent(env, piSessionId, 'session_start', {
+    // v0.3.13:走 enqueuePost(而非直发 postEvent)——session_start 必须排在
+    // 先于它发生的 session_shutdown 之后送达 Marina,否则主锁乱序误判(见
+    // postQueue 注释)。仍 await 自己的 POST:workspaceId 响应要在 handler 内
+    // appendEntry(ctx 才是当前对话),阻塞语义与 0.3.7 的「session_start 例外」
+    // 相同,只是多了排队延迟(通常 <10ms;Marina 不通时最多多等队首一个 3s 超时)。
+    const resp = await enqueuePost(piSessionId, 'session_start', {
       reason: event.reason,
       workspaceId: knownWorkspaceId,
       parentSessionFile,

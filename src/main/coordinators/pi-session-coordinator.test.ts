@@ -193,6 +193,11 @@ describe('PiSessionCoordinator — session_start(reason 分发)', () => {
 });
 
 describe('PiSessionCoordinator — 主锁(子 agent 忽略)', () => {
+  // 注:子 agent 的 session_start 一律用 reason='startup' —— pi 源码里子进程
+  // (pi-subagents spawn 的独立进程)走 AgentSession 构造默认值 'startup';
+  // 'new'/'resume'/'fork' 只有主进程 TUI 内的对话切换会产生(agent-session-
+  // runtime.js 的 resumeSession/newSession/fork 路径)。这也是 coordinator
+  // 乱序主切换防御的识别依据(2026-09-12 修复)。
   it('主绑定后,子 piSid 的 session_start 被忽略(不建 workspace、不抢绑定)', async () => {
     const { pi, hooks, ws } = makePi();
     await pi.handlePiSessionEvent('s1', {
@@ -204,7 +209,7 @@ describe('PiSessionCoordinator — 主锁(子 agent 忽略)', () => {
     await pi.handlePiSessionEvent('s1', {
       piSessionId: 'subagent-1',
       event: 'session_start',
-      reason: 'fork',
+      reason: 'startup',
     });
     expect(ws.createForSession).not.toHaveBeenCalled();
     expect(hooks.onPiAgentChanged).toHaveBeenCalledTimes(1); // 只主的那次
@@ -242,6 +247,81 @@ describe('PiSessionCoordinator — 主锁(子 agent 忽略)', () => {
     });
     expect(ws.createForSession).toHaveBeenCalled();
     expect(hooks.onPiAgentChanged).toHaveBeenCalledWith('s1', true);
+  });
+
+  // ── 事件乱序防御(2026-09-12 修复:tab 不显示"正在工作")──────────────────
+  // 根因:bridge 的 session_start 不走发送队列(要等响应拿 workspaceId),队列里
+  // 有慢 POST 在飞时,/resume /new 的 session_start(新)会抢在 session_shutdown
+  // (旧)之前到达 Marina → 新主被主锁误判为 subagent 注册进 children → 旧主的
+  // shutdown 随后 teardown 把聚合条目(含误注册的新主)和 getter 一起删 → 新主
+  // 后续 agent_working 走主路径但 !getter → 静默丢弃 → tab 永远不显示工作中。
+  it('乱序:新主 session_start 先于旧主 shutdown 到达 → 新主的 working 不丢', async () => {
+    const { pi, hooks } = makePi();
+    // 旧主正常生命周期:启动 → 干活 → 收工(idle)
+    await pi.handlePiSessionEvent('s1', {
+      piSessionId: 'pi-a',
+      event: 'session_start',
+      reason: 'startup',
+    });
+    await pi.handlePiSessionEvent('s1', { piSessionId: 'pi-a', event: 'agent_working' });
+    await pi.handlePiSessionEvent('s1', { piSessionId: 'pi-a', event: 'agent_settled' });
+    hooks.notifyAgentWorking.mockClear();
+    hooks.notifyAgentSettled.mockClear();
+
+    // 乱序到达:新主 session_start(resume)在前,旧主 shutdown 在后
+    await pi.handlePiSessionEvent('s1', {
+      piSessionId: 'pi-b',
+      event: 'session_start',
+      reason: 'resume',
+    });
+    await pi.handlePiSessionEvent('s1', { piSessionId: 'pi-a', event: 'session_shutdown' });
+
+    // 新主开干 → 必须驱动 working(tab 显示"正在工作"的唯一信号)
+    await pi.handlePiSessionEvent('s1', { piSessionId: 'pi-b', event: 'agent_working' });
+    expect(hooks.notifyAgentWorking).toHaveBeenCalledWith('s1');
+
+    // 新主收工 → settled(hasUnviewedWork 依赖它)
+    await pi.handlePiSessionEvent('s1', { piSessionId: 'pi-b', event: 'agent_settled' });
+    expect(hooks.notifyAgentSettled).toHaveBeenCalledWith('s1');
+  });
+
+  it('乱序修复不误伤:同 piSid 重复 start(reload)不重置 working', async () => {
+    const { pi, hooks } = makePi();
+    await pi.handlePiSessionEvent('s1', {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'startup',
+    });
+    await pi.handlePiSessionEvent('s1', { piSessionId: 'pi-1', event: 'agent_working' });
+    // 工作中收到同 piSid 的 reload start(mainWorking 不该被翻 false)
+    await pi.handlePiSessionEvent('s1', {
+      piSessionId: 'pi-1',
+      event: 'session_start',
+      reason: 'reload',
+    });
+    await pi.handlePiSessionEvent('s1', { piSessionId: 'pi-1', event: 'agent_settled' });
+    expect(hooks.notifyAgentSettled).toHaveBeenCalledTimes(1); // 状态机仍连贯
+  });
+
+  it('乱序防御不放行 startup 抢跑:subagent 的 session_start(startup)仍按子处理', async () => {
+    const { pi, hooks } = makePi();
+    await pi.handlePiSessionEvent('s1', {
+      piSessionId: 'pi-a',
+      event: 'session_start',
+      reason: 'startup',
+    });
+    hooks.onPiAgentChanged.mockClear();
+    // subagent 子进程冷启动(reason=startup)不得触发主切换防御(无法与子区分)
+    await pi.handlePiSessionEvent('s1', {
+      piSessionId: 'pi-sub',
+      event: 'session_start',
+      reason: 'startup',
+      parentSessionFile: 'C:\\proj\\.pi\\session\\parent.jsonl',
+    });
+    expect(hooks.onPiAgentChanged).not.toHaveBeenCalled(); // 未当作新主声明身份
+    // 主仍是 pi-a:pi-a 的 working 正常驱动(防御没有误吞主绑定)
+    await pi.handlePiSessionEvent('s1', { piSessionId: 'pi-a', event: 'agent_working' });
+    expect(hooks.notifyAgentWorking).toHaveBeenCalledWith('s1');
   });
 });
 
@@ -314,7 +394,7 @@ describe('PiSessionCoordinator — subagent 聚合状态(v0.3.4,L3 重开)', () 
     await pi.handlePiSessionEvent('s1', {
       piSessionId: 'sub-1',
       event: 'session_start',
-      reason: 'fork',
+      reason: 'startup',
     });
     await pi.handlePiSessionEvent('s1', { piSessionId: 'sub-1', event: 'agent_working' });
     expect(hooks.notifyAgentWorking).toHaveBeenCalledTimes(1); // 上升沿:状态回 active
@@ -335,7 +415,7 @@ describe('PiSessionCoordinator — subagent 聚合状态(v0.3.4,L3 重开)', () 
     await pi.handlePiSessionEvent('s1', {
       piSessionId: 'sub-1',
       event: 'session_start',
-      reason: 'fork',
+      reason: 'startup',
     });
     await pi.handlePiSessionEvent('s1', { piSessionId: 'sub-1', event: 'agent_working' });
     expect(hooks.notifyAgentWorking).toHaveBeenCalledTimes(1);
@@ -357,7 +437,7 @@ describe('PiSessionCoordinator — subagent 聚合状态(v0.3.4,L3 重开)', () 
     await pi.handlePiSessionEvent('s1', {
       piSessionId: 'sub-1',
       event: 'session_start',
-      reason: 'fork',
+      reason: 'startup',
     });
     await pi.handlePiSessionEvent('s1', { piSessionId: 'sub-1', event: 'agent_working' });
     // 主退出(quit)→ 子还在干,teardown 延迟
@@ -384,7 +464,7 @@ describe('PiSessionCoordinator — subagent 聚合状态(v0.3.4,L3 重开)', () 
     await pi.handlePiSessionEvent('s1', {
       piSessionId: 'sub-1',
       event: 'session_start',
-      reason: 'fork',
+      reason: 'startup',
     });
     await pi.handlePiSessionEvent('s1', { piSessionId: 'sub-1', event: 'agent_working' });
     await pi.handlePiSessionEvent('s1', {
@@ -416,7 +496,7 @@ describe('PiSessionCoordinator — subagent 聚合状态(v0.3.4,L3 重开)', () 
     await pi.handlePiSessionEvent('s1', {
       piSessionId: 'sub-1',
       event: 'session_start',
-      reason: 'fork',
+      reason: 'startup',
     });
     await pi.handlePiSessionEvent('s1', { piSessionId: 'sub-1', event: 'agent_working' });
     // 子还在干 → 主退出走延迟 teardown,注册表存活(这是注册子受保护的前提;
@@ -475,7 +555,7 @@ describe('PiSessionCoordinator — subagent 泄露回收(sweepStaleChildren)', (
     await pi.handlePiSessionEvent('s1', {
       piSessionId: 'sub-1',
       event: 'session_start',
-      reason: 'fork',
+      reason: 'startup',
     });
     await pi.handlePiSessionEvent('s1', { piSessionId: 'sub-1', event: 'agent_working' });
     await pi.handlePiSessionEvent('s1', {
@@ -506,7 +586,7 @@ describe('PiSessionCoordinator — subagent 泄露回收(sweepStaleChildren)', (
     await pi.handlePiSessionEvent('s1', {
       piSessionId: 'sub-1',
       event: 'session_start',
-      reason: 'fork',
+      reason: 'startup',
     });
     await pi.handlePiSessionEvent('s1', { piSessionId: 'sub-1', event: 'agent_working' });
     // 10 分钟时子发了 name_changed(免费的活着证明)→ 15 分钟线上扫时未超宽限
@@ -532,7 +612,7 @@ describe('PiSessionCoordinator — subagent 泄露回收(sweepStaleChildren)', (
     await pi.handlePiSessionEvent('s1', {
       piSessionId: 'sub-1',
       event: 'session_start',
-      reason: 'fork',
+      reason: 'startup',
     });
     pi.onSessionDestroyed('s1');
     hooks.notifyAgentWorking.mockClear();

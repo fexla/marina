@@ -9,6 +9,23 @@
 
 ### Added
 
+- **pi bridge 事件乱序根治——「AI 已开始工作但终端 tab 不显示工作中」(双层修复)**:
+  根因:bridge 的 `session_start` 为拿 workspaceId 响应不走发送队列(直发),其余
+  事件走 `postQueue` 串行链;`/new` `/resume` `/fork` 时 pi 先发旧主
+  `session_shutdown`(入队)再发新主 `session_start`(直发),队列里有慢 POST
+  在飞时 start 会**抢在 shutdown 之前**到达 Marina → 主锁把新主误判为 subagent
+  注册进 children → 旧主 shutdown 的 teardown 把聚合条目(含误注册的新主)和
+  getter 连根拆掉 → 新主后续所有 `agent_working`/`agent_settled` 因 `!getter`
+  被静默丢弃 → 该 pi 会话整个生命周期 tab 都不显示工作中。修复:
+  ① bridge 0.3.13——`session_start` 也走 `postQueue`(仍 await 拿 workspaceId,
+  appendEntry 仍在 handler 内、ctx 才是当前对话),事件到达顺序与 pi 内发生
+  顺序严格一致;② Marina 防御层——`reason` ∈ new/resume/fork 的 session_start
+  在旧主绑定仍在时按**主切换**放行(pi 源码证实这三种 reason 只有主进程 TUI 内
+  切换产生,子进程走构造默认值 startup,不会伪造),旧主迟到的 shutdown 因
+  piSid 不匹配被既有未注册分支忽略;主切换时 `mainWorking` 重置为新对话 idle
+  (同 piSid 的 reload 重复 start 不重置,避免工作中误翻)。测试修正:既有
+  subagent 模拟的 `reason:'fork'` 改为真实的 `startup`(pi 源码
+  `agent-session.js` 构造默认值)。
 - **「已打开」面板 tab 右键菜单完善(三种 tab 形态补齐)**:① 普通文件 tab 新增
   「打开 diff」——文件 tab 只有绝对路径,`cmd:git:open-diff` 增加 `absolutePath`
   互斥变体,main 端 realpath 文件后从其**自身位置**向上找 `.git` 定位仓库(与
@@ -46,7 +63,7 @@
 
 ## [0.3.3-dev.20] — 2026-09-09
 
-> ADR-037 勘误批:tab 分隔线粉色/换行残留修复 + 全部未声明 --color-* token 清扫。
+> ADR-037 勘误批:tab 分隔线粉色/换行残留修复 + 全部未声明 --color-\* token 清扫。
 
 ### Fixed
 
@@ -55,7 +72,7 @@
   换行时竖线(独立 flex item)留在上一行末尾。改为挂在首个命令 tab 的
   `::before` 上(跟随命令 tab 组换行),颜色用 `--color-bg-elevated`(面板
   边框事实标准 token),两侧 tab 都可见时才画。
-- **清扫全部未声明 --color-* token(5 个 / 18 处)并把守护测试扩大到全部
+- **清扫全部未声明 --color-\* token(5 个 / 18 处)并把守护测试扩大到全部
   选择器**:原测试只盯 `.command-` 前缀,`--color-border`(×11)、
   `--color-hover`(×2)、`--color-accent`(×3)、`--color-bg-input`(×2)、
   `--color-text`(×1)全部漏网 —— 其中网页查看器工具条/超限按钮的边框
@@ -200,7 +217,7 @@
   (已打开文件本体+所在目录+workspace 根,realpath 防 symlink 逃逸)→ 逐响应自
   包含档 CSP(禁一切 http(s) 出网)→ 32MB 上限+MIME 缺省 octet-stream → svg 额外
   script-src 'none'。app 自身 CSP 一字不松,仅新增窄项 `frame-src 'self'
-  marina-file:`。预览内容不经 IPC;热刷新复用 fs.watch→mtimeMs 链零新代码。
+marina-file:`。预览内容不经 IPC;热刷新复用 fs.watch→mtimeMs 链零新代码。
   已接受降级(Ctrl+F 不搜 iframe/滚动不持久/主题跟随 OS/非同目录资源断链)。
 - **源码⇄预览切换**:工具条一键切 TextViewer(read 对 web 文件返回源码文本);
   附重新加载/浏览器打开按钮;超限(>32MB)显示占位+外开。
@@ -285,7 +302,7 @@
 
 ## [0.3.3-dev.10] — 2026-08-23
 
-> 盘符绝对路径链接修复构建:dev.9 里 [x](D:\\a.png) 这类链接点击无反应。
+> 盘符绝对路径链接修复构建:dev.9 里 [x](D:\a.png) 这类链接点击无反应。
 
 ### Fixed
 
@@ -295,7 +312,7 @@
   且不在 https?/mailto 白名单)把 href 整条剥空。现在经自定义 urlTransform 放行盘符
   路径(含 micromark 把反斜杠编码出的 `%5C` 形态),其余协议照旧消毒(javascript: 等
   仍剥空)。图片 `![](...)` 的盘符 src 同样受益;main 端无需改动(decodeURIComponent
-  + resolve 对绝对路径天然正确)。
+  - resolve 对绝对路径天然正确)。
 
 ## [0.3.3-dev.9] — 2026-08-23
 
