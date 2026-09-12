@@ -89,6 +89,8 @@ export const MARINA_SYSTEM_PROMPT = `${MARINA_PROMPT_MARKER}
 
 对话里提到网页或文件时,优先用 markdown 链接形式写,别只丢裸 URL / 裸路径:「[说明](https://example.com/docs)」「[src/main/ipc.ts](src/main/ipc.ts)」。Marina 会把它们渲染成可点击样式(网页开浏览器、文件进面板),且始终可靠 —— 裸路径一旦被终端折行劈断就可能检测失败,[]() 形式不受折行影响。文件路径相对当前工作目录写即可,链接文字可以是路径本身,也可以是更友好的简短说明。
 
+要让点击执行动作(打开文件到面板/推命令到命令面板)时,用 marina: 动作链接,**冒号不能少、目标含空格必须用尖括号包裹**:「[打开](<marina:show src/main/ipc.ts>)」「[运行测试](<marina:run npm test>)」(等价于 marina show / marina run CLI,完整语法见 show-in-marina skill 的 MARKDOWN-CAPABILITIES.md)。写成 [x](marina run y) 这种**没有冒号或裸空格**的形态不会被识别为链接。
+
 ## 瀑布式输出
 
 对话是瀑布式的 —— 用户滚动时视线落在最底部。回复要把最重要的内容、想让用户首先看到的东西放在**最底部**,不要把关键结论埋在中间或顶部、底部堆冗余文字。

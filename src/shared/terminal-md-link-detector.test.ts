@@ -53,6 +53,26 @@ describe('detectMdLinks 基础', () => {
     expect(links[0]!.href).toBe('u.md');
     expect(links[0]!.end).toBe('[a](u.md "提示")'.length);
   });
+
+  it('尖括号形态 [x](<a b.md>) 认(CommonMark 标准的目标含空格写法)', () => {
+    expect(detectMdLinks('see [x](<a b.md>) ok')).toEqual([
+      { label: 'x', href: 'a b.md', start: 4, end: 17 },
+    ]);
+  });
+
+  it('宽容 marina:目标允许裸空格(勘误③;scheme 锚定,误报面≈零)', () => {
+    expect(detectMdLinks('[运行](marina:run gh issue list)')).toEqual([
+      { label: '运行', href: 'marina:run gh issue list', start: 0, end: 30 },
+    ]);
+    // 尾部 title 不进 href(lazy 交替)
+    expect(detectMdLinks('[x](marina:show a "标题")')[0]!.href).toBe('marina:show a');
+    // 标准形态照旧走严格分支
+    expect(detectMdLinks('[x](marina:show%20a.md)')[0]!.href).toBe('marina:show%20a.md');
+  });
+
+  it('marina 无冒号(marina run xxx)不是 scheme,任何形态都不认', () => {
+    expect(detectMdLinks('[abc](marina run xxx)')).toEqual([]);
+  });
 });
 
 describe('detectMdLinks 排除项', () => {

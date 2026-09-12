@@ -54,9 +54,18 @@ export interface LinkifyContext {
 /* ── 已有链接/图片(不透明段)────────────────────────────────────── */
 
 /** 在行首 i 处匹配 `[label](href)` / `![label](href)`。
- *  label 允许转义与括号;href 允许一层嵌套括号(marked 同规则);
+ *  label 允许转义与括号;href 三种形态(交替,按优先级):
+ *  1. 标准(无空格,允许一层嵌套括号,marked 同规则);
+ *  2. **宽容 marina**:`marina:` 开头允许裸空格(lazy,尾部 title 留给可选段)
+ *     —— 模型常写 `[运行](marina:run gh issue list)` 自然形态,marked 不认
+ *     (CommonMark 目标不能有裸空格),renderExistingLink 会把它归一化成 %20
+ *     形态再交给 marked,渲染出正常 OSC 8 链接(勘误③ 20260913)。
+ *     scheme 锚定误报面≈零;`marina run`(无冒号)任何形态都不认。
+ *  3. 尖括号包裹 `<...>`(CommonMark 标准的目标含空格写法)—— marked 原生
+ *     认,原样透传不归一化。
  *  引用式 `[l][r]` 与图片引用式不匹配(按普通文本走,罕见于对话输出)。 */
-const LINK_AT_RE = /^(!?)\[((?:[^\\\[\]]|\\.)*)\]\(\s*((?:[^()\s]|\([^\s()]*\))+)\s*(?:"[^"]*")?\)/;
+const LINK_AT_RE =
+  /^(!?)\[((?:[^\\\[\]]|\\.)*)\]\(\s*(?:(marina:[^()]*?)|((?:[^()\s]|\([^\s()]*\))+)|<([^<>\n]*)>)\s*(?:"[^"]*")?\)/;
 
 interface MatchedLink {
   /** 是否图片(`!` 前缀)。图片一律原样透传。 */
@@ -73,7 +82,10 @@ interface MatchedLink {
 function matchLinkAt(line: string, at: number): MatchedLink | null {
   const m = LINK_AT_RE.exec(line.slice(at));
   if (!m) return null;
-  return { image: m[1] === '!', label: m[2]!, href: m[3]!, raw: m[0], end: at + m[0].length };
+  // href 三选一:宽容 marina > 标准串 > 尖括号内侧(交替顺序即优先级)。
+  const href = m[3] ?? m[4] ?? m[5] ?? '';
+  if (href.length === 0) return null;
+  return { image: m[1] === '!', label: m[2]!, href, raw: m[0], end: at + m[0].length };
 }
 
 /* ── markdown 文本安全(反斜杠 / 方括号转义)─────────────────────── */
@@ -285,10 +297,21 @@ function linkifyLine(line: string, ctx: LinkifyContext): string {
   return out;
 }
 
-/** 已有链接:图片与普通链接默认整段原文回放(label 可能自带转义,不能再转义);
- *  仅当 label 本身是超长 URL 时替换 label(href 一律不动)。 */
+/** 已有链接的回放规则(优先级从上到下):
+ *  1. 图片 → 整段原文(label 可能自带转义,不能再转义)。
+ *  2. 宽容 marina(目标以 marina: 开头且含裸空格)→ **归一化**:payload 严格
+ *     percent-encode 后重发,让 pi 的 marked 认成合法链接、渲染出 OSC 8。
+ *     marked 不认裸空格目标,原样透传会变成字面量文本(勘误③ 20260913)。
+ *     label 保留原捕获(自带转义,不二次转义)。归一化结果无裸空格 → 幂等。
+ *  3. label 是超长 URL → 仅缩短 label(href 不动)。
+ *  4. 其余 → 整段原文回放。 */
 function renderExistingLink(link: MatchedLink, ctx: LinkifyContext): string {
   if (link.image) return link.raw;
+  const isMarinaHref = link.href.toLowerCase().startsWith('marina:');
+  if (isMarinaHref && /[ \t]/.test(link.href)) {
+    const payload = link.href.slice('marina:'.length).trim();
+    return `[${link.label}](marina:${encodeMarinaUriPayload(payload)})`;
+  }
   if (/^https?:\/\//.test(link.label) && link.label.length > urlShortenThreshold(ctx)) {
     return `[${escapeMdLabel(shortenUrlLabel(link.label))}](${link.href})`;
   }

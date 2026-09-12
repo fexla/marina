@@ -213,6 +213,27 @@ describe('linkifyMarkdown 不透明段透传', () => {
     const out = linkifyMarkdown('[src/x.ts][ref]', CTX);
     expect(out).toContain('marina:');
   });
+
+  it('宽容 marina 目标(裸空格)归一化为 %20 形态(勘误③;marked 才能渲染成 OSC 8)', () => {
+    const out = linkifyMarkdown('click [运行](marina:run gh issue list) now', CTX);
+    expect(out).toBe('click [运行](marina:run%20gh%20issue%20list) now');
+  });
+
+  it('宽容形态归一化后幂等(第二次跑不再改写)', () => {
+    const once = linkifyMarkdown('[x](marina:show a b.md)', CTX);
+    expect(linkifyMarkdown(once, CTX)).toBe(once);
+  });
+
+  it('尖括号 marina 形态 [x](<marina:run a b>) 同样归一化(与裸空格形态统一)', () => {
+    expect(linkifyMarkdown('go [x](<marina:run a b>) end', CTX)).toBe(
+      'go [x](marina:run%20a%20b) end',
+    );
+  });
+
+  it('尖括号非 marina 形态 [x](<a b.md>) 原样透传(marked 原生认)', () => {
+    const md = 'go [x](<a b.md>) end';
+    expect(linkifyMarkdown(md, CTX)).toBe(md);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
