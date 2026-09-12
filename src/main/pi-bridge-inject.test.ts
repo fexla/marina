@@ -10,8 +10,8 @@
  *
  * @被测契约:
  *   - resolveSkillsDir:extension 模块 URL → <pkg>/skills 绝对路径。
- *   - appendMarinaPrompt:幂等追加(含 marker 不重复);追加块含 marker + 三节
- *     Marina 约定(大段输出走 show-in-marina / 瀑布式 / grilling)。
+ *   - appendMarinaPrompt:幂等追加(含 marker 不重复);追加块含 marker + 四节
+ *     Marina 约定(大段输出走 show-in-marina / 链接用 []() 写 / 瀑布式 / grilling)。
  *   - skillsDirExists:目录存在性(真包目录存在;虚构路径不存在)。
  *   - index.ts 工厂(动态 import 真模块 + mock pi):非 Marina env 零注册;
  *     Marina env 下 resources_discover 返回包内 skills 路径、before_agent_start
@@ -77,7 +77,7 @@ describe('appendMarinaPrompt', () => {
   });
 });
 
-describe('MARINA_SYSTEM_PROMPT 内容(来源:开发者 CLAUDE.md 的 Marina 三节)', () => {
+describe('MARINA_SYSTEM_PROMPT 内容(CLAUDE.md 三节 + 终端链接一节)', () => {
   it('含 show-in-marina skill 引用与渐进披露指引', () => {
     expect(MARINA_SYSTEM_PROMPT).toContain('show-in-marina');
     expect(MARINA_SYSTEM_PROMPT).toContain('SKILL.md');
@@ -88,6 +88,13 @@ describe('MARINA_SYSTEM_PROMPT 内容(来源:开发者 CLAUDE.md 的 Marina 三�
     expect(MARINA_SYSTEM_PROMPT).toContain('瀑布式');
     expect(MARINA_SYSTEM_PROMPT).toContain('grilling');
     expect(MARINA_SYSTEM_PROMPT).toContain('推论');
+  });
+
+  it('含「链接用 []() 写」约定(方案-终端可交互链接-20260912:[]() 在终端与面板都可点)', () => {
+    expect(MARINA_SYSTEM_PROMPT).toContain('链接用 []() 写');
+    expect(MARINA_SYSTEM_PROMPT).toContain('可点击');
+    // 提示词是模板字符串:节内容里不允许出现未转义反引号(会截断模板串)
+    expect(MARINA_SYSTEM_PROMPT.includes('`')).toBe(false);
   });
 
   it('marker 位于注入块首行(幂等检查的锚点)', () => {

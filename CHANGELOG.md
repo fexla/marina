@@ -33,7 +33,9 @@
   addon-web-links 的 `_getWindowedLineStrings`+`_mapStrIdx`),修掉 ADR-027 的
   折行盲区,非 pi 终端同样受益。已知降级:SerializeAddon 不保留 OSC 8,scrollback
   回放后旧链接退化为纯文本,自研检测兜底(marina: 动作语义丢失);信任模型:终端
-  `marina:run` 无确认,同 ADR-035。
+  `marina:run` 无确认,同 ADR-035。配套 bridge 系统提示词(0.3.15)新增「链接用
+  []() 写」一节:引导模型对网页/文件优先用 markdown 链接形式输出,而非裸 URL/
+  裸路径 —— []() 在 pi TUI(OSC 8)与面板文档两条展示面都可点,不受终端折行影响。
 - **pi bridge 事件乱序根治——「AI 已开始工作但终端 tab 不显示工作中」(双层修复)**:
   根因:bridge 的 `session_start` 为拿 workspaceId 响应不走发送队列(直发),其余
   事件走 `postQueue` 串行链;`/new` `/resume` `/fork` 时 pi 先发旧主

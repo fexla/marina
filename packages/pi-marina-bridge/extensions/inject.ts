@@ -14,9 +14,11 @@
  *   (agent-session.js emitBeforeAgentStart 传 _baseSystemPrompt),不会跨轮累积;
  *   这里仍做幂等 guard(含 MARINA_PROMPT_MARKER 即不重复追加),防御未来 pi 改为
  *   链式持久、或其它 extension 把我们追加过的 prompt 再次作为 base 传入。
- * - 提示词内容是 Marina 的输出习惯约定(大段输出走面板 / 瀑布式排版 / grilling
- *   批量澄清),来源是开发者项目 CLAUDE.md 中与 Marina 相关的三节,改写为
- *   pi + show-in-marina skill 的语境。skill 教"怎么用 CLI",提示词教"什么时候用"。
+ * - 提示词内容是 Marina 的输出习惯约定(大段输出走面板 / 链接用 []() 写 /
+ *   瀑布式排版 / grilling 批量澄清),前三节来源是开发者项目 CLAUDE.md 中与
+ *   Marina 相关的部分,改写为 pi + show-in-marina skill 的语境;「链接用
+ *   []() 写」一节随终端可交互链接功能加入(方案-终端可交互链接-20260912)。
+ *   skill 教"怎么用 CLI",提示词教"什么时候用"。
  *
  * @不要在这里做的事:
  * - 不订阅 pi 事件(那是 index.ts 的职责)
@@ -64,8 +66,10 @@ export const MARINA_PROMPT_MARKER = '<!-- marina-bridge-system-prompt -->';
 /**
  * 注入的 Marina 系统提示词。中文:来源材料(CLAUDE.md)即中文,Marina 当前
  * 用户群也以中文为主;现代模型对中文行为指令遵从无差异。
- * 三节均要求"先读 show-in-marina skill 的 SKILL.md 再动手"式的渐进披露:
+ * 各节均要求"先读 show-in-marina skill 的 SKILL.md 再动手"式的渐进披露:
  * 这里只教"什么时候/往哪里放",CLI 用法由 skill 本体承载。
+ * 第四节「链接用 []() 写」随终端可交互链接功能加入(方案-终端可交互链接-20260912):
+ * []() 形态在 pi TUI(OSC 8)与面板文档两条展示面都渲染成可点击,比裸文本可靠。
  */
 export const MARINA_SYSTEM_PROMPT = `${MARINA_PROMPT_MARKER}
 
@@ -80,6 +84,10 @@ export const MARINA_SYSTEM_PROMPT = `${MARINA_PROMPT_MARKER}
 对话回复只留一两句提炼 + 文件路径,不要把全文复述一遍。例外:短结论、单条问答、需要直接执行的指令,正常在对话里回即可。
 
 多轮任务可把同一份文档作为任务看板:每轮覆写同一文件并重新 show,面板原地刷新标签页,对话保持一行状态 + 指向文档。
+
+## 链接用 []() 写
+
+对话里提到网页或文件时,优先用 markdown 链接形式写,别只丢裸 URL / 裸路径:「[说明](https://example.com/docs)」「[src/main/ipc.ts](src/main/ipc.ts)」。Marina 会把它们渲染成可点击样式(网页开浏览器、文件进面板),且始终可靠 —— 裸路径一旦被终端折行劈断就可能检测失败,[]() 形式不受折行影响。文件路径相对当前工作目录写即可,链接文字可以是路径本身,也可以是更友好的简短说明。
 
 ## 瀑布式输出
 
