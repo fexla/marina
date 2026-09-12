@@ -317,10 +317,13 @@ export type AppAction =
       /**
        * v0.3.3 ADR-024:bind 后 renderer 只恢复 scroll；完整 openedFiles/active 由 main
        * FilePanelService 先通过 file-panel/updated 给出，runs 进独立缓存。
+       * ADR-039:scroll 含命令条目(command: 前缀,kind='command'),view 恢复面板内
+       * 当时在看哪一侧(快照 panelView,缺失时由 workspace-snapshot 推导)。
        */
       type: 'workspace/snapshot-restored';
       sessionId: string;
-      scroll: Record<string, { scrollTop: number; scrollLeft: number; kind: FileKind }>;
+      scroll: Record<string, { scrollTop: number; scrollLeft: number; kind: FileViewerScrollKind }>;
+      view?: 'file' | 'command';
     }
   | { type: 'md-themes/update'; themes: MdTheme[] };
 
@@ -626,7 +629,8 @@ function reducer(state: AppState, action: AppAction): AppState {
     }
     case 'workspace/snapshot-restored': {
       // 文件列表/active 已由有完整 stat 元数据的 file-panel/updated 更新；这里仅补
-      // renderer 私有 scroll。runs 由 code-block-run-cache 单独导入。
+      // renderer 私有 scroll(文件 + 命令两类条目,restore 前已按快照校验)。runs 由
+      // code-block-run-cache 单独导入。view(ADR-039)恢复面板内看哪一侧。
       const scrollMap = new Map<string, FileViewerScrollPosition>();
       for (const [path, pos] of Object.entries(action.scroll)) {
         scrollMap.set(path, {
@@ -638,6 +642,11 @@ function reducer(state: AppState, action: AppAction): AppState {
       const fileViewerScroll = new Map(state.fileViewerScroll);
       if (scrollMap.size > 0) fileViewerScroll.set(action.sessionId, scrollMap);
       else fileViewerScroll.delete(action.sessionId);
+      if (action.view) {
+        const openPanelViews = new Map(state.openPanelViews);
+        openPanelViews.set(action.sessionId, action.view);
+        return { ...state, fileViewerScroll, openPanelViews };
+      }
       return { ...state, fileViewerScroll };
     }
     case 'file-panel/clear': {
@@ -1139,15 +1148,24 @@ export function useIpcSync(): {
           window.api.on<{ sessionId: string }>(EVENT_CHANNELS.WORKSPACE_CHANGED, (p) => {
             void restoreWorkspaceSnapshot(dispatch, p.sessionId);
           }),
-          window.api.on<CommandPanelUpdatedPayload>(EVENT_CHANNELS.COMMAND_PANEL_UPDATED, (p) =>
+          window.api.on<CommandPanelUpdatedPayload>(EVENT_CHANNELS.COMMAND_PANEL_UPDATED, (p) => {
             dispatch({
               type: 'command-panel/updated',
               sessionId: p.sessionId,
               commands: p.commands,
               activeKey: p.activeKey,
               requestActivation: p.requestActivation === true,
-            }),
-          ),
+            });
+            // ADR-039:命令页与文档同一快照 —— 命令列表/输出/activeKey 变化同样
+            // debounce 写快照。commandPanelUpdated 是 owner-only 事件(隐私),
+            // 即写触发也只在 owner 窗口,单写者;commandPanel 切片本身由 main 在
+            // WORKSPACE_WRITE_SNAPSHOT 边界合并内存真值,renderer 滞后无影响。
+            scheduleWorkspaceSnapshotWrite(
+              p.sessionId,
+              () => stateRef.current,
+              () => null,
+            );
+          }),
           window.api.on<MdThemeListUpdatedPayload>(EVENT_CHANNELS.MD_THEME_LIST_UPDATED, (p) =>
             dispatch({ type: 'md-themes/update', themes: p.themes }),
           ),

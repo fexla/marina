@@ -44,6 +44,7 @@ import { homedir } from 'node:os';
 import type { OpenedFile, OpenedFileOrigin } from '@shared/types';
 import { detectFileKind } from '@shared/file-kind';
 import type {
+  CommandEntry,
   FilePanelSnapshot,
   ReadFileResponse,
   ReadImageResponse,
@@ -154,6 +155,8 @@ export interface WorkspaceOps {
    * v0.3.3 Feature D 接线:读当前 session 绑定 workspace 的文件面板快照
    * (openedFiles/activeFilePath/scroll/runs)。切换 workspace 后用此重建 PanelState
    * + renderer 恢复 scroll/runs。无绑定/无快照返 null。
+   * ADR-039:快照新增 commandPanel/panelView 切片 —— 本服务只消费文件相关字段,
+   * commandPanel 由 CommandPanelService 经同一 op 读取(见其 attachWorkspaceOps)。
    */
   readSnapshotForSession?(sessionId: string): Promise<{
     openedFiles: Array<{
@@ -165,6 +168,8 @@ export interface WorkspaceOps {
     activeFilePath: string | null;
     scroll: Record<string, { scrollTop: number; scrollLeft: number }>;
     runs: unknown;
+    commandPanel?: { version: number; commands: CommandEntry[]; activeKey: string | null };
+    panelView?: 'file' | 'command';
   } | null>;
 }
 

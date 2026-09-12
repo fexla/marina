@@ -3161,15 +3161,23 @@ function registerWorkspaceHandlers(deps: IpcLayerDeps): void {
   );
 
   // 写当前 session 绑定 workspace 的文件面板快照(renderer debounce 触发)。
+  // ADR-039:命令页切片在这里从 CommandPanelService 内存真值合并 —— renderer
+  // 组装的快照不含 commandPanel(命令真值在 main,renderer 侧可能滞后/缺失),
+  // 边界合并保证任何触发源(文件事件/命令事件)写盘的命令部分都是权威值。
+  // exportSnapshot 返 null(本 session 从未有过命令面板状态)时省略字段,
+  // 保留磁盘上已有的命令记忆(≠ 用户全关了 —— 那会导出 commands:[])。
   registerHandle(
     COMMAND_CHANNELS.WORKSPACE_WRITE_SNAPSHOT,
     async (
       _e,
       envelope: CommandEnvelope<{ sessionId: string; snapshot: WorkspaceFilePanelSnapshot }>,
     ): Promise<void> => {
+      const snapshot: WorkspaceFilePanelSnapshot = { ...envelope.payload.snapshot };
+      const commandPanel = deps.commandPanelService.exportSnapshot(envelope.payload.sessionId);
+      if (commandPanel) snapshot.commandPanel = commandPanel;
       await workspaceCoordinator.writeWorkspaceSnapshot(
         envelope.payload.sessionId,
-        envelope.payload.snapshot,
+        snapshot,
       );
     },
   );

@@ -51,6 +51,7 @@ import { FileTreePollingService } from './file-tree-polling-service';
 import { WEB_FILE_SCHEME_PRIVILEGES, WebFileProtocol } from './web-file-protocol';
 import { WEB_FILE_SCHEME } from '@shared/web-file-url';
 import { EVENT_CHANNELS } from '@shared/protocol';
+import type { CommandEntry } from '@shared/protocol';
 import { GitService } from './git-service';
 import { BackgroundWorkScheduler } from './background-work-scheduler';
 import { SessionWorkspaceManager } from './session-workspace-manager';
@@ -233,6 +234,11 @@ function bootstrap(): void {
   // service 引用(路由分发目标)+ 5 业务 ops(注入式)。SessionManager 的
   // env 注入(getUrl)改走 gateway —— FilePanelEnvSource 接口两者都满足。
   const localHttpGateway = new LocalHttpGateway(filePanelService);
+  // v0.3.3:命令面板后端(ADR-027 / Feature G)。构造无依赖,提前到这里供下方
+  // pi workspace 切换 notify 闭包引用(ADR-039:命令页与文档同点恢复)。复用
+  // codeBlockRunner 执行 + backgroundWorkScheduler 后台轮询。HTTP /run 路由在
+  // file-panel-service(复用同一 server + Bearer 鉴权),经 commandRunOps 转发回本服务。
+  const commandPanelService = new CommandPanelService();
   // 内置 skill 在 dev 从源码读取、installed 包从 extraResources 读取。安装器只会
   // 复制这一份受控内容到用户明确选择的本地收藏项目。
   // v0.3.3(方案 20260909)起 skill 的物理来源 = pi-marina-bridge package 内的
@@ -302,11 +308,18 @@ function bootstrap(): void {
   sessionWorkspaceCoordinator.attachSessionLookup(sessionManager);
   piSessionCoordinator.attachSessionLookup(sessionManager);
   piSessionCoordinator.attachHooks(sessionManager);
-  // pi 切换 workspace(resume 切回 / new 新建)后触发文件面板重建 + 快照恢复。
+  // pi 切换 workspace(resume 切回 / new 新建)后触发「已打开」面板重建 + 快照恢复。
   // filePanelService 在上面已创建(221),这里闭合 coordinator ↔ file-panel-service。
-  piSessionCoordinator.attachWorkspaceSwitchNotify(
-    (sid) => void filePanelService.onWorkspaceSwitched(sid),
-  );
+  // ADR-039:命令页与文档同一快照、同一恢复点 —— 命令先恢复(其 owner-only
+  // commandPanelUpdated 先落 renderer store),随后文件恢复 emit
+  // filePanelUpdated + workspaceChanged(scroll 恢复的 command: 条目校验与
+  // 面板渲染都拿得到完整命令表)。
+  piSessionCoordinator.attachWorkspaceSwitchNotify((sid) => {
+    void commandPanelService
+      .onWorkspaceSwitched(sid)
+      .catch(() => {}) // onWorkspaceSwitched 内部已兜底;再防御一层,不阻塞文件恢复
+      .then(() => filePanelService.onWorkspaceSwitched(sid));
+  });
   sessionManager.attachWorkspaceCoordinator(sessionWorkspaceCoordinator);
   // v0.3.3 ADR-028「查看语义精准化」:窗口重新获焦/从最小化恢复 → 用户回来了,
   // 清该窗口当前选中 session 的 hasUnviewedWork(红灯转正常)。窗口关闭 → 清映射
@@ -403,10 +416,6 @@ function bootstrap(): void {
       },
     },
   );
-  // v0.3.3:命令面板后端(ADR-027 / Feature G)。复用 codeBlockRunner 执行 +
-  // backgroundWorkScheduler 后台轮询。HTTP /run 路由在 file-panel-service(复用
-  // 同一 server + Bearer 鉴权),经 commandRunOps 转发回本服务。
-  const commandPanelService = new CommandPanelService();
   // 0.3.2 性能飞行记录器独立于 BrowserWindow 生命周期。关闭全部窗口后仍采样
   // main/GPU/utility 进程、event-loop stall 与固定业务操作；自动报告不含路径/
   // 命令/终端内容。对象在 ready 前构造,start 在 app.whenReady 内调用。
@@ -754,12 +763,21 @@ function bootstrap(): void {
             activeFilePath: string | null;
             scroll: Record<string, { scrollTop: number; scrollLeft: number }>;
             runs: unknown;
+            commandPanel?: { version: number; commands: CommandEntry[]; activeKey: string | null };
+            panelView?: 'file' | 'command';
           } | null>,
       };
       // M3:workspace ops 一份对象,同时注入 gateway(路由)与 service(核心面板:
       // gallery 缓存路径 + workspace 切换重建 PanelState),避免两份真值。
       localHttpGateway.attachWorkspaceOps(filePanelWorkspaceOps);
       filePanelService.attachWorkspaceOps(filePanelWorkspaceOps);
+      // v0.3.3 ADR-039:命令面板同款注入(只需读快照 —— commandPanel 切片的
+      // 写入在 ipc WORKSPACE_WRITE_SNAPSHOT 边界合并,不走这份 ops)。
+      commandPanelService.attachWorkspaceOps({
+        readSnapshotForSession: (sid) =>
+          filePanelWorkspaceOps.readSnapshotForSession?.(sid) ??
+          Promise.resolve(null),
+      });
       // v0.3.3 ADR-027:命令面板接线。sessionLookup 破循环依赖(同 file-panel);
       // runner 复用 codeBlockRunner(执行 + output/exited 事件订阅);scheduler 复用
       // backgroundWorkScheduler(per-指令 后台轮询);HTTP /run 经 commandRunOps 转发。

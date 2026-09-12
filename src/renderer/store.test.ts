@@ -370,4 +370,46 @@ describe('renderer open panel view(ADR-037 命令面板整合进「已打开」)
     });
     expect(state.fileViewerScroll.get('s1')?.has('command:k1') ?? false).toBe(false);
   });
+
+  it('workspace/snapshot-restored 恢复文件+命令滚动条目并记录面板内视图(ADR-039)', () => {
+    let state = makeDefaultState('w1', 1);
+    // 恢复前 main 侧已 emit 过恢复后的命令表(命令先于文件恢复,见 index.ts 接线)。
+    state = __appReducerForTest(state, commandSnapshot(false));
+    // 预置旧对话的滚动记忆,resume 恢复要整体替换而不是叠加。
+    state = __appReducerForTest(state, {
+      type: 'view/file-viewer-scroll',
+      sessionId: 's1',
+      path: 'command:old-conversation',
+      kind: 'command',
+      scrollTop: 999,
+      scrollLeft: 0,
+    });
+
+    state = __appReducerForTest(state, {
+      type: 'workspace/snapshot-restored',
+      sessionId: 's1',
+      scroll: {
+        'C:\\a.md': { scrollTop: 120, scrollLeft: 0, kind: 'markdown' },
+        'command:k1': { scrollTop: 300, scrollLeft: 0, kind: 'command' },
+      },
+      view: 'command',
+    });
+
+    const bucket = state.fileViewerScroll.get('s1')!;
+    expect(bucket.get('C:\\a.md')?.kind).toBe('markdown');
+    expect(bucket.get('command:k1')?.scrollTop).toBe(300);
+    expect(bucket.has('command:old-conversation')).toBe(false); // 整体替换
+    expect(state.openPanelViews.get('s1')).toBe('command');
+
+    // 空 scroll(空 workspace)→ bucket 删除,但显式 view 仍记录(resolveOpenPanelView
+    // 会因该侧为空回退,不产生死状态)。
+    state = __appReducerForTest(state, {
+      type: 'workspace/snapshot-restored',
+      sessionId: 's1',
+      scroll: {},
+      view: 'file',
+    });
+    expect(state.fileViewerScroll.has('s1')).toBe(false);
+    expect(state.openPanelViews.get('s1')).toBe('file');
+  });
 });

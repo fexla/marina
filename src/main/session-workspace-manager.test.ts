@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { createTempDataDir, removeTempDataDir } from './persistence';
 import { SessionWorkspaceManager } from './session-workspace-manager';
 import type { FilePanelSnapshotData } from './session-workspace-manager';
+import type { CommandEntry } from '@shared/protocol';
 
 /** 测试用确定性 UUID 序列（注入 uuid 选项）。 */
 const WS_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -558,4 +559,127 @@ describe('SessionWorkspaceManager', () => {
     expect(manager.getRecord(cloned.workspaceId)).not.toBeNull();
     await expect(manager.readSnapshot(cloned.workspaceId)).resolves.toBeNull();
   });
+
+  // ── 快照 commandPanel/panelView 切片(ADR-039:命令页与文档同一快照)────
+
+  it('readSnapshot 归一 commandPanel/panelView:坏条目剔除,合法切片透传', async () => {
+    await manager.create();
+    const good = makeCommandEntry('k1', 'echo hi');
+    // 直接落原始 JSON(不经 sanitize)验证 readSnapshot 的归一行为。
+    const file = join(dir, 'file-panel-workspaces', WS_A, '__marina_state__', 'file-panel.json');
+    await fs.mkdir(join(dir, 'file-panel-workspaces', WS_A, '__marina_state__'), {
+      recursive: true,
+    });
+    await fs.writeFile(
+      file,
+      JSON.stringify({
+        version: 1,
+        openedFiles: [],
+        activeFilePath: null,
+        scroll: { 'command:k1': { scrollTop: 5, scrollLeft: 0 } },
+        runs: [],
+        commandPanel: {
+          version: 2,
+          commands: [good, { key: 42, command: 'bad' }, null, { key: 'k2' }],
+          activeKey: 'k1',
+        },
+        panelView: 'command',
+      }),
+      'utf8',
+    );
+    const snap = await manager.readSnapshot(WS_A);
+    expect(snap!.commandPanel).toEqual({
+      version: 2,
+      commands: [good],
+      activeKey: 'k1',
+    });
+    expect(snap!.panelView).toBe('command');
+    expect(snap!.scroll['command:k1']).toEqual({ scrollTop: 5, scrollLeft: 0 });
+  });
+
+  it('readSnapshot 旧格式快照(无切片)→ 字段缺省,不报错', async () => {
+    await manager.create();
+    await manager.writeSnapshot(WS_A, {
+      version: 1,
+      openedFiles: [{ path: 'a.md', kind: 'text', external: false }],
+      activeFilePath: 'a.md',
+      scroll: {},
+      runs: [],
+    });
+    const snap = await manager.readSnapshot(WS_A);
+    expect(snap!.commandPanel).toBeUndefined();
+    expect(snap!.panelView).toBeUndefined();
+  });
+
+  it('readSnapshot 损坏的 panelView 枚举 → 丢弃,commandPanel 保留', async () => {
+    await manager.create();
+    const file = join(dir, 'file-panel-workspaces', WS_A, '__marina_state__', 'file-panel.json');
+    await fs.mkdir(join(dir, 'file-panel-workspaces', WS_A, '__marina_state__'), {
+      recursive: true,
+    });
+    const good = makeCommandEntry('k1', 'git status');
+    await fs.writeFile(
+      file,
+      JSON.stringify({
+        version: 1,
+        openedFiles: [],
+        activeFilePath: null,
+        scroll: {},
+        runs: [],
+        commandPanel: { version: 2, commands: [good], activeKey: 'k1' },
+        panelView: 'sidebar',
+      }),
+      'utf8',
+    );
+    const snap = await manager.readSnapshot(WS_A);
+    expect(snap!.panelView).toBeUndefined();
+    expect(snap!.commandPanel!.commands).toEqual([good]);
+  });
+
+  it('cloneWorkspace 继承 commandPanel:runCwd 重写指向新目录,command: 滚动键原样', async () => {
+    const src = await manager.create(); // WS_A
+    const internalPath = join(src.dir, 'notes.md');
+    const good = makeCommandEntry('k1', 'git status', { runCwd: join(src.dir, 'sub') });
+    const externalCwd = makeCommandEntry('k2', 'dir', { runCwd: 'D:\\proj' });
+    await manager.writeSnapshot(WS_A, {
+      version: 1,
+      openedFiles: [{ path: internalPath, kind: 'text', external: false }],
+      activeFilePath: null,
+      scroll: { 'command:k1': { scrollTop: 9, scrollLeft: 0 } },
+      runs: [],
+      commandPanel: { version: 2, commands: [good, externalCwd], activeKey: 'k1' },
+      panelView: 'command',
+    });
+
+    const cloned = await manager.cloneWorkspace(WS_A);
+    const snap = await manager.readSnapshot(cloned.workspaceId);
+    // 命令随文档一起继承(fork 同一抽象);runCwd 内部路径重写、外部不动。
+    const [a, b] = snap!.commandPanel!.commands;
+    expect(a!.runCwd).toBe(join(cloned.dir, 'sub'));
+    expect(b!.runCwd).toBe('D:\\proj');
+    expect(snap!.commandPanel!.activeKey).toBe('k1');
+    expect(snap!.panelView).toBe('command');
+    // command: 滚动键不是文件路径,原样保留(恢复时按 commandPanel 校验)。
+    expect(snap!.scroll['command:k1']).toEqual({ scrollTop: 9, scrollLeft: 0 });
+  });
 });
+
+/** 测试用最小合法 CommandEntry(字段完整性交给 CommandPanelService 的归一)。 */
+function makeCommandEntry(
+  key: string,
+  command: string,
+  extra: Partial<{ runCwd: string | null }> = {},
+): CommandEntry {
+  return {
+    key,
+    command,
+    title: command,
+    refreshPolicy: { scope: 'foreground', interval: '30s' },
+    lastRunId: null,
+    lastExitCode: 0,
+    status: 'exited',
+    output: 'ok',
+    lastRunAt: 123,
+    ...(extra.runCwd !== undefined ? { runCwd: extra.runCwd } : {}),
+  };
+}

@@ -28,6 +28,7 @@ import { promises as fs } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { OpenedFileOrigin } from '@shared/types';
+import type { CommandEntry } from '@shared/protocol';
 import { JsonStore } from './persistence';
 import { logger } from './logger';
 
@@ -100,6 +101,13 @@ export interface FilePanelSnapshotData {
   activeFilePath: string | null;
   scroll: Record<string, { scrollTop: number; scrollLeft: number }>;
   runs: Array<{ key: string; state: string; output: string; exitCode: number | null }>;
+  /**
+   * 命令页切片(v0.3.3 ADR-039:命令与文档同一快照,同一条恢复/继承管线)。
+   * 可选以兼容旧快照;undefined = 磁盘记忆保留(见 protocol.ts 注释)。
+   */
+  commandPanel?: { version: 2; commands: CommandEntry[]; activeKey: string | null };
+  /** 用户当时在看「文件」还是「命令」侧;可选以兼容旧快照。 */
+  panelView?: 'file' | 'command';
 }
 
 export interface SessionWorkspaceManagerOptions {
@@ -258,7 +266,9 @@ export class SessionWorkspaceManager {
    * - file-panel.json 快照:openedFiles[].path / activeFilePath / scroll 的 key
    *   里指向源目录内部的绝对路径,全部重写为新目录下的对应路径(external=true
    *   的外部路径不受影响)——否则 fork 的面板会直接指向父 workspace 里的文件,
-   *   编辑会改到父的文件,违反「fork 不共享」(裁决 3)。
+   *   编辑会改到父的文件,违反「fork 不共享」(裁决 3)。ADR-039 起快照还含命令页
+   *   切片(commandPanel/panelView/command: scroll 键),一并继承(命令与文档
+   *   同一抽象);commandPanel.commands[].runCwd 按同规则重写。
    *
    * 失败策略:新建 workspace 必须成功(同 create());复制/快照是**尽力而为的
    * 增强**——源目录部分复制失败只 warn,不抛(fork 降级为空 workspace,行为安全)。
@@ -299,6 +309,9 @@ export class SessionWorkspaceManager {
     }
 
     // 2) 快照复制 + 内部路径重写(失败降级为无快照,面板空状态)。
+    //    ADR-039:快照含命令页切片(commandPanel/panelView/command: scroll 键),
+    //    spread 自动携带 —— fork 同样继承命令页(与文档一致);command 的 runCwd
+    //    可能指向源目录内部,按同规则重写,否则 fork 里旧输出的相对链接漂移。
     try {
       const snapshot = await this.readSnapshot(sourceWorkspaceId);
       if (snapshot) {
@@ -310,6 +323,17 @@ export class SessionWorkspaceManager {
           scroll: Object.fromEntries(
             Object.entries(snapshot.scroll).map(([k, v]) => [remap(k), v]),
           ),
+          ...(snapshot.commandPanel
+            ? {
+                commandPanel: {
+                  ...snapshot.commandPanel,
+                  commands: snapshot.commandPanel.commands.map((c) => ({
+                    ...c,
+                    ...(c.runCwd ? { runCwd: remap(c.runCwd) } : {}),
+                  })),
+                },
+              }
+            : {}),
         };
         await this.writeSnapshot(workspaceId, remapped);
       }
@@ -911,12 +935,38 @@ export class SessionWorkspaceManager {
             exitCode: typeof r.exitCode === 'number' ? r.exitCode : null,
           }))
       : [];
+    // 命令页切片(ADR-039):浅校验(条目 key/command/output 必须是 string),深
+    // 归一(refreshPolicy 枚举/legacy strategy 迁移)留给 CommandPanelService
+    // .restoreSnapshot —— 那里已有 normalizeRefreshPolicy,不在这重复一套。
+    const commandPanel =
+      parsed.commandPanel && typeof parsed.commandPanel === 'object'
+        ? {
+            version: 2 as const,
+            commands: Array.isArray(parsed.commandPanel.commands)
+              ? parsed.commandPanel.commands.filter(
+                  (c): c is CommandEntry =>
+                    !!c &&
+                    typeof c.key === 'string' &&
+                    typeof c.command === 'string' &&
+                    typeof c.output === 'string',
+                )
+              : [],
+            activeKey:
+              typeof parsed.commandPanel.activeKey === 'string'
+                ? parsed.commandPanel.activeKey
+                : null,
+          }
+        : undefined;
+    const panelView =
+      parsed.panelView === 'file' || parsed.panelView === 'command' ? parsed.panelView : undefined;
     return {
       version: 1,
       openedFiles,
       activeFilePath: typeof parsed.activeFilePath === 'string' ? parsed.activeFilePath : null,
       scroll,
       runs,
+      ...(commandPanel ? { commandPanel } : {}),
+      ...(panelView ? { panelView } : {}),
     };
   }
 

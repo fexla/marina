@@ -1,23 +1,28 @@
 /**
  * @file workspace-snapshot.ts
- * @purpose v0.3.3 ADR-024 / Feature D:文件面板状态快照的恢复 + 写入编排。
+ * @purpose v0.3.3 ADR-024 / Feature D:「已打开」面板状态快照的恢复 + 写入编排。
+ *   ADR-039 起快照含命令页切片(commandPanel/panelView/command: 滚动条目),
+ *   命令与文档同一条 debounce 写入 / 切换恢复管线。
  *
  * @关键设计:
  * - bind 切到某 workspace 后,调 restoreWorkspaceSnapshot(dispatch, sessionId):
  *   读 main 的 WORKSPACE_READ_SNAPSHOT → dispatch 'workspace/snapshot-restored'
- *   灌入 openedFiles/active/scroll + restoreCodeBlockRuns 灌入 runs。
- * - file-panel 状态变化(openedFiles/active/scroll/runs)触发 scheduleWorkspaceSnapshotWrite:
- *   500ms debounce 后发 WORKSPACE_WRITE_SNAPSHOT(滚动停滚落盘,ADR §2.6)。
- *   切走面板/关 session 应 flush(本模块提供 flushWorkspaceSnapshotWrite)。
+ *   灌入 scroll(文件+命令)+ 面板内视图 + restoreCodeBlockRuns 灌入 runs。
+ * - 面板状态变化(openedFiles/active/scroll/runs/commandPanel)触发
+ *   scheduleWorkspaceSnapshotWrite:500ms debounce 后发 WORKSPACE_WRITE_SNAPSHOT
+ *   (滚动停滚落盘,ADR §2.6)。切走面板/关 session 应 flush(本模块提供
+ *   flushWorkspaceSnapshotWrite)。commandPanel 切片不在 renderer 组装 —— main
+ *   在写边界合并 CommandPanelService 内存真值(单一真相源,见 ipc.ts)。
  * - 不进逐字节热路径(附录 H):只在聚合点 debounce 写。
  *
- * @对应文档章节: ADR-024 §2.6、附录 H。
+ * @对应文档章节: ADR-024 §2.6、ADR-039、附录 H。
  *
  * @不要在这里做的事:
- * - 不读/写 localStorage(runs 可能含敏感信息,只落 main 受管目录)。
+ * - 不读/写 localStorage(runs/命令可能含敏感信息,只落 main 受管目录)。
  * - 不在 PTY 逐字节热路径上报。
+ * - 不在 renderer 组装 commandPanel 切片(命令真值在 main,边界合并)。
  */
-import type { AppAction, AppState } from './store';
+import type { AppAction, AppState, FileViewerScrollKind } from './store';
 import { COMMAND_CHANNELS, type WorkspaceFilePanelSnapshot } from '@shared/protocol';
 import type { FileKind } from '@shared/types';
 import {
@@ -34,11 +39,54 @@ const WRITE_DEBOUNCE_MS = 500;
 const writeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 /**
+ * 从快照推导恢复到 renderer 的滚动条目与面板内视图(纯函数,可测)。
+ *
+ * - 文件条目:kind 从快照 openedFiles 推(找不到则跳过,防 kind 不匹配导致 viewer
+ *   复活错误状态 —— 快照 scroll 只存 scrollTop/scrollLeft,不含 kind)。
+ * - 命令条目(command: 前缀,ADR-039 起持久化):kind 恒 'command',按快照
+ *   commandPanel.commands 的 key 校验(命令已不在快照里的孤儿滚动条目跳过,
+ *   防复活)。以快照为权威而非 store —— 恢复与 commandPanelUpdated 事件的
+ *   到达顺序解耦。
+ * - 视图:优先快照显式 panelView;缺失(旧快照)时推导 —— 有 active 命令且无
+ *   active 文件 = 当时在看命令侧,否则文件侧。
+ */
+export function deriveRestoredScroll(snapshot: WorkspaceFilePanelSnapshot): {
+  scroll: Record<string, { scrollTop: number; scrollLeft: number; kind: FileViewerScrollKind }>;
+  view: 'file' | 'command';
+} {
+  const kindByPath = new Map<string, FileKind>();
+  for (const f of snapshot.openedFiles) {
+    kindByPath.set(f.path, f.kind as FileKind);
+  }
+  const commandKeys = new Set(
+    (snapshot.commandPanel?.commands ?? []).map((c) => `command:${c.key}`),
+  );
+  const scroll: Record<
+    string,
+    { scrollTop: number; scrollLeft: number; kind: FileViewerScrollKind }
+  > = {};
+  for (const [path, pos] of Object.entries(snapshot.scroll)) {
+    if (path.startsWith('command:')) {
+      if (!commandKeys.has(path)) continue; // 命令已不在快照,孤儿滚动不复活
+      scroll[path] = { scrollTop: pos.scrollTop, scrollLeft: pos.scrollLeft, kind: 'command' };
+      continue;
+    }
+    const kind = kindByPath.get(path);
+    if (!kind) continue; // scroll 对应的文件已不在 openedFiles,跳过(防复活)
+    scroll[path] = { scrollTop: pos.scrollTop, scrollLeft: pos.scrollLeft, kind };
+  }
+  const view =
+    snapshot.panelView === 'file' || snapshot.panelView === 'command'
+      ? snapshot.panelView
+      : snapshot.commandPanel?.activeKey && !snapshot.activeFilePath
+        ? 'command'
+        : 'file';
+  return { scroll, view };
+}
+
+/**
  * bind 切到某 workspace 后,从 main 读其文件面板快照并恢复到 store + run 缓存。
  * 文件/结果缺失由 main 端 readSnapshot 过滤(返 null);null 则跳过(保持当前空状态)。
- *
- * 快照里的 scroll 只存 scrollTop/scrollLeft(不含 kind);恢复时 kind 从快照的
- * openedFiles 推(找不到则跳过该条,防 kind 不匹配导致 viewer 复活错误状态)。
  */
 export async function restoreWorkspaceSnapshot(
   dispatch: Dispatch,
@@ -53,29 +101,16 @@ export async function restoreWorkspaceSnapshot(
     );
     if (!snapshot) return;
 
-    // 推 kind:从 openedFiles 建 path→kind 映射,给 scroll 条目补 kind。
-    const kindByPath = new Map<string, FileKind>();
-    for (const f of snapshot.openedFiles) {
-      kindByPath.set(f.path, f.kind as FileKind);
-    }
-    const scrollWithKind: Record<
-      string,
-      { scrollTop: number; scrollLeft: number; kind: FileKind }
-    > = {};
-    for (const [path, pos] of Object.entries(snapshot.scroll)) {
-      const kind = kindByPath.get(path);
-      if (!kind) continue; // scroll 对应的文件已不在 openedFiles,跳过(防复活)
-      scrollWithKind[path] = { scrollTop: pos.scrollTop, scrollLeft: pos.scrollLeft, kind };
-    }
-
     // 文件列表/active 不在这里恢复：main 的 FilePanelService.onWorkspaceSwitched
-    // 已先 stat 并 emit 完整 OpenedFile(name/size/mtime/path)。旧实现把磁盘快照的
-    // {path,kind} 强转为 OpenedFile[] 覆盖完整事件，file.name=undefined 最终让
-    // fileIconFor 崩溃白屏。renderer 只补 main PanelState 不持有的 scroll/runs。
+    // 已先 stat 并 emit 完整 OpenedFile(name/size/mtime/path);命令列表同样由
+    // CommandPanelService.onWorkspaceSwitched 先恢复并 emit。renderer 只补 main
+    // 不持有的 scroll(文件+命令)/面板内视图/runs。
+    const { scroll, view } = deriveRestoredScroll(snapshot);
     dispatch({
       type: 'workspace/snapshot-restored',
       sessionId,
-      scroll: scrollWithKind,
+      scroll,
+      view,
     });
 
     // runs 灌进 code-block-run-cache(模块级单例)。
@@ -152,10 +187,11 @@ async function doWriteSnapshot(
   const scroll: Record<string, { scrollTop: number; scrollLeft: number }> = {};
   if (scrollRaw) {
     for (const [path, pos] of scrollRaw) {
-      // 命令输出滚动记忆不落盘:命令列表本身是内存态(不跨重启),落盘只会
-      // 留下永远无人消费的孤儿条目。文件条目照旧持久化。
-      if (path.startsWith('command:')) continue;
-      const external = !wsDir || isAbsoluteOutside(path, wsDir);
+      // 命令条目(command: 前缀)不是文件系统路径:不属于任何 workspace 内外
+      // 判定,原样存取(isAbsoluteOutside 判非绝对 → 直通)。ADR-039 起命令页
+      // 随 commandPanel 切片一起持久化,它的滚动记忆同文件一样跨 resume 恢复。
+      const external = !path.startsWith('command:') &&
+        (!wsDir || isAbsoluteOutside(path, wsDir));
       const storedPath = !external && wsDir ? (toRelative(path, wsDir) ?? path) : path;
       scroll[storedPath] = { scrollTop: pos.scrollTop, scrollLeft: pos.scrollLeft };
     }
@@ -168,6 +204,9 @@ async function doWriteSnapshot(
     activeFilePath: panel?.activePath ?? null,
     scroll,
     runs,
+    // 面板内正在看哪一侧(ADR-037/038);commandPanel 切片不在这里组装 —— main
+    // 在 WORKSPACE_WRITE_SNAPSHOT 边界合并 CommandPanelService 内存真值。
+    panelView: state.openPanelViews.get(sessionId) ?? null,
   };
   try {
     await window.api.invoke(COMMAND_CHANNELS.WORKSPACE_WRITE_SNAPSHOT, { sessionId, snapshot });

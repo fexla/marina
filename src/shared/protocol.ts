@@ -2143,7 +2143,14 @@ export interface WorkspaceRunEntry {
   exitCode: number | null;
 }
 
-/** bind 切换后推给 renderer 恢复的快照(<workspace>/__marina_state__/file-panel.json)。 */
+/**
+ * bind 切换后推给 renderer 恢复的快照(<workspace>/__marina_state__/file-panel.json)。
+ *
+ * v0.3.3 ADR-039:快照从「文件面板快照」升级为「已打开面板整体快照」——命令页
+ * (ADR-037 合并进同一面板)作为可选 commandPanel 切片共存于同一文件,与文档
+ * 同一条 debounce 写入 / workspace 切换恢复 / fork 继承管线(「同一层抽象」)。
+ * 字段全部可选,旧 version=1 快照(无命令)与新版本互读兼容,version 不 bump。
+ */
 export interface WorkspaceFilePanelSnapshot {
   version: 1;
   openedFiles: Array<{
@@ -2156,6 +2163,25 @@ export interface WorkspaceFilePanelSnapshot {
   activeFilePath: string | null;
   scroll: Record<string, { scrollTop: number; scrollLeft: number }>;
   runs: WorkspaceRunEntry[];
+  /**
+   * 命令页切片(ADR-039)。写入时由 main 在 WORKSPACE_WRITE_SNAPSHOT 边界合并
+   * (CommandPanelService.exportSnapshot 的内存真值,renderer 不自带);恢复时
+   * CommandPanelService.onWorkspaceSwitched 消费。undefined = 本次运行期间该
+   * session 从未有过命令面板状态(保留磁盘上已有的记忆,不清空)。
+   */
+  commandPanel?: CommandPanelDiskSlice | null;
+  /** 恢复时用户当时在看「文件」还是「命令」侧(ADR-037 面板内双视图)。 */
+  panelView?: 'file' | 'command' | null;
+}
+
+/**
+ * 快照里的命令面板切片(磁盘形态;内存真值形态见 CommandPanelSnapshot)。
+ * schema 与 CommandPanelService 的 CommandPanelSnapshotData(version 2)一致。
+ */
+export interface CommandPanelDiskSlice {
+  version: 2;
+  commands: CommandEntry[];
+  activeKey: string | null;
 }
 
 /** list() 返回项。 */

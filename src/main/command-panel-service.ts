@@ -14,8 +14,11 @@
  * - output 复用 CodeBlockRunner 的内部 'output' 事件，但不向 renderer 转发逐 chunk 流。
  *   entry.output 始终保留最近一次已完成结果；当前 run 写有界 pending buffer，exited 时
  *   原子替换并经 owner-only commandPanelUpdated 广播，取消/被取代则丢弃 pending。
- * - 持久化(D6,套用 ADR-024):command-panel.json,本服务只持内存态,读写委托
- *   workspaceOps(与 FilePanelService 同款注入)。持久化触发由 renderer/上层驱动。
+ * - 持久化(D6,套用 ADR-024;v0.3.3 ADR-039 接线):命令页作为 workspace 快照
+ *   (file-panel.json)的 commandPanel 切片与文档同文件共存 —— 写入由 renderer
+ *   debounce 触发 WORKSPACE_WRITE_SNAPSHOT、main 在写边界合并 exportSnapshot
+ *   真值;恢复由 onWorkspaceSwitched(pi resume 切回 workspace)读本切片灌入。
+ *   本服务只持内存态,磁盘读写委托上层(与 FilePanelService 同款注入)。
  *
  * @对应文档: ADR-028(docs/方案-命令面板-20260802.md)、ADR-023(CodeBlockRunner)、
  *            ADR-021(后台调度)、ADR-024(workspace 持久化)、附录 I(后台任务规范)。
@@ -131,13 +134,28 @@ export interface CommandScheduler {
   removeConsumer(consumerId: string): void;
 }
 
-/** 命令面板快照的磁盘 schema(仿 file-panel.json,见 ADR-024 §4)。
- * 持久化委托(attachWorkspaceOps)尚未接线上层,但 restore/export 已实现,
- * 上层接线时直接调即可。 */
+/** 命令面板快照的磁盘 schema(ADR-024 §4 同款纪律;v0.3.3 ADR-039 起作为
+ * workspace 快照 file-panel.json 的 commandPanel 切片,不再独立 command-panel.json)。
+ * 写入:main 在 WORKSPACE_WRITE_SNAPSHOT 边界合并 exportSnapshot 真值;
+ * 恢复:onWorkspaceSwitched 从快照切片灌入(见持久化委托区)。 */
 export interface CommandPanelSnapshotData {
   version: 2;
   commands: CommandEntry[];
   activeKey: string | null;
+}
+
+/**
+ * workspace 快照读取委托(onWorkspaceSwitched 恢复用,index.ts 闭合为
+ * SessionWorkspaceCoordinator.readWorkspaceSnapshot,与 FilePanelService 的
+ * WorkspaceOps 同款注入模式)。只声明命令面板需要的最小结构面。
+ */
+export interface CommandPanelWorkspaceOps {
+  /** 读当前 session 绑定 workspace 的快照;无绑定/文件缺失返 null。 */
+  readSnapshotForSession(
+    sessionId: string,
+  ): Promise<{
+    commandPanel?: { version: number; commands: CommandEntry[]; activeKey: string | null };
+  } | null>;
 }
 
 interface CommandPanelState {
@@ -207,6 +225,7 @@ export class CommandPanelService extends EventEmitter {
   private lookup: CommandPanelSessionLookup | null = null;
   private runner: CodeBlockRunner | null = null;
   private scheduler: CommandScheduler | null = null;
+  private workspaceOps: CommandPanelWorkspaceOps | null = null;
 
   /** 注入 session 查询(破循环依赖)。index.ts 组装后调。 */
   attachSessionLookup(lookup: CommandPanelSessionLookup): void {
@@ -238,6 +257,11 @@ export class CommandPanelService extends EventEmitter {
       for (const entry of state.commands) this.syncSchedulerTask(sessionId, entry);
       this.applySchedulerDemand(sessionId);
     }
+  }
+
+  /** 注入 workspace 快照读取(ADR-039:onWorkspaceSwitched 恢复命令页用)。 */
+  attachWorkspaceOps(ops: CommandPanelWorkspaceOps): void {
+    this.workspaceOps = ops;
   }
 
   // ──────────────────────────────────────────────────────────────────
@@ -531,8 +555,54 @@ export class CommandPanelService extends EventEmitter {
   }
 
   // ──────────────────────────────────────────────────────────────────
-  // 持久化委托(读写 command-panel.json,ADR-024)
-  // ──────────────────────────────────────────────────────────────────
+  // 持久化委托(workspace 快照 commandPanel 切片,ADR-024 D6 / ADR-039 接线)
+  // ────────────────────────────────────────────────────────────────
+
+  /**
+   * v0.3.3 ADR-039:workspace 切换(pi resume 切回 / new 新建 / fork 克隆)后重建
+   * 该 session 的命令面板 —— 与 FilePanelService.onWorkspaceSwitched 完全对称:
+   * 命令与文档同住一个 workspace 快照、同一条切换恢复管线(「同一层抽象」)。
+   *
+   * 流程:读新 workspace 快照的 commandPanel 切片 → restoreSnapshot(缺失/损坏
+   * = 清空面板,与文件「快照缺失→空面板」语义一致)→ emit owner-only
+   * commandPanelUpdated(renderer 的 commandPanels 与 command: 滚动记忆随之同步)。
+   *
+   * 恢复语义:条目带最近一次已完成 output(直接可读),status 重置 idle(见
+   * restoreSnapshot);后续刷新按各自 refreshPolicy 照常运转 —— foreground 面板
+   * 可见(HOT)时自动跑,background 恢复 WARM 轮询,manual 静态展示旧输出。
+   * 不在恢复时立即重跑:恢复是「把你离开时的页面还给你」,不是「resume 即刷新」。
+   *
+   * @注意 切走前的旧 workspace 命令依赖 renderer debounce 写(500ms)已落盘,
+   * 与文件侧同一暴露窗口;这里不做切走前 flush(对称,不单独加机制)。
+   */
+  async onWorkspaceSwitched(sessionId: string): Promise<void> {
+    let slice: CommandPanelSnapshotData | null = null;
+    try {
+      const snap = (await this.workspaceOps?.readSnapshotForSession(sessionId)) ?? null;
+      if (snap?.commandPanel) {
+        slice = {
+          version: 2,
+          commands: snap.commandPanel.commands,
+          activeKey: snap.commandPanel.activeKey,
+        };
+      }
+    } catch (err) {
+      // 快照读失败降级为空面板(用户可重新 run),不阻塞切换 —— 与文件侧一致。
+      logger.warn(
+        MODULE,
+        `onWorkspaceSwitched: read snapshot failed sid=${sessionId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    this.restoreSnapshot(sessionId, slice);
+    // restoreSnapshot 本体不 emit(D6 原语义:由调用方决定广播时机);恢复完统一
+    // 广播一次,owner renderer 才能同步 —— 空快照也必须广播(清空旧对话的命令)。
+    this.emitUpdated(sessionId, {
+      requestActivation: false,
+      commandKey: this.panels.get(sessionId)?.activeKey ?? null,
+    });
+  }
 
   /** 用快照数据恢复某 session 的命令面板(bind 切换/首次拉取,上层调)。 */
   restoreSnapshot(sessionId: string, data: CommandPanelSnapshotData | null): void {

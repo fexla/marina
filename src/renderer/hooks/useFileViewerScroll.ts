@@ -12,8 +12,9 @@
  *   scrollIntoView 抢；标题跳转在下一帧反写当前位置，watcher 刷新也不会回到旧位置。
  *
  * @不要在这里做的事:
- * - 不持久化到 localStorage/main；这是重启可丢的 L1 工作态(workspace 快照写盘
- *   由 workspace-snapshot.ts 过滤 command: 条目,命令本身不跨重启)。
+ * - 不持久化到 localStorage/main;持久化(workspace 快照写盘)由
+ *   workspace-snapshot.ts 编排 —— ADR-039 起 command: 条目同样落盘,命令页
+ *   跨 pi resume 恢复(与文件同一快照管线)。
  * - 不规范化 path；OpenedFile.path 是 main 的唯一身份,命令用 'command:<key>'。
  * - 不保存 Markdown 内每个 pre/table 的局部横向滚动。
  */

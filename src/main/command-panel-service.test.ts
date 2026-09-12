@@ -626,6 +626,89 @@ describe('CommandPanelService', () => {
     });
   });
 
+  describe('onWorkspaceSwitched(ADR-039:pi resume 切回 workspace 恢复命令页)', () => {
+    /** 造一份「磁盘快照」形态(与 manager.sanitizeSnapshot 输出同构)。 */
+    const makeDiskSnapshot = (commands: unknown[], activeKey: string | null) => ({
+      openedFiles: [],
+      activeFilePath: null,
+      scroll: {},
+      runs: [],
+      commandPanel: { version: 2, commands, activeKey },
+    });
+
+    it('快照含 commandPanel → 恢复条目(output 保留/status idle)+ emit 一次', async () => {
+      const key = commandKeyFor('git status');
+      const commands = [
+        {
+          key,
+          command: 'git status',
+          title: 'status',
+          refreshPolicy: { scope: 'background', interval: '5s' },
+          lastRunId: 'stale-run',
+          lastExitCode: 0,
+          status: 'exited',
+          output: '# 历史输出',
+          lastRunAt: 1,
+        },
+      ];
+      const events: Array<{ requestActivation: boolean; commands: number }> = [];
+      svc.on('commandPanelUpdated', (e) =>
+        events.push({ requestActivation: e.requestActivation, commands: e.snapshot.commands.length }),
+      );
+      svc.attachWorkspaceOps({
+        readSnapshotForSession: async () =>
+          makeDiskSnapshot(commands, key) as Awaited<
+            ReturnType<Parameters<CommandPanelService['attachWorkspaceOps']>[0]['readSnapshotForSession']>
+          >,
+      });
+
+      await svc.onWorkspaceSwitched('s1');
+
+      const snap = svc.getSnapshot('s1');
+      expect(snap.commands).toHaveLength(1);
+      expect(snap.commands[0]!.output).toBe('# 历史输出'); // 离开时的页面原样还回
+      expect(snap.commands[0]!.status).toBe('idle'); // runId 已失效,重置
+      expect(snap.commands[0]!.lastRunId).toBeNull();
+      expect(snap.activeKey).toBe(key);
+      expect(events).toEqual([{ requestActivation: false, commands: 1 }]);
+      // background 策略恢复 scheduler task(resume 后轮询继续)。
+      expect(scheduler.tasks.has(`command-panel:s1:${key}`)).toBe(true);
+    });
+
+    it('快照无 commandPanel(旧格式/新空 workspace)→ 清空现有命令并广播空态', async () => {
+      await svc.runCommand('s1', 'cmd-a', null, 'w1');
+      expect(svc.getSnapshot('s1').commands).toHaveLength(1);
+      svc.attachWorkspaceOps({
+        readSnapshotForSession: async () =>
+          ({ openedFiles: [], activeFilePath: null, scroll: {}, runs: [] }) as never,
+      });
+
+      const events: number[] = [];
+      svc.on('commandPanelUpdated', (e) => events.push(e.snapshot.commands.length));
+      await svc.onWorkspaceSwitched('s1');
+
+      expect(svc.getSnapshot('s1').commands).toHaveLength(0);
+      expect(events).toEqual([0]); // 空态也要广播(renderer 才会清掉旧对话的 tab)
+    });
+
+    it('读快照抛错 → 降级清空,不抛(与文件侧降级语义一致)', async () => {
+      await svc.runCommand('s1', 'cmd-a', null, 'w1');
+      svc.attachWorkspaceOps({
+        readSnapshotForSession: async () => {
+          throw new Error('disk io boom');
+        },
+      });
+      await expect(svc.onWorkspaceSwitched('s1')).resolves.toBeUndefined();
+      expect(svc.getSnapshot('s1').commands).toHaveLength(0);
+    });
+
+    it('未注入 workspaceOps → 清空(no-op 读,不抛)', async () => {
+      await svc.runCommand('s1', 'cmd-a', null, 'w1');
+      await expect(svc.onWorkspaceSwitched('s1')).resolves.toBeUndefined();
+      expect(svc.getSnapshot('s1').commands).toHaveLength(0);
+    });
+  });
+
   describe('commandKeyFor', () => {
     it('同 command 同 key(稳定)', () => {
       expect(commandKeyFor('echo hello')).toBe(commandKeyFor('echo hello'));

@@ -45,10 +45,11 @@ import { fileIconFor } from '@shared/file-icon';
 import { HighlightedText } from '../common/HighlightedText';
 import { buildFileEntryMenu } from '../common/fileListRowContextMenu';
 import { FileListRow } from '../common/FileListRow';
-import { useAppDispatch, useAppState } from '../../store';
+import { useAppDispatch, useAppState, useAppStateRef } from '../../store';
 import { useTranslation } from '../LanguageProvider';
 import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
 import { waitForClaim } from '../../hooks/claim-gate';
+import { scheduleWorkspaceSnapshotWrite } from '../../workspace-snapshot';
 import { useToast } from '../Toast';
 import type { ContextMenuItem } from '../ContextMenu';
 import { FileViewer } from './FileViewer';
@@ -66,6 +67,7 @@ interface FilePanelProps {
 export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
   const state = useAppState();
   const dispatch = useAppDispatch();
+  const stateRef = useAppStateRef();
   const { tx } = useTranslation();
   // 右键菜单依赖。提到顶层取一次,避免每个 tab row 各起一份 hook —— tab 数量
   // 可能较多(打开 10+ 文件),统一取更简。buildContextMenu 闭包捕获即可。
@@ -133,6 +135,15 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
           activeKey: snap.activeKey,
           requestActivation: false,
         });
+        // ADR-039 兜底落盘:无 owner 期间 push 的命令没有触发过任何 renderer
+        // 事件(commandPanelUpdated 是 owner-only,orphan 时被丢弃),owner 重新
+        // 挂载的这次拉取是它进 workspace 快照的第一个机会。幂等:重复调度只是
+        // debounce 合并,commandPanel 切片由 main 在写边界取内存真值。
+        scheduleWorkspaceSnapshotWrite(
+          sessionId,
+          () => stateRef.current,
+          () => null,
+        );
       })
       .catch((err: unknown) => {
         console.warn('[FilePanel] command get-state failed', err);
@@ -140,7 +151,7 @@ export function FilePanel({ sessionId, search }: FilePanelProps): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, dispatch]);
+  }, [sessionId, dispatch, stateRef]);
 
   const activeFile: OpenedFile | null =
     snapshot.files.find((file) => file.path === snapshot.activePath) ?? null;
