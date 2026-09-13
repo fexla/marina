@@ -28,6 +28,7 @@ import { WindowChrome } from './components/WindowChrome';
 import { ContextMenuProvider } from './components/ContextMenu';
 import { ToastProvider } from './components/Toast';
 import { ModalProvider } from './components/Modal';
+import { useIsMobile } from './mobile';
 import { LanguageProvider } from './components/LanguageProvider';
 import { LastSessionConfirmBridge } from './components/LastSessionConfirmBridge';
 import { WebDownloadBridge } from './components/WebDownloadBridge';
@@ -211,6 +212,17 @@ function ConnectedShell({
   const sync = useIpcSync();
   const state = useAppState();
   const dispatch = useAppDispatch();
+
+  // 移动端(Android WebView 壳,ADR-042):窄屏时侧栏改左缘抽屉。
+  // 抽屉开闭是纯视图态(不进 store —— 桌面端无此概念,窗口 resize 跨过断点
+  // 时随组件重渲染自然重置)。
+  const isMobile = useIsMobile();
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  // 选中 session(点 .session-item)或双击路径后自动收抽屉 —— 事件委托实现,
+  // 不给 Sidebar 加 prop(保持桌面端组件接口零移动端概念)。
+  const closeDrawerOnSessionPick = (e: React.SyntheticEvent<HTMLDivElement>): void => {
+    if ((e.target as HTMLElement).closest?.('.session-item')) setMobileSidebarOpen(false);
+  };
 
   // ADR-021:GitPanel 在 WARM（其他面板/折叠/失焦）时会卸载，但 60s 后台结果仍
   // 必须写组件外缓存。根层 bridge 常驻；GitPanel 自己的 listener 只负责 live state。
@@ -406,11 +418,39 @@ function ConnectedShell({
                 <div
                   className={`app-body${state.simpleMode ? ' simple-mode' : ''}${
                     state.inSettingsView ? ' workspace-hidden' : ''
-                  }`}
+                  }${isMobile ? ' mobile' : ''}`}
                   inert={state.inSettingsView ? '' : undefined}
                   aria-hidden={state.inSettingsView ? true : undefined}
                 >
-                  {!state.simpleMode && <Sidebar key="sidebar" />}
+                  {!state.simpleMode &&
+                    (isMobile ? (
+                      <>
+                        {mobileSidebarOpen && (
+                          <div
+                            className="mobile-sidebar-backdrop"
+                            onClick={() => setMobileSidebarOpen(false)}
+                          />
+                        )}
+                        {mobileSidebarOpen && (
+                          <div
+                            className="mobile-sidebar-drawer"
+                            onClickCapture={closeDrawerOnSessionPick}
+                          >
+                            <Sidebar key="sidebar" />
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          className="mobile-sidebar-fab"
+                          aria-label="打开路径侧栏"
+                          onClick={() => setMobileSidebarOpen(true)}
+                        >
+                          ☰
+                        </button>
+                      </>
+                    ) : (
+                      <Sidebar key="sidebar" />
+                    ))}
                   <MainPane key="main-pane" />
                 </div>
                 {state.inSettingsView && (
