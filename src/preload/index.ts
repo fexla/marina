@@ -33,7 +33,7 @@ import {
   type CommandResponse,
 } from '@shared/command-contracts';
 import { connectRemoteDaemon, browserWsFactory } from '@shared/remote-connect';
-import { RemoteTransport, ConnectError, ConnectErrorCode } from './remote-transport';
+import { ConnectError, ConnectErrorCode, type RemoteTransport } from './remote-transport';
 
 /**
  * 解析当前 OS 的 Windows build 号(如 22621),非 Windows 或解析失败返回 null。
