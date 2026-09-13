@@ -20,8 +20,8 @@
   (浮球按钮,选 session 自动收)、隐藏桌面自绘标题栏、safe-area、触屏
   touch-action 基础;平板/宽屏自动回落桌面三栏。web 构建通过(2156 模块);
   浏览器端到端验证:空态/添加表单/连接失败错误链路(扫描+诊断+重试)。
-  Capacitor android 平台已生成(appId `so.marina.app`);APK 构建链待 Android
-  SDK 组件装完(网络受限进行中)。已知打磨项:端口扫描全失败耗时 ~30s(TCP
+  debug APK 构建链全通(so.marina.app,5.5MB,`apps/mobile/README.md` 含
+  环境与踩坑说明)。已知打磨项:端口扫描全失败耗时 ~30s(TCP
   失败后仍等满 auth 超时,Electron 端同款既有行为)。
 
 ## [0.3.3] — 2026-09-14
