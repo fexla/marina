@@ -24,9 +24,37 @@ import {
   ConnectError,
   ConnectErrorCode,
   RemoteTransport,
+  type WSLike,
   type WsFactory,
 } from '../preload/remote-transport';
 import { REMOTE_DAEMON_PORT_MAX, REMOTE_DAEMON_PORT_MIN } from './protocol';
+
+/**
+ * 浏览器原生 WebSocket 适配成 WSLike(RemoteTransport 期望的接口)。
+ * Electron preload 与 Android WebView 的全局 WebSocket 行为一致,两个客户端
+ * 共用这一份适配(从 preload/index.ts 移入,单一真相源)。
+ * close code/reason 必须透传(daemon 认证失败用 4003/4001,client 端错误分析依赖它)。
+ */
+export const browserWsFactory: WsFactory = (url: string): WSLike => {
+  const ws = new WebSocket(url);
+  const adapter: WSLike = {
+    get readyState() {
+      return ws.readyState;
+    },
+    OPEN: WebSocket.OPEN,
+    send: (d: string) => ws.send(d),
+    close: () => ws.close(),
+    onopen: null,
+    onmessage: null,
+    onclose: null,
+    onerror: null,
+  };
+  ws.onopen = () => adapter.onopen?.();
+  ws.onmessage = (ev: MessageEvent) => adapter.onmessage?.({ data: ev.data });
+  ws.onclose = (ev: CloseEvent) => adapter.onclose?.({ code: ev.code, reason: ev.reason });
+  ws.onerror = (e) => adapter.onerror?.(e);
+  return adapter;
+};
 
 /** 连接一个远程 daemon 所需的最小信息(与 main 端 GetRemoteConnectionResponse.connection 同形)。 */
 export interface RemoteDaemonConnection {

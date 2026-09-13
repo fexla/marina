@@ -17,6 +17,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
   attachImeCompositionEndCleaner,
+  type AttachOptions,
   type ImeTextareaLike,
 } from './ime-textarea-workaround';
 
@@ -157,13 +158,13 @@ describe('attachImeCompositionEndCleaner (IME-1 workaround 护栏)', () => {
 
     attachImeCompositionEndCleaner(ta, {
       delayMs: 16,
-      setTimeoutFn: fakeSetTimeout as unknown as (
-        fn: () => void,
-        ms: number,
-      ) => ReturnType<typeof setTimeout>,
-      clearTimeoutFn: fakeClearTimeout as unknown as (
-        h: ReturnType<typeof setTimeout>,
-      ) => void,
+      // mock 的断言目标直接取 AttachOptions 字段类型:TimeoutHandle 在
+      // DOM/Node 双端解析出不同联合(见 ime-textarea-workaround.ts 定义注释),
+      // 写死任何一端的形状都会在另一端逆变打架。
+      setTimeoutFn: fakeSetTimeout as unknown as NonNullable<AttachOptions['setTimeoutFn']>,
+      clearTimeoutFn: fakeClearTimeout as unknown as NonNullable<
+        AttachOptions['clearTimeoutFn']
+      >,
     });
 
     ta.dispatch();

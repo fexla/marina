@@ -32,8 +32,8 @@ import {
   type CommandPayload,
   type CommandResponse,
 } from '@shared/command-contracts';
-import { connectRemoteDaemon } from '@shared/remote-connect';
-import { RemoteTransport, ConnectError, ConnectErrorCode, type WSLike } from './remote-transport';
+import { connectRemoteDaemon, browserWsFactory } from '@shared/remote-connect';
+import { RemoteTransport, ConnectError, ConnectErrorCode } from './remote-transport';
 
 /**
  * 解析当前 OS 的 Windows build 号(如 22621),非 Windows 或解析失败返回 null。
@@ -129,35 +129,13 @@ const LOCAL_CONTROL_EVENTS = new Set<string>([
   EVENT_CHANNELS.SETTINGS_LOCAL_APPEARANCE_CHANGED,
 ]);
 
-// 浏览器原生 WebSocket 适配成 WSLike(RemoteTransport 期望的接口)。
-// preload 上下文有原生 WebSocket;这里桥接 on*/send/close + readyState。
-function browserWs(url: string): WSLike {
-  const ws = new WebSocket(url);
-  const adapter: WSLike = {
-    get readyState() {
-      return ws.readyState;
-    },
-    OPEN: WebSocket.OPEN,
-    send: (d: string) => ws.send(d),
-    close: () => ws.close(),
-    onopen: null,
-    onmessage: null,
-    onclose: null,
-    onerror: null,
-  };
-  ws.onopen = () => adapter.onopen?.();
-  ws.onmessage = (ev: MessageEvent) => adapter.onmessage?.({ data: ev.data });
-  // 透传 close code/reason(daemon 认证失败用 4003/4001,client 端错误分析依赖它)。
-  ws.onclose = (ev: CloseEvent) => adapter.onclose?.({ code: ev.code, reason: ev.reason });
-  ws.onerror = (e) => adapter.onerror?.(e);
-  return adapter;
-}
-
 // ── v2.0 远程后端 transport gate(ADR-014 / §14.9,每窗口后端)──
 // backend=null(本地窗口):invoke/on 走 ipcRenderer,**零回归**。
 // backend=profileId(远程窗口):首次 invoke 时拉该 profile 的 connection,
 // 建 RemoteTransport 连 ws://daemon,后续 invoke/on 走 WS。
 // on 本地路径立即注册(零回归);远程路径 transport ready 后注册。
+// (浏览器 WebSocket 的 WSLike 适配与建连流程在 @shared/remote-connect,
+//  与 Android WebView 壳共用同一份。)
 let remoteTransport: RemoteTransport | null = null;
 let transportInit: Promise<void> | null = null;
 function ensureTransport(): Promise<void> {
@@ -182,7 +160,7 @@ function ensureTransport(): Promise<void> {
       // WebView 壳(apps/mobile 的 window.api shim)共用同一份建连逻辑,防双份漂移。
       remoteTransport = await connectRemoteDaemon({
         connection: { host: res.connection.host, token: res.connection.token },
-        wsFactory: browserWs,
+        wsFactory: browserWsFactory,
         // 阶段3 断线重连:成功后 reload 重新拉 snapshot(session owner 在断线时
         // 被 daemon 自动 release,重连后要重建视图)。reload 丢 renderer 状态可接受
         // (断线是异常,用户重新介入合理)。

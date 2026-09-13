@@ -42,8 +42,11 @@ export interface ImeTextareaLike {
 
 /**
  * 兼容 window.setTimeout 和 Node setTimeout 的返回类型。
+ * 显式写 number 联合:Electron web 构建只加载 DOM lib(返回 number),Android
+ * web 构建(apps/mobile)的类型图会同时看到 DOM + Node 两个 setTimeout 重载,
+ * ReturnType 只取最后一个重载,两端会解析出不同结果(ADR-042 踩坑)。
  */
-type TimeoutHandle = ReturnType<typeof setTimeout>;
+type TimeoutHandle = ReturnType<typeof setTimeout> | number;
 
 export interface AttachOptions {
   /**
