@@ -7,800 +7,123 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
-### Fixed
-
-- **右键终端链接不再触发左键操作**:xterm `Linkifier._handleMouseUp` 不过滤鼠标键,
-  mousedown/mouseup 落在同一链接上时任何键(含右键)都会触发 activate——存量
-  问题(文件路径 provider / WebLinksAddon 同病),新链接让它显眼。全部四个
-  activate 入口(OSC 8 linkHandler / []() provider / 文件路径 provider /
-  WebLinks handler)统一加 `event.button !== 0` 守卫,右键归还上下文菜单。
-- **窗口缩窄时文件面板 dock 不再把终端挤成残渣**:dock 持久宽度(默认 440px)
-  此前渲染期不按容器钳制,窗口缩窄时终端被挤到 30px 以下、窗口 <720px 时 dock
-  直接溢出主区(CDP 逐档实测定位;非终端链接功能引入,但该功能驱动「开着面板
-  用终端」暴露了它)。`.panel-dock` 渲染期 CSS 钳制:最多占分割容器宽 −360px
-  (终端可用地板),下限 280px,极端窄退到 100%(不再溢出);持久宽度不动,
-  窗口恢复后 dock 自动回到用户设定宽度,折叠态不受影响。
-
-### Added
-
-- **终端可交互链接(ADR-041,方案-终端可交互链接-20260912)**:终端正文的可点击
-  内容从「buffer 正则单行检测」升级为双通道——
-  ① **pi 插件侧检测(源文本层,根治换行问题)**:PTY env 注入 `PI_HYPERLINKS=1`
-  开启 pi 原生 OSC 8 超链接输出;bridge 0.3.14 注册官方 `registerMarkdownTransformer`
-  (display-only,流式/最终/恢复会话全跑)——裸文件路径(vendored STRICT 检测,
-  corpus 一致性测试防漂移;相对路径按 pi cwd 绝对化、`~` 展开、`D:/x` 盘符截断
-  补回)生成 `marina:show "绝对路径" --line N` 动作链接;裸 URL 包成可点链接,
-  超长(> max(28, 宽/2))label 缩为「域名+尾段」、href 完整;fenced code / inline
-  code / 已有链接 / 图片不透明透传。OSC 8 落 buffer 后 xterm 原生跨软折行不断链
-  ——路径被折行劈断检测不出的问题从根上消失。
-  ② **终端级 []() 解析(裸 markdown 文本)**:新增 shared 检测器(语义对齐
-  marked:图片排除、一层嵌套括号 href、转义 label)+ TerminalView provider,
-  覆盖 `pi -p` 打印模式 / `cat xx.md` / 其它工具输出;点击与 OSC 8 同一条路由
-  (`terminal-link-router.ts`:https/mailto 系统浏览器外开、`marina:` 复用
-  ADR-035 分发(session 作用域)、其余按路径进文件面板;`#anchor` no-op;SSH
-  session 只留 http/marina: 类 href)。
-  配套:`marina:show` 新增 `--line N`(text 类文件行跳转,导航事件 line 变体,
-  TextViewer requestId 键控消费、已打开不 remount 也可重复跳;非 text kind 忽略
-  line 照常打开);OSC 8 点击经 `linkHandler.allowNonHttpProtocols` 接管(不设则
-  `marina:` 链接被 xterm 整体丢弃);hover tooltip 展示 marina: 命令原文 / 完整
-  URL(知情通道);**文件路径 provider 升级为跨折行窗口检测**(移植官方
-  addon-web-links 的 `_getWindowedLineStrings`+`_mapStrIdx`),修掉 ADR-027 的
-  折行盲区,非 pi 终端同样受益。已知降级:SerializeAddon 不保留 OSC 8,scrollback
-  回放后旧链接退化为纯文本,自研检测兜底(marina: 动作语义丢失);信任模型:终端
-  `marina:run` 无确认,同 ADR-035。配套 bridge 系统提示词(0.3.15)新增「链接用
-  []() 写」一节:引导模型对网页/文件优先用 markdown 链接形式输出,而非裸 URL/
-  裸路径 —— []() 在 pi TUI(OSC 8)与面板文档两条展示面都可点,不受终端折行影响。
-  勘误③(0.3.16):`marina:` 链接目标宽容解析 —— 终端 []() 检测器认尖括号形态
-  `[x](<a b.md>)`(CommonMark 标准)与 `marina:` 裸空格形态(scheme 锚定,误报
-  面≈零);bridge transformer 把宽容形态归一化成 %20 再交 marked 渲染;提示词补
-  marina: 动作链接写法教学(冒号必须、空格用 `<>` 包裹或 %20)。无冒号的
-  `[x](marina run y)` 仍不认(不是 scheme)。
-- **pi bridge 事件乱序根治——「AI 已开始工作但终端 tab 不显示工作中」(双层修复)**:
-  根因:bridge 的 `session_start` 为拿 workspaceId 响应不走发送队列(直发),其余
-  事件走 `postQueue` 串行链;`/new` `/resume` `/fork` 时 pi 先发旧主
-  `session_shutdown`(入队)再发新主 `session_start`(直发),队列里有慢 POST
-  在飞时 start 会**抢在 shutdown 之前**到达 Marina → 主锁把新主误判为 subagent
-  注册进 children → 旧主 shutdown 的 teardown 把聚合条目(含误注册的新主)和
-  getter 连根拆掉 → 新主后续所有 `agent_working`/`agent_settled` 因 `!getter`
-  被静默丢弃 → 该 pi 会话整个生命周期 tab 都不显示工作中。修复:
-  ① bridge 0.3.13——`session_start` 也走 `postQueue`(仍 await 拿 workspaceId,
-  appendEntry 仍在 handler 内、ctx 才是当前对话),事件到达顺序与 pi 内发生
-  顺序严格一致;② Marina 防御层——`reason` ∈ new/resume/fork 的 session_start
-  在旧主绑定仍在时按**主切换**放行(pi 源码证实这三种 reason 只有主进程 TUI 内
-  切换产生,子进程走构造默认值 startup,不会伪造),旧主迟到的 shutdown 因
-  piSid 不匹配被既有未注册分支忽略;主切换时 `mainWorking` 重置为新对话 idle
-  (同 piSid 的 reload 重复 start 不重置,避免工作中误翻)。测试修正:既有
-  subagent 模拟的 `reason:'fork'` 改为真实的 `startup`(pi 源码
-  `agent-session.js` 构造默认值)。
-- **「已打开」面板 tab 右键菜单完善(三种 tab 形态补齐)**:① 普通文件 tab 新增
-  「打开 diff」——文件 tab 只有绝对路径,`cmd:git:open-diff` 增加 `absolutePath`
-  互斥变体,main 端 realpath 文件后从其**自身位置**向上找 `.git` 定位仓库(与
-  session cwd 无关,文件可以属于别的仓库),换算 repo 相对路径后走与 Git 面板
-  完全相同的 diff 管线(owner/SSH 校验、symlink/junction 逃逸拦截照旧;symlink
-  目标按真实位置判定所属仓库,仓库外内容不会借该入口进 diff)。僵尸 tab(missing)
-  禁用该项;二进制 tab(image/unknown)不提供——main 对二进制的处理就是重开文件
-  本身,无意义往返。② 受管 git-diff tab 菜单改为围绕源文件:「打开源文件」
-  (origin 真值 + repoIdentity,与 DiffViewer 工具栏同通道;sourceMissing 禁用)、
-  「复制相对路径」(源文件 repo 相对路径),隐藏指向 `__marina_diff__` 临时文件的
-  「在 Explorer 中显示 / 用默认应用打开 / 复制绝对路径」;外部打开的裸 .diff
-  保持原菜单。③ 命令 tab 此前完全没有右键,新增「重新运行(运行中禁用)/ 关闭 /
-  关闭其他 / 关闭所有 / 复制命令」,菜单由 FilePanel 构建(与文件 tab 同宿主,
-  IPC/dispatch 边界不变),CommandTabStrip 只负责弹出。统一菜单生成器
-  (buildFileEntryMenu)操作族拆为查看族(primary/openFile/openDiff)与关闭族,
-  相邻非空组间加 divider;既有调用方(git/file-tree)菜单形态不变。
-- **pi resume 恢复命令页(ADR-039,命令与文档同一快照)**:`marina run` 推的
-  命令 tab 此前是纯内存态,resume pi 会话只恢复文档不恢复命令。现在命令作为
-  workspace 快照(file-panel.json)的 `commandPanel` 切片与文档同一条管线:
-  debounce 落盘(main 在写边界合并内存真值,单一真相源)、resume/new/fork 切换
-  workspace 时与文档一起恢复(带离开时的最后输出,刷新策略照常运转,不立即
-  重跑)、fork 继承(runCwd 重写指向新目录)。命令输出的滚动位置(`command:`
-  条目)同步落盘恢复;新增 `panelView` 切片记住当时在看文件侧还是命令侧。
-  接通了 ADR-028 D6 预留的 CommandPanelService.restoreSnapshot/exportSnapshot。
-- **pi subagent 工作状态聚合(ADR-038)**:后台/async 子 agent 运行期间终端状态
-  不再错翻空闲。pi-subagents 的子 agent 是独立 pi 子进程,其 bridge 事件早已到达
-  Marina、此前被 ADR-028 主锁纯丢弃;现在 workspace/名字污染照旧拦截,但工作状态
-  进聚合——终端「工作中」= 主 agent ∨ 任一注册子 agent 在干(同一个绿灯),全部
-  收工 → idle + hasUnviewedWork(与主 agent 收工同一路径);主 `agent_settled`
-  在子仍在干时抑制。配套:主 pi 退出但子在干 → teardown 延迟到子排空(期间新起
-  pi 则取消);已注册子永不升级为主(封掉后台子 session_start 劫持主对话的竞态);
-  泄露回收(hard-kill 子不发 shutdown,15min 无事件视为死,`name_changed` 等被
-  忽略的事件作免费保活)。前台(task 工具阻塞)子 agent 期间主本就未 settled,
-  行为不变。bridge 与 pi 侧零改动。
-
-## [0.3.3-dev.20] — 2026-09-09
-
-> ADR-037 勘误批:tab 分隔线粉色/换行残留修复 + 全部未声明 --color-\* token 清扫。
-
-### Fixed
-
-- **已打开面板 tab 分隔线两处问题(ADR-037 勘误)**:① 亮粉色竖线 —— 用了未声明
-  token `var(--color-border, #f0f)`,fallback 故障探针色直接显示;② 命令 tab
-  换行时竖线(独立 flex item)留在上一行末尾。改为挂在首个命令 tab 的
-  `::before` 上(跟随命令 tab 组换行),颜色用 `--color-bg-elevated`(面板
-  边框事实标准 token),两侧 tab 都可见时才画。
-- **清扫全部未声明 --color-\* token(5 个 / 18 处)并把守护测试扩大到全部
-  选择器**:原测试只盯 `.command-` 前缀,`--color-border`(×11)、
-  `--color-hover`(×2)、`--color-accent`(×3)、`--color-bg-input`(×2)、
-  `--color-text`(×1)全部漏网 —— 其中网页查看器工具条/超限按钮的边框
-  一直在显示粉色(ADR-034 起的既有 bug)。统一换最近似已声明 token;
-  md-code-block 家族与 gallery 边框按透明外壳契约改 `color-mix(currentcolor)`
-  派生(gallery 的 bg-primary 衬底是刻意设计,保留)。
-
-## [0.3.3-dev.19] — 2026-09-09
-
-> 面板整合批(ADR-037):命令面板并入「已打开」面板(统一 tab 列表,dock 4→3)、
-> marina run 重推已存在指令跳转、命令输出记忆浏览位置。
-
-### Changed
-
-- **命令面板整合进「已打开」面板(ADR-037,方案-面板整合-20260909)**:
-  命令面板与文件面板同构(program-push + 多 tab + markdown),独立 dock 面板
-  只剩"多一次 tab 切换"的成本 —— dock 面板 4→3,「已打开」面板渲染统一
-  tab 列表(文件 tab 在前、命令 tab 在后带状态点,细分隔线),搜索过滤
-  同时作用于两侧,徽章计两侧总数。main 服务层(IPC/事件/调度器/持久化)
-  原样保留,纯 UI 归属变更;store 新增 openPanelViews 记录面板内正在看
-  文件侧/命令侧(openFile/runCommand 的 requestActivation 分别写
-  'file'/'command' 并都激活已打开 dock,用户点 tab 走 view/set-open-panel-view,
-  resolveOpenPanelView 兜底一侧清空回退另一侧)。调度 demand(ADR-021)改为
-  「已打开面板激活 + dock 未折叠 + 正在看命令侧」才报 HOT,顺带修复 dock
-  折叠仍报 HOT 的旧问题。skill 文档同步(bridge 0.3.11)。
-
-### Added
-
-- **marina run 重推已存在指令也跳转**(与 marina show 的"已存在则等价 show"
-  对齐):runCommand 无论新指令还是重推都切 activeKey 并请求激活,且激活
-  事件移到 spawn 前发出 —— 长命令先跳面板看到 running 占位,而非跑完才跳。
-  后台调度器自动刷新不经 runCommand,不抢激活。
-- **命令输出记忆浏览位置**:复用文件侧 useFileViewerScroll
-  (identity=`command:<key>`),切命令 tab / 切走再切回复到上次浏览位置;
-  restoreVersion 恒为 key(不用 lastRunAt,避免自动刷新把视口反复拉回旧
-  保存点);命令关闭裁剪条目,workspace 快照写盘过滤(命令不跨重启)。
-
-## [0.3.3-dev.18] — 2026-09-09
-
-> Markdown 能力复用批(ADR-036):命令面板输出补齐本地链接/本地图片/gallery/
-> 标题大纲,与「已打开」面板文件共享全部 Markdown 能力,路径基准 = 命令运行时 cwd。
-
-### Changed
-
-- **Markdown 能力默认全源复用(ADR-036,方案-面板能力默认复用-20260910)**:
-  命令面板输出与「已打开」面板文件共享**全部** Markdown 能力 —— 本地文件链接、
-  本地图片、gallery、标题大纲/章节折叠此前被 fileContext 门控(命令输出一律
-  降级),现在只差**路径解析基准**:文件来源 = md 文件目录 + 成员校验(不变);
-  命令来源 = **该命令运行时 cwd**(CommandEntry.runCwd,spawn 时 main 记录的
-  真值,终端 cd 后旧输出的相对路径不漂移;旧快照回退 session 当前 cwd)。
-  renderer 只传 commandKey 标识,基准值全程 main 端真值,伪造不了;权限面与
-  UI「打开文件」按钮等价,不引入新边界。插件管线单一化(heading-sections
-  不再文件专属,双分支废除),滚动容器选择器双认;FilePanelService 相对解析
-  收口 resolvePanelPathBase(mdPath XOR baseDir),新增 openFileFromBase;
-  marina:show 在命令输出里也按 runCwd 解析。skill 文档同步(bridge 0.3.10)。
-
-## [0.3.3-dev.17] — 2026-09-09
-
-> Markdown 面板交互批:marina: 动作链接(ADR-035,文档内点击触发 CLI show/run)、
-> 链接样式统一、Ctrl+F 选区预填、YAML frontmatter 识别隐藏。
-
-### Added
-
-- **面板 Ctrl+F 搜索支持选区预填**:面板里有选中文本时按 Ctrl+F,搜索框直接
-  写入选中内容的第一行(浏览器 find bar 同款行为;输入框单行且高亮按文本节点
-  匹配,跨行搜索词命中不了,取第一行作种子最稳)。读选区发生在 focus 之前 ——
-  焦点移入输入框会清掉文档选区;预填后全选,直接输入即整体替换。
-- **Markdown YAML frontmatter 识别并隐藏**:引入 remark-frontmatter 5.0.0,
-  文档开头的 `---` YAML 块解析为 mdast yaml 节点后静默跳过 —— 不渲染、不进
-  Ctrl+F 的 DOM 文本、不进标题大纲、不影响裸路径自动链接(此前渲染成两条
-  `<hr>` 夹原始 YAML 文本)。CRLF 与含 Windows 路径的 frontmatter 均正确隐藏;
-  正文中间 `---` 保持 CommonMark 原语义。
-- **marina: 动作链接(ADR-035,方案-marina动作链接-20260909)**:Markdown 文档里的
-  `[x](<marina:show a.md>)` / `[x](<marina:run gh issue list>)` 点击后等价于跑
-  marina CLI 对应子命令 —— main 端直接分发到 CLI 同源服务路径(show 进「已打开」
-  面板,run 进命令面板),无确认弹窗(安全模型同 ADR-023 可运行代码块:能让用户
-  看到文档的 agent 本就有跑 CLI 的权限,内嵌动作不扩大权限面;任意来源 md 的
-  一键执行能力是 ADR-023 既成事实)。文件面板与命令面板两种文档来源都可用;
-  show 相对 md 文件目录解析(无 mdPath 时相对 session cwd,与 CLI 一致)。
-  渲染为动作 chip(药丸形 + 动词图标 ▶/📄,hover 显示将执行的参数原文),颜色
-  currentColor 派生(透明垫底契约同 .md-code-block,global-css.test.ts 守护)。
-  语法要点:CommonMark 裸目标不容空格,含参数必须 `<>` 包裹或 `%20`;位置参数
-  按单空格拼接;`--title` 只在命令前识别(命令自身 flag 不误吞);解析器
-  src/shared/marina-link.ts,分发 src/main/marina-link-dispatch.ts,IPC 通道
-  MARINA_LINK_RUN;micromark→消毒→解析全链有集成测试钉住各合法写法。
-- **Markdown 普通链接统一下划线样式**:三套 markdown 主题(marina/github/custom)
-  统一「低调常驻下划线(currentColor 派生)+ hover 加深」,弥补 marina 主题原先
-  无 hover 反馈、github 主题下划线行为不一致的问题。marina: 动作 chip 不吃
-  这套(有自己的按钮样式)。
-- **skill 文档同步(bridge 0.3.8 → 0.3.9)**:SKILL.md 新增 marina: 动作链接节
-  (语法/写法规则/使用场景),MARKDOWN-CAPABILITIES.md 新增 §2.4 + 速查
-  checklist 条目;ensureUpToDate 靠版本差把新文档推给已装用户。
-
-## [0.3.3-dev.16] — 2026-09-09
-
-> pi-bridge skill 整合批(ADR-028 决策 8):show-in-marina skill 与「Marina 输出
-> 习惯」系统提示词随 pi-marina-bridge 在 Marina 终端内自动注入,装一次 bridge
-> 全项目生效、随版本自动更新;手动 skill 安装收窄为 claude/codex。
-
-### Added
-
-- **pi 终端自动注入 show-in-marina skill + Marina 系统提示词(ADR-028 决策 8,
-  方案-pibridge-skill与提示词注入-20260909)**:skill 物理上移入
-  pi-marina-bridge package(`packages/pi-marina-bridge/skills/show-in-marina/`),
-  extension 检测到 Marina env 三件套后经 pi 的 `resources_discover` 钩子贡献该
-  目录为 skillPaths(skill 只在 Marina 终端内出现,非 Marina 会话零污染),并经
-  `before_agent_start` 幂等追加「Marina 输出习惯」系统提示词(大段输出走文件面板
-  /瀑布式排版/grilling 批量澄清,内容源自开发者项目 CLAUDE.md 的 Marina 三节)。
-  bridge package 版本 0.3.7 → 0.3.8(ensureUpToDate 靠它把新内容推给已装用户)。
-  真实 pi 0.84.4 端到端验证:有 env 时 skill 被发现(`show-in-marina` 进 skill
-  列表、location 指向包内路径)+ 提示词恰好追加一次;无 env 时两者皆零。
-  `piIntegration` 开关不 gate 注入(它管 workspace 绑定/指示灯;文件面板是独立
-  功能,注入只依赖「是否 Marina 终端」)。
-
-### Changed
-
-- **手动 skill 安装不再有 pi 目标**:右键「安装 Marina Skill」只剩 Claude Code /
-  Codex(pi 由 bridge 自动注入,无需逐项目安装)。pi 目标移除的原因:pi 对同名
-  skill 先加载者胜,项目级 `.pi/skills` 旧副本会遮蔽 bridge 随版本更新的新副本。
-  SkillInstaller 源目录改为 bridge 包内的 skills/show-in-marina(与注入同一份
-  物理内容,单一真相源),electron-builder 相应去掉独立的 `src/skills` 打包项。
-  旧项目里已装的 `.pi/skills/show-in-marina` 不主动清理(不碰用户项目目录),
-  如被遮蔽重装 skill 或删该目录即可。
-
-### Fixed
-
-- **typecheck 红(48ec329 起)**:`packages/pi-marina-bridge/extensions/index.ts`
-  对 `@earendil-works/pi-coding-agent` 的 type-only import 在 Marina 仓不可解析
-  (TS2307)并级联 16 个 implicit-any/TS2345。改为包内本地最小结构化类型
-  `pi-types.ts`(只声明实际使用的 `on` 9 事件重载 + `appendEntry` + ctx 切片,
-  对照 pi 0.84.4 types.d.ts 核对),jiti 运行时擦除类型、零影响。
-
-## [0.3.3-dev.15] — 2026-09-03
-
-> WebViewer 批:「已打开」面板支持本地 HTML 网页预览(ADR-034)。archify 类 skill
-> 产出的自包含交互产物(内联 SVG/JS、导出按钮)不再外开浏览器,面板内直接可看。
-
-### Added
-
-- **本地 HTML 预览(ADR-034)**:`.html/.htm` 归新 FileKind `web`,WebViewer 以
-  sandbox iframe 经 `marina-file://` 特权协议流式渲染。四层安全防线:路径白名单
-  (已打开文件本体+所在目录+workspace 根,realpath 防 symlink 逃逸)→ 逐响应自
-  包含档 CSP(禁一切 http(s) 出网)→ 32MB 上限+MIME 缺省 octet-stream → svg 额外
-  script-src 'none'。app 自身 CSP 一字不松,仅新增窄项 `frame-src 'self'
-marina-file:`。预览内容不经 IPC;热刷新复用 fs.watch→mtimeMs 链零新代码。
-  已接受降级(Ctrl+F 不搜 iframe/滚动不持久/主题跟随 OS/非同目录资源断链)。
-- **源码⇄预览切换**:工具条一键切 TextViewer(read 对 web 文件返回源码文本);
-  附重新加载/浏览器打开按钮;超限(>32MB)显示占位+外开。
-- **iframe 内下载闭环**:接 will-download 存系统下载目录 + 广播事件,App 级桥弹
-  in-app toast(不注册 handler 时 Electron 直接取消下载,PoC 实证)。
-- **新冒烟场景** `--file-viewer-html`:端到端断言 iframe 挂载 + 产物内联脚本真实
-  执行(postMessage 回执)+ 源码切换往返。
-
-### Fixed
-
-- **CSP 拼接缺分号**:`wss:` 后漏分号把 frame-src 拼进 connect-src 源表达式
-  (冒烟实测抓到)。
-- **快照恢复 kind 重检测**:旧快照里 .html 存的 'text' 恢复后自动升级为 'web'
-  (onWorkspaceSwitched 改按文件名重检测,与 openFile 同源)。
-
-## [0.3.3-dev.14] — 2026-09-03
-
-> 现场验证修复批:真实 fork 实测抓到的亲缘读缺陷。需要新构建分发(便携版烧的是内置
-> bridge,自动升级只能从当前构建向外刷新,源码里的修复必须随新包到达)。
-
-### Fixed
-
-- **bridge 亲缘读在大父文件上静默失效(0.3.4→0.3.5)**:真实 fork 实测发现
-  `readLastWorkspaceBinding` 的尾部 64KB 读窗在「会话开始只绑过一次、之后对话长到
-  MB 级」的父文件上读不到头部绑定(实证:父 1.06MB/唯一绑定 L4 → `parentWs=-`,
-  靠 payload 回退路径救回 TUI fork;但 CLI `pi --fork` 冷启动的血统判定会静默失效,
-  继承绑定活着时直接共享父 workspace,违反 ADR-033 裁决 3)。改 readline 流式全
-  文件前扫取最后命中(+32MB 护栏),回归测试:头部绑定×>128KB 文件必读出。
-  同场验证链路全通:auto-upgrade 生效、fork 继承克隆落 entry、fork 后 /resume
-  切回自己的 workspace。
-
-## [0.3.3-dev.13] — 2026-09-03
-
-> pi bridge fork/子会话适配批(fork 继承 + 死绑定根治 + bridge 自动升级)。
-
-### Added
-
-- **pi 对话分叉的 workspace 语义(ADR-033)**:fork 继承 + 同文件共享 + fork/子会话
-  不共享。① **修死绑定根因(G1)**:bridge 读绑定从「全文件 first-match」改为
-  「当前分支(leaf→root)最近 entry」——旧读法在 workspace 被回收一次后永久命中
-  最老的死绑定,每次 resume 都新建空 workspace、文件面板永不恢复(本机实证单文件
-  累积 4 条绑定 entry)。② **fork = 新建 workspace 且继承父副本**(开发者裁决):
-  `cloneWorkspace` 复制父的面板快照与受管文件,内部路径重写指向新目录(防编辑
-  穿透到父);继承源优先 bridge 从父文件尾读出的当前绑定,缺失回退 fork 复制路径
-  上的继承 entry,已回收退化空新建;/new 不继承。③ **共享策略(裁决)**:同一对话
-  文件跨终端 resume 允许共享 workspace,release 改为最后占用者销毁才释放;fork 血统
-  首次激活时若绑定是从父文件继承来的,不共享父的而是克隆一份并返回新 id 覆盖 entry
-  (治 CLI `pi --fork` 冷启动/离线 fork 的永久共享)。④ /tree 不监听(裁决):同文件
-  内换分支不切 workspace。⑤ **bridge 自动升级**:启动时比对内置版与稳定目录版,
-  不一致静默重拷(不 spawn pi install),从未安装不预装——否则 bridge 的修复永远
-  分发不到用户机器。bridge 0.3.3→0.3.4。
-
-## [0.3.3-dev.12] — 2026-08-29
-
-> 裸盘符路径自动链接构建:dev.11 里 read D:\\a.png 这类裸路径还只能复制手开。
-
-### Added
-
-- **正文里的裸 Windows 盘符路径自动变成可点链接。** `read D:\...\v20_f3.png` 这类
-  没有链接语法的裸路径此前只是纯文本;remark 插件 remarkMarinaPathAutolink 把无歧义的
-  盘符绝对路径(字母+:+/或\)自动包成链接,点击行为与手写 [x](D:\a.png) 完全一致
-  (面板只读打开)。边界限定空白/开括号(URL 中段不误切)、句尾标点不进目标、
-  链接 label/标题/代码内不嵌套;含空格/相对/UNC 路径不猜,仍用显式链接。
-
-## [0.3.3-dev.11] — 2026-08-29
-
-> Git 面板二进制文件交互修复:点击/右键不再开无信息量的 "Binary files differ" diff。
-
-### Changed
-
-- **Git 面板点击二进制文件改为直接按普通方式打开。** 此前点任何文件都开 diff,而二
-  进制文件的 diff 只有一行 `Binary files a/x.png and b/x.png differ`,没有信息量。现在扩
-  展名不在文本白名单的文件(图片/未知类型,判定口径与文件面板 `detectFileKind` 一致,不
-  做内容嗅探)点击后直接打开文件本身:图片在面板图片查看器显示,其它二进制显示
-  「暂不支持预览」占位 —— 与在文件树里点击同名文件的行为一致,零新 IPC(分流在
-  main 端 `GitService.openDiff` 单点完成,renderer 不改)。两个例外保留 diff:已删除文件
-  (工作区无实体,diff 仍有 "deleted file mode" 信息)与目录条目(modified submodule,diff
-  显示 Subproject commit 变更)。文本文件行为不变。右键菜单同步:二进制文件主项
-  标签由「打开 diff」换成「打开文件」并省略重复的「打开文件本身」次级项(deleted 仍标
-  「打开 diff」);判定谓词提炼为 shared `isBinaryLikeKind`,main/renderer 单一真源。
-  对应 软件定义书 §14.6 ADR-017 条款的 v0.3.3 标注。
-
-## [0.3.3-dev.10] — 2026-08-23
-
-> 盘符绝对路径链接修复构建:dev.9 里 [x](D:\a.png) 这类链接点击无反应。
-
-### Fixed
-
-- **Markdown 里的 Windows 盘符绝对路径链接可以点击了。** `[图](D:\a\b.png)` /
-  `[页](C:\Users\x\m.html)` 此前渲染成 `<a href="">` 点击无反应:react-markdown 的
-  defaultUrlTransform 把 "C:"/"D:" 误判为未知 URL 协议(第一个 `:` 在任何 `/?#` 之前
-  且不在 https?/mailto 白名单)把 href 整条剥空。现在经自定义 urlTransform 放行盘符
-  路径(含 micromark 把反斜杠编码出的 `%5C` 形态),其余协议照旧消毒(javascript: 等
-  仍剥空)。图片 `![](...)` 的盘符 src 同样受益;main 端无需改动(decodeURIComponent
-  - resolve 对绝对路径天然正确)。
-
-## [0.3.3-dev.9] — 2026-08-23
-
-> dev.8 出包后积累的两项：文档图片可交互 + show-in-marina skill 能力参考随包分发。
-
-### Added
-
-- **文档图片可交互(点开/右键复制/在资源管理器中显示)。** Markdown 正文内联图
-  (MdImage)、图片文件(ImageViewer)、gallery 代码块(GalleryViewer)三个看图 surface 统一获得：
-  单击 → main resolve 后用系统图片查看器打开(图片被链接包裹时单击仍归链接导航)；
-  右键 → 用系统图片查看器打开 / 复制图片 / 在 Explorer 中显示(生成器收敛在 imageActions.ts，
-  能力驱动)。新通道 `cmd:gallery:reveal-image` 与 `cmd:system:clipboard-write-image`(复制的就是
-  看到的那一帧;GIF 只保留首帧)。命令面板输出无 fileContext，图片保持纯静态。
-
-### Changed
-
-- **show-in-marina skill 附带 Markdown 面板能力参考文档。** 随包分发的
-  `src/skills/show-in-marina/` 新增 `MARKDOWN-CAPABILITIES.md`(面板渲染 Markdown 的完整能力清单：
-  本地文件/网页/锚点链接、可运行代码块、gallery、本地图片、目录导航、硬性约束如 raw HTML 禁用)，
-  并在 SKILL.md 顶部加指向它的摘要——AI 安装该 skill 后写文档时能按标准格式产出可交互文档，
-  而不是只知道链接和代码块两条。仓库本地 `.pi/skills` 开发副本不受影响。
-
-## [0.3.3-dev.8] — 2026-08-21
-
-> 远程断网占用终端问题修复:补实现规格已定义的 WS 心跳 + 右键显式接管兜底。
-> 心跳跑在 daemon 侧,远程机器需部署本构建才生效;客户端升级只为获得「占用此终端」菜单。
-
-### Fixed
-
-- **远程静默断线不再无限期占用终端所有权。** 断网(拔线/WG 掉线/NAT 超时)时 daemon 收不到
-  FIN/RST,close 事件不触发 → 重连宽限期永不启动 → 僵尸 clientId 永久持有 session owner;
-  网络恢复后重开的窗口拿新 clientId,claim 全部命中 `SessionAlreadyOwned`,表现为「终端被
-  之前的窗口占用」。ipc-protocol §2.6 规定的 ping/pong 心跳(30s,3 次未响应判死)此前只有
-  规格没有实现,现已补上:检出后走既有断开 → 宽限(10s)→ release 流程,最坏 ~2 分钟;
-  客户端零改动(浏览器/ws 库协议层自动回 pong)。
-
-### Added
-
-- **右键「占用此终端」显式接管所有权**(v0.3.3 用户裁决,软件定义书 §8.4 增补显式占用例外)。
-  session 被其他窗口/client 持有时,右键 Tab 或侧栏 session,菜单首位出现「占用此终端」,
-  直接强占 owner(新命令 `cmd:session:takeover`,payload/response 与 claim 同形)。旧持有方
-  UI 收广播自动转「其他窗口持有」;接管者此前持有的其他 session 按单焦点规则自动释放。
-  既覆盖心跳检出前(最坏 ~2 分钟)的手动兜底,也覆盖多窗口间明确想抢回控制权的场景。
-  默认点击行为不变:仍是聚焦持有方、不抢。
-
-## [0.3.3-dev.7] — 2026-08-12
-
-> 修复 pi 压缩上下文时侧边栏误显示闲置(dev.6 是诊断构建,合并升格)。
-
-### 修复
-
-- **pi 压缩上下文期间侧边栏不再误显示闲置。** 根因:pi-marina-bridge 只监听 `agent_start`/`agent_settled`,漏了 `session_before_compact`/`session_compact`。threshold 压缩(上下文累积超阈)常发生在 `agent_settled` 之后 —— 压缩全程 bridge 不发任何事件 → Marina 停在 settled(idle),与用户体感「还在工作」矛盾。bridge 现监听 `session_before_compact` → 发 `agent_working`(压缩=工作);`session_compact` → `willRetry=false` 发 `agent_settled`(压缩完无后续),`willRetry=true`(overflow retry)保持 working 等随后的 `agent_start`。
-
-## [0.3.3-dev.5] — 2026-08-11
-
-> 0.3.3 系列第 5 个 dev 构建。汇总 `0.3.3-dev.3` 之后的远程命令、终端链接、Git 面板、pi 集成与架构稳定性修复,供本地/内测验证。(dev.4 号未实际构建,合并升格为 dev.5)
-
-### Added
-
-- **命令面板支持远程 SSH session 的 sudo 执行**(反转 ADR-028 D7):SSH session 的命令现经
-  `ssh <profile> '<cmd>'` 一次性 exec 在远程跑(stdout/stderr 流式回捕,复用 CodeBlockRunner)。
-  `--sudo` / 🛡 toggle 让命令以 `sudo -S -p ''` 跑,sudo 密码由 main 内存仓库(sudo-password-store)
-  按 SSH profile 隔离托管,经 stdin 喂入——**绝不落盘 / 进日志 / 进 env / 进 event payload**。
-  CLI `marina run --sudo "<cmd>"`;AI 推送时缺密码则命令进入 `awaiting-sudo-password` 态,面板内联
-  弹 masked 输入,录入后重跑(每服务器只发生一次)。详见 `docs/方案-命令面板远程sudo-20260807.md`。
-
-### Changed
-
-- **主进程边界收敛**:session workspace / pi / 生命周期职责拆入 coordinator，本地 HTTP API 收敛到
-  `LocalHttpGateway`，IPC 新增 `CommandContractMap` 穷尽路由约束；保持现有产品行为不变，同时降低
-  退出、远程路由和后续协议演进的回归面。
-
-### Fixed
-
-- **Git 面板动态出现/消失**:同一 cwd 中途执行 `git init` 或移除 `.git` 后，下一次 shell prompt
-  会重评估仓库能力并更新 Git tab；异步结果加代次与生命周期保护，避免慢结果覆盖新状态或修改
-  已退出 / 已销毁 session。
-- **终端文件链接定位**:修正 CJK 宽字符、`@` 双候选和 `~` home 展开场景下的文件链接识别与定位。
-- **Git diff 预览来源保持**:修复打开 diff 后来源身份丢失，确保同名文件与刷新路径仍指向正确变更。
-- **文件树层级缩进统一**:目录与文件行统一使用共享树行缩进规则，避免 disclosure gutter 抵消层级。
-- **pi settled 状态及时回落**:`agent_settled` 后立即切回 idle，不再等待字节流 idle 阈值。
-- **pi resume 切回 workspace 后文件面板恢复(根治)**:此前 `/resume` 一个之前的 pi 对话后,该对话原打开的文件不恢复。根因(日志实证):pi resume 同一对话时 piSessionId 会变,Marina 内存映射 `piSessionId→workspaceId` 永远 miss → 每次新建空 workspace。改为把 workspace 绑定**存进 pi 对话本身**(`pi.appendEntry`,跨重启跟对话走):bridge 从对话 entry 读出 workspaceId 随 session_start 带上 → Marina 切回原 workspace + 重建面板恢复快照;新建 workspace 后返回 id 交回 bridge 存 entry。删掉了旧的内存映射,不依赖易变的 piSessionId。
-
-## [0.3.3-dev.3] — 2026-08-08
-
-> 0.3.3 系列第 3 个 dev 构建。汇总 `0.3.3-dev.2` 之后的 pi 集成打磨与架构复核修复,供本地/内测验证。
-
-### Added
-
-- **退出 quiesce 状态机**:退出流程补显式状态机(running→quiescing→flushing→stopped),quiescing 后本地 IPC / WebSocket / HTTP ingress 拒绝新工作(返回 `Quiescing` 错误 / HTTP 503,health 放行),before-quit 有序化为 enterQuiescing → shutdown → enterFlushing → flush(1s 预算) → enterStopped。避免 shutdown/flush 期间的新动作落在关闭之后。
-
-### Changed
-
-- **pi 集成设置从「外观」移到「AI」分类**:pi 集成(workspace 绑定 / 指示灯 / 安装 package)与视觉呈现无关,此前误放在外观分类。移到 AI 分类,安装反馈改用 toast。
-- **workspace 命令路由改 backend-data(ADR-029)**:七个 `WORKSPACE_*` 命令此前误归 local-control,远程窗口的 workspace 读写静默脱节。改为随 session 归 backend(依据软件定义书 14.9.6「数据归 daemon」),ADR-024 的 local-control 声明作废(持久化机制不变)。命令路由补穷尽校验(未知 channel fail-closed),新命令漏分类不再静默走远程。
-- **抽取 app-lifecycle 模块**:`isQuitting` 退出标志原是 index.ts 模块级状态,ipc.ts/tray.ts 反向 import 形成两个静态循环 import。拆出 `src/main/app-lifecycle.ts` 作为退出状态单一事实源,消除循环依赖,ipc.test.ts 移除专用 mock。
-
-### Fixed
-
-- **pi 工作期终端状态打架 + 「已查看」语义精准化(ADR-028)**:(1) pi 思考/读文件期间终端无字节流,旧字节流 idle 检测误判 session idle(黄灯闪烁)还白烧 BETA-006 LLM——新增 `piWorking` 锁,agent_working 时抑制 idle 计时器、稳定 active,settled 后解锁交还字节流检测。(2) 旧逻辑把「切换 terminal」当成唯一「已查看」清除条件——新增「正在看」判定(owner 窗口可见+选中该 session),settled 时若正被看则不标警告色;窗口 focus/从最小化恢复时清除未看标记。
-- **子 agent 事件不再污染主终端(ADR-028)**:pi 调用 subagent 后终端名被改成 `subagent-worker-xxx` ——根因是 subagent 起独立子 session 触发的事件被当成主对话处理。新增「主 piSessionId 锁定」guard,每个 terminal 同一时刻只绑定一个主对话,不同 piSessionId 的子 agent 事件全部忽略;合法主切换(/new /resume /fork /重启)前 pi 必先发 session_shutdown 清空主绑定。
-- **file-panel/gallery 命令加 owner 校验**:9 个文件面板/图片 handler 此前无 owner 校验,非 owner 窗口能读/改别的窗口的文件面板。新增 `requireFilePanelOwner`(本地 IPC 与 WS 都接入),错误带 `SessionNotFound`/`NotOwner` code;FilePanel mount 前 waitForClaim 消除乐观接管期命中 NotOwner 的 race。
-- **session 销毁时回收 panel UI 缓存**:`clearPanelUiState` 文档声称 session 销毁时调用,但生产代码从未接线,已销毁 session 的 UI 缓存(展开目录/选中态/滚动位置)滞留内存随 session 数无界增长。在 SESSION_DESTROYED bridge 补上调用。
-- **统一 frameless 窗口错误态外壳**:frame:false 窗口里「可见状态必须渲染 WindowChrome 才有标题栏」只靠各分支自觉,协议版本不匹配分支漏画标题栏;本机外观死耦合在连接成功路径,错误态拿不到主题。新增 `LocalAppearanceProvider`(顶层拉本机外观,与连接状态解耦)与 `FramelessShell`(结构上保证可见状态必有标题栏+本机主题),4 条握手/错误分支统一改走它。
-- **新窗口默认选中「当前电脑」**:segment 此前持久化到 localStorage 且跨窗口共享,任意窗口切到「远程」后每个新窗口都默认选中远程段。移除持久化,每个新窗口独立从「本机」起步。
-- **命令面板刷新时保留输出**:刷新期间保留上次完成结果直到重跑结束,恢复命令输出里的代码块文本选中,刷新进度指示可访问。
-
-## [0.3.3-dev.2] — 2026-08-07
-
-> 0.3.3 系列第 2 个 dev 构建。汇总 `0.3.3-dev.1` 之后的设置、侧栏分组与命令面板修复，供本地/内测验证。
-
-### Added
-
-- **设置页「允许远程连接」新增“启动时自动开启”开关**:勾选后 Marina 启动时自动启动远程服务端(绑定已有 `remoteDaemon.autoStart` 设置,此前仅能手动点“开启”;只影响下次启动)。
-
-### Fixed
-
-- **侧栏收藏分组按 PathKind 隔离**：每个分组实例只属于 local 或 ssh；远程段不再显示本机空分组壳。旧混合组自动拆分，分组拖拽继续提交全量布局，隐藏 kind 数据不会丢失。
-- **命令面板复用“已打开”的 Markdown 正文模块**：主题、GFM、外链、代码块执行与正文搜索改为同一实现；命令输出不伪造文件路径，本地链接、图片与 gallery 仍仅对真实文件启用。
-
-## [0.3.3-dev.1] — 2026-08-07
-
-> 0.3.3 系列首个 dev 构建(预发布)。汇总 `0.3.3-preview.2`(2026-08-05)之后的已提交积累,供本地/内测验证。正式发版时合并升格为 `0.3.3`。
-
-### Added
-
-- **文件树按需轮询**:文件树面板改走 `BackgroundWorkScheduler` 的 demand 感知(HOT/WARM/NONE),切走不刷新、切回立拉,降低后台开销。
-- **右键菜单子菜单分层**:子菜单通过 `createPortal` 分层渲染,避免被父容器裁剪。
-- **Pi 集成(ADR-028)**:pi 对话绑定 workspace、终端活动状态精准化;新增 `pi-marina-bridge` 哑转发器 extension;命令面板(`marina run`)使用文档补齐。
-- **文件面板中键自动滚动**:中键改为浏览器风格自动滚动,替换原 hand-pan。
-
-### Changed
-
-- 侧栏:remote 窗口默认到「本机」段;"SSH" 改名为 "Remote"。
-
-### Fixed
-
-- 构建:恢复 preview2 的 release gates 与 `switch:*` npm 脚本(内部)。
-
-## [0.3.3-preview.2] — 2026-08-05
-
-> 第二个 0.3.3 预览构建（0.3.3-preview 的后续开发构建）。相对 `0.3.3-preview`(2026-08-04)
-> 新增:侧栏拖拽 v3、收藏分组递归嵌套与重设计、远程 backend 窗口修复,以及
-> `show-in-marina` skill 的 Linux/macOS 原生客户端(修复「装出 Windows 版」缺陷)。
-
-### 修复
-
-- **`show-in-marina` skill 在 Linux/macOS 上不再装出 Windows 版。**
-  此前内置 skill 只带 Windows 启动器(`marina.ps1` 靠 PowerShell、`marina.cmd`
-  靠 cmd.exe、无扩展名的 `marina` bash 包装器显式搜 `powershell.exe` 找不到就
-  `exit 127`),Linux 上 agent 跟着 `SKILL.md` 走会彻底失效。后端 `file-panel-service`
-  本是平台无关的 HTTP+Bearer 服务,缺的只是一个原生客户端。新增 `marina.sh`
-  (bash+curl,零额外运行时——无 jq/python/node,与 `marina.ps1` 头注释「不引入
-  额外运行时依赖」同款哲学),实现 ping/workspace/show/run/close/list/screenshot
-  全部子命令,退出码与 ps1 严格对齐。无扩展名的 `marina` 改成平台调度器:检测到
-  `powershell.exe` 走 ps1(Windows 行为 100% 不变),否则走 `marina.sh`。同时修了
-  `marina` 的 git 可执行位(此前 `100644`,Linux 上 `./marina` 会 Permission denied)。
-  详见 `docs/方案-skill-Linux支持-20260805.md`(Option D)。10.9.0.1(Ubuntu 26.04)
-  端到端 25/25 通过。
-
-- **侧栏拖拽改为不改变高度的单提示线模型（v3，用户裁决）。**
-  此前拖动时会在每个间隙插入等高 placeholder，整列高度随拖动涨缩；且 DragOverlay
-  跟随延迟 + placeholder 推挤邻居导致行 rect 漂移，出现“向下拖动，落点反而向上”
-  的非单调现象。现在：拖动期间**不渲染任何占位 placeholder**，列表整体高度恒定；
-  只有一条 `position:absolute` 的提示线，其垂直位置由指针 y 相对各子行中点单调
-  推导，水平缩进/宽度由落点容器深度决定。更关键的是落点解析改为**纯坐标驱动**：
-  拖动时不再依赖 dnd-kit 的 over/碰撞（它们用的是 DragOverlay 跟随矩形，有偏移与
-  延迟），而是用真实 `pointermove` 的 clientX/Y 在 DOM 里命中行——**y 选在哪一行的
-  上半/下半，x 决定是否嵌入指针所在的组**（拖路径到组标题、x 靠右=进入该组；
-  x 靠左=作为同级）。提示线只画一条线、不带任何文字，缩进即层级，所见即所得。
-  group/path/session 三类统一适用。已用真实 Electron + CDP 指针验证：向下拖索引
-  单调、列表高度零变化、x 右移缩进加深并真正嵌入目标组、释放后 bookmarks.json
-  正确更新。
-- **修复「拖组想同级却嵌入」的交互缺陷（bug #2）。** 此前拖一个组想放到另一个
-  组的**同级位置**时，最自然的指针落点是那个组展开后的子组列表空白区——但那块
-  空白在视觉和数据上都属于该组内部，旧逻辑一律当「嵌入该组」，用户几乎无法表达
-  「同级」。现修复为：指针落在某组的子组列表空白区时，**x 靠左（未越过子内容缩进列）
-  = 同级后置**（放在该组之后、其下一个兄弟之前），**x 靠右 = 嵌入该组末尾**（保留原语义）。
-  与「y 选行、x 定层」模型一致。已用 CDP 指针验证：同级缩进更浅、释放后组留在原父级、
-  不误入被拖组；同时路径→组嵌入未回归。
-- **拖动浮层优化 + 分组图标换。** 拖动浮层（DragOverlay）改为半透明（opacity 0.6），
-  不再遮挡背景提示线/目标行；显示文字优先用名称，无名称时取路径 basename 而非完整路径。
-  收藏分组图标从文件夹改为 `Tag`（价签）——组内条目才是文件夹，组本身是「归类」，
-  用价签与文件夹正交、不再语义撞车。
+## [0.3.3] — 2026-09-14
+
+> 相对 0.3.2 的主题版本:**AI 交互深水区** —— pi 对话与 Marina 的全链路集成
+> (workspace 自动绑定 / 终端状态与标题分层 / fork 语义 / subagent 聚合 / 事件
+> 乱序根治)、面板系统整合(命令面板并入「已打开」/ `marina:` 动作链接 / 能力
+> 全源复用 / 命令页快照恢复)、终端可交互链接、本地 HTML 预览,以及远程体验
+> 补强(WS 心跳 / 显式接管 / 远程目录选择器 / sudo 执行)。
+> 本版本由 `0.3.3-preview`、`0.3.3-preview.2` 与 `0.3.3-dev.1` ~ `0.3.3-dev.20`
+> 共 22 个开发构建合并升格而来。
 
 ### 新增
 
-- **收藏分组可递归嵌套（子组）。**
-  用户裁决后分组从单级升级为树：任意分组可建子组，组内路径与子组并存。
-  group/path/session 拖拽使用真实容器的 `0..N` insertion slot：拖动时命中插槽会
-  膨胀成等高 placeholder，邻居在释放前实时让位；最终层级和顺序只来自
-  `targetContainerId + targetIndex`，不再根据起始深度、横向像素或祖先链猜测。
-  （v3 起该“等高 placeholder”模型已被“不改变高度的单提示线”取代，见上。本条
-  保留作为最初实现的说明，真实行为以上述 v3 修复为准。）
-  可精确把深层子组提升一级或直接提升到根级；禁止拖入自身或后代（循环守卫）。
-  解散分组时路径与子组提升到上级，绝不删数据。磁盘 schema 为 bookmarks.json
-  v3（v1/v2 启动期自动迁移）。
-
-- **侧栏分组/路径/终端菜单按用户任务重设计。**
-  删除分组和收藏分类重复的 `⋯`，对象管理只保留右键。分组菜单首项可通过系统/
-  backend 目录选择器“添加文件夹到此组”，`BOOKMARK_ADD {path,groupId}` 原子地
-  直接归组，不经过未分组中间态；另有新建子组、重命名、解散分组，组头仍保留
-  F2/Delete。路径菜单分「打开/定位、复制、组织、启动方式、项目工具」区；终端
-  菜单提供主任务和“复制信息”子菜单。远程 backend / SSH 上下文不再显示会在
-  用户看不到的电脑上执行的“在文件管理器中显示”。
-
-### 修复
-
-- **远程 backend 窗口点「+」加文件夹报错。**
-  `BOOKMARK_PICK_FOLDER` 走 WS 到 daemon 后没有 Electron `webContents`，
-  `getOwnerBrowserWindow` 抛 TypeError。新增 `RemoteDialogUnavailable` 防线，
-  远程窗口改用 renderer 自绘、backend-data 驱动的点击式目录选择器（Home / 上级 /
-  子目录，全程无路径输入，符合原则 2）。
-
-- **收藏子组拖动改为所见即所得的真实插槽，local/SSH 混合收藏不再被后端拒绝。**
-  分组块此前先后用“上半同级/下半嵌套”和“横移 24px 改一级”猜层级，三层以上
-  无法直接选择父容器。现在 root 与每个 `group.subgroups` 都注册独立容器，边界
-  重合时展开为多个有物理高度的插槽；组标题大目标统一表示“移入此组末尾”。
-  path/session 同样在目标列表实时腾出占位。拖动布局始终基于 backend 全量收藏，
-  不再因遗漏隐藏 segment pathId 被 `InvalidOrderList` 拒绝。
-
-- **移除收藏不再暗中清掉最近记录。**
-  菜单项只做它说的事；无 session 的路径按状态机自动进入「最近」。
-
-- **侧栏路径 badge 只统计未退出终端，分类 tooltip 文案修正。**
-  badge 回答「现在有几个终端活着」；「展开/折叠」tooltip 带上分类名。
+- **pi 桥接集成(ADR-028)。** 新增 `pi-marina-bridge` extension(哑转发器,非
+  Marina 环境 no-op):检测终端注入的 Marina env,把 pi 对话生命周期事件转发给
+  Marina。pi 对话自动绑定独立 workspace —— 同一终端内 `/new` `/resume` 切对话
+  即切面板状态;绑定**存进 pi 对话本身**(appendEntry,跨重启跟对话走),根治
+  resume 后面板不恢复。终端状态精准化:`isPiAgent` / `hasUnviewedWork` 字段,
+  agent 工作中绿灯由 agent 信号权威驱动(不再靠字节流启发式),收工后侧栏竖线
+  警告色提示"有未查看的完成活动"。对话名自动同步为终端名(用户手动改名则不
+  覆盖)。
+- **pi 状态与标题的分层架构(ADR-030/032)。** `TerminalStateGetter`:agent 信号
+  (working/settled)为权威主源,字节流启发式降为 fallback 且 agent 绑定时完全
+  旁路 —— settled 立即 idle、无闪烁。`TitleState` 五槽派生:`user > agent >
+  program > shell > default`,pi 标题在结构上不可被 shell 子进程(如
+  powershell.exe 抢写"Windows PowerShell")覆盖;OSC 133 只用 D 标记前台程序
+  退出,pi 的 A/B/C 分区标记不参与归类(防污染)。
+- **pi fork / 子会话的 workspace 语义(ADR-033)。** 绑定读取按对话文件当前分支
+  (root→leaf 最近 entry),根治"workspace 回收一次后 first-match 永远命中最老的
+  死绑定";`/fork` 继承父 workspace 副本(copy-on-fork,内部路径重写防编辑穿透);
+  同一对话文件跨终端 resume 共享 workspace(最后占用者销毁才释放),fork 血统
+  不共享;bridge 启动时版本比对自动升级(修复可随新构建分发)。
+- **pi subagent 工作状态聚合(ADR-038)。** 后台/async 子 agent 运行期间终端状态
+  不再错翻空闲:终端「工作中」= 主 agent ∨ 任一注册子 agent 在干;污染拦截照旧
+  (子事件不做 workspace/名字决策、已注册子永不升级为主);主 pi 退出而子仍在干
+  时 teardown 延迟;hard-kill 泄露的子 15 分钟无事件由 sweeper 回收。
+- **pi bridge 事件乱序根治(ADR-040)。** 「AI 已开始工作但 tab 不显示工作中」的
+  根因是 session_start 直发抢在 shutdown 之前到达导致主锁误判:bridge 0.3.13 起
+  全部事件走串行队列(到达顺序与 pi 内严格一致) + Marina 防御层(reason ∈
+  new/resume/fork 的 session_start 按主切换放行,兼容旧 bridge)。
+- **show-in-marina skill 与「Marina 输出习惯」系统提示词随 bridge 自动注入
+  (ADR-028 决策 8)。** skill 物理移入 bridge 包,只在 Marina 终端内被发现(非
+  Marina 会话零污染);大段输出走文件面板 / 瀑布式排版 / grilling 批量澄清的
+  输出习惯提示词幂等追加。手动 skill 安装收窄为 Claude Code / Codex。
+- **命令面板整合进「已打开」面板(ADR-037)。** dock 面板 4→3:文件 tab 在前、
+  命令 tab 在后,统一列表 / 搜索 / 徽章;面板内记录正在看文件侧还是命令侧(一侧
+  清空自动回退另一侧);`marina run` 重推已存在指令也跳转且激活移到 spawn 前
+  (长命令先看到 running 占位);命令输出记忆浏览位置。
+- **`marina:` 动作链接(ADR-035)。** Markdown 文档内 `[x](<marina:show a.md>)` /
+  `[x](<marina:run gh issue list>)` 点击等价于 agent 跑对应 CLI 子命令(main 端
+  同源分发,不 spawn 脚本);无确认弹窗(安全模型同可运行代码块),hover 显示
+  将执行的参数原文;渲染为动作 chip。
+- **Markdown 能力默认全源复用(ADR-036)。** 命令面板输出与文件面板共享全部
+  Markdown 能力(本地链接/图片/gallery/标题大纲),路径解析基准 = 命令运行时
+  cwd(spawn 时 main 记录真值,终端 cd 后旧输出不漂移)。此前按来源门控的双分支
+  插件管线废除。
+- **pi resume 恢复命令页(ADR-039)。** 命令 tab 作为 workspace 快照的
+  `commandPanel` 切片与文档同一条管线落盘/恢复(带离开时的最后输出,不立即
+  重跑);fork 继承;命令输出滚动位置同步跨 resume;`panelView` 切片记住当时
+  在看哪一侧。
+- **终端可交互链接(ADR-041)。** 双通道:① pi 插件侧检测(PTY env 注入
+  `PI_HYPERLINKS=1`,bridge 注册 markdown transformer —— 裸路径/URL 在源文本层
+  变成 OSC 8 超链接,跨软折行不断链,路径被折行劈断检测不出的问题从根上消失);
+  ② 终端级 `[]()` 解析 provider(覆盖 `pi -p` / `cat md` 等裸 markdown 输出)。
+  点击统一路由:https/mailto 外开系统浏览器、`marina:` 复用动作链接分发、文件
+  路径进「已打开」面板;`marina:show` 新增 `--line N` 行跳转;文件路径 provider
+  升级跨折行窗口检测。配套 bridge 系统提示词新增「链接用 []() 写」引导。
+- **本地 HTML 预览(ADR-034)。** 「已打开」面板把 `.html/.htm` 渲染成真实网页:
+  `marina-file://` 特权协议 + sandbox iframe,四层防线(路径白名单 / 禁一切
+  http(s) 出网的逐响应 CSP / 32MB 上限 / svg script-src 'none'),app 自身 CSP
+  一字不松。服务 archify 类 skill 产出的自包含交互产物;源码⇄预览一键切换;
+  iframe 内下载闭环(toast 通知)。
+- **远程体验补强。** WS ping/pong 心跳(30s × 3 次未响应判死,静默断线不再
+  无限期占用终端所有权,最坏 ~2 分钟释放);右键「占用此终端」显式接管
+  (`cmd:session:takeover`,鼠标优先的抢回兜底);远程窗口自绘点击式目录选择器
+  (Home/上级/子目录,全程无路径输入);命令面板支持远程 SSH session 的 sudo
+  执行(密码 main 内存托管,绝不落盘/进日志/进 env);「允许远程连接」新增
+  启动时自动开启。
+- **侧栏收藏分组 v3。** 分组递归嵌套(bookmarks.json v4,自动迁移);拖拽改
+  「不改变高度的单提示线」模型(y 选行 / x 定层,纯坐标驱动,所见即所得);
+  分组/路径/终端菜单按任务重设计;Linux/macOS 原生 `marina.sh` 客户端(修复
+  skill 装出 Windows 版)。
+- **文档与图片交互。** 正文图片 / 图片文件 / gallery 三处统一:单击系统查看器
+  打开、右键复制图片 / Explorer 显示;裸 Windows 盘符路径自动链接;YAML
+  frontmatter 识别隐藏;面板 Ctrl+F 支持选区预填;「已打开」tab 右键菜单补齐
+  (文件 tab 开 diff / diff tab 围绕源文件 / 命令 tab 重跑与关闭族)。
+- **其他**:文件树按需轮询(demand 感知)、中键自动滚动(浏览器风格)、退出
+  quiesce 状态机(关闭期间拒绝新工作)。
 
 ### 变更
 
-- **顶部路径切换改名「当前电脑 / SSH」。**
-  远程 backend 窗口的「当前电脑」显示 daemon 名（如 FEX）；「Marina 电脑」仍为
-  独立小节。
-
-- **SSH 段「+」可就地创建并连接，不再跳设置。**
-  0/1/N 个 profile 都打开同一个连接面板；已有连接一击选择，“新建 SSH 连接”
-  始终可见。新表单把主机、用户名、认证方式放在首屏，端口/默认目录/ProxyJump
-  收进更多选项；提交后保存 profile 并立即创建 session，错误留在表单内。
-
-- **OS 文件夹拖入只在「客户端本机 backend + 当前电脑段」可用。**
-  SSH 段 / 远程窗口不再显示拖入反馈，误拖给解释 toast。
-
-## [0.3.3-preview] — 2026-08-04
+- **workspace 命令路由改 backend-data(ADR-029)**:7 个 `WORKSPACE_*` 命令随
+  session 归 backend,远程窗口 workspace 读写不再静默脱节;命令路由 fail-closed
+  (未知 channel 抛错)。IPC 命令契约集中为 `CommandContractMap`(ADR-031),
+  channel / payload / response 双端编译期对齐。
+- **主进程边界收敛**:session workspace / pi / 生命周期职责拆入 coordinator,
+  本地 HTTP API 收敛到 `LocalHttpGateway`,退出状态拆出 `app-lifecycle`
+  (消除循环 import)。
+- **pi 集成设置从「外观」移到「AI」分类**;新窗口默认选中「当前电脑」
+  (segment 不再跨窗口持久化)。
+- **Git 面板点击二进制文件改为直接打开文件本身**(与文件树一致;deleted /
+  submodule 目录条目保留 diff)。
 
 ### 修复
 
-- **Ubuntu 26.04 的 `.deb` 可正确解析 GTK / AT-SPI 依赖。**
-  Ubuntu 26.04 与 Debian 新版已把 `libgtk-3-0`、`libatspi2.0-0` 迁到 t64
-  包名；旧配置会令 apt 报“没有安装候选”。现在 Debian control 使用
-  `t64 | legacy` alternatives，同一 amd64 包兼容新旧 Ubuntu。
-
-- **Windows 包严格剔除非目标 node-pty 二进制。**
-  `files` 负 glob 与 `asarUnpack` 合用时仍会把 macOS / ARM64 prebuild 带入 staging
-  （ISO-2）。新增 `afterPack` 钩子，只清理本次 `appOutDir`，按目标平台/架构保留
-  node-pty；绝不修改开发机 `node_modules`。`0.3.3-preview` 首次严格校验由 2 个
-  Mach-O 错误转为 3/3 Windows `.node` 匹配、0 错误、0 警告。
-
-- **新建收藏分组入口收进侧栏右键菜单。**
-  移除收藏列表底部突兀的虚线“新建分组”按钮；现在右键根级分类（收藏 / 临时 /
-  最近）均可新建，右键已有分组则统一显示新建、重命名、删除。仍使用项目自绘
-  Modal 输入名称，保留分组行尾重命名/删除快捷按钮。真实 Electron 鼠标验证三类
-  根菜单均正常；并完成“右键收藏 → 新建 → 右键新组 → 删除”的完整闭环。
-
-- **收藏路径拖拽释放后真正重排并支持移入空组。**
-  旧逻辑在同容器向下拖时先删除源项、再按已经左移的目标 index 插入，导致相邻项
-  释放后顺序原样；同时 `SortableContext` 不会自动注册空容器，空组和折叠组根本无法
-  成为落点。现在排序由纯函数按 dnd-kit `arrayMove` 语义生成不可变布局，未分组区和
-  分组整块均显式注册 droppable，并显示落点描边。真实 Electron 指针验证“同组交换并
-  恢复”和“未分组 → 空组 → 未分组”均通过，原布局完整恢复；新增 7 个布局回归测试。
-
-- **“已打开”中的 Diff 页签可一眼区分。**
-  Diff 继续使用源文件类型 icon，并在右下角叠加 8px 的 “D” 角标；普通文本、Markdown
-  等页签不显示角标。角标 icon 外层固定 14px，不会重新引入长文件名压扁图标的问题。
-  真实 renderer 验证当前 Diff 页签显示 D，三个普通页签无角标，图标保持 14×14px。
-
-- **“已打开”切文件不再先闪 dock 主题色。**
-  旧 `file-panel-body` 完全透明，activePath 已切换但 viewer 等待 IPC 内容的约 100ms
-  内会露出 dock 背景；GitHub Light Markdown 因而先闪深紫/深灰再变白。现在 active
-  file 确定后即用隐藏取色 probe 复用目标 Markdown class（含自定义 CSS），在首帧
-  paint 前给 body 铺最终背景；普通 Text/Diff/Image 则预铺主内容背景。真实 Electron
-  4ms 采样验证：Text 切换始终 `rgb(13,17,23)`，Markdown tab 与 README 内本地链接
-  打开的 100–250ms loading 期始终为白色，均未出现中间色。
-
-- **侧栏路径与终端层级不再因状态变化跳缩进。**
-  路径无终端时不再 `display:none` 掉展开槽，而是保留固定 12px 槽并隐藏箭头；有无
-  终端的路径名 x 坐标由约 18px 差异归零。session 按 ADR-019 的一级缩进渲染模板
-  icon（内置模板用统一 Lucide，自定义模板保留自定义 icon），内容从 x≈22 开始、名称
-  从 x≈40 开始。收藏分组现在只缩进 path/session 内容，不再右移整行盒，因此
-  active/idle/exited 色条在分组内外都紧贴侧栏 x=0；active 满底时 icon 与名称同步
-  反色，不与层级槽争空间。真实 renderer 几何测量覆盖无/有终端路径、分组与 idle/active。
-
-- **workspace 切回不再因残缺 `OpenedFile` 白屏。**
-  main 已先恢复带 `name/size/mtimeMs` 的完整文件列表，但 renderer 随后的快照恢复又把
-  `{path, kind}` 强转为 `OpenedFile[]` 覆盖它，最终 `fileIconFor(undefined)` 抛错、整窗
-  白屏。现在文件列表/active 只认 main 的 `file-panel/updated`，renderer 快照仅补 scroll
-  和 code-run 缓存。真实 CLI 强测通过：bind → new 清空 → bind 恢复；退出重启后同名
-  bind 仍恢复 README，renderer console 0 错误。
-
-- **Markdown 页内锚点真正滚动。**
-  `react-markdown` 默认 heading 没有 id，旧 `#anchor` 分支放行浏览器默认行为却无目标，
-  scrollTop 完全不变。现在按 Unicode-safe GitHub 风格 slug 在当前 Markdown 容器内定位
-  h1–h6 并 `scrollIntoView`；实测 smoke 文档从 scrollTop 301.9 回到 8.1。同步修正
-  v0.3.3 smoke fixture 的仓库相对链接层级（`docs/test-fixtures` 到根应为 `../../`）。
-
-- **长文件名只省略文本，不再压扁 icon。**
-  `FileListRow` 的 Lucide SVG 原本继承 flex item 默认 `flex-shrink: 1`；约 196 字符的
-  文件名会把 14px icon 横向压到 4.6px，视觉上像 icon 和文字一起缩小。现在 list/tab
-  的 icon、chevron、关闭按钮固定尺寸，只有 label 槽承担负空间并在末尾 ellipsis。
-  真实 renderer computed layout 验证：短/长文件 icon 均为 14×14px、文字均 12px，
-  长文本保持 `scrollWidth > clientWidth + text-overflow: ellipsis`。
-
-- **大结果集交互不再冻结整个窗口。**
-  真实 Electron/CDP Long Task 基准覆盖四条高风险路径：文件树展开 500 项
-  (旧 max rAF gap 120–175ms)、文件树搜索命中 500 项(180ms)、Git 未跟踪组展开
-  500 项(145ms)、只读 50k 行文本/diff(分别冻结 4.7s/7.0s)。文件树/Git 的大列表
-  更新改为 React transition，面板搜索 query 改用 deferred value；文件树搜索仍扫描
-  5000 项但最多挂载 200 个匹配并提示缩小查询。TextViewer 限 1000 行、DiffViewer
-  限 500 行并修复“先高亮完整 50k 行再 slice”的隐藏全量工作，视口外行用
-  `content-visibility` 跳过 layout/paint。修复后四条基准均无 >100ms Long Task，窗口
-  拖动、终端输入与动画不会再被一次大列表 commit 长时间阻塞。
-
-- **Markdown 表格内链接换行优化(方案 B)。**
-  MarkdownViewer 表格窄列里的链接(文字 + URL)原本只在空格处断行,文字留本行、
-  URL 挤下一行,视觉上像两条链接、点击区也分裂。现对 `td a` 设
-  `overflow-wrap: anywhere`,链接可在任意字符处断行、不撑宽表格(靠表格已有的
-  `overflow-x: auto` 横向滚动兜底)。代价是长 URL 会从中间断,但整条 `<a>` 仍是
-  一个节点,点哪半都生效。覆盖三种 markdown 风格(auto / github / custom)。
-
-- **终端 URL 链接点击打不开浏览器(T13 / v0.3.3)。**
-  `WebLinksAddon` 默认 handler 走无参 `window.open()`,被 window-manager 的
-  `setWindowOpenHandler` deny 成 null(deny 前正则拿到空 url → `shell.openExternal`
-  永不执行),故点 `https://`/`mailto:` 零反应。改为给 `WebLinksAddon` 传自定义
-  handler 直接走 IPC `SYSTEM_OPEN_EXTERNAL`(main 侧已白名单 http/https/mailto),
-  绕开脆弱的 window.open 链路。`setWindowOpenHandler` 保留作 OSC 8 / 其他
-  window.open 的安全兼底(拒 file:// / javascript: 等)。
-
-### 新增
-
-- **终端输出相对路径 → 可点链接(Feature F / v0.3.3)。** 终端里带斜杠的相对路径
-  (`src/x.ts:42`)现在变成可点链接:鼠标移上去出现下划线(xterm 内置),点击在右 dock
-  「已打开」面板只读打开该文件(相对 session.currentCwd 解析,复用 cmd:file-panel:open);
-  带 `:行号` 的路径打开后自动滚动到该行(不做高亮)。两种触发:(A) 自动链接 — xterm
-  自定义 link provider,STRICT 正则(要斜杠+扩展名,挡住属性访问 `.length`/`.map` 和裸
-  文件名,降误识别);(B) 右键菜单「在面板打开」— 选中终端文本后右键,选区文本直接丢给
-  main 解析(裸文件名也认,用户主动选中=意图明确)。URL 由现有 WebLinksAddon 优先接管。
-  SSH session 不启用(远程本地图不可达,套 SshUnsupported 模式)。文件不存在 → toast 提示,
-  不预探盘(hover 不发 IPC)。行号跳转走 renderer 端 pending-line-jump 缓存(不动 protocol/main)。
-  设计依据 ADR-027(T14 grilling 定稿)。TextViewer 新增 scrollToLine 能力(双 rAF 排在
-  useFileViewerScroll 的 restore 抑制之后)。
-
-- **Gallery 图片表代码块(Feature A / v0.3.3)。** Markdown 文档里 `` ` ``gallery ` ` `` ` 代码块
-  (每行一个图片链接:本地路径或 http(s) URL)渲染成幻灯片:一次一张、左右切换、缩略图条
-  快速跳转、指示器 `N/总数`、键盘 ←/→(gallery 聚焦时拦截)。点图用系统图片查看器打开。
-  交互参数按 T05 HITL 原型裁决(ADR-026):主图自适应流式(按比例,上限 480px)、
-  缩略图条 56px 单行横滚、网络图失败占位 + 重试 + ⚠计数(超时 10s 不自动重试)、
-  懒加载 ±1(窗口外骨架)。网络图在 daemon 下载到 workspace 的 `__marina_gallery__/`
-  缓存(绕开 prod CSP `img-src` 限制),随 workspace 回收;缓存命中不重复下载。
-  SSH 远程 session 的本地图不可达走 main 自然降级(失败占位),网络图正常。
-
-- **workspace 绑定/复用 + 文件面板状态持久化(Feature D / v0.3.3)。**
-  v0.3.3 最重的 feature(ADR-024)。workspaceId 与 sessionId 解耦,目录 =
-  `<root>/<workspaceId>/`,session 运行中可领养别的 workspaceId。CLI `marina workspace`
-  系列改查 main(workspaceId 解耦后 `$env:MARINA_WORKSPACE` 是 spawn 时陈旧值,
-  切换后退化为初始值,不可靠;ADR §2.1):`workspace`(查当前路径)、`workspace list`
-  (列命名 workspace)、`workspace bind --name X [--new]`(upsert:新→命名+pin;存在→切+
-  恢复快照)、`workspace new`(切新空临时)、`workspace unpin`(剥 name+pinned 退回
-  可回收;无 remove 防误删)。manifest schema v1→v2(加 name/createdAt/pinned/pathScope,
-  自动迁移旧 sessionId 当 workspaceId),pinned 免回收,name pathScope 内唯一。文件面板
-  状态快照(openedFiles/active/scroll/**代码块运行结果**)持久化到
-  `<workspace>/__marina_state__/file-panel.json`,bind 切换后自动恢复(滚动 500ms
-  debounce 落盘,不进逐字节热路径)。详见 ADR-024。
-
-- **命令面板(Feature G / v0.3.3)。**
-  第 4 个 dock 面板(ADR-027)。补足「终端被 AI coding agent 占着、没法瞄一眼命令输出」
-  的需求:AI 用 `marina run "<任意命令字符串>"` 推送指令,Marina 复用 CodeBlockRunner
-  (ADR-023)跑它(bash,在 session.currentCwd 下,不经 PTY),把输出渲染成 markdown
-  进面板。多 tab(同 command 去重 upsert)+ per-指令 刷新策略(默认仅前台跑、少数
-  后台轮询走 BackgroundWorkScheduler ADR-021)+ 手动重跑。输出里的 http(s)/mailto
-  链接可点(走系统浏览器)。SSH session 拒绝(对称 Git/代码块)。设计上是通用面板
-  (map/ticket 只是第一个用例),不内建 GitHub 耦合,避免「跨 session 上下文累积」红线。
-  持久化(command-panel.json,套用 ADR-024 机制)接口已就绪,触发器待 Feature D 的
-  renderer 恢复/flush 接线一起完成。
-
-- **侧栏收藏分组 + 拖拽排序(Feature E.1+E.2 / v0.3.3)。**
-  收藏路径告别平铺:加**一级分组**虚拟容器(GroupNode,path 身份不变),分组可折叠/重命名/
-  删组(删组子路径归未分组,绝不删 path)。**@dnd-kit 拖拽**:收藏路径可组内排序 + 跨组移动
-  (拖完发统一分层 BOOKMARK_REORDER {ungrouped, groups[{id,childOrder}]});各路径下终端
-  可同 path 内拖序(决策 #15:服务端内存真值,不落盘,重启重置)。临时/最近不可分组/拖序
-  (决策 #13)。分组折叠态走 L2 偏好 usePanelPreference(附录 G)。bookmarks.json schema
-  v1→v2 自动迁移(幂等/原子/损坏回退;旧 path 归未分组)。新依赖 @dnd-kit/core +
-  @dnd-kit/sortable(npm 核活跃度已验,2024-12 仍在维护)。详见 ADR-025。
-
-- **远程截图(`marina screenshot`)—— agent 自测 enabler(T12 / v0.3.3)。**
-  新增 `GET /screenshot?terminal=<id>` HTTP 路由(Bearer 鉴权,同其他路由)截该 session
-  owner window 的屏返 `image/png`;capture 回调注入式(`attachWindowCapture`,index.ts
-  闭合 sessionManager→ownerWindowId→windowManager.getById→webContents.capturePage→toPNG),
-  服务层不引 electron 保持可测。CLI `marina screenshot [PATH]`(`Invoke-WebRequest -OutFile`)
-  默认落 `<workspace>/marina-screenshot-<时间戳>.png` 并打印路径 —— agent 截图后 `read` 即可
-  自测 UI,消除人工截图依赖(T05/T06 类 HITL)。无 owner/窗口销毁/未注入分别返 400/503。
-
-- **Markdown 文档里的本地文件链接 → 面板只读查看(Feature B / v0.3.3)。**
-  MarkdownViewer 的链接按 scheme 分流(决策 #4):`http://`/`https://`/`mailto:`
-  外链仍走系统浏览器;页内 `#锚点` 滚动;**其余一律当本地文件**,相对 md 文件
-  所在目录解析后进文件面板**只读查看**(复用 FilePanelService 状态机:加 tab +
-  切 active + watcher)。新增 `cmd:file-panel:open-path` 通道 + `openFileFromMarkdown`
-  方法,与 `readImageAsset`(图片)同源安全模型:mdPath 成员校验 + main 端 resolve
-  - stat。文件不存在/不是文件/源 md 不在面板 → toast 提示。链接约定写进
-    `show-in-marina` SKILL(本地文件直接写路径→面板;网页写完整 `https://` URL→
-    浏览器)。
-
-- **Diff 视图「打开源文件」入口(Feature C / v0.3.3)。** DiffViewer 左上角新增
-  工具栏,放 `file-text` 按钮;点击走 `cmd:git:open-file` 在文件面板**只读**打开
-  diff 对应文件的工作区原文(非 diff)。路径从 diff 文本的 `+++ b/<path>` 解析
-  (单文件 diff 适用;多文件 diff 因无法确定目标文件而禁用按钮);删除文件
-  (`+++ /dev/null`)自动禁用按钮并 tooltip「文件已删除」。与 Git 面板右键「打开
-  文件」复用同一通道。纯路径解析逻辑抽到 `src/shared/diff-path.ts`(单测覆盖
-  normal/added/deleted/renamed/多文件/含空格路径/二进制等场景)。
-
-- **侧栏 terminal 条目状态色条 + 缩进(Feature E.3 / v0.3.3,T06 视觉定稿)。**
-  session 行的状态指示从 9px 圆点改为**左侧竛条「变宽覆盖整行」动画**。T06 HITL
-  定稿(用户文字描述 + 原型确认,代替截图):idle = 左侧 3px 细竛条(info 色);
-  active = 细条 `cubic-bezier(0.16,1,0.3,1)` 1s 变宽覆盖整个背景 + **文字同步反色**
-  (bg-primary)+ 稳态 opacity 脉冲(2.6s,延迟 1s 等变宽完成)。active→idle 是
-  idle→active 的逆变化(用 `transition` 双向,非 `@keyframes` 定格)。配色用
-  `var(--color-info)`(跟主题变,rose-pine=青绿),不 color-mix 派生。exited 复用
-  灰细条 + 现有 exit-code 图标 + 整行 dim(色条只管 idle/active 两态)。
-  `prefers-reduced-motion` 关闭动画(active 直接铺满静止)。已知取舍:info 满底 +
-  反色在 cutie(淡紫)对比度不足(~2.3:1)、github-dark 满屏高饱和蓝扎眼,用户
-  看过原型矩阵后接受(换取强状态感知;替代的「洗涤 wash」方案通用可读但覆盖感弱
-  被否)。详见 `docs/方案-E3色条动画-20260802.md`。
-  session 行加一级缩进(`--tree-indent-unit`,附录 G 单一真相源)与父 path 行形成层级。
-  exited check/X 图标在行内(竛条太窄),成功绿勾 / 失败红叉。
-
-### 修复
-
-- **修复运行 alt-screen TUI(Claude Code / Pi / vim 等)时终端滚动条偶发跳到
-  最顶部的问题(SCROLL-2)。** 根因是 xterm 在 alternate/normal buffer 切换
-  (`?1049h`/`?1049l`)时会 fire 一次 `onScroll`,而滚动位置记忆的 `onScroll`
-  监听未区分 buffer 类型,把切换瞬间的 `ydisp` 当成用户滚动写进 store;下次
-  replay 重建执行 `scrollToLine(topLine)` 时把视口拉到 scrollback 顶部。修复:
-  `onScroll` 回调顶部加 `if (buf.type !== 'normal') return;` 守卫 —— alt buffer
-  本就无 scrollback,滚动位置记忆只对 normal buffer 有意义。详见
-  `docs/issues/scroll-2-alt-buffer-viewport-jump-to-top.md`。
+- 右键终端链接不再触发左键操作(四个 activate 入口统一 `button !== 0` 守卫);
+- 窗口缩窄时文件面板 dock 不再把终端挤成残渣(渲染期 CSS 钳制:终端可用地板
+  360px、dock 下限 280px);
+- pi 压缩上下文期间侧栏不再误显示闲置(bridge 补监听 compact 事件);
+- 9 个文件面板/图片 handler 补 owner 校验(非 owner 窗口不能读写别人的面板);
+- session 销毁回收 panel UI 缓存(修无界增长);
+- frameless 窗口错误态统一外壳(`FramelessShell` + `LocalAppearanceProvider`,
+  4 条握手/错误分支都有标题栏和本机主题);
+- 未声明 `--color-*` token 清扫(5 个 token / 18 处,网页查看器边框一直显示
+  故障探针粉色的既有 bug);
+- tab 分隔线粉色 / 换行残留;Markdown 盘符绝对路径链接点击无反应
+  (react-markdown urlTransform 误剥);快照恢复 kind 重检测;CSP 拼接缺分号;
+- bridge 亲缘读在大父文件上静默失效(改 readline 流式全文件扫描)。
 
 ## [0.3.2] — 2026-08-01
 
