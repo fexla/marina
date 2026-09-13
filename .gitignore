@@ -65,6 +65,9 @@ EasyTerm-userdata-*/
 # transcripts, repository context, or other internal review material.
 .pi-subagents/
 
+# ZCode (AI coding agent) local workspace state — plans and per-machine notes
+.zcode/
+
 # Local PR review notes / drafts — not for upstream
 docs/pr-reviews/
 
