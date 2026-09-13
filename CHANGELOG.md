@@ -7,6 +7,23 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+### Added
+
+- **安卓远程客户端首批(ADR-042,方案-安卓远程客户端-20260914)**:新增
+  `apps/mobile/` Capacitor 工程 —— Android 端 Marina 为纯远程客户端(无本地
+  PTY/SSH),复用共享 renderer 源码 + `window.api` 的 web shim(local-control →
+  localStorage/浏览器 API 等价实现;backend-data → RemoteTransport over WS,
+  建连逻辑与新抽出的 `@shared/remote-connect` 与 Electron preload 共用单一
+  真相源)。MobileBoot 启动序:连接管理(添加电脑 host+密码,自动重连上次)/
+  连接中/错误态(端口扫描 32780-32789 + 错误分类诊断),连接成功后动态 import
+  renderer 入口零改动复用。移动端适配第一版:窄屏(<900px)侧栏改左缘抽屉
+  (浮球按钮,选 session 自动收)、隐藏桌面自绘标题栏、safe-area、触屏
+  touch-action 基础;平板/宽屏自动回落桌面三栏。web 构建通过(2156 模块);
+  浏览器端到端验证:空态/添加表单/连接失败错误链路(扫描+诊断+重试)。
+  Capacitor android 平台已生成(appId `so.marina.app`);APK 构建链待 Android
+  SDK 组件装完(网络受限进行中)。已知打磨项:端口扫描全失败耗时 ~30s(TCP
+  失败后仍等满 auth 超时,Electron 端同款既有行为)。
+
 ## [0.3.3] — 2026-09-14
 
 > 相对 0.3.2 的主题版本:**AI 交互深水区** —— pi 对话与 Marina 的全链路集成
