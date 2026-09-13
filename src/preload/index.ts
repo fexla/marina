@@ -22,8 +22,6 @@ import { platform, release } from 'os';
 import {
   COMMAND_CHANNELS,
   EVENT_CHANNELS,
-  REMOTE_DAEMON_PORT_MAX,
-  REMOTE_DAEMON_PORT_MIN,
   getCommandRouting,
   type CommandEnvelope,
   type GetRemoteConnectionPayload,
@@ -34,6 +32,7 @@ import {
   type CommandPayload,
   type CommandResponse,
 } from '@shared/command-contracts';
+import { connectRemoteDaemon } from '@shared/remote-connect';
 import { RemoteTransport, ConnectError, ConnectErrorCode, type WSLike } from './remote-transport';
 
 /**
@@ -178,73 +177,11 @@ function ensureTransport(): Promise<void> {
           '[preload] 该远程电脑配置不完整或连接密码无法解密,请在设置里重新保存连接密码。',
         );
       }
-      const { host, token } = res.connection;
-      // profile 数据不全 → 明确报 PROFILE_INCOMPLETE(本地数据问题,非网络)。
-      if (!host || !token) {
-        throw new ConnectError(
-          ConnectErrorCode.PROFILE_INCOMPLETE,
-          `[preload] 该远程电脑配置不完整(缺 ${!host ? 'IP' : '密码'}),请在设置里补全。`,
-        );
-      }
-      // 端口扫描:从 32780 起,串行尝试 32780-32789。端口关闭 TCP RST 快速失败,
-      // 遇开放的错误端口才等握手超时(1.5s)。找到第一个握手通过的端口。
-      // 设计动机(用户需求):client 只需 IP,不用输端口。daemon 默认 32780,
-      // 扫描一小段兑底 daemon 端口被占改用别的。
-      const PORT_FROM = REMOTE_DAEMON_PORT_MIN;
-      const PORT_COUNT = REMOTE_DAEMON_PORT_MAX - REMOTE_DAEMON_PORT_MIN + 1;
-      let portFound: number | null = null;
-      // 收集各端口尝试的错误码,全失败时选最有价值的报告给用户。
-      const tried: Array<{ port: number; code: string; message: string }> = [];
-      for (let i = 0; i < PORT_COUNT; i++) {
-        const port = PORT_FROM + i;
-        const probe = new RemoteTransport({
-          url: `ws://${host}:${port}`,
-          token,
-          wsFactory: browserWs,
-          authTimeoutMs: 3000,
-          autoReconnect: false,
-        });
-        try {
-          await probe.ready;
-          probe.close();
-          portFound = port;
-          break;
-        } catch (err) {
-          probe.close();
-          const code = err instanceof ConnectError ? err.code : 'UNKNOWN';
-          const message = err instanceof Error ? err.message : String(err);
-          tried.push({ port, code, message });
-        }
-      }
-      if (portFound === null) {
-        // 选最有价值的错误码(优先级:AUTH_REJECTED > WS_HANDSHAKE > AUTH_TIMEOUT > TCP_UNREACHABLE)。
-        // AUTH_REJECTED 最有价值 —— 说明某个端口是 Marina daemon 但密码错(用户改密码即可)。
-        // 全部 TCP_UNREACHABLE → server 根本没起 / 网络不通(最常见)。
-        const priority: Record<string, number> = {
-          AUTH_REJECTED: 0,
-          WS_HANDSHAKE: 1,
-          AUTH_TIMEOUT: 2,
-          TCP_UNREACHABLE: 3,
-          UNKNOWN: 4,
-        };
-        const best = [...tried].sort(
-          (a, b) => (priority[a.code] ?? 9) - (priority[b.code] ?? 9),
-        )[0];
-        const bestCode = best?.code ?? 'TCP_UNREACHABLE';
-        const triedCodes = tried.map((t) => t.code);
-        // 构造给 renderer 的诊断信息(含 host/端口范围/最有价值原因)。
-        throw new ConnectError(
-          bestCode as ConnectErrorCode,
-          `[preload] 连接 ${host}:${PORT_FROM}-${PORT_FROM + PORT_COUNT - 1} 全部失败。` +
-            `最有价值原因:${best?.message ?? '无响应'}。` +
-            `尝试详情:${tried.map((t) => `${t.port}=${t.code}`).join(', ')}。` +
-            `triedCodes=${triedCodes.join(',')}`,
-        );
-      }
-      // 重建带重连回调的 transport 连找到的端口(扫描用的 probe 已 close)
-      const t = new RemoteTransport({
-        url: `ws://${host}:${portFound}`,
-        token,
+      // 端口扫描(32780-32789)+ 错误分类 + 建立带自动重连的 transport 抽到
+      // @shared/remote-connect(v0.3.4,ADR-042):Electron 远程窗口与 Android
+      // WebView 壳(apps/mobile 的 window.api shim)共用同一份建连逻辑,防双份漂移。
+      remoteTransport = await connectRemoteDaemon({
+        connection: { host: res.connection.host, token: res.connection.token },
         wsFactory: browserWs,
         // 阶段3 断线重连:成功后 reload 重新拉 snapshot(session owner 在断线时
         // 被 daemon 自动 release,重连后要重建视图)。reload 丢 renderer 状态可接受
@@ -260,8 +197,6 @@ function ensureTransport(): Promise<void> {
           console.error('[preload] remote reconnect failed (terminal):', reason);
         },
       });
-      await t.ready;
-      remoteTransport = t;
     } catch (err) {
       // 远程连接失败:绝不静默回退本地!每窗口后端模型下,用户明确要开远程窗口,
       // 失败必须报错 —— 否则窗口偷偷变本地,用户看到本地数据会以为“打开错了/还是本地窗口”。

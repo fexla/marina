@@ -26,8 +26,9 @@
  *   onReconnectSuccess reload/重拉 snapshot。握手前断线不重连(算初始化失败)。
  */
 
-import { randomUUID } from 'node:crypto';
-
+// UUID 用全局 WebCrypto(Electron preload 的 Node 20+ 与浏览器/WebView 都有
+// globalThis.crypto.randomUUID),不用 node:crypto —— 让本文件可被 web 端
+// (apps/mobile 的 window.api shim)直接复用,同一份帧协议实现不漂移。
 /** 帧类型,与 transport-ws.ts 对称(import 会拉 main 依赖链,这里重声明)。 */
 interface ClientCommandFrame {
   type: 'command';
@@ -196,7 +197,7 @@ export class RemoteTransport {
   invoke<P = unknown>(channel: string, payload: unknown): Promise<P> {
     if (this.closed) return Promise.reject(new Error('[remote-transport] 已关闭'));
     if (this.reconnecting) return Promise.reject(new Error('[remote-transport] 重连中'));
-    const requestId = randomUUID();
+    const requestId = globalThis.crypto.randomUUID();
     const envelope = { windowId: this.clientId ?? '', requestId, payload };
     const frame: ClientCommandFrame = { type: 'command', channel, envelope };
     return new Promise<P>((resolve, reject) => {
