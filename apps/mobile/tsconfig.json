@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["vite/client"],
+    "baseUrl": ".",
+    "paths": {
+      // 与 vite.config.ts 的 alias 一致;额外覆盖 mobile 源码里引用的
+      // preload(remote-transport / Api 类型)。
+      "@shared/*": ["../../src/shared/*"],
+      "@renderer/*": ["../../src/renderer/*"]
+    }
+  },
+  "include": ["src", "../../src/renderer/global.d.ts"]
+}

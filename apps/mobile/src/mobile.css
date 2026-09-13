@@ -1,0 +1,283 @@
+/**
+ * @file apps/mobile/src/mobile.css
+ * @purpose Android 壳专属样式:MobileBoot(连接管理)UI + 共享 renderer 的
+ *   移动端适配(第一版,ADR-042 决策 4「先做一版」)。
+ *
+ * @分层:
+ * 1. MobileBoot 样式(.mobile-boot-*):不依赖主题系统(此时还没连上 daemon,
+ *    拿不到主题;用自带的深色中性配色)。
+ * 2. renderer 移动适配(媒体查询 @media (max-width: 900px)):共享 renderer 的
+ *    DOM 结构在窄屏的等价布局 —— 隐藏桌面自绘标题栏、侧栏改抽屉(配合
+ *    App.tsx 的 isMobile 分支渲染浮球按钮)、dock 面板宽度钳制。
+ *    桌面端(Electron 窗口 >= 900px)这些规则零命中,不影响 PC。
+ *
+ * @不要在这里做的事:
+ * - 不要改主题变量(主题来自 daemon 下发的 settings,断连时 boot 界面也该好看)
+ * - 不要写死px字号 —— 用根字号/相对单位,配合系统字体缩放
+ */
+
+/* ════════════════════════════════════════════════════════════════
+ * 1. MobileBoot(连接管理 / 连接中 / 错误态)
+ * ════════════════════════════════════════════════════════════════ */
+
+.mobile-boot {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  padding-top: calc(16px + env(safe-area-inset-top, 0px));
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  background: #16141f; /* Rose Pine base 近似,未连上 daemon 前的固定配色 */
+  color: #e0def4;
+  font-family: system-ui, sans-serif;
+  z-index: 1000;
+}
+
+.mobile-boot-card {
+  width: 100%;
+  max-width: 420px;
+  max-height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.mobile-boot-title {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.mobile-boot-sub {
+  font-size: 14px;
+  opacity: 0.7;
+}
+
+.mobile-boot-spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 3px solid rgba(224, 222, 244, 0.2);
+  border-top-color: #e0def4;
+  animation: mobile-boot-spin 0.9s linear infinite;
+  margin: 12px auto;
+}
+
+@keyframes mobile-boot-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.mobile-boot-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mobile-boot-profile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(224, 222, 244, 0.12);
+  background: rgba(224, 222, 244, 0.05);
+  color: inherit;
+  text-align: left;
+  /* 触屏目标 >= 48px */
+  min-height: 48px;
+}
+
+.mobile-boot-profile:active {
+  background: rgba(224, 222, 244, 0.12);
+}
+
+.mobile-boot-profile-name {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.mobile-boot-profile-host {
+  font-size: 12px;
+  opacity: 0.55;
+  font-family: ui-monospace, monospace;
+}
+
+.mobile-boot-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mobile-boot-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  opacity: 0.8;
+}
+
+.mobile-boot-form input {
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(224, 222, 244, 0.2);
+  background: rgba(224, 222, 244, 0.06);
+  color: inherit;
+  font-size: 16px; /* >=16px 防止 iOS/Android 聚焦时自动放大 */
+}
+
+.mobile-boot-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mobile-boot-btn {
+  flex: 1;
+  min-height: 44px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(224, 222, 244, 0.2);
+  background: transparent;
+  color: inherit;
+  font-size: 15px;
+}
+
+.mobile-boot-btn.primary {
+  background: rgba(224, 222, 244, 0.14);
+  border-color: rgba(224, 222, 244, 0.3);
+}
+
+.mobile-boot-error {
+  margin: 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: rgba(235, 111, 146, 0.1);
+  color: #eb6f92; /* Rose Pine love */
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * 2. 共享 renderer 的移动端适配(第一版)
+ *    媒体查询限窄屏;桌面 Electron 窗口宽度通常 >= 1000px,零命中。
+ * ════════════════════════════════════════════════════════════════ */
+
+@media (max-width: 900px) {
+  /* 2.1 隐藏桌面自绘标题栏(WindowChrome 根类名 .app-titlebar):Android 有
+     系统状态栏,最小化/最大化/关闭与拖拽区在移动端无意义。 */
+  .app-titlebar {
+    display: none !important;
+  }
+
+  /* 2.2 内容壳从标题栏下方起改为覆盖全屏(标题栏隐藏后回收它的高度),
+     safe-area 让开系统状态栏与导航条。 */
+  .app-root.with-shell .app-content-shell {
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  /* 2.3 侧栏改抽屉(配合 App.tsx 的 isMobile 分支:.app-body 加
+     .mobile 类,侧栏外层包 .mobile-sidebar-backdrop / .mobile-sidebar-drawer)。
+     抽屉从左缘滑入,宽度 82vw 上限 340px。 */
+  .app-body.mobile {
+    position: relative;
+  }
+
+  .mobile-sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 900;
+  }
+
+  .mobile-sidebar-drawer {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(82vw, 340px);
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    z-index: 901;
+    overflow: hidden auto;
+    background: var(--base, #16141f);
+    box-shadow: 8px 0 32px rgba(0, 0, 0, 0.5);
+  }
+
+  .mobile-sidebar-drawer .sidebar {
+    width: 100% !important;
+    min-width: 0 !important;
+    border-right: none;
+  }
+
+  /* 2.4 浮球按钮(开抽屉):固定左上角,不侵入 TabBar 组件内部。 */
+  .mobile-sidebar-fab {
+    position: fixed;
+    top: calc(8px + env(safe-area-inset-top, 0px));
+    left: 8px;
+    z-index: 800;
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    border: 1px solid rgba(128, 128, 128, 0.35);
+    background: var(--surface, rgba(30, 28, 40, 0.9));
+    color: var(--text, #e0def4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    line-height: 1;
+    /* 避免被 MainPane 内容遮挡点击 */
+    touch-action: manipulation;
+  }
+
+  /* 2.5 右 dock(文件树/Git/已打开面板)在窄屏改为底部 sheet:
+     面板 dock 改纵向堆叠占下方 55vh。第一版用布局翻转,交互打磨后续迭代。 */
+  .panel-dock-host,
+  .session-ui-layout,
+  .app-body .main-pane {
+    min-width: 0;
+  }
+
+  /* 2.6 触屏滚动:全局允许垂直 pan,禁掉浏览器长按选择的默认干扰
+     (终端内的文本选择由 xterm 自己接管)。 */
+  .app-root {
+    -webkit-user-select: none;
+    user-select: none;
+    /* 双击缩放交给应用逻辑(字号调整),禁浏览器原生 double-tap-zoom */
+    touch-action: manipulation;
+  }
+
+  .app-root .xterm,
+  .app-root .xterm * {
+    /* 终端区内允许系统 pan-y 滚动 scrollback(xterm 无内建触屏滚动,第一版
+       借用原生滚动容器;选择/点击与滚动的冲突在 CP-A2 打磨) */
+    touch-action: pan-y pinch-zoom;
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  /* 2.7 设置页全屏(桌面是右侧 overlay,移动端全屏更自然) */
+  .settings-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 950;
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  /* 2.8 上下文菜单/弹窗在窄屏的可用性:宽度钳制 */
+  .context-menu,
+  .modal-overlay .modal-card {
+    max-width: 92vw;
+  }
+}

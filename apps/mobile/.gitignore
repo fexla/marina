@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Web build output(Capacitor webDir;cap copy 会拷进 android 工程)
+dist/
+
+# Capacitor generated sync artifacts(android assets 里的副本)
+android/app/src/main/assets/public/
+android/capacitor-cordova-android-plugins/
+
+# Gradle / Android Studio
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+
+# Keystore(签名密钥绝不入库)
+*.keystore
+!debug.keystore
+
+# Android build outputs
+android/app/build/
+android/build/
+android/.gradle/
+android/local.properties

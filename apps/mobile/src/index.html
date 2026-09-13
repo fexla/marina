@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      user-scalable=no:系统级双指缩放与 xterm 的 pinch(调字号)以及终端内
+      手势冲突,禁掉;字号调整走应用内设置(双指缩放 = Ctrl+滚轮 的触屏等价
+      物由 mobile 层自己实现,见 ADR-042 决策 4)。
+      viewport-fit=cover:状态栏沉浸式布局(Capacitor StatusBar overlay)。
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="dark light" />
+    <title>Marina</title>
+  </head>
+  <body>
+    <!-- MobileBoot(连接管理/连接中/错误态)先挂 #boot,连接成功后 unmount 并
+         动态 import renderer 入口挂 #root。两个根节点隔离,renderer 源码零改动。 -->
+    <div id="boot"></div>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>
