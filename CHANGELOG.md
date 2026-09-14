@@ -24,6 +24,28 @@
   环境与踩坑说明)。已知打磨项:端口扫描全失败耗时 ~30s(TCP
   失败后仍等满 auth 超时,Electron 端同款既有行为)。
 
+### Fixed
+
+- **安卓端第三批(用户勘误:交互系统性缺陷)**:
+  - **状态栏遮挡**:targetSdk 35 默认 edge-to-edge 而 WebView 的
+    `env(safe-area-inset-*)` 恒为空,顶部被系统状态栏盖住 → MainActivity
+    把 systemBars inset 换算 CSS px 注入 `--android-inset-top/bottom`
+    (变化时推送 + `MarinaNative` 桥同步拉取兜底),mobile.css 全部
+    safe-area 位消费该变量。
+  - **返回键无响应**:Capacitor 默认 goBack 对 SPA 无效 → 原生转发
+    `__marinaAndroidBack` → 'marina-back' 事件逐层消费(设置子页 → 设置
+    详情 → 设置列表 → 侧栏抽屉 → 面板 dock → 回后台 moveTaskToBack,
+    绝不杀 app);设置 header 的 ‹ 走同一事件。
+  - **设置返回按钮异常**(返回后显示红×):两因 —— ‹ 一刀切跳层(改
+    back-bus 逐层退)+ 触屏 `:hover` 粘滞(`@media (hover: none)` 还原)。
+  - **键盘收起后无法再唤起**:xterm 触摸处理吃掉 tap 默认行为 →
+    TerminalView capture 阶段识别单指短 tap 主动 focus helper-textarea
+    (用户手势上下文内,IME 正常弹出);键盘判定改基线法兼容两种壳模式。
+  - **右侧面板消失**:panel-dock 从 `display:none` 改为右缘全高 overlay
+    (min(92vw,420px),collapsed=右缘把手);展开状态与 PC 同一数据源。
+  - 新增长期规范 `docs/standards/mobile-interactions.md`(断点双处同步/
+    返回键层级表/键盘/触屏规则/一致性检查清单)。
+
 - **安卓端移动交互第二批(设置可用性/比例适配/终端触屏生死线)**:
   - **设置页单栏两级导航**:桌面双栏(200px 侧导航 + 详情)在 411px 竖屏挤压
     不可用 → 移动布局改单栏(分类列表 → 详情页滑入,header ×/‹ 双态);依赖
