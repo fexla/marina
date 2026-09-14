@@ -2288,6 +2288,25 @@ export function TerminalView({
     };
   }, [selectOnCopy, session.id]);
 
+  // 移动端软键盘弹起时把终端滚到底(ADR-042)。App.tsx 的 useMobileViewportFix
+  // 已把布局压到键盘上沿、ResizeObserver 已 re-fit 行数;但 xterm fit 只改
+  // viewport 行数,不自动滚到最新行 —— 输入行(提示符)会留在屏幕外。
+  // 桌面 Electron 下 visualViewport.height === innerHeight,阈值永不触发,零影响。
+  useEffect(() => {
+    if (!active) return undefined;
+    const vv = window.visualViewport;
+    if (!vv) return undefined;
+    const onVvResize = (): void => {
+      if (window.innerHeight - vv.height > 120) {
+        termRef.current?.scrollToBottom();
+      }
+    };
+    vv.addEventListener('resize', onVvResize);
+    return () => {
+      vv.removeEventListener('resize', onVvResize);
+    };
+  }, [active]);
+
   // CP-4 勘误 #6/#9:Ctrl+F / Esc 走 attachCustomKeyEventHandler (见 xterm
   // mount effect),不再用 wrapper 的 onKeyDown — 后者优先级低于 xterm 内部
   // keydown,在终端 focus 时根本拿不到。

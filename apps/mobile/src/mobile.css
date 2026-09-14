@@ -194,11 +194,29 @@
 }
 
 /* ════════════════════════════════════════════════════════════════
- * 2. 共享 renderer 的移动端适配(第一版)
- *    媒体查询限窄屏;桌面 Electron 窗口宽度通常 >= 1000px,零命中。
+ * 2. 共享 renderer 的移动端适配
+ *    断点与 src/renderer/mobile.ts 的 QUERY 同步维护(两处一起改):
+ *    窄屏(竖屏手机/竖屏平板)或「横屏矮窗」(横屏手机,如 914x411)。
+ *    桌面 Electron 常规窗口(宽 >900 且高 >500)零命中,不影响 PC。
  * ════════════════════════════════════════════════════════════════ */
 
-@media (max-width: 900px) {
+@media (max-width: 900px), (max-height: 500px) and (orientation: landscape) {
+  /* 2.0 软键盘视口适配:Android WebView 沉浸模式下系统不 resize layout
+     viewport(innerHeight 恒定,visualViewport 被键盘压缩)。App.tsx 的
+     useMobileViewportFix 把 visualViewport.height 写到 :root 的
+     --marina-mobile-vh,这里让 app-body 用它作高度 —— 键盘弹起时整个
+     应用(含底部辅助键条)压到键盘上沿,终端输入行不再被盖住。
+     无该变量时回退 100%(桌面 Electron 窄窗口不写这个变量,行为不变)。 */
+  .app-body.mobile {
+    height: var(--marina-mobile-vh, 100%);
+  }
+
+  /* 键盘弹出时浮球浮在键盘上没有意义还会挡键条,隐藏
+     (类由 useMobileViewportFix 挂到 <html> 上)。 */
+  html.mobile-keyboard-open .mobile-sidebar-fab {
+    display: none;
+  }
+
   /* 2.1 隐藏桌面自绘标题栏(WindowChrome 根类名 .app-titlebar):Android 有
      系统状态栏,最小化/最大化/关闭与拖拽区在移动端无意义。 */
   .app-titlebar {
@@ -293,8 +311,10 @@
   .app-root .xterm,
   .app-root .xterm * {
     /* 终端区内允许系统 pan-y 滚动 scrollback(xterm 无内建触屏滚动,第一版
-       借用原生滚动容器;选择/点击与滚动的冲突在 CP-A2 打磨) */
-    touch-action: pan-y pinch-zoom;
+       借用原生滚动容器;选择/点击与滚动的冲突在 CP-A2 打磨)。
+       注意不给 pinch-zoom:双指缩放由 TerminalAuxBar 的 usePinchFontSize
+       接管(调字号而不是缩放页面)。 */
+    touch-action: pan-y;
     -webkit-user-select: text;
     user-select: text;
   }
@@ -307,9 +327,107 @@
     padding-top: env(safe-area-inset-top, 0px);
   }
 
+  /* 2.7.1 设置页单栏两级导航(SettingsView 的 .settings-body.mobile):
+     第一级 = 分类列表全宽;点分类后 .detail-open,详情页从右滑入覆盖列表,
+     header 的 × 变 ‹ 返回。桌面双栏规则(global.css)在移动媒体查询下被
+     以下覆盖。 */
+  .settings-body.mobile {
+    position: relative;
+  }
+
+  .settings-body.mobile .settings-nav {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    flex: 1 1 auto;
+    padding: 8px;
+    gap: 4px;
+  }
+
+  .settings-body.mobile .settings-nav-item {
+    /* 触屏目标 >= 44px(桌面 8px 10px 太小,手指点不准) */
+    min-height: 44px;
+    padding: 10px 14px;
+    font-size: 14px;
+  }
+
+  .settings-body.mobile .settings-detail {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    transform: translateX(100%);
+    transition: transform 0.18s ease-out;
+    padding: 16px;
+    box-shadow: -8px 0 32px rgba(0, 0, 0, 0.4);
+  }
+
+  .settings-body.mobile.detail-open .settings-detail {
+    transform: none;
+  }
+
+  /* 设置详情里的控件行在窄屏的可用性:标签列 + 控件列改为纵向堆叠,
+     触屏选择控件(下拉/数字输入)目标 >= 44px。 */
+  .settings-body.mobile .settings-row,
+  .settings-body.mobile .settings-field {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .settings-body.mobile .settings-input,
+  .settings-body.mobile select,
+  .settings-body.mobile .settings-button {
+    min-height: 40px;
+    font-size: 15px;
+  }
+
   /* 2.8 上下文菜单/弹窗在窄屏的可用性:宽度钳制 */
   .context-menu,
   .modal-overlay .modal-card {
     max-width: 92vw;
+  }
+
+  /* 2.9 终端辅助键条(TerminalAuxBar):渲染在 .terminal-workspace 内、
+     TerminalDeck 的下方(不进 Deck —— deck-slot 是 absolute inset:0 会盖住
+     它)。workspace 改纵向 flex:deck flex:1 占满,键条一行沉底。 */
+  .terminal-workspace {
+    flex-direction: column;
+  }
+
+  .terminal-aux-bar {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 6px;
+    padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+    overflow-x: auto;
+    background: var(--surface, #1f1d2e);
+    border-top: 1px solid var(--inactive, rgba(128, 128, 128, 0.2));
+    /* 键条自身不参与双指缩放;点击不触发 300ms 延迟 */
+    touch-action: pan-x manipulation;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .terminal-aux-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .terminal-aux-key {
+    flex: 0 0 auto;
+    min-width: 44px;
+    min-height: 40px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--inactive, rgba(128, 128, 128, 0.3));
+    background: var(--base, #191724);
+    color: var(--text, #e0def4);
+    font-size: 13px;
+    font-family: inherit;
+    line-height: 1;
+  }
+
+  .terminal-aux-key:active {
+    background: var(--iris, #c4a7e7);
+    color: var(--base, #191724);
   }
 }

@@ -28,7 +28,7 @@ import { WindowChrome } from './components/WindowChrome';
 import { ContextMenuProvider } from './components/ContextMenu';
 import { ToastProvider } from './components/Toast';
 import { ModalProvider } from './components/Modal';
-import { useIsMobile } from './mobile';
+import { useIsMobile, useMobileViewportFix } from './mobile';
 import { LanguageProvider } from './components/LanguageProvider';
 import { LastSessionConfirmBridge } from './components/LastSessionConfirmBridge';
 import { WebDownloadBridge } from './components/WebDownloadBridge';
@@ -217,6 +217,9 @@ function ConnectedShell({
   // 抽屉开闭是纯视图态(不进 store —— 桌面端无此概念,窗口 resize 跨过断点
   // 时随组件重渲染自然重置)。
   const isMobile = useIsMobile();
+  // 软键盘弹起时把 visualViewport.height 写到 :root(mobile.css 消费),
+  // 否则 Android WebView 沉浸模式下布局不收缩、终端输入行被键盘盖住。
+  useMobileViewportFix(isMobile);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   // 选中 session(点 .session-item)或双击路径后自动收抽屉 —— 事件委托实现,
   // 不给 Sidebar 加 prop(保持桌面端组件接口零移动端概念)。
