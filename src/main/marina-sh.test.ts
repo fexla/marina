@@ -163,7 +163,9 @@ function runMarinaSh(
       clearTimeout(timer);
       resolveFn({ status: null, stdout, stderr, timedOut: false });
     });
-    child.on('exit', (code) => {
+    child.on('close', (code) => {
+      // close 而非 exit:快速退出的子进程 stdio data 事件可能晚于 exit 派发,
+      // 在 exit 时 resolve 会丢失尾部输出(高负载下必现,marina.sh 空输出假故障)
       clearTimeout(timer);
       resolveFn({ status: code, stdout, stderr, timedOut: false });
     });

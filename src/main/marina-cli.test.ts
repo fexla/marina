@@ -227,7 +227,9 @@ function runMarinaBash(
       clearTimeout(timer);
       resolve({ status: null, stdout, stderr, error: err, timedOut: false });
     });
-    child.on('exit', (code) => {
+    child.on('close', (code) => {
+      // close 而非 exit:exit 时 stdio data 事件可能未派发完,快速退出的子进程
+      // 会丢尾部输出(高负载下必现)
       clearTimeout(timer);
       resolve({ status: code, stdout, stderr, timedOut: false });
     });
