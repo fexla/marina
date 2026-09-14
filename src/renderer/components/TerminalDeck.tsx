@@ -1,20 +1,22 @@
 /**
  * @file TerminalDeck.tsx
- * @purpose 保留本窗口访问过的 xterm 实例；切 session 只切换可见 slot，不销毁/
- * 重放终端，从源头保留 xterm viewport、selection、normal/alternate buffer 状态。
+ * @purpose 保留本窗口访问过的 xterm 实例;切 session 只切换可见 slot,不销毁/
+ *   重放终端,从源头保留 xterm viewport、selection、normal/alternate buffer 状态。
  *
  * @关键设计:
- * - 最多缓存 10 个 session(LRU)，对齐项目 10-session 内存验收基线；超限才 unmount。
- * - inactive slot 使用 visibility:hidden + inert，保留真实几何与 Terminal 对象，
- *   但不能 focus/input；只有 active slot fit/resize/focus。
+ * - 最多缓存 10 个 session(LRU),对齐项目 10-session 内存验收基线;超限才 unmount。
+ * - inactive slot 使用 visibility:hidden + inert,保留真实几何与 Terminal 对象,
+ *   但不能 focus/input;只有 active slot fit/resize/focus。
  * - TerminalView 的 main view lease 让 owner=null 的 parked slot 继续接收输出。
- * - lease 断流(曾被别的 client 接管)时只替换该 slot 的 generation key，完整 replay。
+ * - lease 断流(曾被别的 client 接管)时只替换该 slot 的 generation key,完整 replay。
+ * - 移动布局(ADR-042)的辅助键条/双指缩放在 MainPane 层挂载(见
+ *   TerminalAuxBar.tsx),本组件两端布局完全一致。
  *
- * @对应文档章节:软件定义书.md 8.4 owner；AGENTS.md §10 内存基线。
+ * @对应文档章节:软件定义书.md 8.4 owner;AGENTS.md §10 内存基线。
  *
  * @不要在这里做的事:
- * - 不要缓存 LayoutHost/File/Git panel；隐藏 panel 必须 unmount 并上报 NONE demand。
- * - 不要把 cache 放模块级 Map；LRU/generation 是显式 React view state。
+ * - 不要缓存 LayoutHost/File/Git panel;隐藏 panel 必须 unmount 并上报 NONE demand。
+ * - 不要把 cache 放模块级 Map;LRU/generation 是显式 React view state。
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useAppState } from '../store';
@@ -37,7 +39,7 @@ export function TerminalDeck({ activeSessionId }: TerminalDeckProps): JSX.Elemen
     activeSessionId ? [{ sessionId: activeSessionId, generation: 0 }] : [],
   );
 
-  // 访问即移到 LRU 尾；React key 不变,移动数组位置不会重建 xterm。
+  // 访问即移到 LRU 尾;React key 不变,移动数组位置不会重建 xterm。
   useEffect(() => {
     if (!activeSessionId) return;
     setCached((previous) => {
@@ -50,7 +52,7 @@ export function TerminalDeck({ activeSessionId }: TerminalDeckProps): JSX.Elemen
     });
   }, [activeSessionId]);
 
-  // session 真销毁时移除；普通 owner=null/切 path 不移除。
+  // session 真销毁时移除;普通 owner=null/切 path 不移除。
   useEffect(() => {
     setCached((previous) => previous.filter((entry) => state.sessions.has(entry.sessionId)));
   }, [state.sessions]);

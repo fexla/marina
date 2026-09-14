@@ -108,14 +108,20 @@ function toRendererProfile(p: MobileDaemonProfile) {
 
 // ── 外观(ADR-029:归客户端机器) ─────────────────────────────────────
 
-/** 与 main 端 settings-manager DEFAULT_SETTINGS.appearance 保持一致。 */
+/**
+ * 与 main 端 settings-manager DEFAULT_SETTINGS.appearance 保持一致,
+ * terminalFontSize 除外:手机视口(约 411 CSS px 宽)上 13px 每行只有 ~52 列
+ * 且观感过小,移动端默认 15(2026-09-14 真机确认;用户可双指缩放调回)。
+ * 只影响本机 localStorage 首次写入前的默认 —— appearance 归客户端(ADR-029),
+ * 不会与 daemon 侧设置互相覆盖。
+ */
 const DEFAULT_APPEARANCE: Settings['appearance'] = {
   theme: 'rose-pine',
   windowStyle: 'windows',
   language: 'system',
   terminalFontFamily: "'Cascadia Mono', 'JetBrains Mono', 'Consolas', 'LXGW WenKai Mono'",
   terminalFallbackFont: '',
-  terminalFontSize: 13,
+  terminalFontSize: 15,
   terminalLineHeight: 1.2,
   uiFontFamily: "'LXGW WenKai', system-ui, sans-serif",
   uiZoom: 1.0,
