@@ -1,0 +1,180 @@
+# Marina GitLab CI · 多平台打包 + 双源发布
+#
+# 触发: push tag v* → quality → build(win/linux 并行) → publish(双发 GitLab+GitHub)
+# 对应: docs/打包发布流程.md §4、scripts/release.mjs、scripts/publish-release.mjs
+#
+# 自建 GitLab 前置条件(一次性):
+#   1. 注册 Windows runner(tags 含 marina-windows,shell executor 且 shell=PowerShell)
+#      + Linux runner(tags 含 marina-linux,shell executor 且宿主机装了 Docker)
+#   2. Settings → CI/CD → Variables 配置(**项目级**,不是 job 级):
+#      - GITLAB_TOKEN       (必填;project access token,scope 需含 api + write_repository)
+#                           ↑ Generic Package 上传与 Release 创建都靠它。CI_JOB_TOKEN
+#                             权限不足,不能替代(脚本虽保留 JOB-TOKEN 兼容,但不建议依赖)
+#      - GH_TOKEN           (可选,GitHub classic PAT repo scope;不配则只发 GitLab)
+#      - GITHUB_OWNER / GITHUB_REPO  (可选,默认 fexla / marina)
+#      - ELECTRON_MIRROR    (可选,默认 npmmirror)
+#      注:GITLAB_URL / GITLAB_PROJECT_ID 由 CI 预定义变量映射,无需手工配置
+#   3. package.json version 必须与 tag 一致(tag = v${version}),CI 会拦
+#
+# 设计要点:
+#   - quality 与 build 分离:build 里 --skip-typecheck/lint/tests,避免双跑
+#   - Windows / Linux 并行,互不共享 node_modules(ISO-1 教训)
+#   - Linux 优先走 Dockerfile.linux-build,与本地 npm run build:linux:docker 同路径
+#   - publish 需要两个 build 的 artifacts;不同文件名会合并,同名后写覆盖(本项目产物名不冲突)
+
+stages:
+  - quality
+  - build
+  - publish
+
+variables:
+  GIT_DEPTH: "0"
+  ELECTRON_MIRROR: "https://npmmirror.com/mirrors/electron/"
+  # 缓存 key 按 lockfile,跨 job 共享 node_modules 时注意平台 — 本项目故意不跨平台共享
+  npm_config_cache: "$CI_PROJECT_DIR/.npm"
+
+default:
+  interruptible: true
+
+# ---------------------------------------------------------------------------
+# quality · 在 Linux 上跑 typecheck / lint / test(构建门禁)
+# ---------------------------------------------------------------------------
+quality:linux:
+  stage: quality
+  image: node:20-bullseye
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v/'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  before_script:
+    - node -v && npm -v
+    - npm ci
+  script:
+    - npm run typecheck
+    - npm run lint
+    - npm run lint:css
+    - npm test
+  cache:
+    key: "npm-linux-$CI_JOB_NAME"
+    paths:
+      - .npm
+
+# ---------------------------------------------------------------------------
+# build:windows · nsis + portable
+# 需要 Windows runner(tag: marina-windows)。shell 或 docker-windows executor 均可,
+# 但必须装 Node 20、Python 3、VS Build Tools 2022(node-pty)。
+# ---------------------------------------------------------------------------
+build:windows:
+  stage: build
+  tags:
+    - marina-windows
+  needs:
+    - job: quality:linux
+      artifacts: false
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v/'
+  variables:
+    GIT_CLEAN_FLAGS: "ffdx"
+  before_script:
+    - node -v
+    - |
+      $tag = "${CI_COMMIT_TAG}"
+      $ver = $tag.TrimStart("v")
+      $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+      if ($pkg -ne $ver) {
+        Write-Error "tag $tag 与 package.json version $pkg 不一致 — 先 bump/version 再打 tag"
+        exit 1
+      }
+      Write-Host "version OK: $ver"
+  script:
+    - npm ci
+    # quality 已过,build 阶段跳过重复检查;verify --strict 仍强制(ISO-1 门禁)
+    - npm run release:win -- --strict --skip-typecheck --skip-lint --skip-tests
+  after_script:
+    - if (Test-Path "release") { Get-ChildItem -Recurse release | Select-Object FullName, Length | Format-Table -AutoSize }
+  artifacts:
+    name: "marina-win-$CI_COMMIT_TAG"
+    when: on_success
+    expire_in: 30 days
+    paths:
+      - release/
+    exclude:
+      - release/**/*-unpacked/**
+      - release/**/*.pdb
+
+# ---------------------------------------------------------------------------
+# build:linux · deb + rpm + AppImage
+# 自建 runner 推荐 shell executor + 宿主机 Docker(与本地 build:linux:docker 同路径)。
+# 若 runner 是 docker executor,把 tags 改成带 Docker 的那台,或改用 node:20-bullseye
+# 镜像直跑 build:linux(需镜像内有 dpkg-dev/rpm/fakeroot,见 Dockerfile.linux-build)。
+# ---------------------------------------------------------------------------
+build:linux:
+  stage: build
+  tags:
+    - marina-linux
+  needs:
+    - job: quality:linux
+      artifacts: false
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v/'
+  before_script:
+    - docker version
+    - |
+      tag="${CI_COMMIT_TAG#v}"
+      pkg=$(sed -n 's/^[[:space:]]*"version": "\([^"]*\)".*/\1/p' package.json | head -1)
+      if [ "$pkg" != "$tag" ]; then
+        echo "ERROR: tag $CI_COMMIT_TAG 与 package.json version $pkg 不一致"
+        exit 1
+      fi
+      echo "version OK: $tag"
+  script:
+    - docker build -f Dockerfile.linux-build -t marina-linux-build:ci .
+    - mkdir -p release
+    - docker run --rm -v "$CI_PROJECT_DIR/release:/build/release" marina-linux-build:ci
+    # ISO-1 门禁 —— 必须在容器内跑第二次,不能用宿主条件短路:
+    #   - 宿主 shell runner 不保证有 node;而 `[ -d node_modules ]` 在本 job 里恒假
+    #     (依赖由容器内 npm ci 安装),曾导致这道门在 CI 中从未真正生效。
+    #   - 复用同一镜像:节点/WORKDIR/scripts 都在,verify-artifacts.mjs 只依赖
+    #     node 内置模块,扫的是 release/<v>/linux-unpacked/(electron-builder 的 staging)。
+    # 退出码非 0(含"没找到 unpacked")会让 job 失败。
+    - |
+      docker run --rm \
+        -v "$CI_PROJECT_DIR/release:/build/release" \
+        marina-linux-build:ci \
+        node scripts/verify-artifacts.mjs --version="${CI_COMMIT_TAG#v}" --strict
+  artifacts:
+    name: "marina-linux-$CI_COMMIT_TAG"
+    when: on_success
+    expire_in: 30 days
+    paths:
+      - release/
+    exclude:
+      - release/**/*-unpacked/**
+
+# ---------------------------------------------------------------------------
+# publish · 双源:GitLab Generic Package + Release,以及 GitHub Releases
+# ---------------------------------------------------------------------------
+publish:release:
+  stage: publish
+  image: node:20-bullseye
+  needs:
+    - job: build:windows
+      artifacts: true
+    - job: build:linux
+      artifacts: true
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v/'
+  variables:
+    # CI 预定义变量 → 脚本读的环境变量名映射。
+    # 注意:不要在这里再写 GITLAB_TOKEN —— 项目级 CI/CD 变量会自动注入 job 环境,
+    # job 级声明反而会覆盖它,自引用($GITLAB_TOKEN)展开后是空串,导致 publish 失败。
+    GITLAB_URL: "$CI_SERVER_URL"
+    GITLAB_PROJECT_ID: "$CI_PROJECT_ID"
+  script:
+    - node -v
+    - |
+      VER="${CI_COMMIT_TAG#v}"
+      echo "publish Marina $VER"
+      ls -la release/"$VER"/ || ls -laR release/ | head -100
+    - node scripts/publish-release.mjs --version="$VER"
+  # 不把 release 再 artifact 出去 — 已在 GitLab/GitHub 上

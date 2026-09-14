@@ -534,12 +534,16 @@ if (opts.bump !== 'none' && !opts.dryRun) {
   console.log(`  1. 在 CHANGELOG.md 顶部加 [${releaseVersion}] 章节`);
   console.log(`  2. git add package.json CHANGELOG.md && git commit -m "chore(release): bump ${releaseVersion}"`);
   console.log(`  3. git tag v${releaseVersion}`);
-  console.log(`  4. git push && git push --tags`);
-  console.log(`  5. 在 GitHub Releases 上传 release/${releaseVersion}/ 下的安装器(+ 把 RELEASE_NOTES.md 贴上)`);
+  console.log(`  4. git push origin HEAD && git push gitlab HEAD && git push --tags`);
+  console.log(`     ↑ tag 推到 gitlab 会触发 CI 双平台打包;也可本机手动双发:`);
+  console.log(`       npm run publish:release`);
+  console.log(`  5. 或本机: 配好 GITLAB_* / GH_TOKEN 后 npm run publish:release`);
 } else {
   console.log(`  1. 校验通过的 release/${releaseVersion}/ 已可发布`);
-  console.log(`  2. SmartScreen 警告:Windows 安装器未签名,SmartScreen 会拦,KI-002 跟踪`);
-  console.log(`  3. Linux 包测试方式见 docs/Linux安装指南-20260517.md`);
+  console.log(`  2. 双源发布: npm run publish:release`);
+  console.log(`     (GitLab Generic Package + Release;有 GH_TOKEN 时同步 GitHub)`);
+  console.log(`  3. SmartScreen 警告:Windows 安装器未签名,SmartScreen 会拦,KI-002 跟踪`);
+  console.log(`  4. Linux 包测试方式见 docs/Linux安装指南-20260517.md`);
 }
 
 phaseDone('Phase 6 · Report');
