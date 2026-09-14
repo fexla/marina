@@ -24,6 +24,7 @@ import {
 import { COMMAND_CHANNELS } from '@shared/protocol';
 import type { LayoutNode, SessionInfo } from '@shared/types';
 import { useAppDispatch, useAppState } from '../../store';
+import { useIsMobile } from '../../mobile';
 import { Icon } from '../icons';
 import { useTranslation } from '../LanguageProvider';
 import { SearchBar } from '../common/SearchBar';
@@ -203,6 +204,7 @@ function PanelStack({
     return () => window.removeEventListener('marina:panel-search-result', onResult);
   }, [session.id]);
 
+
   // 导航:dispatch 给当前 active panel 的 FileViewer(若在查找文件内容)。
   const navigateSearch = useCallback(
     (direction: 'next' | 'previous'): void => {
@@ -241,6 +243,24 @@ function PanelStack({
         console.warn('[LayoutHost] update panel layout failed', err);
       });
   };
+
+  // 移动端 back-bus 最底层消费:面板 overlay 展开时,返回键 = 折叠 dock
+  // (见 docs/standards/mobile-interactions.md 返回键层级)。bubble 阶段注册
+  // —— capture 阶段的设置层/抽屉层先执行,这里只在它们都没消费时生效;
+  // 设置页打开时 dock 虽仍挂载但不该被折叠,guard 放行。
+  const isMobileLayout = useIsMobile();
+  useEffect(() => {
+    if (!isMobileLayout) return undefined;
+    const onBack = (e: Event): void => {
+      if (e.defaultPrevented || appState.inSettingsView) return;
+      if (!persisted.collapsed) {
+        e.preventDefault();
+        updateLayout({ collapsed: true });
+      }
+    };
+    window.addEventListener('marina-back', onBack);
+    return () => window.removeEventListener('marina-back', onBack);
+  }, [isMobileLayout, appState.inSettingsView, persisted.collapsed, updateLayout]);
 
   const startResize = (event: MouseEvent<HTMLDivElement>): void => {
     event.preventDefault();

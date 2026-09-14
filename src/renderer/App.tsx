@@ -227,6 +227,26 @@ function ConnectedShell({
     if ((e.target as HTMLElement).closest?.('.session-item')) setMobileSidebarOpen(false);
   };
 
+  // back-bus 最外层消费(安卓返回键 / header ‹ 共用的 'marina-back' 事件,
+  // 见 docs/standards/mobile-interactions.md)。层级用事件阶段实现:
+  // 设置层(capture,进设置时才 mount、注册最晚)最先执行;本监听者
+  // (capture,App 首挂最早注册,但 guard inSettingsView 放行)其次;
+  // dock(bubble,LayoutHost)最后。轮到这里的是「抽屉开」一种情况
+  // (设置打开时由设置层消费)。都不命中则不消费 → 壳层
+  // __marinaAndroidBack 返回 false → 原生回后台。
+  useEffect(() => {
+    if (!isMobile) return undefined;
+    const onBack = (e: Event): void => {
+      if (e.defaultPrevented || state.inSettingsView) return;
+      if (mobileSidebarOpen) {
+        e.preventDefault();
+        setMobileSidebarOpen(false);
+      }
+    };
+    window.addEventListener('marina-back', onBack, { capture: true });
+    return () => window.removeEventListener('marina-back', onBack, { capture: true });
+  }, [isMobile, mobileSidebarOpen, state.inSettingsView]);
+
   // ADR-021:GitPanel 在 WARM（其他面板/折叠/失焦）时会卸载，但 60s 后台结果仍
   // 必须写组件外缓存。根层 bridge 常驻；GitPanel 自己的 listener 只负责 live state。
   useEffect(() => {

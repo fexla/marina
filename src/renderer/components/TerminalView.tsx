@@ -112,6 +112,7 @@ import { detectFileLinks, parsePathWithLineCol } from '@shared/terminal-path-det
 import { detectMdLinks } from '@shared/terminal-md-link-detector';
 import { setPendingLineJump, movePendingLineJump } from '../pending-line-jump';
 import { useAppDispatch, useAppState, useAppStateRef } from '../store';
+import { subscribeMobileViewport, useIsMobile } from '../mobile';
 import { useCloseSession } from '../hooks/useCloseSession';
 import { readClipboardText, writeClipboardText } from '../clipboard';
 import { Icon } from './icons';
@@ -2291,21 +2292,64 @@ export function TerminalView({
   // 移动端软键盘弹起时把终端滚到底(ADR-042)。App.tsx 的 useMobileViewportFix
   // 已把布局压到键盘上沿、ResizeObserver 已 re-fit 行数;但 xterm fit 只改
   // viewport 行数,不自动滚到最新行 —— 输入行(提示符)会留在屏幕外。
-  // 桌面 Electron 下 visualViewport.height === innerHeight,阈值永不触发,零影响。
+  // 桌面 Electron 没有 visualViewport,subscribeMobileViewport 直接 no-op。
   useEffect(() => {
     if (!active) return undefined;
-    const vv = window.visualViewport;
-    if (!vv) return undefined;
-    const onVvResize = (): void => {
-      if (window.innerHeight - vv.height > 120) {
-        termRef.current?.scrollToBottom();
-      }
-    };
-    vv.addEventListener('resize', onVvResize);
-    return () => {
-      vv.removeEventListener('resize', onVvResize);
-    };
+    const off = subscribeMobileViewport({
+      onHeight: () => {},
+      onKeyboardOpen: (open) => {
+        if (open) termRef.current?.scrollToBottom();
+      },
+    });
+    return off;
   }, [active]);
+
+  // 移动端 tap 终端画布唤起键盘(2026-09-14 真机取证:xterm 的 touch 处理会
+  // 吃掉 tap 的默认行为,合成 click 不再派发 → helper-textarea 不 focus,
+  // IME 不弹;键盘一旦收起就再也唤不起,触屏终端不可用)。
+  // 这里在 capture 阶段监听(先于 xterm 的处理;preventDefault 不影响后续
+  // listener 执行),识别「单指、未滚动、短按」的 tap 后主动 focus
+  // helper-textarea —— 此刻仍在用户手势上下文内,Android WebView 会弹出
+  // 输入法(脱离手势的 programmatic focus 不会)。
+  const isMobileView = useIsMobile();
+  useEffect(() => {
+    if (!isMobileView || !active) return undefined;
+    const host = containerRef.current;
+    if (!host) return undefined;
+    let startX = 0;
+    let startY = 0;
+    let startedAt = 0;
+    let moved = false;
+    const onTouchStart = (e: TouchEvent): void => {
+      const t = e.touches[0];
+      if (e.touches.length !== 1 || !t) {
+        moved = true; // 双指(pinch 缩放)不视为 tap
+        return;
+      }
+      startX = t.clientX;
+      startY = t.clientY;
+      startedAt = Date.now();
+      moved = false;
+    };
+    const onTouchMove = (e: TouchEvent): void => {
+      const t = e.touches[0];
+      if (e.touches.length !== 1 || !t) return;
+      if (Math.hypot(t.clientX - startX, t.clientY - startY) > 10) moved = true;
+    };
+    const onTouchEnd = (): void => {
+      if (moved || Date.now() - startedAt > 500) return;
+      const ta = host.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null;
+      ta?.focus();
+    };
+    host.addEventListener('touchstart', onTouchStart, { passive: true, capture: true });
+    host.addEventListener('touchmove', onTouchMove, { passive: true, capture: true });
+    host.addEventListener('touchend', onTouchEnd, { passive: true, capture: true });
+    return () => {
+      host.removeEventListener('touchstart', onTouchStart, { capture: true });
+      host.removeEventListener('touchmove', onTouchMove, { capture: true });
+      host.removeEventListener('touchend', onTouchEnd, { capture: true });
+    };
+  }, [isMobileView, active]);
 
   // CP-4 勘误 #6/#9:Ctrl+F / Esc 走 attachCustomKeyEventHandler (见 xterm
   // mount effect),不再用 wrapper 的 onKeyDown — 后者优先级低于 xterm 内部

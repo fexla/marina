@@ -27,8 +27,8 @@
   align-items: center;
   justify-content: center;
   padding: 16px;
-  padding-top: calc(16px + env(safe-area-inset-top, 0px));
-  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  padding-top: calc(16px + var(--android-inset-top, env(safe-area-inset-top, 0px)));
+  padding-bottom: calc(16px + var(--android-inset-bottom, env(safe-area-inset-bottom, 0px)));
   background: #16141f; /* Rose Pine base 近似,未连上 daemon 前的固定配色 */
   color: #e0def4;
   font-family: system-ui, sans-serif;
@@ -226,8 +226,8 @@
   /* 2.2 内容壳从标题栏下方起改为覆盖全屏(标题栏隐藏后回收它的高度),
      safe-area 让开系统状态栏与导航条。 */
   .app-root.with-shell .app-content-shell {
-    padding-top: env(safe-area-inset-top, 0px);
-    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-top: var(--android-inset-top, env(safe-area-inset-top, 0px));
+    padding-bottom: var(--android-inset-bottom, env(safe-area-inset-bottom, 0px));
   }
 
   /* 2.3 侧栏改抽屉(配合 App.tsx 的 isMobile 分支:.app-body 加
@@ -249,8 +249,8 @@
     bottom: 0;
     left: 0;
     width: min(82vw, 340px);
-    padding-top: env(safe-area-inset-top, 0px);
-    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-top: var(--android-inset-top, env(safe-area-inset-top, 0px));
+    padding-bottom: var(--android-inset-bottom, env(safe-area-inset-bottom, 0px));
     z-index: 901;
     overflow: hidden auto;
     background: var(--base, #16141f);
@@ -268,7 +268,7 @@
   .mobile-sidebar-fab {
     position: fixed;
     right: 16px;
-    bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(20px + var(--android-inset-bottom, env(safe-area-inset-bottom, 0px)));
     z-index: 800;
     width: 48px;
     height: 48px;
@@ -285,18 +285,76 @@
     touch-action: manipulation;
   }
 
-  /* 2.5 右 dock(文件树/Git/已打开面板):窄屏下不能参与水平 split ——
-     桌面的 280px 钳制下限在 411px 视口会把终端挤成 131px/12 列(真机
-     实测)。v1 暂时整体隐藏,终端拿满宽;「已打开」面板的移动端形态
-     (底部 sheet + 把手)是下一个任务,涉及 LayoutHost 分支。 */
-  .panel-dock {
+  /* 2.5 右 dock(文件树/Git/已打开面板):不参与水平 split(桌面 280px 在
+     411px 视口会把终端挤成 131px/12 列),改为右缘全高滑入面板 —— 组件结构
+     (LayoutHost)零改动,只是形态变化:终端恒满宽,dock 覆盖在其上;
+     collapsed 态从「右缘细条」变「右缘把手圆钮」。触屏没有 mouse,resize
+     拖条隐藏(固定宽度,排序/浏览不受影响)。 */
+  .layout-split {
+    position: relative;
+  }
+
+  .panel-dock:not(.panel-dock-collapsed) {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(92vw, 420px) !important; /* 覆盖 inline width(触屏不可拖) */
+    z-index: 60;
+    border-left: 1px solid var(--inactive, rgba(128, 128, 128, 0.25));
+    box-shadow: -10px 0 32px rgba(0, 0, 0, 0.45);
+  }
+
+  .panel-dock .panel-dock-resize-handle {
     display: none !important;
+  }
+
+  .panel-dock-collapsed {
+    position: absolute;
+    top: 50%;
+    right: 0;
+    transform: translateY(-50%);
+    width: 30px;
+    z-index: 60;
+    border-radius: 10px 0 0 10px;
+    background: var(--surface, #1f1d2e);
+    border: 1px solid var(--inactive, rgba(128, 128, 128, 0.3));
+    border-right: none;
+  }
+
+  .panel-dock-collapsed .panel-dock-expand-button {
+    width: 100%;
+    min-height: 56px;
+    font-size: 16px;
   }
 
   .layout-split > .layout-terminal-leaf {
     flex: 1 1 auto !important;
     width: 100% !important;
     min-width: 0;
+  }
+
+  /* 2.5.1 触屏 :hover 粘滞修复:Chromium 触屏上 tap 会触发 :hover 并保持
+     到点别处(用户报的「返回后按钮变红×」即 settings-close 的 hover 态)。
+     (hover: none) 下把高频按钮的 hover 效果还原为常态 —— 触屏用 :active
+     给按压反馈,不需要 hover。后续新按钮沿用此模式。 */
+  @media (hover: none) {
+    .settings-close:hover {
+      background: transparent;
+      color: var(--color-text-primary, inherit);
+      border-color: var(--color-bg-elevated, currentColor);
+    }
+
+    .settings-nav-item:hover:not(.active),
+    .settings-button:hover {
+      background: transparent;
+    }
+
+    .panel-dock-expand-button:hover,
+    .panel-dock-collapse-button:hover {
+      background: transparent;
+      color: var(--color-text-muted, inherit);
+    }
   }
 
   /* 2.6 触屏滚动:全局允许垂直 pan,禁掉浏览器长按选择的默认干扰
@@ -324,7 +382,7 @@
     position: fixed;
     inset: 0;
     z-index: 950;
-    padding-top: env(safe-area-inset-top, 0px);
+    padding-top: var(--android-inset-top, env(safe-area-inset-top, 0px));
   }
 
   /* 2.7.1 设置页单栏两级导航(SettingsView 的 .settings-body.mobile):
@@ -398,7 +456,7 @@
     flex: 0 0 auto;
     display: flex;
     gap: 6px;
-    padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+    padding: 6px 8px calc(6px + var(--android-inset-bottom, env(safe-area-inset-bottom, 0px)));
     overflow-x: auto;
     background: var(--surface, #1f1d2e);
     border-top: 1px solid var(--inactive, rgba(128, 128, 128, 0.2));

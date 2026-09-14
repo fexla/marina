@@ -225,14 +225,48 @@ export function SettingsView(): JSX.Element {
     }
   }, [visibleCategories, active]);
 
+  /**
+   * 「退一层」back-bus(安卓返回键与 header 的 ‹ 共用同一通道):
+   * dispatch 'marina-back'(cancelable),监听者由内层到外层依次收到。
+   * 层级实现:capture 阶段按注册序 = mount 序(React effect 子先父:
+   * CategoryPanel 内的子页 → 本组件),更上层的浮层(App 抽屉,更早 mount)
+   * 更先注册 —— 它们先执行,轮不到这里;dock(bubble 阶段)更晚。
+   * 本组件只负责「详情页 → 分类列表」这一层;更深的子页(如 Shell 分类的
+   * 模板编辑器)由各自 Panel 消费,没消费才轮到这里。
+   * 在分类列表层不消费 → App 层的监听者退出设置。
+   */
+  const requestBack = useCallback((): void => {
+    window.dispatchEvent(new CustomEvent('marina-back', { cancelable: true }));
+  }, []);
+
+  // 安卓返回键进到设置时:详情页 → 退回列表;列表层 → 不消费(App 层退出设置)。
+  // 注意子页(ShellPanel 等)的监听者先收到 —— 它们消费后本监听者收到的
+  // 事件已 defaultPrevented,直接跳过。
+  useEffect(() => {
+    const onBack = (e: Event): void => {
+      if (e.defaultPrevented) return;
+      // 分类列表层 = 设置的最底层,再退就是退出设置。
+      if (detailOpen) {
+        e.preventDefault();
+        setDetailOpen(false);
+      } else {
+        e.preventDefault();
+        dispatch({ type: 'view/exit-settings' });
+      }
+    };
+    window.addEventListener('marina-back', onBack, { capture: true });
+    return () => window.removeEventListener('marina-back', onBack, { capture: true });
+  }, [detailOpen, dispatch]);
+
   const handleClose = useCallback(() => {
-    // 移动端在详情页时,× 的位置是「返回分类列表」而不是退出设置。
+    // 移动端在详情页时,× 的位置是「返回」而不是退出设置 —— 走 back-bus
+    // 逐层退(先由更深的子页消费,避免从模板编辑器一步跳回分类列表)。
     if (isMobile && detailOpen) {
-      setDetailOpen(false);
+      requestBack();
       return;
     }
     dispatch({ type: 'view/exit-settings' });
-  }, [dispatch, isMobile, detailOpen]);
+  }, [dispatch, isMobile, detailOpen, requestBack]);
 
   const activeCategory = visibleCategories.find((c) => c.id === active);
 
@@ -284,7 +318,11 @@ export function SettingsView(): JSX.Element {
           ))}
         </nav>
         <main className="settings-detail">
-          <CategoryPanel categoryId={active} setError={setErrorMsg} />
+          <CategoryPanel
+            categoryId={active}
+            setError={setErrorMsg}
+            {...(isMobile ? { mobileDetailOpen: detailOpen } : {})}
+          />
         </main>
       </div>
     </div>
@@ -294,14 +332,21 @@ export function SettingsView(): JSX.Element {
 interface CategoryPanelProps {
   categoryId: CategoryId;
   setError: (msg: string | null) => void;
+  /**
+   * 移动布局下详情页是否可见。detail 是 CSS 位移隐藏、组件不卸载 —— 含子页
+   * 的 Panel(Shell)在列表层时仍 mount,back-bus 消费必须以此 guard,否则
+   * 会「关一个看不见的子页」,用户视角按了返回没反应。
+   * 桌面端恒 undefined(双栏同时可见,back-bus 不触发)。
+   */
+  mobileDetailOpen?: boolean;
 }
 
-function CategoryPanel({ categoryId, setError }: CategoryPanelProps): JSX.Element {
+function CategoryPanel({ categoryId, setError, mobileDetailOpen }: CategoryPanelProps): JSX.Element {
   switch (categoryId) {
     case 'appearance':
       return <AppearancePanel setError={setError} />;
     case 'shell':
-      return <ShellPanel setError={setError} />;
+      return <ShellPanel setError={setError} {...(mobileDetailOpen !== undefined ? { mobileDetailOpen } : {})} />;
     case 'behavior':
       return <BehaviorPanel setError={setError} />;
     case 'data':
@@ -1099,7 +1144,13 @@ function AppearancePanel({ setError }: { setError: (msg: string | null) => void 
 // Shell 与启动分类
 // ──────────────────────────────────────────────────────────────────
 
-function ShellPanel({ setError }: { setError: (msg: string | null) => void }): JSX.Element {
+function ShellPanel({
+  setError,
+  mobileDetailOpen,
+}: {
+  setError: (msg: string | null) => void;
+  mobileDetailOpen?: boolean;
+}): JSX.Element {
   const { tx } = useTranslation();
   const state = useAppState();
   const sh = state.settings.shell;
@@ -1112,6 +1163,21 @@ function ShellPanel({ setError }: { setError: (msg: string | null) => void }): J
   const [templateMode, setTemplateMode] = useState<
     { kind: 'list' } | { kind: 'edit'; templateId: string | null /* null = 新建 */ }
   >({ kind: 'list' });
+
+  // 模板编辑子页消费 back-bus(安卓返回键/header ‹):先于 SettingsView 的
+  // 监听者收到(capture 同阶段按注册序 = mount 序子先父),退子页而不是
+  // 退整个详情页。mobileDetailOpen=false(移动端在分类列表层)时子页
+  // 视觉不可见,不消费 —— 见 CategoryPanelProps.mobileDetailOpen 注释。
+  useEffect(() => {
+    const onBack = (e: Event): void => {
+      if (e.defaultPrevented || templateMode.kind !== 'edit') return;
+      if (mobileDetailOpen === false) return;
+      e.preventDefault();
+      setTemplateMode({ kind: 'list' });
+    };
+    window.addEventListener('marina-back', onBack, { capture: true });
+    return () => window.removeEventListener('marina-back', onBack, { capture: true });
+  }, [templateMode.kind, mobileDetailOpen]);
 
   useEffect(() => {
     let cancelled = false;
