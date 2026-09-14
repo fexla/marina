@@ -70,6 +70,20 @@ export interface ConnectRemoteDaemonOptions {
   onReconnectSuccess?: () => void;
   onReconnectStart?: () => void;
   onReconnectFail?: (reason: unknown) => void;
+  /**
+   * 用户取消探测(v0.3.4 Android 壳引入):端口扫描是串行 await,每试下一个
+   * 端口前轮询本谓词,返回 true 立即抛 ConnectAbortedError。不中断已在飞的
+   * 单个端口握手(authTimeoutMs 上限),最坏多等一个端口的超时。
+   */
+  shouldAbort?: () => boolean;
+}
+
+/** 用户主动取消建连(区别于网络失败 —— 调用方不应把它当错误展示)。 */
+export class ConnectAbortedError extends Error {
+  constructor() {
+    super('[remote-connect] 连接已取消');
+    this.name = 'ConnectAbortedError';
+  }
 }
 
 /** profile 数据不全的明确报错(本地数据问题,非网络)。导出给调用方在拉取后自检。 */
@@ -101,6 +115,7 @@ export async function connectRemoteDaemon(
   // 收集各端口尝试的错误码,全失败时选最有价值的报告给用户。
   const tried: Array<{ port: number; code: string; message: string }> = [];
   for (let i = 0; i < PORT_COUNT; i++) {
+    if (opts.shouldAbort?.()) throw new ConnectAbortedError();
     const port = PORT_FROM + i;
     const probe = new RemoteTransport({
       url: `ws://${host}:${port}`,

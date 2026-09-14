@@ -15,6 +15,16 @@ const config: CapacitorConfig = {
   appId: 'so.marina.app',
   appName: 'Marina',
   webDir: 'dist',
+  // androidScheme 必须放在 server 对象下且显式 'http'(踩坑实录 ×2):
+  // 1) Capacitor 7 默认 'https',WebView 页面以 https://localhost 提供,而
+  //    daemon 连接是 ws://(ADR-015 纯 token,TLS 延后)——Chromium 混合内容
+  //    策略禁止 https 页面发起 insecure WebSocket。
+  // 2) androidScheme 是 CapacitorConfig.server 的字段,写在顶层会被静默忽略
+  //    (类型宽松不报错),第一个「修复」因此无效。
+  // 本地资产降为 http://localhost 无实际安全损失(资产打包在 APK 内,不经网络)。
+  server: {
+    androidScheme: 'http',
+  },
 };
 
 export default config;
