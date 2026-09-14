@@ -46,6 +46,50 @@ if (!bootEl || !rootEl) {
 }
 const bootRoot = createRoot(bootEl);
 
+// ── 系统栏 inset(状态栏/手势条避让)───────────────────────────────
+//
+// MainActivity 在 systemBars insets 变化时会把 --android-inset-top/bottom
+// 注入 :root;但**首次 attach 时页面可能还没 load**,主动推会丢 —— 这里在
+// 任何 UI 渲染前经 MarinaNative 桥同步拉一次兜底(mobile.css 的 safe-area
+// 位消费这些变量)。见 docs/standards/mobile-interactions.md §3。
+declare global {
+  interface Window {
+    __marinaAndroidBack?: () => boolean;
+    MarinaNative?: { getInsets(): string };
+  }
+}
+
+if (window.MarinaNative) {
+  try {
+    const parts = window.MarinaNative.getInsets().split(',');
+    const top = Number(parts[0]);
+    const bottom = Number(parts[1]);
+    if (Number.isFinite(top) && top >= 0) {
+      document.documentElement.style.setProperty('--android-inset-top', `${top}px`);
+      document.documentElement.style.setProperty('--android-inset-bottom', `${bottom}px`);
+    }
+  } catch (err) {
+    console.warn('[mobile] MarinaNative inset pull failed', err);
+  }
+}
+
+// ── 安卓返回键桥(MainActivity.onBackPressed → 这里) ────────────────
+//
+// 协议:返回 true = web 层已消费(退了一层浮层),原生侧不动;
+// 返回 false = 未消费 → 原生 moveTaskToBack 回后台。
+// 消费链:'marina-back' cancelable 事件,监听者由内层到外层依次注册
+// (React mount 顺序子先父 → CategoryPanel 子页 → SettingsView → App),
+// 最内层浮层 preventDefault 即消费。renderer 挂载前(boot 页)无监听者,
+// 返回 false → 回后台,符合预期(boot 页没有可退的浮层)。
+
+window.__marinaAndroidBack = (): boolean => {
+  const consumed = window.dispatchEvent(
+    new CustomEvent('marina-back', { cancelable: true }),
+  );
+  // dispatchEvent 返回 false = 有监听者调用了 preventDefault。
+  return !consumed;
+};
+
 /** 设备稳定 clientId:daemon 侧 owner / view lease / 事件定向的标识。 */
 function ensureWindowId(): string {
   const KEY = 'marina.mobile.clientId';
