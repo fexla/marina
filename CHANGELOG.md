@@ -54,6 +54,11 @@
   `@electron/rebuild -f -w node-pty` 按 Electron 头强制重编(CI 与手工流程
   同步);verify-artifacts 新增 ldd 门禁 —— Linux 包内任何 .node 依赖
   libnode.so 即校验失败,同类问题不再出仓。
+- **quality:linux 门禁在 Linux 跑绿**(首跑 21 败/1721 过):CodeBlockRunner
+  POSIX 兕底从 sh 改 bash(与偏好序一致,原测试自相矛盾);marina / marina.sh
+  从 Windows 提交丢了执行位 → git 补 +x;marina-cli 测试在 POSIX 改经 bash
+  跑 wrapper;Windows 行为断言(pwsh 显示名/WSL/C:\ fixtures/盘符链接化/
+  Windows 路径往返)加 skipIf 守卫,Windows 开发机全量照跑。
 
 ## [0.3.3] — 2026-09-14
 

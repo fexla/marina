@@ -27,7 +27,7 @@ import {
   skillsDirExists,
 } from '../../packages/pi-marina-bridge/extensions/inject';
 
-describe('resolveSkillsDir', () => {
+describe.skipIf(process.platform !== 'win32')('resolveSkillsDir', () => {
   it('extension 模块 URL → 包根/skills 绝对路径', () => {
     // 模拟 jiti 加载 <pkg>/extensions/index.ts 时传入的 import.meta.url
     // (Windows 形态:file:/// 加盘符,percent-encoding 由 fileURLToPath 解)。

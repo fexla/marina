@@ -22,7 +22,7 @@ import {
   __setRunRegImplForTest,
 } from './windows';
 
-describe('WindowsAdapter — WSL shell support', () => {
+describe.skipIf(process.platform !== 'win32')('WindowsAdapter — WSL shell support', () => {
   afterEach(() => {
     __setListWslDistrosImplForTest(null);
   });

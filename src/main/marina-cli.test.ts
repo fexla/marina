@@ -148,15 +148,26 @@ function runMarina(
       else env[k] = v;
     }
   }
-  return spawnSync(CMD, args, {
-    env,
-    input: opts.input,
-    cwd: opts.cwd,
-    encoding: 'utf-8',
-    shell: true,
-    windowsHide: true,
-    stdio: opts.input !== undefined ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
-  });
+  // Windows:spawnSync .cmd(shell:true 让 cmd.exe 处理批处理);
+  // POSIX:把 wrapper 交给 bash 执行,不依赖文件 +x 位。
+  return process.platform === 'win32'
+    ? spawnSync(CMD, args, {
+        env,
+        input: opts.input,
+        cwd: opts.cwd,
+        encoding: 'utf-8',
+        shell: true,
+        windowsHide: true,
+        stdio: opts.input !== undefined ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
+      })
+    : spawnSync(BASH as string, [BASH_WRAPPER, ...args], {
+        env,
+        input: opts.input,
+        cwd: opts.cwd,
+        encoding: 'utf-8',
+        windowsHide: true,
+        stdio: opts.input !== undefined ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
+      });
 }
 
 /**
