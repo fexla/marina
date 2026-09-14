@@ -17,6 +17,9 @@
  *   3. **体积合理性**:每个包 unpacked 大小在 [80MB, 500MB] 之间(异常小 =
  *      产物缺失,异常大 = 没过滤掉大文件)。
  *   4. **报告**:打印每个包的 SHA256 + 大小 + .node 清单,供发布前 review。
+ *   5. **ELF 依赖纯净度(Linux)**:ldd 检查 Linux 包内每个 .node,依赖 libnode.so
+ *      (系统共享库版 Node 编译的残留)即失败 —— 这种二进制在 Electron 内
+ *      dlopen 失败(0.3.3 的 pty.node 中招:链接了 libnode.so.127)。
  *
  * @用法
  *   node scripts/verify-artifacts.mjs              # 校验当前 package.json.version
@@ -34,6 +37,7 @@
  *   docs/issues/iso-1-cross-platform-build-pollution.md  本校验的动机
  */
 import { existsSync, readFileSync, statSync, readdirSync, openSync, readSync, closeSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { resolve, dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -291,6 +295,29 @@ for (const pd of platformDirs) {
         kind: 'cross-platform-binary',
         message: `${rel} 是 ${fmt},但 ${pd.platform} 包应该是 ${expectedList.join(' / ')}`,
       });
+    }
+  }
+
+  // ─── ELF 依赖纯净度(仅 Linux;ldd 检查)───
+  // Electron 内嵌 Node,包内 .node 不得依赖外部 libnode.so。系统共享库版
+  // Node 编译的原生模块会带这个依赖,装到没有 libnode 的机器上 dlopen 失败、
+  // daemon 起不来 —— 平台 magic 校验(ELF ✓)拦不住,必须查动态依赖。
+  if (pd.platform === 'linux') {
+    for (const f of nodeFiles) {
+      if (detectBinaryFormat(f) !== BINARY_FORMATS.ELF_LINUX) continue;
+      const res = spawnSync('ldd', [f], { encoding: 'utf8', timeout: 30000 });
+      if (res.error) {
+        pkgReport.notes.push(`ldd 不可用,跳过依赖检查:${relative(unpackedDir, f)} (${res.error.message})`);
+        continue;
+      }
+      const libnodeLine = res.stdout.split('\n').find((l) => /^\s*libnode\.so/.test(l));
+      if (libnodeLine) {
+        pkgReport.issues.push({
+          severity: 'error',
+          kind: 'shared-libnode-dependency',
+          message: `${relative(unpackedDir, f)} 依赖 ${libnodeLine.trim()} —— 须按 Electron 头重编(见 docs/打包发布流程.md §3.4.1)`,
+        });
+      }
     }
   }
 

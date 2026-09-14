@@ -152,6 +152,11 @@ build:linux:
       echo "version: $pkg (tag: ${CI_COMMIT_TAG:-分支构建,跳过一致性检查})"
   script:
     - npm ci
+    # node-pty 按 Electron 头强制重编:install-app-deps 见它带 prebuilds 目录会
+    # 静默跳过,留下 npm 生命周期用系统 node 编的产物(链接 libnode.so,在
+    # Electron 内 dlopen 失败、daemon 起不来);重编后由 verify 的 ldd 门禁兑底。
+    # 头文件从 electronjs.org/headers 直连下载,npmmirror 不托管。
+    - npx @electron/rebuild@4.2.0 -f -w node-pty -v "$(node -p "require('electron/package.json').version")"
     - npx electron-vite build
     - npx electron-builder --linux deb AppImage --x64 --config.npmRebuild=false
     - node scripts/verify-artifacts.mjs --version="$(node -p "require('./package.json').version")" --strict

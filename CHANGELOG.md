@@ -33,6 +33,20 @@
   只依赖 Linux 产物 —— tag 推送即发 deb/AppImage,Windows 包由 build:windows
   (手动,Windows runner 未就绪)产出后由 publish-release.mjs 幂等补传;feat/*
   分支可手动触发 build:linux 验证构建管线(不打 tag)。
+- **Electron 31.7.7 → 33.4.11**(精确锁定,不用 caret):31.x 运行时在部署机
+  存在堆破坏崩溃(5~25s 内 SIGSEGV,core 见 0xbadbad00 毒化,不稳定复现;
+  部署实测 32.3.3 与 33.4.11 均稳定,取后者)。
+
+### Fixed
+
+- **Linux 包内 `pty.node` 链接 `libnode.so.127`,daemon 起不来**(0.3.3 部署
+  实测发现):linux-x64 无预编译,node-pty 被 npm 生命周期用系统共享库版 Node
+  编译,install-app-deps 又因 prebuilds 目录存在而静默跳过重编;报错文案还
+  误导成 "Cannot find module './prebuilds/linux-x64/.../pty.node'"(node-pty
+  只抛最后一个候选,实为 dlopen 失败)。修复:构建流程在 electron-vite 前用
+  `@electron/rebuild -f -w node-pty` 按 Electron 头强制重编(CI 与手工流程
+  同步);verify-artifacts 新增 ldd 门禁 —— Linux 包内任何 .node 依赖
+  libnode.so 即校验失败,同类问题不再出仓。
 
 ## [0.3.3] — 2026-09-14
 
