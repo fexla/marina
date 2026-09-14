@@ -10,6 +10,9 @@
  *   错误条但不阻止用户继续输入 (input 内部状态 = main 实际值)
  * - 7 分类按软件定义书 6.6.2 分组:外观 / Shell 与启动 / 行为 / 数据 /
  *   系统集成 / 高级 / 关于
+ * - 移动布局(ADR-042,2026-09-14):桌面双栏在 411px 竖屏挤压不可用,
+ *   改为单栏两级导航(分类列表 → 详情页,header 的 × 变 ‹ 返回);
+ *   依赖桌面本机能力的分类在移动端整体隐藏(见 MOBILE_HIDDEN_CATEGORIES)。
  *
  * @CP-4 chunk 范围:
  * - chunk 1: 骨架 + 主题
@@ -57,6 +60,7 @@ import type { DeepPartial } from '@shared/types-helpers';
 import type { Settings } from '@shared/types';
 import { hasAnyRemote } from '@shared/remote-visibility';
 import { useAppDispatch, useAppState } from '../store';
+import { useIsMobile } from '../mobile';
 import { useBackendLabel } from '../hooks/useBackendLabel';
 import {
   RECOMMENDED_TERMINAL_FONTS,
@@ -117,6 +121,22 @@ const REMOTE_CATEGORY: CategoryDef = {
 };
 
 /**
+ * 移动布局下隐藏的分类(ADR-042):这些分类的区块依赖「桌面客户端本机能力」——
+ * - system-integration:Explorer 集成 / 注册表,Windows 桌面专属;
+ * - advanced:性能诊断(本机 main 飞行记录器)+ daemon 启停(Android 壳的
+ *   local-control 面明确报不支持,见 apps/mobile/src/local-commands.ts);
+ * - remote:Android 壳的 profile 管理已由 MobileBoot(连接页)全功能承载,
+ *   这里再暴露一份是双入口;且其中的 daemon 管理块在移动端同样不可用。
+ * 其余分类(外观/Shell/行为/数据/AI/关于)要么走 local-control 已实现,
+ * 要么走 backend-data 天然远程(远程管理 PC 的 shell/模板/AI 配置,单流语义)。
+ */
+const MOBILE_HIDDEN_CATEGORIES: ReadonlySet<CategoryId> = new Set<CategoryId>([
+  'system-integration',
+  'advanced',
+  'remote',
+]);
+
+/**
  * v1.14(方案-远程UI统一 §III.4):'remote' 分类显示条件统一走 hasAnyRemote
  * (SSH profile / 远程电脑 / enableRemote / daemon 运行 任一为真)。
  * 全部为 false 时隐藏 —— 设置页永远是 8 个分类,跟 beta.9 一致。
@@ -174,6 +194,11 @@ export function SettingsView(): JSX.Element {
   const state = useAppState();
   const [active, setActive] = useState<CategoryId>('appearance');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // 移动布局:单栏两级导航。第一级 = 分类列表(全宽),点分类进入第二级
+  // 详情页;detailOpen=false 时显示列表,true 时详情页滑入覆盖列表,
+  // header 的关闭按钮相应变「返回」。桌面端此 state 恒 false,双栏不变。
+  const isMobile = useIsMobile();
+  const [detailOpen, setDetailOpen] = useState(false);
 
   const visibleCategories = useMemo(
     () =>
@@ -182,12 +207,13 @@ export function SettingsView(): JSX.Element {
         hasDaemonProfiles: state.remoteBackendProfiles.length > 0,
         enableRemote: state.settings?.advanced?.enableRemote === true,
         daemonRunning: state.remoteDaemonStatus?.running === true,
-      }),
+      }).filter((c) => !isMobile || !MOBILE_HIDDEN_CATEGORIES.has(c.id)),
     [
       state.sshProfiles.length,
       state.remoteBackendProfiles.length,
       state.settings?.advanced?.enableRemote,
       state.remoteDaemonStatus?.running,
+      isMobile,
     ],
   );
 
@@ -200,8 +226,15 @@ export function SettingsView(): JSX.Element {
   }, [visibleCategories, active]);
 
   const handleClose = useCallback(() => {
+    // 移动端在详情页时,× 的位置是「返回分类列表」而不是退出设置。
+    if (isMobile && detailOpen) {
+      setDetailOpen(false);
+      return;
+    }
     dispatch({ type: 'view/exit-settings' });
-  }, [dispatch]);
+  }, [dispatch, isMobile, detailOpen]);
+
+  const activeCategory = visibleCategories.find((c) => c.id === active);
 
   return (
     <div className="settings-view">
@@ -213,23 +246,34 @@ export function SettingsView(): JSX.Element {
           title={t('settings.close')}
           aria-label={t('settings.close')}
         >
-          ×
+          {isMobile && detailOpen ? '‹' : '×'}
         </button>
-        <h1 className="settings-title">{t('settings.title')}</h1>
+        <h1 className="settings-title">
+          {isMobile && detailOpen && activeCategory
+            ? t(activeCategory.titleKey)
+            : t('settings.title')}
+        </h1>
         {errorMsg && (
           <span className="settings-error" role="alert">
             <Icon name="alertTriangle" size={12} /> {errorMsg}
           </span>
         )}
       </header>
-      <div className="settings-body">
+      <div
+        className={
+          isMobile ? `settings-body mobile${detailOpen ? ' detail-open' : ''}` : 'settings-body'
+        }
+      >
         <nav className="settings-nav" aria-label={t('settings.title')}>
           {visibleCategories.map((c) => (
             <button
               key={c.id}
               type="button"
               className={`settings-nav-item${active === c.id ? ' active' : ''}`}
-              onClick={() => setActive(c.id)}
+              onClick={() => {
+                setActive(c.id);
+                if (isMobile) setDetailOpen(true);
+              }}
               data-testid={`settings-nav-${c.id}`}
             >
               <span className="settings-nav-icon" aria-hidden="true">
