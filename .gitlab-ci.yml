@@ -1,12 +1,16 @@
-# Marina GitLab CI · 多平台打包 + 双源发布
+# Marina GitLab CI · 多平台打包 + 发布(GitLab 先发,GitHub 可选同步)
 #
-# 触发: push tag v* → quality → build(win/linux 并行) → publish(双发 GitLab+GitHub)
+# 触发: push tag v* → quality → build(linux 原生自动 / windows 手动) → publish
+# 分支 feat/* 推送会生成 build:linux 手动任务 —— 不打 tag 就能验证构建管线全链路
 # 对应: docs/打包发布流程.md §4、scripts/release.mjs、scripts/publish-release.mjs
 #
 # 自建 GitLab 前置条件(一次性):
-#   1. 注册 Windows runner(tags 含 marina-windows,shell executor 且 shell=PowerShell)
-#      + Linux runner(tags 含 marina-linux,shell executor 且宿主机装了 Docker)
-#   2. Settings → CI/CD → Variables 配置(**项目级**,不是 job 级):
+#   1. Linux runner: FEX(标签 marina-linux,shell executor,用户级 systemd 服务)。
+#      宿主机需 Node ≥ 20、g++/make/python3(node-pty 编译);不需要 Docker。
+#   2. Windows runner(标签 marina-windows)尚未注册 —— build:windows 在 tag
+#      流水线里是手动任务;publish 不依赖它(Linux 先发)。Windows runner 就绪后
+#      把该 job 改回自动触发,或手动跑 job 后重跑 publish 幂等补传(按 sha256 比对)。
+#   3. Settings → CI/CD → Variables 配置(**项目级**,不是 job 级):
 #      - GITLAB_TOKEN       (必填;project access token,scope 需含 api + write_repository)
 #                           ↑ Generic Package 上传与 Release 创建都靠它。CI_JOB_TOKEN
 #                             权限不足,不能替代(脚本虽保留 JOB-TOKEN 兼容,但不建议依赖)
@@ -14,13 +18,17 @@
 #      - GITHUB_OWNER / GITHUB_REPO  (可选,默认 fexla / marina)
 #      - ELECTRON_MIRROR    (可选,默认 npmmirror)
 #      注:GITLAB_URL / GITLAB_PROJECT_ID 由 CI 预定义变量映射,无需手工配置
-#   3. package.json version 必须与 tag 一致(tag = v${version}),CI 会拦
+#   4. package.json version 必须与 tag 一致(tag = v${version}),CI 会拦
 #
 # 设计要点:
-#   - quality 与 build 分离:build 里 --skip-typecheck/lint/tests,避免双跑
-#   - Windows / Linux 并行,互不共享 node_modules(ISO-1 教训)
-#   - Linux 优先走 Dockerfile.linux-build,与本地 npm run build:linux:docker 同路径
-#   - publish 需要两个 build 的 artifacts;不同文件名会合并,同名后写覆盖(本项目产物名不冲突)
+#   - quality 与 build 分离:build 阶段跳过 typecheck/lint/tests,避免双跑
+#   - Windows / Linux 各自独立 job,互不共享 node_modules(ISO-1 教训)
+#   - Linux 原生构建(FEX shell runner),与 docs/打包发布流程.md §3.4.1 手工流程
+#     同路径。electron-builder 传 --config.npmRebuild=false:npm ci 的 postinstall
+#     已编好 pty.node,内置 rebuild 在 FEX 上会挂起(实测),显式关掉
+#   - publish 只依赖 build:linux 的产物(Linux 先发):tag 推送即发 deb/AppImage;
+#     Windows 包就绪后由 publish-release.mjs 增量补传(远端已有且 sha256 一致的
+#     文件自动跳过,同名不同内容先删后传)
 
 stages:
   - quality
@@ -37,11 +45,12 @@ default:
   interruptible: true
 
 # ---------------------------------------------------------------------------
-# quality · 在 Linux 上跑 typecheck / lint / test(构建门禁)
+# quality · 在 Linux runner 上跑 typecheck / lint / test(构建门禁)
 # ---------------------------------------------------------------------------
 quality:linux:
   stage: quality
-  image: node:20-bullseye
+  tags:
+    - marina-linux
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v/'
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
@@ -63,6 +72,8 @@ quality:linux:
 # build:windows · nsis + portable
 # 需要 Windows runner(tag: marina-windows)。shell 或 docker-windows executor 均可,
 # 但必须装 Node 20、Python 3、VS Build Tools 2022(node-pty)。
+# Windows runner 未就绪期间是 tag 流水线里的手动任务,不阻塞 pipeline 完成;
+# 就绪后去掉 when/allow_failure 恢复自动触发。
 # ---------------------------------------------------------------------------
 build:windows:
   stage: build
@@ -71,8 +82,11 @@ build:windows:
   needs:
     - job: quality:linux
       artifacts: false
+      optional: true
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v/'
+      when: manual
+      allow_failure: true
   variables:
     GIT_CLEAN_FLAGS: "ffdx"
   before_script:
@@ -103,10 +117,13 @@ build:windows:
       - release/**/*.pdb
 
 # ---------------------------------------------------------------------------
-# build:linux · deb + rpm + AppImage
-# 自建 runner 推荐 shell executor + 宿主机 Docker(与本地 build:linux:docker 同路径)。
-# 若 runner 是 docker executor,把 tags 改成带 Docker 的那台,或改用 node:20-bullseye
-# 镜像直跑 build:linux(需镜像内有 dpkg-dev/rpm/fakeroot,见 Dockerfile.linux-build)。
+# build:linux · deb + AppImage(FEX shell runner 原生构建,无 Docker)
+# 两条触发路径:
+#   - tag v*:自动,发布链路的一环(tag 与 package.json version 一致性在此拦截)
+#   - feat/* 分支:手动任务(when: manual),供不打 tag 验证构建管线;
+#     此时跳过 tag/version 一致性检查(分支上 version 尚未 bump 是常态)
+# verify-artifacts --strict 是 ISO-1 门禁:扫 release/<v>/linux-unpacked/ 确认
+# .node 全为 ELF、asar/shell-hooks 在位、体积在界内;失败则 job 失败,不进 publish。
 # ---------------------------------------------------------------------------
 build:linux:
   stage: build
@@ -115,51 +132,52 @@ build:linux:
   needs:
     - job: quality:linux
       artifacts: false
+      optional: true
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v/'
+    - if: '$CI_COMMIT_BRANCH =~ /^feat\//'
+      when: manual
+      allow_failure: true
   before_script:
-    - docker version
+    - node -v
     - |
-      tag="${CI_COMMIT_TAG#v}"
-      pkg=$(sed -n 's/^[[:space:]]*"version": "\([^"]*\)".*/\1/p' package.json | head -1)
-      if [ "$pkg" != "$tag" ]; then
-        echo "ERROR: tag $CI_COMMIT_TAG 与 package.json version $pkg 不一致"
-        exit 1
+      pkg=$(node -p "require('./package.json').version")
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        tag="${CI_COMMIT_TAG#v}"
+        if [ "$pkg" != "$tag" ]; then
+          echo "ERROR: tag $CI_COMMIT_TAG 与 package.json version $pkg 不一致"
+          exit 1
+        fi
       fi
-      echo "version OK: $tag"
+      echo "version: $pkg (tag: ${CI_COMMIT_TAG:-分支构建,跳过一致性检查})"
   script:
-    - docker build -f Dockerfile.linux-build -t marina-linux-build:ci .
-    - mkdir -p release
-    - docker run --rm -v "$CI_PROJECT_DIR/release:/build/release" marina-linux-build:ci
-    # ISO-1 门禁 —— 必须在容器内跑第二次,不能用宿主条件短路:
-    #   - 宿主 shell runner 不保证有 node;而 `[ -d node_modules ]` 在本 job 里恒假
-    #     (依赖由容器内 npm ci 安装),曾导致这道门在 CI 中从未真正生效。
-    #   - 复用同一镜像:节点/WORKDIR/scripts 都在,verify-artifacts.mjs 只依赖
-    #     node 内置模块,扫的是 release/<v>/linux-unpacked/(electron-builder 的 staging)。
-    # 退出码非 0(含"没找到 unpacked")会让 job 失败。
-    - |
-      docker run --rm \
-        -v "$CI_PROJECT_DIR/release:/build/release" \
-        marina-linux-build:ci \
-        node scripts/verify-artifacts.mjs --version="${CI_COMMIT_TAG#v}" --strict
+    - npm ci
+    - npx electron-vite build
+    - npx electron-builder --linux deb AppImage --x64 --config.npmRebuild=false
+    - node scripts/verify-artifacts.mjs --version="$(node -p "require('./package.json').version")" --strict
   artifacts:
-    name: "marina-linux-$CI_COMMIT_TAG"
+    name: "marina-linux-$CI_COMMIT_REF_SLUG"
     when: on_success
     expire_in: 30 days
     paths:
       - release/
     exclude:
       - release/**/*-unpacked/**
+  cache:
+    key: "npm-linux-$CI_JOB_NAME"
+    paths:
+      - .npm
 
 # ---------------------------------------------------------------------------
-# publish · 双源:GitLab Generic Package + Release,以及 GitHub Releases
+# publish · Linux 先发:GitLab Generic Package + Release(GH_TOKEN 存在时同步 GitHub)
+# 只依赖 build:linux 的产物 —— tag 推送即发布 deb/AppImage;Windows 包由
+# build:windows(手动)产出后,重跑本 job 或本地 publish:release 幂等补传。
 # ---------------------------------------------------------------------------
 publish:release:
   stage: publish
-  image: node:20-bullseye
+  tags:
+    - marina-linux
   needs:
-    - job: build:windows
-      artifacts: true
     - job: build:linux
       artifacts: true
   rules:

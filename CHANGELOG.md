@@ -24,6 +24,16 @@
   环境与踩坑说明)。已知打磨项:端口扫描全失败耗时 ~30s(TCP
   失败后仍等满 auth 超时,Electron 端同款既有行为)。
 
+### Changed
+
+- **CI:Linux 构建原生化 + Linux 先发发布**(FEX shell runner,2026-09-14):
+  `build:linux` 从 Dockerfile.linux-build 容器路线改为 FEX 上的 shell runner
+  原生构建(Node ≥ 20 + g++/make/python3,无 Docker),verify --strict 门禁保留;
+  `quality:linux` 同步跑在 marina-linux runner 原生 Node 上;`publish:release`
+  只依赖 Linux 产物 —— tag 推送即发 deb/AppImage,Windows 包由 build:windows
+  (手动,Windows runner 未就绪)产出后由 publish-release.mjs 幂等补传;feat/*
+  分支可手动触发 build:linux 验证构建管线(不打 tag)。
+
 ## [0.3.3] — 2026-09-14
 
 > 相对 0.3.2 的主题版本:**AI 交互深水区** —— pi 对话与 Marina 的全链路集成
