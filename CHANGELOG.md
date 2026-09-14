@@ -24,6 +24,30 @@
   环境与踩坑说明)。已知打磨项:端口扫描全失败耗时 ~30s(TCP
   失败后仍等满 auth 超时,Electron 端同款既有行为)。
 
+- **安卓端移动交互第二批(设置可用性/比例适配/终端触屏生死线)**:
+  - **设置页单栏两级导航**:桌面双栏(200px 侧导航 + 详情)在 411px 竖屏挤压
+    不可用 → 移动布局改单栏(分类列表 → 详情页滑入,header ×/‹ 双态);依赖
+    桌面本机能力的分类(系统集成/高级/远程)在移动端整体隐藏(local-commands
+    对应命令明确报不支持,双入口/死按钮不暴露)。
+  - **软键盘视口适配**:Android WebView 沉浸模式下系统不 resize layout
+    viewport(innerHeight 恒定、visualViewport 被键盘压缩,真机实测 914→537),
+    新增 `useMobileViewportFix` 把 visualViewport.height 写到 `--marina-mobile-vh`
+    供 `.app-body.mobile` 消费 —— 键盘弹起时应用整体压到键盘上沿,输入行不再
+    被遮;键盘态给 `<html>` 挂 `.mobile-keyboard-open`(隐藏浮球);TerminalView
+    在键盘弹起时把活跃终端 scrollToBottom。
+  - **横屏手机断点**:移动布局判定从 `max-width: 900px` 扩为「窄屏 或
+    (横屏且高 ≤500px)」—— 横屏手机(914x411)此前落进桌面布局,侧栏常驻
+    280px 挤压终端;平板横屏(高 >500)仍走桌面三栏。mobile.css 媒体查询同步。
+  - **终端辅助键条**(TerminalAuxBar):Deck 底部一排横向滚动按键,补齐软键盘
+    没有的 Esc/Tab/方向/PgUp/PgDn/Home/End/Ctrl+C/D/Z/L —— 直发
+    SESSION_SEND_INPUT(与物理键同路,真机验证 ↑ 键历史回显生效)。
+  - **双指缩放终端字号**(= 桌面 Ctrl+滚轮的触屏等价):原生 passive:false
+    监听(React 合成 touch 在 WebView 下 preventDefault 不可靠),写
+    SETTINGS_UPDATE_APPEARANCE(local-control,ADR-029 外观归客户端,不写
+    daemon);移动端默认字号 13→15(411px 视口下 13px 过小,真机确认)。
+  - xterm 触屏 touch-action 从 `pan-y pinch-zoom` 收紧为 `pan-y`(双指手势
+    交应用接管,禁浏览器页面缩放干扰)。
+
 ## [0.3.3] — 2026-09-14
 
 > 相对 0.3.2 的主题版本:**AI 交互深水区** —— pi 对话与 Marina 的全链路集成
