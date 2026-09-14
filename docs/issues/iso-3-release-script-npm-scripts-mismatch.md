@@ -1,6 +1,6 @@
 # ISO-3 · scripts/release.mjs 调用了 package.json 不存在的 npm scripts,发布流水线 Phase 3 必失败
 
-**状态**:**待修**(2026-05-25 发现于 v0.2.0 实际发布过程)
+**状态**:**已修复**(2026-09-20 — package.json 补齐 `release` / `release:win` / `release:linux` / `release:all` / `verify` / `publish:release` / `build:linux:docker`)
 
 **优先级**:P2(发版自动化失效,每次发版被迫绕过 release.mjs 直接用 `npm run build`,失去 ISO-1 verify 阶段对产物纯净度的自动校验,与 ISO-2 互锁)
 
