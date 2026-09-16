@@ -1,7 +1,9 @@
 # AGENTS.md 版本变更说明(历史归档)
 
-> 本文是 `AGENTS.md` 顶部 v1.1~v1.11 变更说明的归档。
-> AGENTS.md 当前版本:1.11。最新版本以仓库内 `AGENTS.md` 顶部「文档版本」为准。
+> 本文是 `AGENTS.md` 顶部 v1.1~v1.12 变更说明的归档。
+> AGENTS.md 当前版本:1.12。最新版本以仓库内 `AGENTS.md` 顶部「文档版本」为准。
+
+> **v1.12 变更**(2026-09-17):新增边界 4「版本号变更」—— 版本号的变更(正式 bump、开新版本线、预判 MINOR/PATCH 目标)由**开发者决定**,AI 唯一能自主的是在既定目标下迭代 `-dev.N`;CHANGELOG 折叠条目/tag 的存在不构成"已发版、可开新线"的自行判断依据。原「三条边界」改为「四条边界」。同步修订 `docs/版本号规则.md`(硬纪律加第 0 条 + 附录 F 预判段改为开发者裁定)。背景:0.4.0 一直处于开发态,agent 误推"已正式发版"并自行预判 MINOR 开出 0.5.0-dev.1,经 force push 改写纠正为 0.4.0-dev.1。
 
 > **v1.11 变更**:新增 5.3「agent 必须自己跑能跑的验证」—— 固化"完成改动后 agent 必须自跑 `npm test`/`typecheck`/`lint` + `smoke`/`smoke:interactive`,不要把能自测的丢给开发者手测;只有 UI 视觉/交互体感/真外部依赖才让人测"的纪律。附 Electron 二进制不能用 `--ignore-scripts` 装的陷阱(postinstall 被跳过 → dev/smoke 报 `Electron uninstall`)。
 
