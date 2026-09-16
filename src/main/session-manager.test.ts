@@ -24,6 +24,7 @@ import {
   inferDisplayName,
   type PtySpawnFn,
   type SessionWorkspaceSource,
+  buildSshLaunchParams,
 } from './session-manager';
 import { looksLikeShellStartupGarbage } from './title-resolver';
 import { Osc1337Parser } from './osc1337-parser';
@@ -391,29 +392,32 @@ describe('inferDisplayName', () => {
 });
 
 describe('SessionManager — createSession', () => {
-  it.skipIf(process.platform !== 'win32')('创建后返回 SessionInfo,调用 attachSession,emit sessionCreated', async () => {
-    const { mgr, path } = makeManager();
-    const listener = vi.fn();
-    mgr.on('sessionCreated', listener);
-    const info = await mgr.createSession({
-      pathId: 'C:\\proj\\a',
-      templateId: 'shell',
-      ownerWindowId: 'w-1',
-      cols: 80,
-      rows: 24,
-    });
-    expect(info.id).toMatch(/^[0-9a-f-]{36}$/);
-    expect(info.pathId).toBe('C:\\proj\\a');
-    expect(info.originalCwd).toBe('C:\\proj\\a');
-    expect(info.currentCwd).toBe('C:\\proj\\a');
-    expect(info.ownerWindowId).toBe('w-1');
-    expect(info.state).toBe('idle');
-    expect(info.cols).toBe(80);
-    expect(info.exitCode).toBeUndefined();
-    expect(path.attached).toEqual([{ sessionId: info.id, path: 'C:\\proj\\a' }]);
-    expect(listener).toHaveBeenCalledTimes(1);
-    expect(FakePty.instances).toHaveLength(1);
-  });
+  it.skipIf(process.platform !== 'win32')(
+    '创建后返回 SessionInfo,调用 attachSession,emit sessionCreated',
+    async () => {
+      const { mgr, path } = makeManager();
+      const listener = vi.fn();
+      mgr.on('sessionCreated', listener);
+      const info = await mgr.createSession({
+        pathId: 'C:\\proj\\a',
+        templateId: 'shell',
+        ownerWindowId: 'w-1',
+        cols: 80,
+        rows: 24,
+      });
+      expect(info.id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(info.pathId).toBe('C:\\proj\\a');
+      expect(info.originalCwd).toBe('C:\\proj\\a');
+      expect(info.currentCwd).toBe('C:\\proj\\a');
+      expect(info.ownerWindowId).toBe('w-1');
+      expect(info.state).toBe('idle');
+      expect(info.cols).toBe(80);
+      expect(info.exitCode).toBeUndefined();
+      expect(path.attached).toEqual([{ sessionId: info.id, path: 'C:\\proj\\a' }]);
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(FakePty.instances).toHaveLength(1);
+    },
+  );
 
   it('cols/rows 越界被夹到合法范围', async () => {
     const { mgr } = makeManager();
@@ -1341,31 +1345,34 @@ describe('SessionManager — OSC 1337 cwd 跟踪 (ADR-008)', () => {
     vi.useRealTimers();
   });
 
-  it.skipIf(process.platform !== 'win32')('收到 OSC 1337 CurrentDir → 更新 currentCwd,不动 pathId', async () => {
-    const { mgr } = makeManager();
-    const stateChanges: { currentCwd?: string }[] = [];
-    mgr.on('sessionStateChanged', (e: { changes: { currentCwd?: string } }) =>
-      stateChanges.push(e.changes),
-    );
-    const info = await mgr.createSession({
-      pathId: 'C:\\original',
-      templateId: 'shell',
-      ownerWindowId: 'w',
-      cols: 80,
-      rows: 24,
-    });
-    expect(info.currentCwd).toBe('C:\\original');
+  it.skipIf(process.platform !== 'win32')(
+    '收到 OSC 1337 CurrentDir → 更新 currentCwd,不动 pathId',
+    async () => {
+      const { mgr } = makeManager();
+      const stateChanges: { currentCwd?: string }[] = [];
+      mgr.on('sessionStateChanged', (e: { changes: { currentCwd?: string } }) =>
+        stateChanges.push(e.changes),
+      );
+      const info = await mgr.createSession({
+        pathId: 'C:\\original',
+        templateId: 'shell',
+        ownerWindowId: 'w',
+        cols: 80,
+        rows: 24,
+      });
+      expect(info.currentCwd).toBe('C:\\original');
 
-    const fp = FakePty.instances[0]!;
-    // \x1b]1337;CurrentDir=C:\new\x07
-    fp.emitData('prefix\x1b]1337;CurrentDir=C:\\\\new\x07suffix');
+      const fp = FakePty.instances[0]!;
+      // \x1b]1337;CurrentDir=C:\new\x07
+      fp.emitData('prefix\x1b]1337;CurrentDir=C:\\\\new\x07suffix');
 
-    const after = mgr.get(info.id)!;
-    expect(after.pathId).toBe('C:\\original'); // 不变
-    expect(after.currentCwd.toLowerCase()).toBe('c:\\new');
-    const cwdChange = stateChanges.find((c) => c.currentCwd !== undefined);
-    expect(cwdChange).toBeDefined();
-  });
+      const after = mgr.get(info.id)!;
+      expect(after.pathId).toBe('C:\\original'); // 不变
+      expect(after.currentCwd.toLowerCase()).toBe('c:\\new');
+      const cwdChange = stateChanges.find((c) => c.currentCwd !== undefined);
+      expect(cwdChange).toBeDefined();
+    },
+  );
 
   it('OSC 1337 序列被字节流剥离,passthrough 透传非 OSC 字节', async () => {
     const { mgr } = makeManager();
@@ -1405,27 +1412,30 @@ describe('SessionManager — OSC 1337 cwd 跟踪 (ADR-008)', () => {
     expect(cwdImpl).not.toHaveBeenCalled();
   });
 
-  it.skipIf(process.platform !== 'win32')('grace 后无 OSC → 启动 cwd 轮询,用 adapter 返回值更新 currentCwd', async () => {
-    const cwdImpl = vi.fn().mockResolvedValue('C:\\polled');
-    const adapter = makeFakeAdapter({ getProcessCwdImpl: cwdImpl });
-    const { mgr } = makeManager({ adapter });
-    const info = await mgr.createSession({
-      pathId: 'C:\\original',
-      templateId: 'shell',
-      ownerWindowId: 'w',
-      cols: 80,
-      rows: 24,
-    });
-    // advanceTimersByTimeAsync 不仅推进 timer,还会 flush 内部 await 的
-    // microtask 队列 — tickCwdPoll 内部的 await getProcessCwd() 才真的会
-    // 解析。同步版本的 advanceTimersByTime 只触发 setInterval 回调,不等
-    // 内部 promise resolve。
-    await vi.advanceTimersByTimeAsync(5_000); // grace 到点 → setInterval 起步
-    await vi.advanceTimersByTimeAsync(5_000); // 第一次 tick
-    expect(cwdImpl).toHaveBeenCalled();
-    const after = mgr.get(info.id)!;
-    expect(after.currentCwd.toLowerCase()).toBe('c:\\polled');
-  });
+  it.skipIf(process.platform !== 'win32')(
+    'grace 后无 OSC → 启动 cwd 轮询,用 adapter 返回值更新 currentCwd',
+    async () => {
+      const cwdImpl = vi.fn().mockResolvedValue('C:\\polled');
+      const adapter = makeFakeAdapter({ getProcessCwdImpl: cwdImpl });
+      const { mgr } = makeManager({ adapter });
+      const info = await mgr.createSession({
+        pathId: 'C:\\original',
+        templateId: 'shell',
+        ownerWindowId: 'w',
+        cols: 80,
+        rows: 24,
+      });
+      // advanceTimersByTimeAsync 不仅推进 timer,还会 flush 内部 await 的
+      // microtask 队列 — tickCwdPoll 内部的 await getProcessCwd() 才真的会
+      // 解析。同步版本的 advanceTimersByTime 只触发 setInterval 回调,不等
+      // 内部 promise resolve。
+      await vi.advanceTimersByTimeAsync(5_000); // grace 到点 → setInterval 起步
+      await vi.advanceTimersByTimeAsync(5_000); // 第一次 tick
+      expect(cwdImpl).toHaveBeenCalled();
+      const after = mgr.get(info.id)!;
+      expect(after.currentCwd.toLowerCase()).toBe('c:\\polled');
+    },
+  );
 
   it.skipIf(process.platform !== 'win32').each(['exit', 'destroy'] as const)(
     'cwd 轮询 await 期间 session %s → 晚到结果不得改 cwd 或重启 Git 重算',
@@ -3710,5 +3720,77 @@ describe('SessionManager — pi 集成 (ADR-028)', () => {
     });
     expect(mgr.get(sid)?.displayName).toBe('重启后');
     expect(created.length).toBeGreaterThan(0);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────
+// v0.4.0 文件面板反向隧道(方案-远程文件面板一致性-20260917 P2)
+// buildSshLaunchParams 的 filePanelForward:-R 参数 + 远端命令 env 前缀。
+// 纯函数测试,不起 SessionManager。
+// ──────────────────────────────────────────────────────────────────
+
+describe('buildSshLaunchParams — 文件面板反向隧道(v0.4.0 P2)', () => {
+  const profile = {
+    id: 'p1',
+    host: 'srv',
+    port: 2222,
+    username: 'u',
+    authType: 'agent' as const,
+  };
+  const forward = {
+    remotePort: 32955,
+    gatewayPort: 18080,
+    env: {
+      MARINA_SERVICE: 'http://127.0.0.1:32955',
+      MARINA_TOKEN: 'tok-1',
+      TERMINAL_ID: 'sid-1',
+    },
+  };
+
+  it('filePanelForward:-R 绑定双端 loopback + ExitOnForwardFailure=no', () => {
+    const { args } = buildSshLaunchParams(profile, '/home/u', { filePanelForward: forward });
+    const rIdx = args.indexOf('-R');
+    expect(rIdx).toBeGreaterThan(-1);
+    expect(args[rIdx + 1]).toBe('127.0.0.1:32955:127.0.0.1:18080');
+    const eIdx = args.indexOf('ExitOnForwardFailure=no');
+    expect(eIdx).toBeGreaterThan(-1);
+  });
+
+  it('filePanelForward:远端命令以 export env 前缀开头(非 tmux)', () => {
+    const { args } = buildSshLaunchParams(profile, '/home/u', { filePanelForward: forward });
+    const remote = args[args.length - 1]!;
+    expect(remote.startsWith("export MARINA_SERVICE='http://127.0.0.1:32955'")).toBe(true);
+    expect(remote).toContain("MARINA_TOKEN='tok-1'");
+    expect(remote).toContain("TERMINAL_ID='sid-1'");
+    expect(remote).toContain("cd '/home/u'");
+  });
+
+  it('tmux 模式:前缀在 exec 外层(export 先行,exec 保留环境)', () => {
+    const { args } = buildSshLaunchParams({ ...profile, tmuxMode: 'attach-or-create' }, '/home/u', {
+      filePanelForward: forward,
+    });
+    const remote = args[args.length - 1]!;
+    expect(remote.startsWith('export MARINA_SERVICE=')).toBe(true);
+    // export 段之后才是 exec $SHELL -lc '<bootstrap>'
+    const execIdx = remote.indexOf('exec "${SHELL:-/bin/sh}" -lc');
+    expect(execIdx).toBeGreaterThan(0);
+    expect(remote.slice(0, execIdx)).toContain('TERMINAL_ID');
+  });
+
+  it('无 filePanelForward:无 -R、无 env 前缀(与旧行为一致)', () => {
+    const { args } = buildSshLaunchParams(profile, '/home/u', {});
+    expect(args).not.toContain('-R');
+    const remote = args[args.length - 1]!;
+    expect(remote.startsWith('cd')).toBe(true);
+    expect(remote).not.toContain('MARINA_SERVICE');
+  });
+
+  it('env 值含单引号时被安全转义', () => {
+    const { args } = buildSshLaunchParams(profile, '/home/u', {
+      filePanelForward: { ...forward, env: { MARINA_TOKEN: "it's" } },
+    });
+    const remote = args[args.length - 1]!;
+    // POSIX 单引号转义:'it'\''s'(关闭引号 → 转义引号 → 重开引号)
+    expect(remote).toContain(String.raw`MARINA_TOKEN='it'\''s'`);
   });
 });

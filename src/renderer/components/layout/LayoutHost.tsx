@@ -335,6 +335,30 @@ function PanelStack({
     };
   }, [isMobileLayout, appState.inSettingsView, persisted.collapsed, updateLayout]);
 
+  // v0.4.0(远程文件面板一致性,方案 20260917 P4):程序推送激活
+  // (openFile / runCommand 的 requestActivation)时,若右栏折叠则自动展开。
+  // 桌面端 dock 平时展开,reducer 切 activePanels 的跳转已经可见;移动端三页
+  // 布局 dock 默认折叠,没有这个 effect「AI 打开了文件」就发生了但看不见
+  // (方案根因 C)。只吃沿信号(panelActivations 每次激活 +1):激活后用户再
+  // 手动折叠不会被旧 tick 重复展开;非当前查看 session 的激活不抢切换。
+  // 不复用 updateLayout 也不把它放进 deps —— 它每次渲染都是新函数,会让本
+  // effect 退化为「每次渲染都跑」;collapsed 经 ref 读激活那一刻的值。
+  const panelActivationTick = appState.panelActivations.get(session.id) ?? 0;
+  const collapsedRef = useRef(persisted.collapsed);
+  collapsedRef.current = persisted.collapsed;
+  useEffect(() => {
+    if (panelActivationTick === 0) return;
+    if (!collapsedRef.current) return;
+    window.api
+      .invoke(COMMAND_CHANNELS.SESSION_UPDATE_UI_LAYOUT, {
+        sessionId: session.id,
+        patch: { docks: { right: { collapsed: false } } },
+      })
+      .catch((err: unknown) => {
+        console.warn('[LayoutHost] panel activation auto-expand failed', err);
+      });
+  }, [panelActivationTick, session.id]);
+
   // 拖宽走 pointer 事件(用户裁决 2026-09-14:触屏也要能拖分界线 —— mouse 事件
   // 在触摸上不触发)。落盘同时带 px 与 ratio(ratio 供别的设备按比例还原,
   // 见 resolveDockRenderWidth)。

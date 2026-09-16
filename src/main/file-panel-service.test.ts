@@ -4,6 +4,8 @@
  *   session 销毁清理 / fs.watch 自动刷新。用真实临时目录(AGENTS.md §9.1)。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import type { ChildProcess } from 'node:child_process';
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1067,3 +1069,140 @@ function makeReader(buf: Buffer) {
     cancel: async () => {},
   };
 }
+
+// ──────────────────────────────────────────────────────────────────
+// v0.4.0 SSH 会话(SessionFs 视角,方案-远程文件面板一致性-20260917 P1)
+// 用注入的 fake ssh spawn 模拟远端:printf $HOME / stat / base64 读取。
+// 不 spawn 真实进程(AGENTS.md 9.3)。
+// ──────────────────────────────────────────────────────────────────
+
+/** 远端文件表:path → 内容(stat 返回其长度 + 固定 mtime)。 */
+function makeSshFake(remoteFiles: Record<string, string>) {
+  const calls: Array<{ command: string; args: string[] }> = [];
+  const emit = new EventEmitter();
+  const deps = {
+    resolveExecutable: (name: string): string | null =>
+      name === 'ssh' ? '/usr/bin/ssh' : '/usr/bin/sshpass',
+    spawn: (command: string, args: string[]) => {
+      calls.push({ command, args });
+      const remote = args[args.length - 1] ?? '';
+      const child = new EventEmitter() as unknown as ChildProcess;
+      const stdout = new EventEmitter();
+      const stderr = new EventEmitter();
+      (child as unknown as { stdout: EventEmitter }).stdout = stdout;
+      (child as unknown as { stderr: EventEmitter }).stderr = stderr;
+      (child as unknown as { kill(): void }).kill = (): void => undefined;
+      setImmediate(() => {
+        let out = '';
+        if (remote.includes('printf %s "$HOME"')) {
+          out = '/home/u';
+        } else if (remote.includes('stat -c')) {
+          // 提取 f='...' 里的路径(单引号已由 shQuote 转义;测试数据无内嵌引号)
+          const m = /f='([^']+)'/.exec(remote);
+          const p = m?.[1] ?? '';
+          if (p in remoteFiles) out = `${Buffer.byteLength(remoteFiles[p]!, 'utf8')} 1700000000`;
+          else out = '__MISSING__';
+        } else if (remote.includes('head -c')) {
+          const m = /f='([^']+)'/.exec(remote);
+          const p = m?.[1] ?? '';
+          const content = remoteFiles[p] ?? '';
+          const limit = Number(/head -c (\d+)/.exec(remote)?.[1] ?? '0');
+          out = Buffer.from(content, 'utf8').subarray(0, limit).toString('base64');
+        } else if (remote.includes('base64 <')) {
+          const m = /f='([^']+)'/.exec(remote);
+          const p = m?.[1] ?? '';
+          out = Buffer.from(remoteFiles[p] ?? '', 'utf8').toString('base64');
+        }
+        stdout.emit('data', Buffer.from(out, 'utf8'));
+        child.emit('close', 0);
+      });
+      void emit; // 保持与真实 ChildProcess 同构的事件面(当前无订阅者)
+      return child;
+    },
+  };
+  return { deps, calls };
+}
+
+describe('FilePanelService - SSH 会话(SessionFs)', () => {
+  const REMOTE_CWD = '/home/u/proj';
+  const target = {
+    host: 'srv',
+    port: 22,
+    username: 'u',
+    authType: 'agent' as const,
+  };
+
+  function makeSvc(remoteFiles: Record<string, string>) {
+    const svc = new FilePanelService();
+    const { deps, calls } = makeSshFake(remoteFiles);
+    svc.attachSessionLookup({
+      get: (id: string) =>
+        id === 'ssh1' ? { currentCwd: REMOTE_CWD, ownerWindowId: 'w1', sshTarget: target } : null,
+    });
+    svc.attachSshFsDeps(deps);
+    return { svc, calls };
+  }
+
+  afterEach(async () => {
+    // 每个用例各自 makeSvc;stop 清 watcher(SSH 无 watcher,幂等)
+  });
+
+  it('openFile 相对路径解析到远端 POSIX 绝对路径 + requestActivation 事件', async () => {
+    const { svc } = makeSvc({ '/home/u/proj/readme.md': '# hello' });
+    const events: Array<Record<string, unknown>> = [];
+    svc.on('filePanelUpdated', (e) => events.push(e as Record<string, unknown>));
+    const snap = await svc.openFile('ssh1', 'readme.md');
+    expect(snap.files).toHaveLength(1);
+    expect(snap.activePath).toBe('/home/u/proj/readme.md');
+    expect(snap.files[0]!.kind).toBe('markdown');
+    expect(snap.files[0]!.size).toBe(7);
+    expect(events.at(-1)).toMatchObject({ requestActivation: true });
+    await svc.stop();
+  });
+
+  it('openFile ~ 展开用远端 $HOME(不是 daemon 本机 home)', async () => {
+    const { svc } = makeSvc({ '/home/u/notes/a.md': 'x' });
+    const snap = await svc.openFile('ssh1', '~/notes/a.md');
+    expect(snap.activePath).toBe('/home/u/notes/a.md');
+    await svc.stop();
+  });
+
+  it('readFile 文本经 base64 读回,内容与远端一致', async () => {
+    const content = 'line1\nline2\n';
+    const { svc } = makeSvc({ '/home/u/proj/out.log': content });
+    await svc.openFile('ssh1', 'out.log');
+    const r = await svc.readFile('ssh1', '/home/u/proj/out.log');
+    expect(r).toEqual({ kind: 'text', text: content, truncated: false });
+    await svc.stop();
+  });
+
+  it('readFile 超 2MB 截断(truncated=true,远端路径同样执行上限)', async () => {
+    const big = 'a'.repeat(2 * 1024 * 1024 + 10);
+    const { svc } = makeSvc({ '/home/u/proj/big.txt': big });
+    await svc.openFile('ssh1', 'big.txt');
+    const r = await svc.readFile('ssh1', '/home/u/proj/big.txt');
+    expect(r.kind).toBe('text');
+    if (r.kind === 'text') {
+      expect(r.truncated).toBe(true);
+      expect(r.text.length).toBe(2 * 1024 * 1024);
+    }
+    await svc.stop();
+  });
+
+  it('openFile 远端不存在 → NotFound(与本地文件不存在同语义)', async () => {
+    const { svc } = makeSvc({});
+    await expect(svc.openFile('ssh1', 'nope.md')).rejects.toMatchObject({
+      code: 'NotFound',
+    });
+    await svc.stop();
+  });
+
+  it('getAllSessionStates(v5 快照数据源)包含 SSH 会话的面板状态', async () => {
+    const { svc } = makeSvc({ '/home/u/proj/a.md': '# a' });
+    await svc.openFile('ssh1', 'a.md');
+    const all = svc.getAllSessionStates();
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({ sessionId: 'ssh1', activePath: '/home/u/proj/a.md' });
+    await svc.stop();
+  });
+});

@@ -1466,54 +1466,56 @@ export function TerminalView({
     // 折行拼回完整逻辑行再检测,字符 index 经 mapStrIdx(宽字符感知)映射回
     // 多行 buffer 坐标。range 约定不变:start.x = 首 cell +1(1-based,含)、
     // end.x = 末字符后 cell(0-based,不含)、y 均为 buffer 行 +1。
-    const isSshSession = session.pathId.startsWith('ssh:');
-    const fileLinkDisposable = isSshSession
-      ? undefined
-      : term.registerLinkProvider({
-          provideLinks(y, callback) {
-            const win = getWindowedLine(term, y - 1);
-            if (!win) {
-              callback(undefined);
-              return;
-            }
-            const links: ILink[] = [];
-            for (const det of detectFileLinks(win.text)) {
-              const [sy, sx] = mapStrIdx(term, win.topIndex, 0, det.start);
-              const [ey, ex] = mapStrIdx(term, win.topIndex, 0, det.end);
-              if (sy === -1 || sx === -1 || ey === -1 || ex === -1) continue;
-              links.push({
-                range: {
-                  start: { x: sx + 1, y: sy + 1 },
-                  end: { x: ex, y: ey + 1 },
-                },
-                text: det.raw,
-                activate: (event: MouseEvent) => {
-                  // 勘误①:只认左键(xterm mouseup 激活不过滤鼠标键,存量同病)。
-                  if (event.button !== 0) return;
-                  // 传 pathCandidates:raw 以 @ 开头时为 [剥@, 带@],点击逐个试首个有效。
-                  openPathFromTerminalRef.current?.(det.pathCandidates, det.line);
-                },
-                hover: (event: MouseEvent) => {
-                  // 知情通道:tooltip 显示将打开的路径(候选多时列全部)+ 行号。
-                  const lineSuffix = det.line !== undefined ? `:${det.line}` : '';
-                  showTerminalLinkTooltip(term, event, det.pathCandidates.join(' / ') + lineSuffix);
-                },
-                leave: () => {
-                  hideTerminalLinkTooltip(term);
-                },
-              });
-            }
-            callback(links.length > 0 ? links : undefined);
-          },
-        });
+    // v0.4.0(方案-远程文件面板一致性-20260917):SSH 会话不再禁用文件路径
+    // 链接。此前禁用的原因是「路径在 daemon 本机 fs 不可达,点了必 toast」;
+    // 现在 main 端 openFile 经 SessionFs 在 session 自己的文件系统视角解析
+    // (SSH = 远端 exec),可达性与本地会话一致,读不到时同样走「文件不
+    // 存在」toast —— 与本地行为完全同构。
+    const fileLinkDisposable = term.registerLinkProvider({
+      provideLinks(y, callback) {
+        const win = getWindowedLine(term, y - 1);
+        if (!win) {
+          callback(undefined);
+          return;
+        }
+        const links: ILink[] = [];
+        for (const det of detectFileLinks(win.text)) {
+          const [sy, sx] = mapStrIdx(term, win.topIndex, 0, det.start);
+          const [ey, ex] = mapStrIdx(term, win.topIndex, 0, det.end);
+          if (sy === -1 || sx === -1 || ey === -1 || ex === -1) continue;
+          links.push({
+            range: {
+              start: { x: sx + 1, y: sy + 1 },
+              end: { x: ex, y: ey + 1 },
+            },
+            text: det.raw,
+            activate: (event: MouseEvent) => {
+              // 勘误①:只认左键(xterm mouseup 激活不过滤鼠标键,存量同病)。
+              if (event.button !== 0) return;
+              // 传 pathCandidates:raw 以 @ 开头时为 [剥@, 带@],点击逐个试首个有效。
+              openPathFromTerminalRef.current?.(det.pathCandidates, det.line);
+            },
+            hover: (event: MouseEvent) => {
+              // 知情通道:tooltip 显示将打开的路径(候选多时列全部)+ 行号。
+              const lineSuffix = det.line !== undefined ? `:${det.line}` : '';
+              showTerminalLinkTooltip(term, event, det.pathCandidates.join(' / ') + lineSuffix);
+            },
+            leave: () => {
+              hideTerminalLinkTooltip(term);
+            },
+          });
+        }
+        callback(links.length > 0 ? links : undefined);
+      },
+    });
 
     // ── []() markdown 链接 provider(方案-终端可交互链接-20260912 第二通道)──
     // pi TUI 的输出走 bridge transformer(OSC 8);这里覆盖**裸 markdown 文本**:
     // pi -p 打印模式、cat 一个 .md、其它工具输出里的 [label](href)。检测在跨折行
     // 窗口文本上跑(terminal-md-link-detector),点击走与 OSC 8 同一条路由
     // (terminal-link-router:marina: 动作 / https 外开 / 路径进文件面板)。
-    // #anchor 无终端语义,检测后过滤。SSH session 只保留 http/marina: 类 href
-    // (裸路径在本机不可达,点了必 toast)。
+    // #anchor 无终端语义,检测后过滤。v0.4.0:SSH 会话的裸路径 href 不再过滤
+    // (main 端 SessionFs 在远端视角解析,与文件路径 provider 同理由,见上)。
     const mdLinkDisposable = term.registerLinkProvider({
       provideLinks(y, callback) {
         const win = getWindowedLine(term, y - 1);
@@ -1524,7 +1526,6 @@ export function TerminalView({
         const links: ILink[] = [];
         for (const det of detectMdLinks(win.text)) {
           if (det.href.startsWith('#')) continue;
-          if (isSshSession && !/^(https?|mailto:|marina:)/i.test(det.href)) continue;
           const [sy, sx] = mapStrIdx(term, win.topIndex, 0, det.start);
           const [ey, ex] = mapStrIdx(term, win.topIndex, 0, det.end);
           if (sy === -1 || sx === -1 || ey === -1 || ex === -1) continue;

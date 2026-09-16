@@ -24,7 +24,8 @@ import {
 
 describe('protocol constants', () => {
   it('PROTOCOL_VERSION is a positive integer', () => {
-    expect(PROTOCOL_VERSION).toBe(4);
+    // v5:GetSnapshotResponse 增加 filePanels/commandPanels(远程文件面板一致性)。
+    expect(PROTOCOL_VERSION).toBe(5);
     expect(Number.isInteger(PROTOCOL_VERSION)).toBe(true);
     expect(PROTOCOL_VERSION).toBeGreaterThan(0);
   });
@@ -162,9 +163,7 @@ describe('command routing (每窗口后端架构边界)', () => {
   it('routing 是穷尽的:每个 COMMAND_CHANNELS 都能被明确分类,无 fail-open 遗漏', () => {
     // ADR-029/H3:routing 必须穷尽。所有命令通道要么 local-control 要么 backend-data,
     // 且 getCommandRouting 对未知 channel 抛错(不静默当 backend)。
-    const results = Object.values(COMMAND_CHANNELS).map((channel) =>
-      getCommandRouting(channel)
-    );
+    const results = Object.values(COMMAND_CHANNELS).map((channel) => getCommandRouting(channel));
     for (const r of results) {
       expect(['local-control', 'backend-data']).toContain(r);
     }
@@ -175,7 +174,7 @@ describe('command routing (每窗口后端架构边界)', () => {
     expect(() => getCommandRouting('cmd:nonexistent:channel')).toThrow(/unknown command channel/);
     // 事件通道不是命令通道,也应拒绝。
     expect(() => getCommandRouting(EVENT_CHANNELS.SESSION_CREATED)).toThrow(
-      /unknown command channel/
+      /unknown command channel/,
     );
   });
 });

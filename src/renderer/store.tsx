@@ -164,6 +164,16 @@ export interface AppState {
   fileViewerScroll: FileViewerScrollState;
 
   /**
+   * v0.4.0(远程文件面板一致性,方案 20260917 P4):每个 session 最近一次
+   * 「程序推送激活」的沿信号(单调递增计数)。openFile / runCommand 的
+   * requestActivation 事件到达时 +1。reducer 里同时会把 activePanels 切到
+   * 「已打开」,但那只对**展开的 dock** 可见 —— LayoutHost 订阅这个沿,在
+   * dock 折叠时(移动端三页布局默认折叠)自动展开,保证「AI 打开文件 → 跳转」
+   * 在桌面/移动两端同样可见。本窗口私有 view state,session 销毁时清理。
+   */
+  panelActivations: Map<string, number>;
+
+  /**
    * 每个 session 在右侧 dock stack 里最后激活的面板(file-tree / file-panel)，
    * 本窗口私有 view state(不上 main)。LayoutHost.PanelStack 的 activePanelId
    * 完全由它驱动:用户点 tab、openFile 自动切换都写进这里，PanelStack remount
@@ -331,6 +341,17 @@ export type AppAction =
 // Reducer
 // ──────────────────────────────────────────────────────────────────
 
+/**
+ * panelActivations 沿信号 +1(见 AppState.panelActivations 注释)。每次
+ * requestActivation 都产生新 Map + 新计数,让 LayoutHost 的 effect 只在
+ * 「激活发生」这个沿上跑一次,而不是每次渲染都判断。
+ */
+function bumpPanelActivation(state: AppState, sessionId: string): Map<string, number> {
+  const next = new Map(state.panelActivations);
+  next.set(sessionId, (next.get(sessionId) ?? 0) + 1);
+  return next;
+}
+
 function reducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
     case 'snapshot/load': {
@@ -338,6 +359,21 @@ function reducer(state: AppState, action: AppAction): AppState {
       const sessionsMap = new Map(s.sessions.map((sess) => [sess.id, sess]));
       // 默认选中第一个收藏路径 (若有);否则不选
       const firstBookmark = s.pathTree.bookmarks[0];
+      // v5 快照:per-session 面板状态冷启动灌入(Android 冷启动/重连、桌面新开
+      // 窗口此前从零开始,「已打开 (N)」徽章无从渲染)。只灌数据,不灌激活
+      // (activePanels)—— 冷启动不该触发任何面板跳转。
+      const filePanels = new Map(
+        (s.filePanels ?? []).map((e) => [
+          e.sessionId,
+          { files: e.files, activePath: e.activePath },
+        ]),
+      );
+      const commandPanels = new Map(
+        (s.commandPanels ?? []).map((e) => [
+          e.sessionId,
+          { commands: e.commands, activeKey: e.activeKey },
+        ]),
+      );
       return {
         ...state,
         pathTree: s.pathTree,
@@ -348,6 +384,8 @@ function reducer(state: AppState, action: AppAction): AppState {
         templates: s.templates,
         defaultTemplateId: s.defaultTemplateId,
         settings: s.settings,
+        filePanels,
+        commandPanels,
         // 远程后端窗口的真实 owner id 不是本地 BrowserWindow 的 windowId,而是
         // daemon 在 WS auth 后分配的 clientId。SessionManager.createSession 也会用
         // 这个 clientId 写 session.ownerWindowId。若这里继续保留 preload URL 里的
@@ -488,6 +526,8 @@ function reducer(state: AppState, action: AppAction): AppState {
       activePanels.delete(action.sessionId);
       const openPanelViews = new Map(state.openPanelViews);
       openPanelViews.delete(action.sessionId);
+      const panelActivations = new Map(state.panelActivations);
+      panelActivations.delete(action.sessionId);
       const lastSelectedAt = new Map(state.lastSelectedAt);
       lastSelectedAt.delete(action.sessionId);
       const terminalScroll = new Map(state.terminalScroll);
@@ -501,6 +541,7 @@ function reducer(state: AppState, action: AppAction): AppState {
         fileViewerScroll,
         activePanels,
         openPanelViews,
+        panelActivations,
         lastSelectedAt,
         terminalScroll,
       };
@@ -571,6 +612,7 @@ function reducer(state: AppState, action: AppAction): AppState {
           filePanelHeadingNavigations,
           activePanels,
           openPanelViews,
+          panelActivations: bumpPanelActivation(state, action.sessionId),
         };
       }
       return { ...state, filePanels, fileViewerScroll, filePanelHeadingNavigations };
@@ -605,7 +647,9 @@ function reducer(state: AppState, action: AppAction): AppState {
         const commandKeys = new Set(action.commands.map((c) => `command:${c.key}`));
         const kept = new Map(
           [...previousScroll].filter(
-            ([path, position]) => !path.startsWith('command:') || (position.kind === 'command' && commandKeys.has(path)),
+            ([path, position]) =>
+              !path.startsWith('command:') ||
+              (position.kind === 'command' && commandKeys.has(path)),
           ),
         );
         if (kept.size !== previousScroll.size) {
@@ -623,7 +667,14 @@ function reducer(state: AppState, action: AppAction): AppState {
         activePanels.set(action.sessionId, 'file-panel');
         const openPanelViews = new Map(state.openPanelViews);
         openPanelViews.set(action.sessionId, 'command');
-        return { ...state, commandPanels, activePanels, openPanelViews, fileViewerScroll };
+        return {
+          ...state,
+          commandPanels,
+          activePanels,
+          openPanelViews,
+          fileViewerScroll,
+          panelActivations: bumpPanelActivation(state, action.sessionId),
+        };
       }
       return { ...state, commandPanels, fileViewerScroll };
     }
@@ -928,6 +979,7 @@ export function makeDefaultState(myWindowId: string, myWindowNumber: number): Ap
     fileViewerScroll: new Map(),
     activePanels: new Map(),
     openPanelViews: new Map(),
+    panelActivations: new Map(),
     lastSelectedAt: new Map(),
     terminalScroll: new Map(),
     mdThemes: [],
@@ -1079,10 +1131,7 @@ export function useIpcSync(): {
           // 包成 IIFE 返回 cleanup,cleanups.push 要求每个参数是 () => void。
           (() => {
             void window.api
-              .invoke(
-                COMMAND_CHANNELS.REMOTE_DAEMON_GET_STATUS,
-                undefined,
-              )
+              .invoke(COMMAND_CHANNELS.REMOTE_DAEMON_GET_STATUS, undefined)
               .then((r) => dispatch({ type: 'remoteDaemonStatus/update', status: r.status }))
               .catch(() => {
                 /* 远程不可达 / 未初始化时静默 */
@@ -1210,10 +1259,9 @@ export function useIpcSync(): {
           ),
         );
 
-        const snapshot = await window.api.invoke(
-          COMMAND_CHANNELS.APP_GET_SNAPSHOT,
-          { myWindowId: window.api.windowId },
-        );
+        const snapshot = await window.api.invoke(COMMAND_CHANNELS.APP_GET_SNAPSHOT, {
+          myWindowId: window.api.windowId,
+        });
 
         // remoteBackendProfiles 是“本客户端如何连接其他电脑”的本地控制面数据，
         // 不能信任远程 snapshot 里的同名字段:远程窗口的 snapshot 来自 daemon，
@@ -1222,10 +1270,7 @@ export function useIpcSync(): {
         // 因此后续新增/改名/删除由本地 REMOTE_PROFILES_UPDATED 持续同步。
         let localRemoteProfiles = snapshot.remoteBackendProfiles;
         try {
-          const result = await window.api.invoke(
-            COMMAND_CHANNELS.REMOTE_PROFILE_LIST,
-            undefined,
-          );
+          const result = await window.api.invoke(COMMAND_CHANNELS.REMOTE_PROFILE_LIST, undefined);
           localRemoteProfiles = result.profiles;
         } catch {
           // 本地 main 尚未注册该命令(协议不匹配)时保留 snapshot 值；握手版本检查
@@ -1262,10 +1307,7 @@ export function useIpcSync(): {
         // 自定义 markdown 主题列表:启动拉一次(订阅已覆盖后续增删广播)。
         // 失败不阻塞主流程 —— 设置页下拉只是少自定义项,内置主题仍可用。
         try {
-          const { themes } = await window.api.invoke(
-            COMMAND_CHANNELS.MD_THEME_LIST,
-            undefined,
-          );
+          const { themes } = await window.api.invoke(COMMAND_CHANNELS.MD_THEME_LIST, undefined);
           if (!cancelled) dispatch({ type: 'md-themes/update', themes });
         } catch (err) {
           console.warn('[md-theme] initial list failed', err);

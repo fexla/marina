@@ -1013,6 +1013,11 @@ export class SessionManager extends EventEmitter {
     }
 
     const hookFile = this.hookFileResolver(shell.id);
+    // TERMINAL_ID 是"本 session 唯一标识",终端里程序读它来告诉 MARINA_SERVICE
+    // 该把文件开到哪个终端的面板。v0.4.0 起生成点提前到 SSH launch 参数构建
+    // 之前:文件面板的反向隧道远端端口按 sessionId 派生(见 filePanelForward),
+    // 而 SSH 会话的 env 前缀注入也依赖它。
+    const sessionId = randomUUID();
     const existingSshSessionsForPath = isSsh
       ? this.list().filter((s) => s.pathId === input.pathId && s.state !== 'exited').length
       : 0;
@@ -1021,6 +1026,11 @@ export class SessionManager extends EventEmitter {
       commandToRun?: { command: string; args: string[]; env?: Record<string, string> };
       enableControlMaster?: boolean;
       controlPath?: string;
+      filePanelForward?: {
+        remotePort: number;
+        gatewayPort: number;
+        env: Record<string, string>;
+      };
     } = { forceTmuxChoice: existingSshSessionsForPath > 0 };
     if (template.command) {
       sshLaunchOptions.commandToRun = {
@@ -1043,6 +1053,34 @@ export class SessionManager extends EventEmitter {
           : '~/.ssh/cm-%r@%h:%p';
       }
     }
+    // v0.4.0(方案-远程文件面板一致性-20260917 P2):SSH 会话的反向隧道 + 远端
+    // env 前缀。此前 MARINA_SERVICE 指向 daemon 本机 127.0.0.1,SSH 远端进程
+    // 物理不可达 → AI 打开文件在 SSH 会话整体失效。-R 把 gateway 端口转发到
+    // 远端 loopback(sshd 默认 GatewayPorts=no,外部不可见),env 经远端命令
+    // 前缀注入(不依赖 sshd AcceptEnv,任意默认 sshd 可用)。ExitOnForwardFailure
+    // 缺省 no:转发失败只静默降级上报,终端本身不受影响(agent 脚本有 /health
+    // 探活)。远端端口按 sessionId 哈希派生,同 host 多会话基本不撞;撞了也只是
+    // 后者转发失败(前者先占),同样静默降级。
+    if (isSsh && this.settingsManager.get().filePanel.enabled) {
+      const fpUrl = this.filePanelService?.getUrl();
+      if (fpUrl) {
+        const gatewayPort = parseGatewayPort(fpUrl.baseUrl);
+        if (gatewayPort !== null) {
+          const remotePort =
+            FILE_PANEL_FORWARD_PORT_MIN +
+            (hashSessionPort(sessionId) % FILE_PANEL_FORWARD_PORT_SPAN);
+          sshLaunchOptions.filePanelForward = {
+            remotePort,
+            gatewayPort,
+            env: {
+              MARINA_SERVICE: `http://127.0.0.1:${remotePort}`,
+              MARINA_TOKEN: fpUrl.token,
+              TERMINAL_ID: sessionId,
+            },
+          };
+        }
+      }
+    }
     const launchParams = isSsh
       ? buildSshLaunchParams(input.sshProfile!, pathRef.path, sshLaunchOptions)
       : this.platformAdapter.buildShellLaunchParams(
@@ -1051,10 +1089,6 @@ export class SessionManager extends EventEmitter {
           template.command ? { command: template.command, args: template.args } : undefined,
         );
 
-    // TERMINAL_ID 是"本 session 唯一标识",终端里程序读它来告诉 MARINA_SERVICE
-    // 该把文件开到哪个终端的面板。必须在 env 构建之前生成,因为下面要把
-    // 它写进 env;原先生成点在 PTY spawn 之后(line 743),那里改成直接引用。
-    const sessionId = randomUUID();
     let workspacePath: string | null = null;
     /** v0.3.3 ADR-024：刚 create 的 workspaceId（PTY spawn 失败时 discard 用）。 */
     let workspaceId: string | null = null;
@@ -2667,6 +2701,32 @@ function pickDisplayName(template: Template, shell: ShellInfo): string {
   return inferDisplayName(shell.executablePath);
 }
 
+/**
+ * v0.4.0 文件面板反向隧道(方案-远程文件面板一致性-20260917 P2):SSH 会话
+ * 在远端 loopback 上占用的端口区间 [MIN, MIN+SPAN)。按 sessionId 哈希取位,
+ * 同一远端 host 上多个 Marina 会话基本不冲突;真冲突(他进程占用)时
+ * ExitOnForwardFailure=no 让该会话静默降级(上报不可用),终端不受影响。
+ */
+const FILE_PANEL_FORWARD_PORT_MIN = 32900;
+const FILE_PANEL_FORWARD_PORT_SPAN = 100;
+
+/** sessionId → [0, SPAN) 稳定哈希(端口派生)。sha256 前 4 字节大端取模。 */
+function hashSessionPort(sessionId: string): number {
+  return (
+    createHash('sha256').update(sessionId).digest().readUInt32BE(0) % FILE_PANEL_FORWARD_PORT_SPAN
+  );
+}
+
+/** 从 LocalHttpGateway baseUrl(http://127.0.0.1:PORT)解析端口;解析失败返回 null。 */
+function parseGatewayPort(baseUrl: string): number | null {
+  try {
+    const port = Number(new URL(baseUrl).port);
+    return Number.isInteger(port) && port > 0 ? port : null;
+  } catch {
+    return null;
+  }
+}
+
 export function buildSshLaunchParams(
   profile: {
     id?: string;
@@ -2689,11 +2749,32 @@ export function buildSshLaunchParams(
     enableControlMaster?: boolean;
     /** ControlPath 绝对路径模板(必含 %r %h %p 占位符),enableControlMaster=true 时必填。 */
     controlPath?: string;
+    /**
+     * v0.4.0 文件面板反向隧道(P2):-R 转发 daemon gateway 到远端 loopback,
+     * env 经远端命令前缀注入(见 buildRemoteLoginCommand)。不传 = 面板禁用,
+     * 与旧行为一致(不转发不注入)。
+     */
+    filePanelForward?: {
+      remotePort: number;
+      gatewayPort: number;
+      env: Record<string, string>;
+    };
   } = {},
 ): { args: string[]; env: Record<string, string> } {
   const args = ['-tt', '-p', String(profile.port), '-o', 'ServerAliveInterval=30'];
   if (profile.authType === 'keyFile' && profile.keyFilePath) {
     args.push('-i', profile.keyFilePath);
+  }
+  // v0.4.0 P2:文件面板反向隧道。绑定地址显式写 127.0.0.1(sshd 即使
+  // GatewayPorts=yes 也不会把转发暴露到远端外网接口);转发失败不杀终端
+  // (ExitOnForwardFailure=no 是 OpenSSH 缺省,这里显式写出意图)。
+  if (options.filePanelForward) {
+    args.push(
+      '-R',
+      `127.0.0.1:${options.filePanelForward.remotePort}:127.0.0.1:${options.filePanelForward.gatewayPort}`,
+      '-o',
+      'ExitOnForwardFailure=no',
+    );
   }
   // ProxyJump:多跳板拼接成 -J host1,host2,host3。空数组等价于不跳板。
   // OpenSSH 接受 user@host:port 形式,这里只做空段过滤,不做格式校验
@@ -2718,7 +2799,7 @@ export function buildSshLaunchParams(
     );
   }
   args.push(`${profile.username}@${profile.host}`);
-  args.push(buildRemoteLoginCommand(remoteCwd, profile, options));
+  args.push(buildRemoteLoginCommand(remoteCwd, profile, options, options.filePanelForward?.env));
   return { args, env: {} };
 }
 
@@ -2737,7 +2818,22 @@ function buildRemoteLoginCommand(
     forceTmuxChoice?: boolean;
     commandToRun?: { command: string; args: string[]; env?: Record<string, string> };
   } = {},
+  /**
+   * v0.4.0 P2:经远端命令前缀 export 的 env(文件面板 MARINA_SERVICE 等)。
+   * 放在命令最外层开头 —— 后续无论是否 exec/tmux 包装,export 进的环境都会
+   * 被保留(exec 不重置 env;tmux new 的 pane 继承;tmux attach 到已存在
+   * server 时 pane 内进程不重放 env,是方案 §6 已接受的降级)。
+   */
+  prefixEnv?: Record<string, string>,
 ): string {
+  // 必须 export:裸 `A=x; cmd` 只对当条赋值生效,后续命令看不到(POSIX 语义)。
+  // export A='…' B='…'; 一次导出全部,再接后续登录命令。
+  const envPrefix =
+    prefixEnv && Object.keys(prefixEnv).length > 0
+      ? `export ${Object.entries(prefixEnv)
+          .map(([k, v]) => `${k}=${shQuote(v)}`)
+          .join(' ')}; `
+      : '';
   const cwd = remoteCwd.trim() || '~';
   let cdCommand: string;
   if (cwd === '~') {
@@ -2762,7 +2858,7 @@ function buildRemoteLoginCommand(
       `exec "\${SHELL:-/bin/sh}" -ic ${shQuote(`${commandLine}; ${shellCommand}`)}`
     : shellCommand;
   if (profile.tmuxMode !== 'attach-or-create') {
-    return `${cdCommand} && ${launchCommand}`;
+    return `${envPrefix}${cdCommand} && ${launchCommand}`;
   }
   const baseSessionName = defaultTmuxSessionName(cwd);
   // 目录派生是产品语义:同一个远程目录的 tmux 会话族必须统一落在
@@ -2788,7 +2884,10 @@ function buildRemoteLoginCommand(
   // 用户回退到 shell 后手动 `tmux new-session -A` 能成功,但直接 remote command
   // 会报 "server exited unexpectedly"。启用 tmux 时先显式进入 login shell 执行
   // bootstrap,让自动路径尽量贴近用户手动成功的路径。
-  return `exec "\${SHELL:-/bin/sh}" -lc ${shQuote(tmuxBootstrap)}`;
+  // envPrefix 在 exec **之外**(先 export 再 exec):exec 保留已导出环境;
+  // 若放进 shQuote(tmuxBootstrap) 里,attach 已有 tmux server 时同样不重放,
+  // 而新建路径反而少一层可见性 —— 统一放最外层,语义与文档注释一致。
+  return `${envPrefix}exec "\${SHELL:-/bin/sh}" -lc ${shQuote(tmuxBootstrap)}`;
 }
 
 function shQuote(value: string): string {

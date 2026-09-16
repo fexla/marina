@@ -7,6 +7,31 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+### Added
+
+- **远程文件面板一致性(ADR-043,方案-远程文件面板一致性-20260917)**:修复远程
+  使用(Android / 远程窗口)与本地在文件访问上的三类行为不一致——「已打开」徽章
+  缺失、AI 打开文件不跳转、终端路径链接点不开。四支柱一次落地:
+  - **SessionFs 会话文件系统视角层**(新 `src/main/session-fs.ts`):FilePanel 的
+    路径解析/校验/读取/监视按 session 选实现——本地 node:fs(行为零变化),
+    SSH 会话系统 ssh 一次性 exec(复用 ControlMaster 控制连接;stat GNU/BSD
+    双兼容,内容经 base64;零新依赖,不引 ssh2)。SSH 会话的终端文件路径链接
+    与 md 裸路径链接解除禁用,点击在远端视角解析,与本地同构(读不到同样
+    「文件不存在」toast)。已知降级:SSH 远端无变更 watch(激活时 stat 比对
+    + 手动刷新)、mtime 精度秒、远端需 POSIX 工具(stat/head/base64)。
+  - **SSH 上报反向隧道**:`MARINA_SERVICE` 对 SSH 会话经 `-R 127.0.0.1:<port>`
+    反向隧道到达远端(端口按 sessionId 哈希取自 32900-32999,转发失败静默
+    降级不杀终端),`MARINA_SERVICE/MARINA_TOKEN/TERMINAL_ID` 经远端命令
+    `export` 前缀注入(不依赖 sshd AcceptEnv)。AI 打开文件(show-in-marina)
+    在 SSH 会话可用;tmux attach 已有会话时 env 不重放(接受降级)。
+  - **快照补齐**:`cmd:app:get-snapshot` 响应新增必填 `filePanels`/
+    `commandPanels`(`PROTOCOL_VERSION` 4→5,握手拒绝混用)。新连接客户端
+    (Android 冷启动/重连、桌面新开窗口)冷启动即有「已打开 (N)」徽章数据,
+    不再依赖"活着收广播"。
+  - **激活可见性**:`requestActivation`(AI 打开文件 / 推送指令)到达且右栏
+    折叠时自动展开(移动端 = 滑入右页),桌面/移动同规则;仅作用于当前查看
+    的 session,不吃重复旧信号。
+
 ## [0.4.0] — 2026-09-17
 
 > 主题版本(MINOR,移动端大更新):**安卓移动端适配完整落地(ADR-042)+

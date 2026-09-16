@@ -21,9 +21,12 @@
  * - HTTP 安全面(127.0.0.1 + Bearer token + /health 免鉴权)见 local-http-gateway.ts
  *   文件头 —— M3 把传输层拆走后,service 不再持有 server/token。
  *
- * @SSH 限制:SSH 会话的 currentCwd 是远程路径,且远程进程根本到不了本机
- *   127.0.0.1(除非反向隧道,超出 v1)。所以本功能 v1 仅实质支持本地终端;
- *   即便 SSH 程序误调,fs.stat 远程路径会失败 → 返回错误,安全无副作用。
+ * @SSH 支持(v0.4.0 方案-远程文件面板一致性-20260917):此前本服务假设
+ *   「session 的文件系统 = daemon 本地 fs」,SSH 会话整体降级(远端进程也
+ *   到不了本机 127.0.0.1 网关)。现在一切路径操作经 SessionFs
+ *   (src/main/session-fs.ts)按 session 选实现:本地 = node:fs(行为不变),
+ *   SSH = 系统 ssh 一次性 exec。已知降级:SSH 无变更 watch(激活时 stat
+ *   比对 + 手动刷新)、mtime 精度秒、远端须有 POSIX 工具(stat/head/base64)。
  *
  * @循环依赖破除:FilePanelService 需要 sessionManager.get() 拿 currentCwd/
  *   owner;SessionManager 需要 gateway.getUrl() 注入 env。解法是
@@ -38,9 +41,8 @@
 import { EventEmitter } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
-import { promises as fs, watch, type FSWatcher, type Stats } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import { basename, dirname, resolve, join, isAbsolute } from 'node:path';
-import { homedir } from 'node:os';
 import type { OpenedFile, OpenedFileOrigin } from '@shared/types';
 import { detectFileKind } from '@shared/file-kind';
 import type {
@@ -51,9 +53,17 @@ import type {
   GalleryResolveImageResponse,
 } from '@shared/protocol';
 import { isRemoteUrl } from '@shared/url-scheme';
-import { normalizePath } from './path-manager';
 import { logger } from './logger';
 import { send, readBody } from './http/http-helpers';
+import {
+  createSshSessionFs,
+  localSessionFs,
+  type SessionFs,
+  type SessionFsStat,
+  type SessionFsWatchHandle,
+  type SshSessionFsDeps,
+  type SshSessionFsTarget,
+} from './session-fs';
 
 const MODULE = 'FilePanelService';
 
@@ -91,7 +101,16 @@ const IMAGE_MIME: Record<string, string> = {
  * (有 get 方法),用接口而非具体类,既破除循环依赖又便于单测注入 mock。
  */
 export interface FilePanelSessionLookup {
-  get(sessionId: string): { currentCwd: string; ownerWindowId: string | null } | null;
+  get(sessionId: string): {
+    currentCwd: string;
+    ownerWindowId: string | null;
+    /**
+     * v0.4.0 方案 20260917:SSH 会话的远端 exec 目标(SessionFs 的 ssh 实现
+     * 用)。缺省/undefined = 本地会话。由组装层(index.ts)从 pathId 还原
+     * profile 并解密 password 后提供 —— SessionManager 本身不持有凭据。
+     */
+    sshTarget?: SshSessionFsTarget;
+  } | null;
 }
 
 /**
@@ -232,8 +251,9 @@ export interface PiEventOps {
 interface PanelState {
   files: OpenedFile[];
   activePath: string | null;
-  /** path → fs.watch 句柄;关闭文件 / session 销毁时统一 close */
-  watchers: Map<string, FSWatcher>;
+  /** path → 变更监视句柄(SessionFs 归一形态;SSH 会话恒空,无 watch 能力);
+   *  关闭文件 / session 销毁时统一 close */
+  watchers: Map<string, SessionFsWatchHandle>;
   /** path → 防抖 timer */
   watchTimers: Map<string, NodeJS.Timeout>;
 }
@@ -267,6 +287,12 @@ function snapshot(state: PanelState | undefined): FilePanelSnapshot {
   return { files: state.files, activePath: state.activePath };
 }
 
+/** SSH target 逐字段比对(凭据/端口/跳板变化都要重建 SessionFs 实例,丢弃
+ *  其远端 $HOME 缓存)。字段全为标量,直接序列化比对足够且不会误判顺序。 */
+function sshTargetEquals(a: SshSessionFsTarget, b: SshSessionFsTarget): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 /**
  * 终端侧边文件预览面板服务。EventEmitter(沿用 SessionManager 模式):
  * - `filePanelUpdated` = 可重放的文件列表/active 状态；
@@ -278,6 +304,13 @@ export class FilePanelService extends EventEmitter {
   private lookup: FilePanelSessionLookup | null = null;
   /** v0.3.3 ADR-024:workspace 操作回调(核心面板用,见 attachWorkspaceOps 注释)。 */
   private workspaceOps: WorkspaceOps | null = null;
+  /**
+   * v0.4.0 方案 20260917:SSH 会话的 SessionFs 实例缓存(target 变化时重建,
+   * 远端 $HOME 缓存也随实例走)。session 销毁时清理(onSessionDestroyed)。
+   */
+  private readonly sshFsCache = new Map<string, { target: SshSessionFsTarget; fs: SessionFs }>();
+  /** SSH exec 依赖(可执行解析 + spawn;测试注入 fake)。生产由 index.ts 装配。 */
+  private sshFsDeps: SshSessionFsDeps | null = null;
 
   constructor() {
     super();
@@ -286,6 +319,37 @@ export class FilePanelService extends EventEmitter {
   /** 组装期后绑定 session 查询能力(见文件头"循环依赖破除")。 */
   attachSessionLookup(lookup: FilePanelSessionLookup): void {
     this.lookup = lookup;
+  }
+
+  /** v0.4.0:注入 SSH exec 依赖(session-fs.ts)。未注入时 SSH 会话的文件操作
+   *  抛 EIO(测试里不涉及 SSH 路径则无需注入)。 */
+  attachSshFsDeps(deps: SshSessionFsDeps): void {
+    this.sshFsDeps = deps;
+  }
+
+  /**
+   * 取该 session 的文件系统视角。本地会话 = 模块级单例(node:fs);SSH 会话 =
+   * 按缓存复用的 SshSessionFs(target 含凭据,逐字段比对识别配置变化)。
+   * sshTarget 存在但 deps 未注入(理论上只有测试)→ 仍返回 ssh 实例,首个
+   * 远端操作会给出明确的「依赖未装配」错误,而不是静默退回本地 fs。
+   */
+  private fsFor(sessionId: string): SessionFs {
+    const info = this.lookup?.get(sessionId);
+    const target = info?.sshTarget;
+    if (!target) return localSessionFs;
+    const cached = this.sshFsCache.get(sessionId);
+    if (cached && sshTargetEquals(cached.target, target)) return cached.fs;
+    const deps: SshSessionFsDeps =
+      this.sshFsDeps ??
+      (() => {
+        throw new Error(
+          '[FilePanelService] SSH session 需要 attachSshFsDeps(组装期由 index.ts 注入;' +
+            '测试场景请注入 fake 或使用本地 session)。未注入即出现本错误属装配缺口。',
+        );
+      })();
+    const created = createSshSessionFs(target, deps);
+    this.sshFsCache.set(sessionId, { target, fs: created });
+    return created;
   }
 
   /**
@@ -316,6 +380,21 @@ export class FilePanelService extends EventEmitter {
   }
 
   /**
+   * v5 快照(GetSnapshotResponse.filePanels 数据源):全部 session 的面板状态。
+   * 供 buildSnapshot 让新连接的客户端(Android 冷启动/重连、桌面新开窗口)冷启动
+   * 即有「已打开 (N)」徽章数据 —— 此前只有活着收广播一条路,新客户端从零开始。
+   * 无文件的 session 不出现(与事件增量语义一致:无状态不发)。
+   */
+  getAllSessionStates(): Array<{ sessionId: string } & FilePanelSnapshot> {
+    const out: Array<{ sessionId: string } & FilePanelSnapshot> = [];
+    for (const [sessionId, state] of this.panels) {
+      if (state.files.length === 0) continue;
+      out.push({ sessionId, files: state.files, activePath: state.activePath });
+    }
+    return out;
+  }
+
+  /**
    * 打开文件并切为 active。已存在则等价 show(更新 mtime + 重置 watcher)。
    * 路径相对 session.currentCwd 解析;校验存在且是文件。
    *
@@ -332,10 +411,13 @@ export class FilePanelService extends EventEmitter {
     rawPath: string,
     options: OpenFileOptions = {},
   ): Promise<FilePanelSnapshot> {
-    const abs = await this.resolveAndStat(sessionId, rawPath);
+    const sfs = this.fsFor(sessionId);
+    // SSH 会话:~ 展开需要远端 $HOME(惰性,一次 exec 后缓存)。放在解析前。
+    await sfs.ensureHome();
+    const abs = await this.resolveAndStat(sfs, sessionId, rawPath);
     let state = this.panels.get(sessionId);
     const existingOrigin = state?.files.find((file) => file.path === abs)?.origin;
-    const opened = await this.toOpenedFile(abs, options.origin ?? existingOrigin);
+    const opened = await this.toOpenedFile(sfs, abs, options.origin ?? existingOrigin);
     // resolveAndStat/toOpenedFile 都跨异步文件系统边界。此后到 emit 之间没有 await，
     // 因而这里重验后，同一 event-loop turn 内的状态修改与事件发送对 owner 是原子的。
     this.requireExpectedOwner(sessionId, options.expectedOwnerWindowId);
@@ -373,7 +455,7 @@ export class FilePanelService extends EventEmitter {
       state.files.push(opened);
     }
     state.activePath = abs;
-    this.ensureWatcher(sessionId, state, abs);
+    this.ensureWatcher(sfs, sessionId, state, abs);
     // requestActivation=true:无论新增还是重复打开(更新 mtime)，用户/终端程序都
     // 期望侧边面板切到「已打开」。show/close/fs.watch 刷新走 false(见下)，不会抢
     // 用户已手动切回「文件」的焦点。统一在此发出，HTTP /open-file、IPC
@@ -495,7 +577,7 @@ export class FilePanelService extends EventEmitter {
     let changed = false;
     await Promise.all(
       state.files.map(async (f) => {
-        const exists = await this.pathExistsAsFile(f.path);
+        const exists = await this.pathExistsAsFile(sessionId, f.path);
         const want = exists ? false : true;
         if (!!f.missing !== want) {
           f.missing = want;
@@ -525,6 +607,7 @@ export class FilePanelService extends EventEmitter {
    */
   async readFile(sessionId: string, rawPath: string): Promise<ReadFileResponse> {
     const state = this.panels.get(sessionId);
+    const sfs = this.fsFor(sessionId);
     const abs = this.normalizeForSession(sessionId, rawPath);
     const file = state?.files.find((f) => f.path === abs);
     if (!file) {
@@ -534,7 +617,7 @@ export class FilePanelService extends EventEmitter {
       return { kind: 'unknown', message: '该文件类型暂不支持预览' };
     }
     if (file.kind === 'image') {
-      // 预判:OpenedFile.size 来自 stat,先用它拒超大图,避免 readFile 把整文件吃进
+      // 预判:OpenedFile.size 来自 stat,先用它拒超大图,避免读取把整文件吃进
       // 内存(50MB 图原实现会先吃满再拒)。读后再校验一次防 size 之后被换成更大的。
       if (file.size > MAX_READ_IMAGE_BYTES) {
         return {
@@ -542,7 +625,7 @@ export class FilePanelService extends EventEmitter {
           message: `图片过大(${file.size} 字节),超过 ${MAX_READ_IMAGE_BYTES} 上限`,
         };
       }
-      const buf = await fs.readFile(abs);
+      const buf = await sfs.readFull(abs);
       if (buf.byteLength > MAX_READ_IMAGE_BYTES) {
         return {
           kind: 'unknown',
@@ -557,11 +640,8 @@ export class FilePanelService extends EventEmitter {
     // 'web'(ADR-034)走同一 UTF-8 读路径,但响应 kind 固定映射为 'text':预览内容
     // 不经此通道(由 marina-file:// 协议流式服务),read 只服务 WebViewer 的
     // "源码查看"模式,复用 TextViewer 渲染。
-    const buf = await fs.readFile(abs);
-    const truncated = buf.byteLength > MAX_READ_TEXT_BYTES;
-    const text = truncated
-      ? buf.subarray(0, MAX_READ_TEXT_BYTES).toString('utf8')
-      : buf.toString('utf8');
+    const { buf, truncated } = await sfs.readLimited(abs, MAX_READ_TEXT_BYTES);
+    const text = buf.toString('utf8');
     return { kind: file.kind === 'web' ? 'text' : file.kind, text, truncated };
   }
 
@@ -584,10 +664,11 @@ export class FilePanelService extends EventEmitter {
     if (isRemoteUrl(src)) {
       return { error: 'not a local image' };
     }
-    const resolved = await this.resolveLocalImageAbs(sessionId, mdPath, src, baseDir);
+    const sfs = this.fsFor(sessionId);
+    const resolved = await this.resolveLocalImageAbs(sfs, sessionId, mdPath, src, baseDir);
     if ('error' in resolved) return { error: resolved.error };
     try {
-      const buf = await fs.readFile(resolved.abs);
+      const buf = await sfs.readFull(resolved.abs);
       return { dataUrl: `data:${resolved.mime};base64,${buf.toString('base64')}` };
     } catch (err) {
       return { error: `read failed: ${err instanceof Error ? err.message : String(err)}` };
@@ -595,13 +676,16 @@ export class FilePanelService extends EventEmitter {
   }
 
   /**
-   * 解析本地图引用为磁盘绝对路径 + mime。复用于 readImageAsset(读 dataUrl)/
-   * gallery 本地图(resolve + open),保证两条路径走**同一套**安全面:
-   * decode → 成员校验 → 相对 md 目录 resolve → stat(须 isFile)→ 大小上限 → MIME 白名单。
+   * 解析本地图引用为(该 session 视角的)绝对路径 + mime。复用于
+   * readImageAsset(读 dataUrl)/ gallery 本地图(resolve + open),保证两条路径走
+   * **同一套**安全面:decode → 成员校验 → 相对 md 目录 resolve → stat(须
+   * isFile)→ 大小上限 → MIME 白名单。经 SessionFs:本地会话返回磁盘绝对
+   * 路径,SSH 会话返回远端 POSIX 绝对路径(后续 readFull 同视角)。
    *
    * @returns 成功 {abs, mime};失败 {error}(不读文件内容,只 resolve+stat)。
    */
   private async resolveLocalImageAbs(
+    sfs: SessionFs,
     sessionId: string,
     mdPath: string | undefined,
     src: string,
@@ -622,19 +706,20 @@ export class FilePanelService extends EventEmitter {
     const dir = base.dir;
     let abs: string;
     try {
-      abs = normalizePath(resolve(dir, decoded));
+      abs = sfs.resolve(dir, decoded);
     } catch (err) {
       return {
         error: `resolve failed: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
-    let stat: Stats;
+    let stat: SessionFsStat;
     try {
-      stat = await fs.stat(abs);
+      stat = await sfs.stat(abs);
     } catch {
       return { error: 'not found' };
     }
-    if (!stat.isFile()) return { error: 'not a file' };
+    if (!stat.exists) return { error: 'not found' };
+    if (!stat.isFile) return { error: 'not a file' };
     if (stat.size > MAX_READ_IMAGE_BYTES) {
       return { error: `image too large (${stat.size} > ${MAX_READ_IMAGE_BYTES})` };
     }
@@ -676,11 +761,13 @@ export class FilePanelService extends EventEmitter {
       if ('error' in dl) return { error: dl.error };
       return { dataUrl: `data:${dl.mime};base64,${dl.buf.toString('base64')}` };
     }
-    // 本地图(含 data:/blob:/无协议):复用 read-image 的解析路径
-    const resolved = await this.resolveLocalImageAbs(sessionId, mdPath, src, baseDir);
+    // 本地图(含 data:/blob:/无协议):复用 read-image 的解析路径(经 SessionFs,
+    // SSH 会话读的是远端文件,与文本/图片查看同一视角)
+    const sfs = this.fsFor(sessionId);
+    const resolved = await this.resolveLocalImageAbs(sfs, sessionId, mdPath, src, baseDir);
     if ('error' in resolved) return { error: resolved.error };
     try {
-      const buf = await fs.readFile(resolved.abs);
+      const buf = await sfs.readFull(resolved.abs);
       return { dataUrl: `data:${resolved.mime};base64,${buf.toString('base64')}` };
     } catch (err) {
       return { error: `read failed: ${err instanceof Error ? err.message : String(err)}` };
@@ -713,7 +800,8 @@ export class FilePanelService extends EventEmitter {
       if ('error' in dl) return { error: dl.error };
       return { path: dl.cachePath };
     }
-    const resolved = await this.resolveLocalImageAbs(sessionId, mdPath, src, baseDir);
+    const sfs = this.fsFor(sessionId);
+    const resolved = await this.resolveLocalImageAbs(sfs, sessionId, mdPath, src, baseDir);
     if ('error' in resolved) return { error: resolved.error };
     return { path: resolved.abs };
   }
@@ -859,8 +947,9 @@ export class FilePanelService extends EventEmitter {
    * 安全(与 readImageAsset 同防线):
    * - mdPath 必须是该 session 已打开列表里的文件(成员校验),防 renderer 被诱导
    *   用任意 mdPath + src 打开磁盘任意文件。这是 renderer→main 的信任边界。
-   * - src 走 normalizePath(resolve(dirname(mdPath), src)),再交 resolveAndStat 校验
-   *   存在 + 是文件(目录拒)。穿越 ../ 可指向 md 目录外,但只进只读面板、不外发。
+   * - src 走 SessionFs.resolve(dirname(mdPath), src),再交 openFile 的
+   *   resolveAndStat 校验存在 + 是文件(目录拒)。穿越 ../ 可指向 md 目录外,
+   *   但只进只读面板、不外发。SSH 会话同样成立:校验发生在远端 fs 视角。
    *
    * @throws FilePanelError ResolveFailed(src 空/畸形)/ SessionMissing / NotFound /
    *   NotFile / 以及 toOpenedFile/detect 的内部错误。renderer 收到后 toast 提示。
@@ -894,11 +983,16 @@ export class FilePanelService extends EventEmitter {
     try {
       decoded = decodeURIComponent(src);
     } catch {
-      // malformed % 序列,保留原值让 resolve 尝试
+      // malformed % 序列,保留原值让 resolve 尝试(与 readImageAsset 一致)
     }
+    // 相对 md 目录解析(经 SessionFs:SSH 会话 POSIX 语义)。decodeURIComponent
+    // 兼容 %20 等转义(与 readImageAsset 一致;renderer 的 normalizeMdImageSources
+    // 对图片做了空格转义,链接 href 由 react-markdown 给原值,这里统一 decode 容错)。
+    const sfs = this.fsFor(sessionId);
+    await sfs.ensureHome();
     let abs: string;
     try {
-      abs = normalizePath(resolve(dirname(mdPath), decoded));
+      abs = sfs.resolve(sfs.dirname(mdPath), decoded);
     } catch (err) {
       throw new FilePanelError(
         'ResolveFailed',
@@ -918,6 +1012,7 @@ export class FilePanelService extends EventEmitter {
 
   /** session 销毁:清掉该 session 全部 watcher + 状态(ipc wireEventBroadcasts 调)。 */
   onSessionDestroyed(sessionId: string): void {
+    this.sshFsCache.delete(sessionId);
     if (!this.panels.has(sessionId)) return;
     this.clearPanel(sessionId);
     this.panels.delete(sessionId);
@@ -944,7 +1039,8 @@ export class FilePanelService extends EventEmitter {
     if (isRemoteUrl(src)) {
       throw new FilePanelError('ResolveFailed', '远程链接不走本地文件打开');
     }
-    if (!isAbsolute(baseDir)) {
+    const sfs = this.fsFor(sessionId);
+    if (!sfs.isAbsolute(baseDir)) {
       throw new FilePanelError(
         'ResolveFailed',
         `baseDir 必须是绝对路径(收到 "${baseDir}")。调用方应传 CommandEntry.runCwd 或 session cwd。`,
@@ -958,7 +1054,7 @@ export class FilePanelService extends EventEmitter {
     }
     let abs: string;
     try {
-      abs = normalizePath(resolve(baseDir, decoded));
+      abs = sfs.resolve(baseDir, decoded);
     } catch (err) {
       throw new FilePanelError(
         'ResolveFailed',
@@ -1007,51 +1103,47 @@ export class FilePanelService extends EventEmitter {
   }
 
   /**
-   * 解析路径为规范化绝对路径并 stat。
-   * 相对路径按 session.currentCwd join(终端程序 `open_file(tid,'README.md')`
-   * 的典型用法)。SSH 远程 cwd 会让 fs.stat 失败 → 抛错,天然隔离。
+   * 解析路径为规范化绝对路径并 stat(经 SessionFs:本地 node:fs / SSH 远端
+   * exec,调用方不感知)。相对路径按 session.currentCwd join(终端程序
+   * `open_file(tid,'README.md')` 的典型用法)。~ 展开在 SessionFs.resolve 内。
    */
-  private async resolveAndStat(sessionId: string, rawPath: string): Promise<string> {
+  private async resolveAndStat(
+    sfs: SessionFs,
+    sessionId: string,
+    rawPath: string,
+  ): Promise<string> {
     if (!rawPath || typeof rawPath !== 'string') {
       throw new FilePanelError('ResolveFailed', 'path 为空');
     }
     const info = this.lookup?.get(sessionId);
     if (!info) throw new FilePanelError('SessionMissing', `未知 terminal: ${sessionId}`);
-    const base = info.currentCwd || process.cwd();
-    // v0.3.x:Shell home 展开。rawPath 以 ~ 开头(裸 ~、~/x、~\x)→ os.homedir() 替换。
-    // 仅作首字符(Shell 语义);中间的 ~ 是合法文件名字符,不动。展开后是绝对路径,
-    // resolve(base, ...) 会忽略 base,正确。
-    let p = rawPath;
-    if (p === '~') {
-      p = homedir();
-    } else if (p.startsWith('~/') || p.startsWith('~\\')) {
-      p = join(homedir(), p.slice(2));
-    }
+    const base = info.currentCwd || (sfs.kind === 'local' ? process.cwd() : '/');
     let abs: string;
     try {
-      // resolve(base, p):p 绝对(含 ~ 展开后的)则忽略 base;相对则拼到 session cwd 上。
-      // 再过 normalizePath 规范化(卷符大写 / 去 trailing sep),与 path id 一致。
-      abs = normalizePath(resolve(base, p));
+      // sfs.resolve:p 绝对(含 ~ 展开后的)则忽略 base;相对则拼到 session cwd 上。
+      // 本地实现再过 normalizePath 规范化(卷符大写 / 去 trailing sep),与
+      // path id 一致;SSH 实现走 POSIX normalize。
+      abs = sfs.resolve(base, rawPath);
     } catch (err) {
       throw new FilePanelError(
         'ResolveFailed',
         `路径解析失败: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    let stat: Stats;
+    let stat: SessionFsStat;
     try {
-      stat = await fs.stat(abs);
+      stat = await sfs.stat(abs);
     } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT') {
-        throw new FilePanelError('NotFound', `文件不存在: ${abs}`);
-      }
+      // SessionFs 只对真异常抛错(远端不可达/工具缺失/权限);不存在走 exists:false。
       throw new FilePanelError(
         'ResolveFailed',
         `stat 失败: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-    if (!stat.isFile()) {
+    if (!stat.exists) {
+      throw new FilePanelError('NotFound', `文件不存在: ${abs}`);
+    }
+    if (!stat.isFile) {
       throw new FilePanelError('NotFile', `不是文件(可能是目录): ${abs}`);
     }
     return abs;
@@ -1059,9 +1151,10 @@ export class FilePanelService extends EventEmitter {
 
   /** show/close 用:只规范化,不 stat(路径必已在列表里,不再二次校验磁盘)。 */
   private normalizeForSession(sessionId: string, rawPath: string): string {
+    const sfs = this.fsFor(sessionId);
     const info = this.lookup?.get(sessionId);
-    const base = info?.currentCwd || process.cwd();
-    return normalizePath(resolve(base, rawPath));
+    const base = info?.currentCwd || (sfs.kind === 'local' ? process.cwd() : '/');
+    return sfs.resolve(base, rawPath);
   }
 
   /**
@@ -1088,46 +1181,52 @@ export class FilePanelService extends EventEmitter {
     throw new FilePanelError('NotFound', `文件未在面板中: ${rawPath}`);
   }
 
-  /** stat 路径是否仍是普通文件(ENOENT / 目录 / 不可达 → false)。refreshStale 用。 */
-  private async pathExistsAsFile(abs: string): Promise<boolean> {
+  /** stat 路径是否仍是普通文件(不存在 / 目录 / 不可达 → false)。refreshStale 用。 */
+  private async pathExistsAsFile(sessionId: string, abs: string): Promise<boolean> {
     try {
-      const s = await fs.stat(abs);
-      return s.isFile();
+      const s = await this.fsFor(sessionId).stat(abs);
+      return s.isFile;
     } catch {
       return false;
     }
   }
 
-  private async toOpenedFile(abs: string, origin?: OpenedFileOrigin): Promise<OpenedFile> {
-    const stat = await fs.stat(abs);
+  private async toOpenedFile(
+    sfs: SessionFs,
+    abs: string,
+    origin?: OpenedFileOrigin,
+  ): Promise<OpenedFile> {
+    const stat = await sfs.stat(abs);
     return {
       path: abs,
-      name: basename(abs),
-      kind: detectFileKind(basename(abs)),
+      name: sfs.basename(abs),
+      kind: detectFileKind(sfs.basename(abs)),
       size: stat.size,
       mtimeMs: stat.mtimeMs,
       ...(origin ? { origin } : {}),
     };
   }
 
-  private ensureWatcher(sessionId: string, state: PanelState, abs: string): void {
+  private ensureWatcher(sfs: SessionFs, sessionId: string, state: PanelState, abs: string): void {
     // 已有 watcher:先关旧的(文件可能被替换为不同 inode,旧句柄失效)
     this.stopWatcher(state, abs);
+    let handle: SessionFsWatchHandle | null;
     try {
-      const w = watch(abs, () => this.scheduleRefresh(sessionId, state, abs));
-      w.on('error', (err) => {
-        // 文件被删 / 权限丢失等。不致命:面板项保留,下次 read 时报错。
-        logger.warn(MODULE, `watch error on ${abs}: ${err.message}`);
-        this.stopWatcher(state, abs);
-      });
-      state.watchers.set(abs, w);
+      handle = sfs.watch(abs, () => this.scheduleRefresh(sessionId, state, abs));
     } catch (err) {
-      // 某些文件系统 / 网络盘不支持 watch。降级:不自动刷新,其余功能不受影响。
+      // 某些文件系统 / 网络盘不支持 watch(fs.watch 同步抛)。降级:不自动
+      // 刷新,其余功能不受影响 —— 与旧实现同策略。
       logger.warn(
         MODULE,
         `watch unavailable for ${abs}: ${err instanceof Error ? err.message : String(err)}`,
       );
+      return;
     }
+    // SSH 会话无变更监视(SessionFs.watch 返回 null)→ 跳过。降级策略:
+    // 面板激活/切文件时 renderer 依赖 mtimeMs 变化重读,加上 refreshStale 的
+    // missing 标记兜底,见方案 20260917 §6。
+    if (!handle) return;
+    state.watchers.set(abs, handle);
   }
 
   private stopWatcher(state: PanelState, abs: string): void {
@@ -1162,8 +1261,8 @@ export class FilePanelService extends EventEmitter {
     const idx = state.files.findIndex((f) => f.path === abs);
     if (idx < 0) return;
     try {
-      const stat = await fs.stat(abs);
-      if (!stat.isFile()) return;
+      const stat = await this.fsFor(sessionId).stat(abs);
+      if (!stat.exists || !stat.isFile) return;
       // 文件还在:刷新 size/mtime 并清掉可能的 missing 标记。
       const before = state.files[idx]!;
       state.files[idx] = {
@@ -1175,21 +1274,16 @@ export class FilePanelService extends EventEmitter {
       };
       this.emitUpdated(sessionId, state);
     } catch (err) {
-      // 文件被删等:保留条目(可能只是临时不可达),标 missing 让 CLI `list`
-      // /面板能展示「该 tab 指向的文件已删」。文件重新出现会在下次 change 事件
-      // 或 refreshStale 里清回 false。ENOENT 是常态;其它异常也降级为 missing
-      // (用户会在 list 里看到,而不是一个静默陈旧的 mtime)。
-      const code = (err as NodeJS.ErrnoException).code;
+      // 远端不可达等真异常(SessionFs 抛错,区别于 exists:false):保留条目,
+      // 标 missing 让 CLI `list`/面板能展示「该 tab 指向的文件暂不可达」。
+      logger.warn(
+        MODULE,
+        `refresh stat failed for ${abs}: ${err instanceof Error ? err.message : String(err)}`,
+      );
       const before = state.files[idx]!;
       if (!before.missing) {
         state.files[idx] = { ...before, missing: true };
         this.emitUpdated(sessionId, state);
-      }
-      if (code !== 'ENOENT') {
-        logger.warn(
-          MODULE,
-          `refresh stat failed for ${abs}: ${err instanceof Error ? err.message : String(err)}`,
-        );
       }
     }
   }

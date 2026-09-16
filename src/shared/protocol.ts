@@ -45,7 +45,11 @@ export type {
  */
 // v4 为 GroupNode / BOOKMARK_GROUP_ADD 增加 required kind。新 renderer 必须按
 // local/ssh 分组树隔离渲染，不能与仍返回无 kind group 的旧 v3 daemon 混用。
-export const PROTOCOL_VERSION = 4 as const;
+// v5(远程文件面板一致性,方案 20260917)为 GetSnapshotResponse 增加 required
+// filePanels/commandPanels 两块 per-session 状态。旧 renderer 收到多出的字段会
+// 忽略,但「新客户端 + 旧 daemon」拿不到徽章数据正是本版要修的 bug,故按破坏性
+// 变更 bump,强制客户端与 daemon 同版本。
+export const PROTOCOL_VERSION = 5 as const;
 
 /** host-only 连接发现协议固定扫描的 daemon 端口范围(含首尾)。 */
 export const REMOTE_DAEMON_PORT_MIN = 32780 as const;
@@ -673,7 +677,36 @@ export interface GetSnapshotPayload {
   myWindowId: string;
 }
 
-export type GetSnapshotResponse = AppSnapshot;
+/**
+ * v5 快照里的单个 session 文件面板状态。与 FilePanelUpdatedPayload 的区别:
+ * 快照是「冷启动全量」(新连接客户端立即渲染徽章/已打开列表),后者是「活着
+ * 期间的增量」。字段拆平(不嵌套 snapshot 对象)与前端 Map 构造对齐。
+ */
+export interface SessionFilePanelEntry {
+  sessionId: string;
+  files: OpenedFile[];
+  activePath: string | null;
+}
+
+/** v5 快照里的单个 session 命令面板状态(语义同 SessionFilePanelEntry)。 */
+export interface SessionCommandPanelEntry {
+  sessionId: string;
+  commands: CommandEntry[];
+  activeKey: string | null;
+}
+
+/**
+ * v5(远程文件面板一致性):快照补齐 per-session 面板状态。此前快照只有
+ * windows/sessions/…,filePanels/commandPanels 只能靠活着收广播获得 ——
+ * 新连接的客户端(Android 每次冷启动/重连、桌面新开窗口)永远从零开始,
+ * 「已打开 (N)」徽章无从渲染。补齐后冷启动即有全量,广播继续做增量。
+ */
+export interface GetSnapshotResponse extends AppSnapshot {
+  /** 全部 session 的文件面板状态(空面板的 session 不出现)。 */
+  filePanels: SessionFilePanelEntry[];
+  /** 全部 session 的命令面板状态(空面板的 session 不出现)。 */
+  commandPanels: SessionCommandPanelEntry[];
+}
 
 export interface QuitPayload {
   /** CP-2 暂未使用,CP-3 加入 session 在跑时的二次确认时启用 */

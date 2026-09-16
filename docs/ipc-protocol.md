@@ -6,8 +6,19 @@
 > 这份文档定义所有消息的 schema、语义、错误码、时序约束。
 > 实现代码必须严格遵循,不允许"自由发挥"。
 
-文档版本:4.1 · 最后更新:2026-08-14
+文档版本:5.0 · 最后更新:2026-09-17
 
+> **v5.0 变更**(远程文件面板一致性,方案-远程文件面板一致性-20260917):
+> - `cmd:app:get-snapshot` 响应新增必填字段 `filePanels: SessionFilePanelEntry[]` 与
+>   `commandPanels: SessionCommandPanelEntry[]`(全部 session 的面板状态):新连接的
+>   客户端(Android 冷启动/重连、桌面新开窗口)冷启动即有「已打开 (N)」徽章数据,
+>   此前只有"活着收广播"一条路。广播增量语义不变。
+> - 因新增 renderer 必需字段,`PROTOCOL_VERSION` 由 4 升为 5;v4/v5 握手拒绝混用。
+> - 行为配套(不改协议面):file-panel 域的路径解析/读取在 main 端经 SessionFs 按
+>   session 选实现(本地 node:fs / SSH 远端 exec),SSH 会话的终端路径链接与文件
+>   面板可用;SSH 会话启动参数带 `-R` 反向隧道 + 远端命令 env 前缀,`MARINA_SERVICE`
+>   在远端可达;`requestActivation` 到达且右栏折叠时 renderer 自动展开。
+>
 > **v4.1 变更**(Markdown 标题导航,向后兼容):
 > - `cmd:file-panel:open` 与 HTTP `POST /open-file` 新增可选 `heading`，内容是可见标题文字。
 > - 新增 owner 定向事件 `evt:file-panel:heading-navigation-requested`；它是一次性 view intent，不进入 PanelState/workspace，也不会被 watcher 重放。
@@ -382,7 +393,7 @@ Renderer 启动
   ↓
 2. invoke('cmd:app:get-protocol-version', {})
   ↓
-3. 收到 { protocolVersion: 4 }
+3. 收到 { protocolVersion: 5 }
   ↓
 4. 比较与 Renderer 编译时的 PROTOCOL_VERSION,不匹配 → 抛错并显示升级提示
   ↓
@@ -447,6 +458,10 @@ interface AppSnapshot {
   defaultTemplateId: string;
   settings: Settings;           // 当前设置
   myWindowId: string;          // 回显,用于校验
+  // v5(远程文件面板一致性):per-session 面板状态,新客户端冷启动即有
+  // 「已打开 (N)」徽章数据(空面板的 session 不出现;广播增量语义不变)
+  filePanels: SessionFilePanelEntry[];      // { sessionId, files, activePath }
+  commandPanels: SessionCommandPanelEntry[]; // { sessionId, commands, activeKey }
 }
 ```
 

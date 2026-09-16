@@ -151,9 +151,7 @@ export interface CommandPanelSnapshotData {
  */
 export interface CommandPanelWorkspaceOps {
   /** 读当前 session 绑定 workspace 的快照;无绑定/文件缺失返 null。 */
-  readSnapshotForSession(
-    sessionId: string,
-  ): Promise<{
+  readSnapshotForSession(sessionId: string): Promise<{
     commandPanel?: { version: number; commands: CommandEntry[]; activeKey: string | null };
   } | null>;
 }
@@ -279,6 +277,20 @@ export class CommandPanelService extends EventEmitter {
       })),
       activeKey: state.activeKey,
     };
+  }
+
+  /**
+   * v5 快照(GetSnapshotResponse.commandPanels 数据源):全部 session 的命令面板
+   * 状态。与 FilePanelService.getAllSessionStates 对称,给新连接客户端冷启动
+   * 补齐徽章数据。无指令的 session 不出现。
+   */
+  getSnapshotEntries(): Array<{ sessionId: string } & CommandPanelSnapshot> {
+    const out: Array<{ sessionId: string } & CommandPanelSnapshot> = [];
+    for (const [sessionId, state] of this.panels) {
+      if (state.commands.length === 0) continue;
+      out.push({ sessionId, ...this.getSnapshot(sessionId) });
+    }
+    return out;
   }
 
   // ──────────────────────────────────────────────────────────────────

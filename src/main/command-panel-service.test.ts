@@ -653,12 +653,17 @@ describe('CommandPanelService', () => {
       ];
       const events: Array<{ requestActivation: boolean; commands: number }> = [];
       svc.on('commandPanelUpdated', (e) =>
-        events.push({ requestActivation: e.requestActivation, commands: e.snapshot.commands.length }),
+        events.push({
+          requestActivation: e.requestActivation,
+          commands: e.snapshot.commands.length,
+        }),
       );
       svc.attachWorkspaceOps({
         readSnapshotForSession: async () =>
           makeDiskSnapshot(commands, key) as Awaited<
-            ReturnType<Parameters<CommandPanelService['attachWorkspaceOps']>[0]['readSnapshotForSession']>
+            ReturnType<
+              Parameters<CommandPanelService['attachWorkspaceOps']>[0]['readSnapshotForSession']
+            >
           >,
       });
 
@@ -716,5 +721,30 @@ describe('CommandPanelService', () => {
     it('不同 command 不同 key', () => {
       expect(commandKeyFor('a')).not.toBe(commandKeyFor('b'));
     });
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────
+// v0.4.0 快照数据源(GetSnapshotResponse.commandPanels,方案 20260917 P3)
+// ──────────────────────────────────────────────────────────────────
+describe('CommandPanelService - getSnapshotEntries(v5 快照)', () => {
+  it('只含有指令的 session;字段与 getSnapshot 同源', async () => {
+    const svc = new CommandPanelService();
+    svc.attachSessionLookup(makeLookup());
+    svc.attachRunner(
+      makeFakeRunner() as unknown as Parameters<CommandPanelService['attachRunner']>[0],
+    );
+    const snap = await svc.runCommand('s1', 'ls');
+    const entries = svc.getSnapshotEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.sessionId).toBe('s1');
+    expect(entries[0]!.activeKey).toBe(snap.activeKey);
+    expect(entries[0]!.commands[0]!.command).toBe('ls');
+  });
+
+  it('空面板(无指令/未触碰)不出现', () => {
+    const svc = new CommandPanelService();
+    svc.attachSessionLookup(makeLookup());
+    expect(svc.getSnapshotEntries()).toEqual([]);
   });
 });

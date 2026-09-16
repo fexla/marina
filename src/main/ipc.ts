@@ -245,7 +245,7 @@ import type {
   CommandPayload,
   CommandResponse,
 } from '@shared/command-contracts';
-import type { AppSnapshot, MdTheme, RemoteDaemonProfile, Settings, Template } from '@shared/types';
+import type { MdTheme, RemoteDaemonProfile, Settings, Template } from '@shared/types';
 import type { WindowManager } from './window-manager';
 import type { PathManager } from './path-manager';
 import { pathRefFromId } from './path-manager';
@@ -2219,7 +2219,10 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
    * 报"missing path base"(renderer 显示错误占位/toast)。renderer 只传
    * commandKey,基准值全程 main 端真值,伪造不了。
    */
-  const commandBaseDir = (sessionId: string, commandKey: string | undefined): string | undefined => {
+  const commandBaseDir = (
+    sessionId: string,
+    commandKey: string | undefined,
+  ): string | undefined => {
     if (commandKey === undefined) return undefined;
     return (
       deps.commandPanelService.getRunCwd(sessionId, commandKey) ??
@@ -2279,10 +2282,7 @@ function registerFilePanelHandlers(deps: IpcLayerDeps): void {
   // 上抛,renderer MdLink 捕获后 toast。
   registerHandle(
     COMMAND_CHANNELS.MARINA_LINK_RUN,
-    async (
-      _e,
-      envelope: CommandEnvelope<RunMarinaLinkPayload>,
-    ): Promise<RunMarinaLinkResponse> => {
+    async (_e, envelope: CommandEnvelope<RunMarinaLinkPayload>): Promise<RunMarinaLinkResponse> => {
       requireFilePanelOwner(sessionManager, envelope.payload.sessionId, envelope.windowId);
       return dispatchMarinaLink(
         { filePanelService, commandPanelService: deps.commandPanelService },
@@ -3039,7 +3039,7 @@ function broadcastAppState(deps: IpcLayerDeps): void {
 // Snapshot 构建
 // ──────────────────────────────────────────────────────────────────
 
-function buildSnapshot(deps: IpcLayerDeps, myWindowId: string): AppSnapshot {
+function buildSnapshot(deps: IpcLayerDeps, myWindowId: string): GetSnapshotResponse {
   return {
     windows: deps.windowManager.list(),
     sessions: deps.sessionManager.list(),
@@ -3050,6 +3050,11 @@ function buildSnapshot(deps: IpcLayerDeps, myWindowId: string): AppSnapshot {
     defaultTemplateId: deps.templatesManager.getDefaultTemplateId(),
     settings: deps.settingsManager.get(),
     myWindowId,
+    // v5(远程文件面板一致性):per-session 面板状态进快照,新连接客户端冷启动
+    // 即有「已打开 (N)」徽章数据。此前只有"活着收广播"一条路,Android 每次
+    // 冷启动/重连都从零开始 → 徽章永远空(方案 20260917 根因 A)。
+    filePanels: deps.filePanelService.getAllSessionStates(),
+    commandPanels: deps.commandPanelService.getSnapshotEntries(),
   };
 }
 
@@ -3183,10 +3188,7 @@ function registerWorkspaceHandlers(deps: IpcLayerDeps): void {
       const snapshot: WorkspaceFilePanelSnapshot = { ...envelope.payload.snapshot };
       const commandPanel = deps.commandPanelService.exportSnapshot(envelope.payload.sessionId);
       if (commandPanel) snapshot.commandPanel = commandPanel;
-      await workspaceCoordinator.writeWorkspaceSnapshot(
-        envelope.payload.sessionId,
-        snapshot,
-      );
+      await workspaceCoordinator.writeWorkspaceSnapshot(envelope.payload.sessionId, snapshot);
     },
   );
 }

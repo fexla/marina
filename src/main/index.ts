@@ -18,12 +18,13 @@
  * @对应文档章节: 软件定义书.md 8.1、9.2.1;AGENTS.md 检查点 1/2
  */
 import { app, Menu, protocol, safeStorage, session as electronSession } from 'electron';
+import { spawn } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { WindowManager } from './window-manager';
 import { TrayManager } from './tray';
 import { SessionManager } from './session-manager';
-import { PathManager } from './path-manager';
+import { PathManager, pathRefFromId } from './path-manager';
 import { SshProfileManager } from './ssh-profile-manager';
 import { RemoteProfileManager } from './remote-profile-manager';
 import { KnownHostsManager, type KnownHostsHistoryFile } from './known-hosts-manager';
@@ -700,7 +701,75 @@ function bootstrap(): void {
       } catch (err) {
         logger.error('main', 'file-panel service start failed (degraded, app continues)', err);
       }
-      filePanelService.attachSessionLookup(sessionManager);
+      // v0.4.0(方案-远程文件面板一致性-20260917 P1):session lookup 适配器。
+      // 不再直接传 sessionManager —— 它给不出 sshTarget(不持有 profile 凭据),
+      // 而 SSH 视角正是本方案要接上的。适配器从 pathId 还原 profile + 解密
+      // password(与 codeBlockRunner 的 sshProfileLookup 同款),让
+      // FilePanelService 按 session 选 SessionFs 实现(本地 node:fs / SSH exec)。
+      filePanelService.attachSessionLookup({
+        get: (sessionId) => {
+          const info = sessionManager.get(sessionId);
+          if (!info) return null;
+          const base = { currentCwd: info.currentCwd, ownerWindowId: info.ownerWindowId };
+          if (!info.pathId.startsWith('ssh:')) return base;
+          const ref = pathRefFromId(info.pathId);
+          if (ref.kind !== 'ssh' || !ref.sshProfileId) return base;
+          const p = sshProfileManager.getInternal(ref.sshProfileId);
+          if (!p) return base;
+          const password = p.passwordEncrypted
+            ? decryptStoredPassword(p.passwordEncrypted, safeStorage).password
+            : undefined;
+          // ControlPath 与交互终端同源(session-manager §阶段 3.5):控制连接
+          // 存在时 SSH 读文件 attach 它,免重复握手/认证。
+          let controlPath: string | undefined;
+          if (settingsManager.get().advanced.enableControlMaster) {
+            try {
+              const adapter = getPlatformAdapter();
+              controlPath = adapter.getSshControlPath ? adapter.getSshControlPath() : undefined;
+            } catch {
+              controlPath = undefined;
+            }
+          }
+          return {
+            ...base,
+            sshTarget: {
+              host: p.host,
+              port: p.port,
+              username: p.username,
+              authType: p.authType,
+              ...(p.keyFilePath ? { keyFilePath: p.keyFilePath } : {}),
+              ...(p.proxyJump ? { proxyJump: p.proxyJump } : {}),
+              ...(password ? { password } : {}),
+              ...(controlPath ? { controlPath } : {}),
+            },
+          };
+        },
+      });
+      // v0.4.0 P1:SSH 视角的 exec 依赖(系统 ssh/sshpass 解析 + spawn)。
+      // 每次读文件时才调用;macOS 适配器占位 throw 已被 catch 吞成 null(退化
+      // 为「SSH 文件操作不可用」错误,不影响本地会话)。
+      filePanelService.attachSshFsDeps({
+        resolveExecutable: (name) => {
+          try {
+            const adapter = getPlatformAdapter();
+            const env: Record<string, string> = {};
+            for (const [k, v] of Object.entries(process.env)) {
+              if (typeof v === 'string') env[k] = v;
+            }
+            return adapter.resolveExecutable(name, env);
+          } catch {
+            return null;
+          }
+        },
+        spawn: (command, args, options) =>
+          spawn(command, args, {
+            ...options,
+            // stdin 关闭(远端命令不交互;BatchMode/sshpass 都不需要 stdin),
+            // stdout/stderr 管道由 SessionFs 收集。windowsHide 防闪窗。
+            stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true,
+          }),
+      });
       // ADR-034:marina-file:// 协议接线(必须 app ready 后)。白名单两大数据源
       // 实时拉取:面板已打开文件(主文档永远可服务)+ 受管 workspace 目录;
       // 前者同时放行其所在目录(iframe 兄弟子资源,见 web-file-protocol.ts)。
@@ -775,8 +844,7 @@ function bootstrap(): void {
       // 写入在 ipc WORKSPACE_WRITE_SNAPSHOT 边界合并,不走这份 ops)。
       commandPanelService.attachWorkspaceOps({
         readSnapshotForSession: (sid) =>
-          filePanelWorkspaceOps.readSnapshotForSession?.(sid) ??
-          Promise.resolve(null),
+          filePanelWorkspaceOps.readSnapshotForSession?.(sid) ?? Promise.resolve(null),
       });
       // v0.3.3 ADR-027:命令面板接线。sessionLookup 破循环依赖(同 file-panel);
       // runner 复用 codeBlockRunner(执行 + output/exited 事件订阅);scheduler 复用
