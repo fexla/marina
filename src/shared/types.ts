@@ -215,6 +215,13 @@ export type LayoutNode =
 export interface DockLayoutState {
   /** dock 宽度，像素；具体范围由 main 的 Dock registry 校验。 */
   width: number;
+  /**
+   * dock 宽度比例(保存时 宽度/视口宽度,0.1~0.6)。跨设备渲染优先用它:
+   * PC 2560px 上调宽的 session,在平板 1292px 上应按比例缩小,而不是拿绝对
+   * 像素值把终端挤窄(用户裁决 2026-09-14)。可选 —— 旧 session 无此字段,
+   * 渲染端退回 width + 视口钳制。
+   */
+  widthRatio?: number;
   /** true 时仅保留窄展开条，隐藏整个 dock，而非某个 active panel。 */
   collapsed: boolean;
 }

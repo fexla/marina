@@ -18,12 +18,13 @@ import {
   useEffect,
   useRef,
   useState,
-  type MouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
 import { COMMAND_CHANNELS } from '@shared/protocol';
 import type { LayoutNode, SessionInfo } from '@shared/types';
 import { useAppDispatch, useAppState } from '../../store';
+import { PANEL_NAV_EVENT, useIsMobile } from '../../mobile';
 import { Icon } from '../icons';
 import { useTranslation } from '../LanguageProvider';
 import { SearchBar } from '../common/SearchBar';
@@ -35,6 +36,28 @@ import { resolveOpenPanelView } from '../file-panel/open-panel-view';
 
 const RIGHT_DOCK_MIN_WIDTH = 280;
 const RIGHT_DOCK_MAX_WIDTH = 900;
+
+/**
+ * dock 渲染宽度解析(用户裁决 2026-09-14「宽度按比例」):
+ * - 有 widthRatio(PC 上拖宽时随 px 一起落盘)→ 按当前视口比例还原 ——
+ *   PC 2560 上调的宽度到平板 1292 上按比例缩小,不挤终端;
+ * - 旧数据只有绝对 px → 视口钳制:上限 min(900, 45% 视口宽),同样防挤。
+ */
+function resolveDockRenderWidth(
+  persisted: { width: number; widthRatio?: number },
+  viewportWidth: number,
+): number {
+  if (persisted.widthRatio != null) {
+    return Math.max(
+      RIGHT_DOCK_MIN_WIDTH,
+      Math.min(RIGHT_DOCK_MAX_WIDTH, Math.round(persisted.widthRatio * viewportWidth)),
+    );
+  }
+  return Math.max(
+    RIGHT_DOCK_MIN_WIDTH,
+    Math.min(RIGHT_DOCK_MAX_WIDTH, persisted.width, Math.round(viewportWidth * 0.45)),
+  );
+}
 
 interface LayoutHostProps {
   /** null = 当前没有 owner session；TerminalDeck 仍必须留在稳定 leaf 中。 */
@@ -89,6 +112,13 @@ function PanelStack({
   const { tx } = useTranslation();
   const appState = useAppState();
   const dispatch = useAppDispatch();
+  // 视口宽度(比例宽度换算 + 拖宽落盘 ratio 用;旋转/缩放窗口时同步)。
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  useEffect(() => {
+    const onResize = (): void => setViewportWidth(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
   const panelIds = panelIdsFromStack(node);
   // defaultPanelId 也要校验属于当前 stack:旧/损坏布局的 defaultActivePanelId
   // 可能不在 panelIds 里,此时回退 panelIds[0],避免激活不存在的 tab。下面
@@ -107,9 +137,17 @@ function PanelStack({
   const activePanelId =
     storedPanelId && panelIds.includes(storedPanelId) ? storedPanelId : defaultPanelId;
   const activeDefinition = PANEL_REGISTRY[activePanelId];
+  // 三页手势导航(用户裁决 2026-09-14):移动端终端是常驻页,右面板靠左滑
+  // 唤出 —— 没有 uiLayout 记录的 session 在移动端必须默认折叠,否则新建
+  // session 会被展开的 dock 盖住且没有把手可关(把手在移动端已移除)。
+  // 已有记录的折叠态修正(旋转/换 session)见下方 snap effect。
+  const isMobileLayout = useIsMobile();
   // 宽度与折叠态属于 right dock 本身，不属于 stack 中当前激活的页面。此前把
   // file-tree/file-panel 各自的 width 当 dock 宽度，导致点 tab 时几何跳变。
-  const persisted = session.uiLayout?.docks.right ?? { width: 440, collapsed: false };
+  const persisted = session.uiLayout?.docks.right ?? {
+    width: 440,
+    collapsed: isMobileLayout,
+  };
   const [pendingWidth, setPendingWidth] = useState<number | null>(null);
   const dragCleanupRef = useRef<(() => void) | null>(null);
   const fileCount = appState.filePanels.get(session.id)?.files.length ?? 0;
@@ -126,7 +164,7 @@ function PanelStack({
     fileCount,
     commandCount,
   );
-  const width = pendingWidth ?? persisted.width;
+  const width = pendingWidth ?? resolveDockRenderWidth(persisted, viewportWidth);
 
   // ADR-021:PanelStack 是“当前 Session + 当前面板”的 UI 真值源。Git 可见且本窗口
   // 聚焦时 HOT(3s)，显示其他面板/失焦时 WARM(60s)，非 owner/unmount 时 NONE。
@@ -230,7 +268,11 @@ function PanelStack({
   // 设为 'file-panel',无论 PanelStack 是否挂载。remount 从 store 恢复(不抢
   // 焦点),卸载期间(设置页/简易模式)发生的新请求也不丢。
 
-  const updateLayout = (patch: { width?: number; collapsed?: boolean }): void => {
+  const updateLayout = (patch: {
+    width?: number;
+    widthRatio?: number;
+    collapsed?: boolean;
+  }): void => {
     window.api
       .invoke(COMMAND_CHANNELS.SESSION_UPDATE_UI_LAYOUT, {
         sessionId: session.id,
@@ -242,12 +284,66 @@ function PanelStack({
       });
   };
 
-  const startResize = (event: MouseEvent<HTMLDivElement>): void => {
+  // 布局形态切换时的 dock 折叠态对齐(用户裁决 2026-09-14「平板交互」):
+  // 移动布局(手机/平板竖屏)= 三页模型的终端页,dock 必须折叠 —— 展开的
+  // 全屏面板会盖住终端且没有把手可关;桌面布局(平板横屏/PC)= 三栏,
+  // dock 展开(与 PC 默认一致)。只在「转移沿」写一次:
+  // - 旋转 / 窗口跨断点(窄↔宽)、移动布局下切换 session(PC 端展开着的
+  //   session 在手机上打开必须落在终端页);
+  // - 稳态下 persisted.collapsed 自己变化(手势/把手开合面板)时
+  //   prev 与当前一致,提前 return —— 不会把用户刚展开的面板又折回去。
+  // 桌面冷启动(prev=null 且非移动)不触发,尊重存储值(PC 语义不变)。
+  const prevLayoutFormRef = useRef<{ sid: string; mobile: boolean } | null>(null);
+  useEffect(() => {
+    const prev = prevLayoutFormRef.current;
+    prevLayoutFormRef.current = { sid: session.id, mobile: isMobileLayout };
+    if (prev && prev.sid === session.id && prev.mobile === isMobileLayout) return;
+    if (!prev && !isMobileLayout) return;
+    if (isMobileLayout) {
+      if (!persisted.collapsed) updateLayout({ collapsed: true });
+    } else if (prev?.mobile && persisted.collapsed) {
+      updateLayout({ collapsed: false });
+    }
+  }, [isMobileLayout, session.id, persisted.collapsed, updateLayout]);
+
+  // 移动端 back-bus 最底层消费:面板 overlay 展开时,返回键 = 折叠 dock
+  // (见 docs/standards/mobile-interactions.md 返回键层级)。bubble 阶段注册
+  // —— capture 阶段的设置层/抽屉层先执行,这里只在它们都没消费时生效;
+  // 设置页打开时 dock 虽仍挂载但不该被折叠,guard 放行。
+  useEffect(() => {
+    if (!isMobileLayout) return undefined;
+    const onBack = (e: Event): void => {
+      if (e.defaultPrevented || appState.inSettingsView) return;
+      if (!persisted.collapsed) {
+        e.preventDefault();
+        updateLayout({ collapsed: true });
+      }
+    };
+    // 三页手势导航:终端左滑开面板 / 面板上右滑或抽屉打开时互斥关闭。
+    // App 层经 PANEL_NAV_EVENT 通知(dock collapsed 是 per-session backend
+    // 状态,App 不知道,只能由这里执行)。
+    const onPanelNav = (e: Event): void => {
+      const open = (e as CustomEvent<{ open: boolean }>).detail?.open === true;
+      if (open === !persisted.collapsed) return;
+      updateLayout({ collapsed: !open });
+    };
+    window.addEventListener('marina-back', onBack);
+    window.addEventListener(PANEL_NAV_EVENT, onPanelNav);
+    return () => {
+      window.removeEventListener('marina-back', onBack);
+      window.removeEventListener(PANEL_NAV_EVENT, onPanelNav);
+    };
+  }, [isMobileLayout, appState.inSettingsView, persisted.collapsed, updateLayout]);
+
+  // 拖宽走 pointer 事件(用户裁决 2026-09-14:触屏也要能拖分界线 —— mouse 事件
+  // 在触摸上不触发)。落盘同时带 px 与 ratio(ratio 供别的设备按比例还原,
+  // 见 resolveDockRenderWidth)。
+  const startResize = (event: ReactPointerEvent<HTMLDivElement>): void => {
     event.preventDefault();
     const startX = event.clientX;
     const startWidth = width;
     let finalWidth = startWidth;
-    const onMove = (moveEvent: globalThis.MouseEvent): void => {
+    const onMove = (moveEvent: globalThis.PointerEvent): void => {
       const delta = startX - moveEvent.clientX;
       finalWidth = Math.max(
         RIGHT_DOCK_MIN_WIDTH,
@@ -256,13 +352,15 @@ function PanelStack({
       setPendingWidth(finalWidth);
     };
     const stop = (): void => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', stop);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', stop);
       dragCleanupRef.current = null;
-      if (finalWidth !== persisted.width) updateLayout({ width: finalWidth });
+      if (finalWidth !== width) {
+        updateLayout({ width: finalWidth, widthRatio: finalWidth / viewportWidth });
+      }
     };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', stop);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', stop);
     dragCleanupRef.current = stop;
   };
 
@@ -300,7 +398,7 @@ function PanelStack({
     <aside className="panel-dock" style={{ width }}>
       <div
         className="panel-dock-resize-handle"
-        onMouseDown={startResize}
+        onPointerDown={startResize}
         role="separator"
         aria-orientation="vertical"
       />

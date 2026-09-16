@@ -2641,6 +2641,35 @@ describe('SessionManager — session UI 布局', () => {
       'dockId="unregistered" 未注册',
     );
   });
+
+  it('widthRatio 随宽度合并保存且校验范围(跨设备比例宽度,v0.3.4)', async () => {
+    const { mgr } = makeManager();
+    const info = await mgr.createSession({
+      pathId: 'C:\\fake',
+      templateId: 'shell',
+      ownerWindowId: 'w1',
+      cols: 80,
+      rows: 24,
+    });
+
+    // 拖宽结束时 renderer 同时上报 px 与 ratio(比例 = px / 保存时视口宽)。
+    mgr.updateUiLayout(info.id, { docks: { right: { width: 600, widthRatio: 600 / 2560 } } });
+    expect(mgr.get(info.id)?.uiLayout?.docks.right).toEqual({
+      width: 600,
+      widthRatio: 0.234,
+      collapsed: false,
+    });
+
+    // 越界 ratio 拒绝且保持原值(与 width 同一套白名单语义)。
+    expect(() => mgr.updateUiLayout(info.id, { docks: { right: { widthRatio: 0.9 } } })).toThrow(
+      'right.widthRatio 必须是 [0.1, 0.6]',
+    );
+    expect(mgr.get(info.id)?.uiLayout?.docks.right?.widthRatio).toBe(0.234);
+
+    expect(() => mgr.updateUiLayout(info.id, { docks: { right: { widthRatio: 0 } } })).toThrow(
+      'right.widthRatio 必须是 [0.1, 0.6]',
+    );
+  });
 });
 
 // ──────────────────────────────────────────────────────────────────

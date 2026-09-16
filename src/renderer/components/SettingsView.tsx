@@ -10,6 +10,9 @@
  *   错误条但不阻止用户继续输入 (input 内部状态 = main 实际值)
  * - 7 分类按软件定义书 6.6.2 分组:外观 / Shell 与启动 / 行为 / 数据 /
  *   系统集成 / 高级 / 关于
+ * - 移动布局(ADR-042,2026-09-14):桌面双栏在 411px 竖屏挤压不可用,
+ *   改为单栏两级导航(分类列表 → 详情页,header 的 × 变 ‹ 返回);
+ *   依赖桌面本机能力的分类在移动端整体隐藏(见 MOBILE_HIDDEN_CATEGORIES)。
  *
  * @CP-4 chunk 范围:
  * - chunk 1: 骨架 + 主题
@@ -57,6 +60,7 @@ import type { DeepPartial } from '@shared/types-helpers';
 import type { Settings } from '@shared/types';
 import { hasAnyRemote } from '@shared/remote-visibility';
 import { useAppDispatch, useAppState } from '../store';
+import { useIsMobile, isNativeShell, suppressNextTerminalAutoFocus } from '../mobile';
 import { useBackendLabel } from '../hooks/useBackendLabel';
 import {
   RECOMMENDED_TERMINAL_FONTS,
@@ -117,6 +121,22 @@ const REMOTE_CATEGORY: CategoryDef = {
 };
 
 /**
+ * 移动布局下隐藏的分类(ADR-042):这些分类的区块依赖「桌面客户端本机能力」——
+ * - system-integration:Explorer 集成 / 注册表,Windows 桌面专属;
+ * - advanced:性能诊断(本机 main 飞行记录器)+ daemon 启停(Android 壳的
+ *   local-control 面明确报不支持,见 apps/mobile/src/local-commands.ts);
+ * - remote:Android 壳的 profile 管理已由 MobileBoot(连接页)全功能承载,
+ *   这里再暴露一份是双入口;且其中的 daemon 管理块在移动端同样不可用。
+ * 其余分类(外观/Shell/行为/数据/AI/关于)要么走 local-control 已实现,
+ * 要么走 backend-data 天然远程(远程管理 PC 的 shell/模板/AI 配置,单流语义)。
+ */
+const MOBILE_HIDDEN_CATEGORIES: ReadonlySet<CategoryId> = new Set<CategoryId>([
+  'system-integration',
+  'advanced',
+  'remote',
+]);
+
+/**
  * v1.14(方案-远程UI统一 §III.4):'remote' 分类显示条件统一走 hasAnyRemote
  * (SSH profile / 远程电脑 / enableRemote / daemon 运行 任一为真)。
  * 全部为 false 时隐藏 —— 设置页永远是 8 个分类,跟 beta.9 一致。
@@ -174,34 +194,146 @@ export function SettingsView(): JSX.Element {
   const state = useAppState();
   const [active, setActive] = useState<CategoryId>('appearance');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // 移动布局:单栏两级导航。第一级 = 分类列表(全宽),点分类进入第二级
+  // 详情页;detailOpen=false 时显示列表,true 时详情页滑入覆盖列表,
+  // header 的关闭按钮相应变「返回」。桌面端此 state 恒 false,双栏不变。
+  const isMobile = useIsMobile();
+  const [detailOpen, setDetailOpen] = useState(false);
 
-  const visibleCategories = useMemo(
-    () =>
-      buildVisibleCategories({
-        hasSshProfiles: state.sshProfiles.length > 0,
-        hasDaemonProfiles: state.remoteBackendProfiles.length > 0,
-        enableRemote: state.settings?.advanced?.enableRemote === true,
-        daemonRunning: state.remoteDaemonStatus?.running === true,
-      }),
-    [
-      state.sshProfiles.length,
-      state.remoteBackendProfiles.length,
-      state.settings?.advanced?.enableRemote,
-      state.remoteDaemonStatus?.running,
-    ],
-  );
+  const visibleCategories = useMemo(() => {
+    const base = buildVisibleCategories({
+      hasSshProfiles: state.sshProfiles.length > 0,
+      hasDaemonProfiles: state.remoteBackendProfiles.length > 0,
+      enableRemote: state.settings?.advanced?.enableRemote === true,
+      daemonRunning: state.remoteDaemonStatus?.running === true,
+    });
+    // 原生壳(用户裁决 2026-09-14「远程栏=切换本设备」):「远程」分类渲染
+    // 本设备的连接档案(MobileBoot 同一存储),与 daemon 侧的 hasAnyRemote
+    // 无关,恒显示;其余桌面本机能力分类照旧隐藏。
+    if (isNativeShell()) {
+      const withRemote = base.some((c) => c.id === 'remote')
+        ? base
+        : base.flatMap((c) => (c.id === 'data' ? [c, REMOTE_CATEGORY] : [c]));
+      return withRemote.filter((c) => c.id === 'remote' || !MOBILE_HIDDEN_CATEGORIES.has(c.id));
+    }
+    return base.filter((c) => !isMobile || !MOBILE_HIDDEN_CATEGORIES.has(c.id));
+  }, [
+    state.sshProfiles.length,
+    state.remoteBackendProfiles.length,
+    state.settings?.advanced?.enableRemote,
+    state.remoteDaemonStatus?.running,
+    isMobile,
+  ]);
 
   // 当前 active 分类被移除时(例如用户在 remote 面板把 enableRemote 关掉且
   // 没 profile),回退到 appearance。
-  useEffect(() => {
-    if (!visibleCategories.some((c) => c.id === active)) {
+  useEffect(() => {    if (!visibleCategories.some((c) => c.id === active)) {
       setActive('appearance');
     }
   }, [visibleCategories, active]);
 
-  const handleClose = useCallback(() => {
+  // 移动端「点输入框外任意处 = 退出编辑」(用户勘误 2026-09-15 第十批②)。
+  // 桌面 Chromium 点别处会自然把 input blur 掉;Android WebView 的触摸落在
+  // 非可聚焦元素上**不会转移焦点** —— 输入框一直保持聚焦,而本页大量输入
+  // (NumberInput 字号/UI 缩放、EnvTextarea 等)是 onBlur 才 commit,结果用户
+  // 只能按软键盘的「完成/回车」让输入生效。这里在设置层挂触摸监听:触点不在
+  // 输入控件内就主动 blur 当前聚焦元素 → 走各控件已有的 onBlur 提交路径。
+  // 只在原生壳内挂:桌面有鼠标点击自然失焦,且该监听对触屏终端的
+  // helper-textarea 焦点链有潜在干扰(设置层下终端 inert,但保持影响面最小)。
+  useEffect(() => {
+    if (!isNativeShell()) return undefined;
+    const onTouchStart = (e: TouchEvent): void => {
+      const target = e.target instanceof Element ? e.target : null;
+      if (target?.closest('input, textarea, select, [contenteditable]')) return;
+      const el = document.activeElement;
+      if (el instanceof HTMLElement && el !== document.body) el.blur();
+    };
+    window.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
+    return () => window.removeEventListener('touchstart', onTouchStart, { capture: true });
+  }, []);
+
+  /**
+   * 移动端「退一层」的单一处理器(安卓返回键与 header 的 ‹ 共用)。
+   *
+   * 为什么不用多个 window 监听器按事件顺序分层(2026-09-14 踩坑):依赖
+   * [detailOpen] 等状态数组的 effect 在状态变化时重挂监听器,把 listener
+   * 移到注册队列**末尾** —— 开子页后子页 Panel 的监听反而排到本组件之后,
+   * 返回键跳过子页层直接关详情(真机复现)。事件顺序在 React 重挂语义下
+   * 不可靠,改为:本组件唯一监听(capture,空 deps + ref 读最新状态),
+   * 子页经 registerBackCloser 注册「能退则退」回调,层级在本函数内集中
+   * 判定:子页 → 详情 → 分类列表 → 退出设置。
+   */
+  const detailOpenRef = useRef(detailOpen);
+  detailOpenRef.current = detailOpen;
+  const subPageCloserRef = useRef<(() => boolean) | null>(null);
+  const registerBackCloser = useCallback((closer: (() => boolean) | null): void => {
+    subPageCloserRef.current = closer;
+  }, []);
+
+  /**
+   * 退出设置的单一出口(requestBack 末段 / handleClose 直达共用)。
+   * 原生壳内的两级防弹(用户勘误 2026-09-14,真机取证):
+   * 1. dispatch 前埋 terminalAutoFocusSuppress —— TerminalView 的 [active]
+   *    重激活 effect 不主动 focus;
+   * 2. 两拍 rAF 后补一发 blur —— 打开设置时 workspace-hidden(visibility:
+   *    hidden)会把 textarea 的焦点摘掉,关闭设置恢复可见时 **Chromium 会
+   *    把焦点自动还给 textarea**(focus 日志:focus:xterm-helper-textarea),
+   *    此时正处于关设置手势的 user-activation 窗口内 → IME 弹出。这条
+   *    恢复路径无法阻止,只能在它发生之后立刻 blur 收掉。
+   * 桌面端键盘焦点回归是好行为,保持不变。
+   */
+  const exitSettings = useCallback((): void => {
+    if (isNativeShell()) {
+      suppressNextTerminalAutoFocus();
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const ae = document.activeElement;
+          if (ae instanceof HTMLTextAreaElement && ae.classList.contains('xterm-helper-textarea')) {
+            ae.blur();
+          }
+        });
+      });
+    }
     dispatch({ type: 'view/exit-settings' });
   }, [dispatch]);
+
+  const requestBack = useCallback((): void => {
+    if (detailOpenRef.current) {
+      if (subPageCloserRef.current?.()) return; // 详情层之内:先退分类内子页
+      setDetailOpen(false); // 详情页 → 分类列表
+      return;
+    }
+    // 分类列表层:组件不卸载,顺手关掉隐形子页,重进详情回到列表态;
+    // 然后退出设置。
+    subPageCloserRef.current?.();
+    exitSettings();
+  }, [exitSettings]);
+  const requestBackRef = useRef(requestBack);
+  requestBackRef.current = requestBack;
+
+  // 安卓返回键('marina-back' 事件,由壳层 __marinaAndroidBack dispatch)。
+  // 设置打开时永远消费(preventDefault)—— App 层的抽屉监听(capture,
+  // 注册更早)见 defaultPrevented 即跳过;dock(bubble)同理。
+  useEffect(() => {
+    const onBack = (e: Event): void => {
+      if (e.defaultPrevented) return;
+      e.preventDefault();
+      requestBackRef.current();
+    };
+    window.addEventListener('marina-back', onBack, { capture: true });
+    return () => window.removeEventListener('marina-back', onBack, { capture: true });
+  }, []);
+
+  const handleClose = useCallback(() => {
+    // 移动端在详情页时,× 的位置是「返回」而不是退出设置 —— 逐层退。
+    if (isMobile && detailOpen) {
+      requestBack();
+      return;
+    }
+    exitSettings();
+  }, [exitSettings, isMobile, detailOpen, requestBack]);
+
+  const activeCategory = visibleCategories.find((c) => c.id === active);
 
   return (
     <div className="settings-view">
@@ -213,23 +345,34 @@ export function SettingsView(): JSX.Element {
           title={t('settings.close')}
           aria-label={t('settings.close')}
         >
-          ×
+          {isMobile && detailOpen ? '‹' : '×'}
         </button>
-        <h1 className="settings-title">{t('settings.title')}</h1>
+        <h1 className="settings-title">
+          {isMobile && detailOpen && activeCategory
+            ? t(activeCategory.titleKey)
+            : t('settings.title')}
+        </h1>
         {errorMsg && (
           <span className="settings-error" role="alert">
             <Icon name="alertTriangle" size={12} /> {errorMsg}
           </span>
         )}
       </header>
-      <div className="settings-body">
+      <div
+        className={
+          isMobile ? `settings-body mobile${detailOpen ? ' detail-open' : ''}` : 'settings-body'
+        }
+      >
         <nav className="settings-nav" aria-label={t('settings.title')}>
           {visibleCategories.map((c) => (
             <button
               key={c.id}
               type="button"
               className={`settings-nav-item${active === c.id ? ' active' : ''}`}
-              onClick={() => setActive(c.id)}
+              onClick={() => {
+                setActive(c.id);
+                if (isMobile) setDetailOpen(true);
+              }}
               data-testid={`settings-nav-${c.id}`}
             >
               <span className="settings-nav-icon" aria-hidden="true">
@@ -240,7 +383,11 @@ export function SettingsView(): JSX.Element {
           ))}
         </nav>
         <main className="settings-detail">
-          <CategoryPanel categoryId={active} setError={setErrorMsg} />
+          <CategoryPanel
+            categoryId={active}
+            setError={setErrorMsg}
+            {...(isMobile ? { registerBackCloser } : {})}
+          />
         </main>
       </div>
     </div>
@@ -250,20 +397,34 @@ export function SettingsView(): JSX.Element {
 interface CategoryPanelProps {
   categoryId: CategoryId;
   setError: (msg: string | null) => void;
+  /**
+   * 移动端「退一层」回调注册(见 SettingsView.requestBack):含子页的
+   * Panel(Shell)把「能退则退」的判定注册上来,返回键先退子页。
+   * 桌面端不传(undefined)—— 桌面双栏无层级概念。
+   */
+  registerBackCloser?: (closer: (() => boolean) | null) => void;
 }
 
-function CategoryPanel({ categoryId, setError }: CategoryPanelProps): JSX.Element {
+function CategoryPanel({
+  categoryId,
+  setError,
+  registerBackCloser,
+}: CategoryPanelProps): JSX.Element {
   switch (categoryId) {
     case 'appearance':
       return <AppearancePanel setError={setError} />;
     case 'shell':
-      return <ShellPanel setError={setError} />;
+      return (
+        <ShellPanel setError={setError} {...(registerBackCloser ? { registerBackCloser } : {})} />
+      );
     case 'behavior':
       return <BehaviorPanel setError={setError} />;
     case 'data':
       return <DataPanel setError={setError} />;
     case 'remote':
-      return <RemotePanel setError={setError} />;
+      // 原生壳:本设备连接切换(见 DeviceConnectionsPanel);桌面/浏览器:
+      // daemon 侧远程设置原样。
+      return isNativeShell() ? <DeviceConnectionsPanel /> : <RemotePanel setError={setError} />;
     case 'system-integration':
       return <SystemIntegrationPanel setError={setError} />;
     case 'ai':
@@ -1055,7 +1216,13 @@ function AppearancePanel({ setError }: { setError: (msg: string | null) => void 
 // Shell 与启动分类
 // ──────────────────────────────────────────────────────────────────
 
-function ShellPanel({ setError }: { setError: (msg: string | null) => void }): JSX.Element {
+function ShellPanel({
+  setError,
+  registerBackCloser,
+}: {
+  setError: (msg: string | null) => void;
+  registerBackCloser?: (closer: (() => boolean) | null) => void;
+}): JSX.Element {
   const { tx } = useTranslation();
   const state = useAppState();
   const sh = state.settings.shell;
@@ -1068,6 +1235,22 @@ function ShellPanel({ setError }: { setError: (msg: string | null) => void }): J
   const [templateMode, setTemplateMode] = useState<
     { kind: 'list' } | { kind: 'edit'; templateId: string | null /* null = 新建 */ }
   >({ kind: 'list' });
+
+  // 模板编辑子页的「退一层」判定注册给 SettingsView.requestBack(安卓返回键
+  // /header ‹):子页开 → 关子页返回 true(已消费);列表态返回 false 让
+  // requestBack 继续退详情层。组件不卸载(detail 是 CSS 位移隐藏),空 deps
+  // 注册一次,状态经 ref 读最新 —— 见 requestBack 注释(事件顺序不可靠)。
+  const templateModeRef = useRef(templateMode);
+  templateModeRef.current = templateMode;
+  useEffect(() => {
+    if (!registerBackCloser) return undefined;
+    registerBackCloser(() => {
+      if (templateModeRef.current.kind !== 'edit') return false;
+      setTemplateMode({ kind: 'list' });
+      return true;
+    });
+    return () => registerBackCloser(null);
+  }, [registerBackCloser]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2048,7 +2231,193 @@ function DataPanel({ setError }: { setError: (msg: string | null) => void }): JS
 //   - 远程文件夹收藏(挂在某个 profile 下的 RemoteBookmark)
 //   - 远程相关高级开关入口(`advanced.enableRemote` 关掉后,若无 profile 则
 //     本面板下次进设置不再显示)
+//
+// 原生壳(Android WebView,用户裁决 2026-09-14)例外:同一个「远程」分类
+// 渲染 DeviceConnectionsPanel —— 管理【本设备】存了哪些电脑、当前连的是哪台
+// (与 MobileBoot 连接页同一份 localStorage 档案),而不是 daemon 侧的远程
+// 设置(允许远程连接等开关在手机上既不可操作也易误导)。数据经 web-api-shim
+// 注入的 window.api.deviceConnections 提供,桌面 api 无此字段(窄化 cast)。
+// 文案沿用 MobileBoot 的硬编码中文(壳内约定,不走 i18n)。
 // ──────────────────────────────────────────────────────────────────
+
+/** 本设备连接档案(renderer 侧结构类型;与 apps/mobile local-commands 的
+ *  MobileDaemonProfile 同形,反向 import 会把壳代码拖进桌面构建,故只结构对齐)。 */
+interface DeviceConnectionProfile {
+  id: string;
+  displayName: string;
+  host: string;
+  addedAt: number;
+}
+
+interface DeviceConnectionsApi {
+  list(): DeviceConnectionProfile[];
+  currentId(): string;
+  remove(id: string): void;
+  save(input: { id?: string; displayName: string; host: string; password: string }): void;
+  /** 切换连接(内部 setLast + reload,重建 transport 走 MobileBoot 启动序)。 */
+  connect(id: string): void;
+}
+
+function getDeviceConnectionsApi(): DeviceConnectionsApi | undefined {
+  return (window.api as unknown as { deviceConnections?: DeviceConnectionsApi }).deviceConnections;
+}
+
+function DeviceConnectionsPanel(): JSX.Element {
+  const api = getDeviceConnectionsApi();
+  const [profiles, setProfiles] = useState<DeviceConnectionProfile[]>(() => api?.list() ?? []);
+  const [currentId, setCurrentId] = useState<string>(() => api?.currentId() ?? '');
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ displayName: '', host: '', password: '' });
+  const [error, setError] = useState<string | null>(null);
+
+  if (!api) {
+    // 理论不可达(该面板只在 isNativeShell 分支挂载,壳必有 shim 字段)——
+    // 防御性兜底,避免将来 shim 重构漏装时白屏。
+    return <div className="settings-detail-fallback">此页面仅在移动客户端可用。</div>;
+  }
+
+  const refresh = (): void => {
+    setProfiles(api.list());
+    setCurrentId(api.currentId());
+  };
+
+  const connect = (id: string): void => {
+    if (id === currentId) return;
+    api.connect(id);
+  };
+
+  const remove = (id: string): void => {
+    api.remove(id);
+    refresh();
+  };
+
+  const submitNew = (): void => {
+    if (!form.host.trim()) {
+      setError('地址必填');
+      return;
+    }
+    api.save({
+      displayName: form.displayName.trim(),
+      host: form.host.trim(),
+      password: form.password,
+    });
+    setAdding(false);
+    setForm({ displayName: '', host: '', password: '' });
+    setError(null);
+    refresh();
+  };
+
+  return (
+    // .settings-panel:与桌面端各分类面板同一容器(720px 约束),横屏下排版
+    // 与工作电脑的「远程」面板一致(勘误①:此前裸容器导致面板通栏、和 PC
+    // 面板排版不一致)。区块头也改用 PC 的 subsection 标题体系,不再拿
+    // SettingRow(label/控件行)当标题使。
+    <div className="settings-panel device-connections">
+      <h3 className="settings-subsection-title">连接电脑</h3>
+      <p className="settings-subsection-desc">
+        本设备保存的 Marina 电脑,共 {profiles.length}
+        台;点「切换」重启连接到所选电脑。档案与启动页「添加电脑」是同一份。
+      </p>
+
+      <ul className="device-connections-list">
+        {profiles.map((p) => {
+          // 行主体 = 纯展示;「切换」是独立按钮(用户裁决 2026-09-15:不复用
+          // 列表主体当按钮)。点击经 api.connect → MobileBoot 层切换逻辑。
+          const isCurrent = p.id === currentId;
+          return (
+            <li key={p.id} className="device-connections-item">
+              <div className="device-connections-main">
+                <span className="device-connections-name">
+                  {p.displayName}
+                  {isCurrent && <span className="device-connections-badge">当前</span>}
+                </span>
+                <span className="device-connections-host">{p.host}</span>
+              </div>
+              {!isCurrent && (
+                <button
+                  type="button"
+                  className="device-connections-switch"
+                  onClick={() => connect(p.id)}
+                  title="切换本设备到此电脑(应用会重启连接)"
+                >
+                  切换
+                </button>
+              )}
+              <button
+                type="button"
+                className="device-connections-remove"
+                aria-label={`删除 ${p.displayName}`}
+                onClick={() => remove(p.id)}
+              >
+                ×
+              </button>
+            </li>
+          );
+        })}
+        {profiles.length === 0 && <li className="device-connections-empty">还没有添加电脑</li>}
+      </ul>
+
+      {adding ? (
+        <div className="device-connections-form">
+          <label>
+            名称
+            <input
+              className="settings-input"
+              value={form.displayName}
+              placeholder="如:工作电脑"
+              autoComplete="off"
+              onChange={(e) => setForm((f) => ({ ...f, displayName: e.target.value }))}
+            />
+          </label>
+          <label>
+            地址(必填)
+            <input
+              className="settings-input"
+              value={form.host}
+              placeholder="Marina 电脑的 IP / 主机名"
+              autoComplete="off"
+              inputMode="url"
+              onChange={(e) => setForm((f) => ({ ...f, host: e.target.value }))}
+            />
+          </label>
+          <label>
+            连接密码(必填)
+            <input
+              className="settings-input"
+              type="password"
+              value={form.password}
+              placeholder="daemon 设置页配置的连接密码"
+              autoComplete="off"
+              onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+            />
+          </label>
+          {error && <div className="device-connections-error">{error}</div>}
+          <div className="device-connections-actions">
+            <button type="button" className="settings-button" onClick={submitNew}>
+              保存
+            </button>
+            <button
+              type="button"
+              className="settings-button"
+              onClick={() => {
+                setAdding(false);
+                setError(null);
+              }}
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="device-connections-actions">
+          <button type="button" className="settings-button" onClick={() => setAdding(true)}>
+            + 添加电脑
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function RemotePanel({ setError }: { setError: (msg: string | null) => void }): JSX.Element {
   const { tx } = useTranslation();

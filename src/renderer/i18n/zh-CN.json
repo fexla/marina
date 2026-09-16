@@ -96,6 +96,8 @@
   "appearance.theme.toneTag.light": "浅色",
   "sidebar.computers.title": "Marina 电脑",
   "sidebar.computers.empty": "去 设置 → 远程 添加",
+  "sidebar.computers.switchTitle": "切换本设备连接",
+  "sidebar.computers.current": "当前",
   "sidebar.computers.openTitle": "在新窗口打开",
   "sidebar.computers.noTokenTitle": "未设密码,去 设置 → 远程 填写"
 }

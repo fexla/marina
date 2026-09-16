@@ -96,6 +96,8 @@
   "appearance.theme.toneTag.light": "light",
   "sidebar.computers.title": "Marina computers",
   "sidebar.computers.empty": "Add in Settings → Remote",
+  "sidebar.computers.switchTitle": "Switch this device connection",
+  "sidebar.computers.current": "Current",
   "sidebar.computers.openTitle": "Open in a new window",
   "sidebar.computers.noTokenTitle": "No password; fill it in Settings → Remote"
 }

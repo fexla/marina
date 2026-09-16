@@ -28,7 +28,15 @@ import { WindowChrome } from './components/WindowChrome';
 import { ContextMenuProvider } from './components/ContextMenu';
 import { ToastProvider } from './components/Toast';
 import { ModalProvider } from './components/Modal';
-import { useIsMobile } from './mobile';
+import {
+  useIsMobile,
+  useMobileLayoutClass,
+  useMobileViewportFix,
+  attachMobileSwipeNavigation,
+  attachTouchLongPressContextMenu,
+  dispatchPanelNav,
+  isNativeShell,
+} from './mobile';
 import { LanguageProvider } from './components/LanguageProvider';
 import { LastSessionConfirmBridge } from './components/LastSessionConfirmBridge';
 import { WebDownloadBridge } from './components/WebDownloadBridge';
@@ -217,12 +225,96 @@ function ConnectedShell({
   // 抽屉开闭是纯视图态(不进 store —— 桌面端无此概念,窗口 resize 跨过断点
   // 时随组件重渲染自然重置)。
   const isMobile = useIsMobile();
+  // 移动布局 CSS 总开关:mobile.css 以 html.marina-mobile 类为门(判定单源
+  // 在 mobile.ts,见其文件头 —— 平板竖屏 CSS 宽可 >900px,媒体查询够不到)。
+  useMobileLayoutClass(isMobile);
+  // 软键盘弹起时把 visualViewport.height 写到 :root(mobile.css 消费),
+  // 否则 Android WebView 沉浸模式下布局不收缩、终端输入行被键盘盖住。
+  useMobileViewportFix(isMobile);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  // 选中 session(点 .session-item)或双击路径后自动收抽屉 —— 事件委托实现,
+  // 旋转/跨断点离开移动布局时收抽屉:开闭是纯视图态,桌面布局不消费它,
+  // 不清掉的话平板竖屏开着抽屉转到横屏再转回来,会看到一个「凭空打开」的抽屉。
+  useEffect(() => {
+    if (!isMobile) setMobileSidebarOpen(false);
+  }, [isMobile]);
+  // 选中 session(点 .session-item)或点「设置」后自动收抽屉 —— 事件委托实现,
   // 不给 Sidebar 加 prop(保持桌面端组件接口零移动端概念)。
+  // 「设置」也收:设置是全屏覆盖,底下留着开着的抽屉,退出设置后突兀。
+  // ⚠️ 必须挂 bubble(onClick),不能挂 onClickCapture(2026-09-14 真机取证):
+  // 真实触摸的 click 是离散事件,React 在根节点 capture/bubble 两次监听之间
+  // 同步 flush 捕获阶段的 setState —— capture 里卸载抽屉后,「设置」按钮已随
+  // 抽屉卸载,bubble 阶段按钮自己的 onClick(dispatch enter-settings)不会执行,
+  // 设置页永远打不开。bubble 顺序天然正确:先按钮 onClick、再本委托收抽屉,
+  // 两个更新同批渲染。
   const closeDrawerOnSessionPick = (e: React.SyntheticEvent<HTMLDivElement>): void => {
-    if ((e.target as HTMLElement).closest?.('.session-item')) setMobileSidebarOpen(false);
+    const target = e.target as HTMLElement;
+    if (target.closest?.('.session-item')) setMobileSidebarOpen(false);
+    else if (
+      target.closest?.('button') &&
+      target.closest('button')?.textContent.trim() === '设置'
+    ) {
+      setMobileSidebarOpen(false);
+    }
   };
+
+  // 三页手势导航(用户裁决 2026-09-14):终端左滑→右面板、右滑→左抽屉;
+  // 抽屉/面板上反向滑回终端。左右页互斥(开一页先关另一页,模型是
+  // 左|中|右 三态,不是可叠加的浮层)。检测原语见 mobile.ts。
+  // blurTerminal:离开终端页时主动 blur helper-textarea —— 它是盖在终端上的
+  // 透明层且持有焦点,Android 返回键只藏 IME 不清焦点,之后任何触摸(包括
+  // 这次的滑动手势)touchstart 落在它身上都会让 IME 立即回弹,盖住刚打开的
+  // 全屏面板/抽屉下半截(2026-09-14 真机取证)。回终端后点按终端即可重新
+  // 唤起键盘(TerminalView tap-to-focus)。
+  const blurTerminal = (): void => {
+    const el = document.activeElement;
+    if (el instanceof HTMLElement && el.classList.contains('xterm-helper-textarea')) el.blur();
+  };
+  useEffect(() => {
+    if (!isMobile) return undefined;
+    return attachMobileSwipeNavigation({
+      onMainSwipeLeft: () => {
+        blurTerminal();
+        setMobileSidebarOpen(false);
+        dispatchPanelNav(true);
+      },
+      onMainSwipeRight: () => {
+        blurTerminal();
+        dispatchPanelNav(false);
+        setMobileSidebarOpen(true);
+      },
+      onDrawerSwipeLeft: () => setMobileSidebarOpen(false),
+      onDockSwipeRight: () => dispatchPanelNav(false),
+    });
+  }, [isMobile]);
+
+  // 触屏长按 = 右键(用户裁决 2026-09-14):合成 contextmenu 派发到触点,
+  // 桌面端全部右键菜单链复用。原生壳内常挂(横竖两态都要)—— 不 gate
+  // isMobile,否则横屏 PC 布局下触屏没有右键。dnd 拖拽元素/输入框的例外
+  // 见 attachTouchLongPressContextMenu 注释。
+  useEffect(() => {
+    if (!isNativeShell()) return undefined;
+    return attachTouchLongPressContextMenu();
+  }, []);
+
+  // back-bus 最外层消费(安卓返回键 / header ‹ 共用的 'marina-back' 事件,
+  // 见 docs/standards/mobile-interactions.md)。层级用事件阶段实现:
+  // 设置层(capture,进设置时才 mount、注册最晚)最先执行;本监听者
+  // (capture,App 首挂最早注册,但 guard inSettingsView 放行)其次;
+  // dock(bubble,LayoutHost)最后。轮到这里的是「抽屉开」一种情况
+  // (设置打开时由设置层消费)。都不命中则不消费 → 壳层
+  // __marinaAndroidBack 返回 false → 原生回后台。
+  useEffect(() => {
+    if (!isMobile) return undefined;
+    const onBack = (e: Event): void => {
+      if (e.defaultPrevented || state.inSettingsView) return;
+      if (mobileSidebarOpen) {
+        e.preventDefault();
+        setMobileSidebarOpen(false);
+      }
+    };
+    window.addEventListener('marina-back', onBack, { capture: true });
+    return () => window.removeEventListener('marina-back', onBack, { capture: true });
+  }, [isMobile, mobileSidebarOpen, state.inSettingsView]);
 
   // ADR-021:GitPanel 在 WARM（其他面板/折叠/失焦）时会卸载，但 60s 后台结果仍
   // 必须写组件外缓存。根层 bridge 常驻；GitPanel 自己的 listener 只负责 live state。
@@ -432,21 +524,10 @@ function ConnectedShell({
                           />
                         )}
                         {mobileSidebarOpen && (
-                          <div
-                            className="mobile-sidebar-drawer"
-                            onClickCapture={closeDrawerOnSessionPick}
-                          >
+                          <div className="mobile-sidebar-drawer" onClick={closeDrawerOnSessionPick}>
                             <Sidebar key="sidebar" />
                           </div>
                         )}
-                        <button
-                          type="button"
-                          className="mobile-sidebar-fab"
-                          aria-label="打开路径侧栏"
-                          onClick={() => setMobileSidebarOpen(true)}
-                        >
-                          ☰
-                        </button>
                       </>
                     ) : (
                       <Sidebar key="sidebar" />
@@ -580,14 +661,12 @@ function RemoteConnectionErrorScreen({
     <div className="remote-error-screen">
       <div className="remote-error-card">
         <h1 className="remote-error-title">{diagnosis.title}</h1>
-        <p className="remote-error-subtitle">
-          这个窗口是远程窗口,但连不上对方电脑上的 Marina。
-        </p>
+        <p className="remote-error-subtitle">这个窗口是远程窗口,但连不上对方电脑上的 Marina。</p>
 
         <ol className="remote-error-checklist">
           {diagnosis.checklist.map((item, i) => (
             <li key={i}>{item}</li>
-              ))}
+          ))}
         </ol>
 
         {/* 详细错误默认展开(不用 details 折叠),确保始终可见 + 可选中复制 */}
@@ -687,7 +766,11 @@ function FramelessShell({
   // 说明:这个降级路径没有标题栏 —— 但 preload 没加载时连 IPC 都没有,标题栏按钮
   // 本来也不能用,降级是合理的(且这是极罕见的致命错误,不是常态)。
   if (typeof window === 'undefined' || !window.api) {
-    return <div className="app-root" data-theme={theme}>{children}</div>;
+    return (
+      <div className="app-root" data-theme={theme}>
+        {children}
+      </div>
+    );
   }
 
   const shell = (

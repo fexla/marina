@@ -1159,6 +1159,8 @@ html[data-maximized='true'] .app-root.with-shell {
   z-index: 5;
   background-color: transparent;
   transition: background-color 120ms ease;
+  /* 触屏拖分界线(pointer 事件):横向拖动不能被浏览器当滚动接走。 */
+  touch-action: none;
 }
 
 .sidebar-resize-handle:hover,
@@ -1218,6 +1220,12 @@ html[data-maximized='true'] .app-root.with-shell {
 .sidebar-computers {
   padding: 6px 8px 2px;
   border-bottom: 1px solid color-mix(in srgb, var(--color-text-muted, #888) 12%, transparent);
+  /* 与 .sidebar-bookmarks-dropzone 同款滚动行为(flex:1 + 内滚):远程
+   * tab 的内容区占满 segmented 与 footer 之间的全部空间,电脑/SSH 多时
+   * 区段内滚动,footer 恒在底部(用户裁决 2026-09-14,详见
+   * .sidebar-footer 的 margin-top:auto 注释)。 */
+  flex: 1 1 0;
+  overflow-y: auto;
 }
 
 .sidebar-computers-header {
@@ -1267,6 +1275,22 @@ html[data-maximized='true'] .app-root.with-shell {
 .sidebar-computer-item:disabled {
   color: var(--color-text-muted, #888);
   cursor: default;
+}
+
+/* 当前连接徽标 + 高亮(原生壳专用:Android 单窗口,列表语义 = 切换本设备
+ * 连接而非开新窗口,用户裁决 2026-09-15)。桌面端不渲染 .current,规则空挂。 */
+.sidebar-computer-item.current {
+  background-color: var(--color-bg-active, rgba(128, 128, 128, 0.18));
+}
+
+.sidebar-computer-current {
+  margin-left: auto;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 500;
+  background-color: var(--color-accent-special, #c4a7e7);
+  color: var(--color-bg-primary, #191724);
 }
 
 .sidebar-computer-name {
@@ -1497,7 +1521,11 @@ html[data-maximized='true'] .app-root.with-shell {
   gap: 4px;
   padding: 3px 8px;
   cursor: grab;
-  touch-action: none;
+  /* pan-y 而不是 none(2026-09-14 触屏勘误):none 会让手指落在组头上的滑动
+     变成死区 —— 列表滚动失灵。dnd 触摸拖拽是长按延迟激活,激活前手指不动
+     就不会被浏览器抢去滚动,激活后的 touchmove 由 dnd-kit preventDefault,
+     pan-y 两者兼容。 */
+  touch-action: pan-y;
   color: var(--color-text-secondary, inherit);
   font-size: 11px;
   font-weight: 600;
@@ -1962,6 +1990,15 @@ html[data-maximized='true'] .app-root.with-shell {
 .sidebar-footer {
   flex: 0 0 auto;
   padding: 6px 8px;
+  /* 设置按钮与 segmented 两个 tab 页面「同级」:钉死在侧栏骨架底部,
+   * 不属于任何一个 tab 的内容流(用户裁决 2026-09-14「远程界面的设置
+   * 位置在上面」)。没有这条时:本机 tab 靠 .sidebar-bookmarks-dropzone
+   * 的 flex:1 把 footer 顶到底,而远程 tab 的 .sidebar-computers 按内容
+   * 收缩,footer 紧跟在几台电脑后面悬在侧栏上部 —— 同一个按钮两个 tab
+   * 两个位置。margin-top:auto 让 footer 吸收全部剩余空间,两个 tab 下
+   * 都恒在左下角;本机 tab 下 dropzone 的 flex:1 已吃光剩余空间,
+   * margin auto 归零,无副作用。 */
+  margin-top: auto;
 }
 
 .settings-entry {
@@ -2192,6 +2229,20 @@ html[data-maximized='true'] .app-root.with-shell {
   width: 6px;
   cursor: ew-resize;
   z-index: 5;
+  /* 触屏拖分界线(pointer 事件):横向拖动不能被浏览器当滚动接走。
+     触屏命中区加宽到 12px(手指比鼠标光标粗得多,6px 点不中)。 */
+  touch-action: none;
+}
+
+@media (pointer: coarse) {
+  .panel-dock-resize-handle {
+    left: -9px;
+    width: 18px;
+  }
+
+  .sidebar-resize-handle {
+    width: 12px;
+  }
 }
 
 .panel-dock-resize-handle:hover,

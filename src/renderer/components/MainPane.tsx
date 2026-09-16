@@ -21,9 +21,7 @@
  * @对应文档章节: 软件定义书.md 6.3 (右侧标签页)、6.4 (终端区域)
  */
 import { useEffect, useRef, useState, type MouseEvent } from 'react';
-import {
-  COMMAND_CHANNELS,
-} from '@shared/protocol';
+import { COMMAND_CHANNELS } from '@shared/protocol';
 import { formatPathDisplayPath } from '@shared/path-display';
 import type { SessionInfo, Template } from '@shared/types';
 import {
@@ -35,6 +33,8 @@ import {
   useAppState,
 } from '../store';
 import { TerminalDeck } from './TerminalDeck';
+import { TerminalAuxBar, usePinchFontSize } from './TerminalAuxBar';
+import { isNativeShell, useIsMobile } from '../mobile';
 import { LayoutHost } from './layout/LayoutHost';
 import { focusTerminalDom } from '../focus';
 import { Icon, type IconName } from './icons';
@@ -120,6 +120,13 @@ export function MainPane(): JSX.Element {
   const fontSize = state.settings.appearance?.terminalFontSize ?? 13;
   const lineHeight = state.settings.appearance?.terminalLineHeight ?? 1.2;
 
+  // 移动端(ADR-042):双指缩放终端字号,原生监听挂在 terminal-workspace 上。
+  // 键条/缩放的触屏能力横竖两态都要:平板横屏是桌面布局但同样是软键盘,
+  // 没有 Esc/方向键物理键的痛点一致(用户勘误 2026-09-14「保持统一」)。
+  const isMobile = useIsMobile();
+  const touchCapabilities = isMobile || isNativeShell();
+  const pinchRef = usePinchFontSize(touchCapabilities);
+
   // FOC-6:selectedSessionId 变化时(托盘点击 / 跨窗口聚焦 /
   // evt:window:focus-requested / view/select-session 等任意路径)
   // 把焦点送到新 session 的 xterm。
@@ -186,10 +193,17 @@ export function MainPane(): JSX.Element {
             state.settings.filePanel?.enabled === true
           }
           terminal={
-            <div className="terminal-workspace">
+            <div className="terminal-workspace" ref={pinchRef}>
               <TerminalDeck
                 activeSessionId={state.inSettingsView ? null : (displayable?.id ?? null)}
               />
+              {/* 移动端辅助键条(软键盘缺的 Esc/Tab/方向/Ctrl 组合)。
+                  放 Deck 的兄弟层而不是 Deck 内部:deck-slot 是 absolute
+                  inset:0,键条进 Deck 会被 slot 全幅盖住;workspace 纵向
+                  flex(mobile.css)让 deck flex:1、键条占底部一行。
+                  pinchRef = 双指缩放字号,原生 passive:false 监听。
+                  横竖两态都渲染(见上方 touchCapabilities 注释)。 */}
+              {touchCapabilities && displayable && <TerminalAuxBar sessionId={displayable.id} />}
               {!displayable && (
                 <div className="terminal-workspace-overlay">
                   {state.selectedPathId ? (
@@ -285,17 +299,14 @@ function EmptyPathState({ pathId }: { pathId: string }): JSX.Element {
     setCreating(true);
     try {
       const dims = state.lastTerminalDims;
-      const res = await window.api.invoke(
-        COMMAND_CHANNELS.SESSION_CREATE,
-        {
-          pathId,
-          templateId,
-          ...(shellId ? { shellId } : {}),
-          ...(isSshPath ? { sshTmuxMode: sshTmuxMode ?? 'disabled' } : {}),
-          cols: dims.cols,
-          rows: dims.rows,
-        },
-      );
+      const res = await window.api.invoke(COMMAND_CHANNELS.SESSION_CREATE, {
+        pathId,
+        templateId,
+        ...(shellId ? { shellId } : {}),
+        ...(isSshPath ? { sshTmuxMode: sshTmuxMode ?? 'disabled' } : {}),
+        cols: dims.cols,
+        rows: dims.rows,
+      });
       // 乐观 dispatch sessions/created:广播(evt:session:created)可能晚于 invoke
       // 返回,此时 select-session 设的 id 还不在 state 里 → getDisplayableSession
       // 返回 null → 闪一下新建页。直接把 res.session 写入 state + 选中,无空窗。

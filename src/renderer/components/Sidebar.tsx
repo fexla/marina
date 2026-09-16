@@ -26,6 +26,7 @@ import {
   useRef,
   type DragEvent,
   type MouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
 import {
@@ -45,7 +46,8 @@ import {
   DndContext,
   DragOverlay,
   MeasuringStrategy,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   pointerWithin,
   useSensor,
   useSensors,
@@ -56,9 +58,7 @@ import {
   type DragStartEvent,
 } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
-import {
-  COMMAND_CHANNELS,
-} from '@shared/protocol';
+import { COMMAND_CHANNELS } from '@shared/protocol';
 import type {
   GroupNode,
   PathKind,
@@ -100,6 +100,7 @@ import { useModal } from './Modal';
 import { useToast } from './Toast';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { usePanelPreference } from '../hooks/usePanelPreference';
+import { dispatchSyntheticContextMenu, isNativeShell } from '../mobile';
 import { claimSession } from '../hooks/claim-gate';
 import { buildSessionContextMenu } from './sessionContextMenu';
 import { closeSessionWithContinue } from '../hooks/useCloseSession';
@@ -176,27 +177,46 @@ interface BackendDirectoryPickerIntent {
 /**
  * Sidebar 宽度持久化(localStorage)。右侧 resize handle 拖动调整,松开时落盘。
  *
- * 范围 [SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH]:小于 min 路径名挤成省略号,大于
- * max 抢占终端区视觉权重。中间档默认 280px 与历史 CSS 一致,无 sidebarWidth
- * 时回落到该值(旧用户首次升级看不出变化)。
+ * v0.3.4(用户裁决 2026-09-14「宽度按比例」):存**比例**而不是绝对像素 ——
+ * 同一台电脑的 localStorage 在不同宽度窗口(PC 2560 / 平板 1292)渲染时按
+ * 视口换算,不再出现"PC 上合适的 280px 在平板上挤占终端"。渲染仍按
+ * [MIN, MAX] px 钳制(小于 min 路径名挤成省略号,大于 max 抢占终端权重)。
+ * 旧 key(marina.sidebar.width,绝对 px)首次读取时按当前视口换算成比例,
+ * 同机迁移无视觉变化。
  */
-const SIDEBAR_WIDTH_LS_KEY = 'marina.sidebar.width';
-const SIDEBAR_DEFAULT_WIDTH = 280;
+const SIDEBAR_WIDTH_LS_KEY = 'marina.sidebar.width'; // 旧:绝对 px,仅作迁移源
+const SIDEBAR_RATIO_LS_KEY = 'marina.sidebar.widthRatio';
+const SIDEBAR_DEFAULT_RATIO = 280 / 1920;
+const SIDEBAR_MIN_RATIO = 0.08;
+const SIDEBAR_MAX_RATIO = 0.35;
 const SIDEBAR_MIN_WIDTH = 180;
 const SIDEBAR_MAX_WIDTH = 600;
 
-function clampSidebarWidth(n: number): number {
-  if (!Number.isFinite(n)) return SIDEBAR_DEFAULT_WIDTH;
-  return Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, Math.round(n)));
+function clampSidebarRatio(n: number): number {
+  if (!Number.isFinite(n)) return SIDEBAR_DEFAULT_RATIO;
+  return Math.max(SIDEBAR_MIN_RATIO, Math.min(SIDEBAR_MAX_RATIO, Math.round(n * 1000) / 1000));
 }
 
-function readSidebarWidthFromStorage(): number {
-  if (typeof window === 'undefined' || !window.localStorage) return SIDEBAR_DEFAULT_WIDTH;
-  const v = window.localStorage.getItem(SIDEBAR_WIDTH_LS_KEY);
-  if (v === null) return SIDEBAR_DEFAULT_WIDTH;
-  const n = Number.parseInt(v, 10);
-  if (Number.isNaN(n)) return SIDEBAR_DEFAULT_WIDTH;
-  return clampSidebarWidth(n);
+/** 渲染宽度 = 比例 × 视口,再按像素上下限钳制。 */
+function sidebarRenderWidth(ratio: number, viewportWidth: number): number {
+  return Math.max(
+    SIDEBAR_MIN_WIDTH,
+    Math.min(SIDEBAR_MAX_WIDTH, Math.round(ratio * viewportWidth)),
+  );
+}
+
+function readSidebarRatioFromStorage(): number {
+  if (typeof window === 'undefined' || !window.localStorage) return SIDEBAR_DEFAULT_RATIO;
+  const ratioRaw = window.localStorage.getItem(SIDEBAR_RATIO_LS_KEY);
+  if (ratioRaw !== null) {
+    return clampSidebarRatio(Number.parseFloat(ratioRaw));
+  }
+  // 迁移:旧绝对 px(本机调的)按当前视口换算 —— 同机升级无视觉变化。
+  const pxRaw = window.localStorage.getItem(SIDEBAR_WIDTH_LS_KEY);
+  if (pxRaw === null) return SIDEBAR_DEFAULT_RATIO;
+  const px = Number.parseInt(pxRaw, 10);
+  if (Number.isNaN(px) || window.innerWidth <= 0) return SIDEBAR_DEFAULT_RATIO;
+  return clampSidebarRatio(px / window.innerWidth);
 }
 
 export function Sidebar(): JSX.Element {
@@ -235,19 +255,27 @@ export function Sidebar(): JSX.Element {
   const setSegment = setSegmentState;
 
   // ── Sidebar 宽度可拖动 + 持久化 ──
-  // 拖动期间只 setWidth 不写 localStorage(快速移动会大量触发 setItem),松开
-  // 时才落盘一次。全局 mousemove/mouseup 监听通过 ref 标记 isResizing,避免
-  // 鼠标移出 sidebar 边缘后丢失事件;widthRef 镜像 state 让 onUp 拿到最新值
-  // 而不依赖 setState updater(updater 内 throw 会把异常抛到 commit)。
+  // 拖动期间只改 state 不写 localStorage(快速移动会大量触发 setItem),松开
+  // 时才落盘一次。走 pointer 事件(用户裁决 2026-09-14:触屏也要能拖分界线,
+  // mouse 事件在触摸上不触发);全局监听 + isResizing ref,避免手指/鼠标移出
+  // sidebar 边缘后丢失事件。ratioRef 镜像 state 让 onUp 拿到最新值而不依赖
+  // setState updater(updater 内 throw 会把异常抛到 commit)。
   // document.body.style.cursor 临时锁成 ew-resize,防止拖动越过 sidebar 边界
   // 进入终端区时鼠标光标抖。
-  const [sidebarWidth, setSidebarWidth] = useState<number>(() => readSidebarWidthFromStorage());
-  const widthRef = useRef(sidebarWidth);
-  widthRef.current = sidebarWidth;
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  useEffect(() => {
+    const onResize = (): void => setViewportWidth(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  const [sidebarRatio, setSidebarRatio] = useState<number>(() => readSidebarRatioFromStorage());
+  const sidebarWidth = sidebarRenderWidth(sidebarRatio, viewportWidth);
+  const ratioRef = useRef(sidebarRatio);
+  ratioRef.current = sidebarRatio;
   const isResizingRef = useRef(false);
 
-  const handleResizeMouseDown = (e: MouseEvent<HTMLDivElement>): void => {
-    if (e.button !== 0) return;
+  const handleResizePointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.preventDefault();
     isResizingRef.current = true;
     document.body.style.cursor = 'ew-resize';
@@ -256,10 +284,10 @@ export function Sidebar(): JSX.Element {
   };
 
   useEffect(() => {
-    const onMove = (e: globalThis.MouseEvent): void => {
+    const onMove = (e: globalThis.PointerEvent): void => {
       if (!isResizingRef.current) return;
       // sidebar 左边贴 viewport 左缘(无窗口阴影/边距),clientX 直接当宽度用
-      setSidebarWidth(clampSidebarWidth(e.clientX));
+      setSidebarRatio(clampSidebarRatio(e.clientX / Math.max(1, window.innerWidth)));
     };
     const onUp = (): void => {
       if (!isResizingRef.current) return;
@@ -267,24 +295,24 @@ export function Sidebar(): JSX.Element {
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       try {
-        window.localStorage?.setItem(SIDEBAR_WIDTH_LS_KEY, String(widthRef.current));
+        window.localStorage?.setItem(SIDEBAR_RATIO_LS_KEY, String(ratioRef.current));
       } catch {
         // localStorage 失败容忍 — 本次会话内拖动仍生效,下次重启回落默认
       }
     };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
     return () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
     };
   }, []);
 
   const handleResizeDoubleClick = (): void => {
     // 双击 handle 复位默认宽度(类似浏览器 devtools 分隔条惯例)
-    setSidebarWidth(SIDEBAR_DEFAULT_WIDTH);
+    setSidebarRatio(SIDEBAR_DEFAULT_RATIO);
     try {
-      window.localStorage?.setItem(SIDEBAR_WIDTH_LS_KEY, String(SIDEBAR_DEFAULT_WIDTH));
+      window.localStorage?.setItem(SIDEBAR_RATIO_LS_KEY, String(SIDEBAR_DEFAULT_RATIO));
     } catch {
       // ignore
     }
@@ -448,10 +476,7 @@ export function Sidebar(): JSX.Element {
     // 真正的本地窗口保留 beta.9 native folder picker；groupId 与 path 在一个
     // BOOKMARK_ADD 中提交，避免先闪到未分组再 reorder 的半完成状态。
     try {
-      const result = await window.api.invoke(
-        COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER,
-        {},
-      );
+      const result = await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER, {});
       if (result.path === null) return;
       await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_ADD, {
         path: result.path,
@@ -469,15 +494,12 @@ export function Sidebar(): JSX.Element {
   const createSessionAtPath = async (path: string): Promise<void> => {
     const templateId = state.defaultTemplateId ?? 'shell';
     const dims = state.lastTerminalDims;
-    const res = await window.api.invoke(
-      COMMAND_CHANNELS.SESSION_CREATE,
-      {
-        pathId: path,
-        templateId,
-        cols: dims.cols,
-        rows: dims.rows,
-      },
-    );
+    const res = await window.api.invoke(COMMAND_CHANNELS.SESSION_CREATE, {
+      pathId: path,
+      templateId,
+      cols: dims.cols,
+      rows: dims.rows,
+    });
     // session 创建后:乐观 dispatch sessions/created 立即写入 state + 选中它。
     dispatch({ type: 'sessions/created', session: res.session });
     if (res.warning) toast.push({ kind: 'warn', message: res.warning });
@@ -511,10 +533,7 @@ export function Sidebar(): JSX.Element {
       return;
     }
     try {
-      const result = await window.api.invoke(
-        COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER,
-        {},
-      );
+      const result = await window.api.invoke(COMMAND_CHANNELS.BOOKMARK_PICK_FOLDER, {});
       if (result.path === null) return;
       await createSessionAtPath(result.path);
     } catch (err) {
@@ -617,9 +636,7 @@ export function Sidebar(): JSX.Element {
     const root = sidebarRef.current;
     if (!root) return null;
     let best: { id: string; area: number } | null = null;
-    const blocks = root.querySelectorAll<HTMLElement>(
-      '.sidebar-group[data-bookmark-group-id]',
-    );
+    const blocks = root.querySelectorAll<HTMLElement>('.sidebar-group[data-bookmark-group-id]');
     for (const el of Array.from(blocks)) {
       const r = el.getBoundingClientRect();
       if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
@@ -786,72 +803,102 @@ export function Sidebar(): JSX.Element {
             </p>
           ) : (
             <ul className="sidebar-computers-list">
-              {localProfiles.map((p) => (
-                <li key={p.id}>
-                  <button
-                    type="button"
-                    className="sidebar-computer-item"
-                    disabled={!p.hasToken}
-                    title={
-                      p.hasToken
-                        ? `${p.displayName} (${p.host}) — ${t('sidebar.computers.openTitle') || '在新窗口打开'}`
-                        : `${p.displayName} (${p.host}) — ${t('sidebar.computers.noTokenTitle') || '未设密码,去 设置 → 远程 填写'}`
-                    }
-                    onClick={() => void openRemoteWindow(p.id)}
-                  >
-                    <Icon name="server" size={12} />
-                    <span className="sidebar-computer-name">{p.displayName}</span>
-                    <span className="sidebar-computer-host">{p.host}</span>
-                  </button>
-                </li>
-              ))}
+              {localProfiles.map((p) => {
+                // 原生壳(单窗口)语义切换(用户裁决 2026-09-15):这里的按钮
+                // 不是 PC 的「开新窗口」(WINDOW_CREATE 在移动端是 notSupported,
+                // 复用它 = 点击报错),而是**切换本设备的连接** —— 经
+                // deviceConnections.connect 转发 MobileBoot 层的切换逻辑
+                // (关旧 transport → 完整 boot 序)。当前连接打「当前」徽标。
+                const native = isNativeShell();
+                const current = native && window.api.backendProfileId === p.id;
+                return (
+                  <li key={p.id}>
+                    <button
+                      type="button"
+                      className={`sidebar-computer-item${current ? ' current' : ''}`}
+                      disabled={!p.hasToken}
+                      title={
+                        native
+                          ? `${p.displayName} (${p.host}) — ${t('sidebar.computers.switchTitle') || '切换本设备连接'}`
+                          : p.hasToken
+                            ? `${p.displayName} (${p.host}) — ${t('sidebar.computers.openTitle') || '在新窗口打开'}`
+                            : `${p.displayName} (${p.host}) — ${t('sidebar.computers.noTokenTitle') || '未设密码,去 设置 → 远程 填写'}`
+                      }
+                      onClick={() => {
+                        if (!native) {
+                          void openRemoteWindow(p.id);
+                          return;
+                        }
+                        if (current) return;
+                        const dc = (
+                          window.api as unknown as {
+                            deviceConnections?: { connect: (id: string) => void };
+                          }
+                        ).deviceConnections;
+                        dc?.connect(p.id);
+                      }}
+                    >
+                      <Icon name="server" size={12} />
+                      <span className="sidebar-computer-name">{p.displayName}</span>
+                      <span className="sidebar-computer-host">{p.host}</span>
+                      {current && (
+                        <span className="sidebar-computer-current">
+                          {t('sidebar.computers.current') || '当前'}
+                        </span>
+                      )}
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </section>
       )}
-      <div className="sidebar-bookmarks-dropzone" data-segment={effectiveSegment}>
-        <BookmarkCategory
-          paths={bookmarksFiltered}
-          allPaths={state.pathTree.bookmarks}
-          groups={groupsFiltered}
-          allGroups={state.pathTree.groups}
-          collapsed={isCategoryCollapsed('bookmark')}
-          onToggleCollapsed={() => handleToggleCategory('bookmark')}
-          onContextMenu={(e) =>
-            openAddGroupContextMenu(e, t('sidebar.category.bookmark') || '收藏')
-          }
-          onRequestAddSubgroup={(parentId) => void addGroupPrompt(parentId)}
-          onRequestAddFolder={(groupId) => void handleAddBookmark(undefined, groupId)}
-          // 外部文件拖放悬停命中的组 id → 组块高亮(见 GroupBlock ext-drop-over)。
-          externalDropTargetGroupId={dropTargetGroupId}
-          {...(effectiveSegment === 'remote'
-            ? { addFolderDisabledReason: 'SSH 远端目录浏览尚不可用；不会退化为手输路径' }
-            : {})}
-          actionLabel={<Icon name="plus" size={12} />}
-          actionTitle={t('sidebar.addBookmark.title')}
-          onAction={(e) => void handleAddBookmark(e)}
-          displayNames={bookmarkDisplayNames}
-        />
-        <Category
-          categoryId="temporary"
-          title={t('sidebar.category.temporary')}
-          iconName="clock"
-          paths={temporaryFiltered}
-          collapsed={isCategoryCollapsed('temporary')}
-          onToggleCollapsed={handleToggleCategory}
-          actionLabel={<Icon name="plus" size={12} />}
-          actionTitle={t('sidebar.addTemporary.title')}
-          onAction={(e) => void handlePickFolderForTemp(e)}
-        />
-        <Category
-          categoryId="recent"
-          title={t('sidebar.category.recent')}
-          iconName="history"
-          paths={recentFiltered}
-          collapsed={isCategoryCollapsed('recent')}
-          onToggleCollapsed={handleToggleCategory}
-        />
-      </div>
+      {/* 收藏/临时/最近三栏只属于「当前电脑」段(用户裁决 2026-09-14:
+          远程段里的这三栏没有意义 —— 那里是 Marina 电脑列表/SSH,不存在
+          本机路径的收藏语义;PC 端同样裁剪,保持两端一致)。 */}
+      {effectiveSegment === 'local' && (
+        <div className="sidebar-bookmarks-dropzone" data-segment={effectiveSegment}>
+          <BookmarkCategory
+            paths={bookmarksFiltered}
+            allPaths={state.pathTree.bookmarks}
+            groups={groupsFiltered}
+            allGroups={state.pathTree.groups}
+            collapsed={isCategoryCollapsed('bookmark')}
+            onToggleCollapsed={() => handleToggleCategory('bookmark')}
+            onContextMenu={(e) =>
+              openAddGroupContextMenu(e, t('sidebar.category.bookmark') || '收藏')
+            }
+            onRequestAddSubgroup={(parentId) => void addGroupPrompt(parentId)}
+            onRequestAddFolder={(groupId) => void handleAddBookmark(undefined, groupId)}
+            // 外部文件拖放悬停命中的组 id → 组块高亮(见 GroupBlock ext-drop-over)。
+            externalDropTargetGroupId={dropTargetGroupId}
+            actionLabel={<Icon name="plus" size={12} />}
+            actionTitle={t('sidebar.addBookmark.title')}
+            onAction={(e) => void handleAddBookmark(e)}
+            displayNames={bookmarkDisplayNames}
+          />
+          <Category
+            categoryId="temporary"
+            title={t('sidebar.category.temporary')}
+            iconName="clock"
+            paths={temporaryFiltered}
+            collapsed={isCategoryCollapsed('temporary')}
+            onToggleCollapsed={handleToggleCategory}
+            actionLabel={<Icon name="plus" size={12} />}
+            actionTitle={t('sidebar.addTemporary.title')}
+            onAction={(e) => void handlePickFolderForTemp(e)}
+          />
+          <Category
+            categoryId="recent"
+            title={t('sidebar.category.recent')}
+            iconName="history"
+            paths={recentFiltered}
+            collapsed={isCategoryCollapsed('recent')}
+            onToggleCollapsed={handleToggleCategory}
+          />
+        </div>
+      )}
       <div className="sidebar-footer">
         <button
           type="button"
@@ -864,13 +911,14 @@ export function Sidebar(): JSX.Element {
         </button>
       </div>
       {/*
-        右侧 resize handle:绝对定位,4px 宽,贴右边。鼠标按下时 setIsResizing,
-        全局 mousemove 计算新宽度。双击复位默认宽度。aria-hidden 因为只是视觉
-        affordance,不进辅助技术导航树(用户操作纯靠鼠标拖)。
+        右侧 resize handle:绝对定位,4px 宽,贴右边。pointer down 时
+        setIsResizing,全局 pointermove 计算新比例(鼠标/触摸同路,触屏分界线
+        也可拖)。双击复位默认宽度。aria-hidden 因为只是视觉 affordance,
+        不进辅助技术导航树(用户操作纯靠拖)。
       */}
       <div
         className="sidebar-resize-handle"
-        onMouseDown={handleResizeMouseDown}
+        onPointerDown={handleResizePointerDown}
         onDoubleClick={handleResizeDoubleClick}
         title="拖动调整宽度 (双击复位)"
         aria-hidden="true"
@@ -1019,6 +1067,53 @@ function basename(p: string | undefined): string {
   if (!p) return '';
   const segs = p.split(/[\\/]/);
   return segs[segs.length - 1] || p;
+}
+
+// ── 触屏拖拽语义(用户裁决 2026-09-14;参数修订 2026-09-15)──────────
+// 此前 PointerSensor distance:5 对触摸同样生效 —— 手指划过分组/终端行 5px 就
+// 开始拖,滑动浏览必误触。拆成两个传感器:鼠标维持 distance(桌面体验不变),
+// 触摸改 delay 激活;长按后不动直接抬起 = 零位移 onDragEnd →
+// dispatchSyntheticContextMenu 弹右键菜单(mobile.ts 的全局长按监听对
+// sortable 元素豁免,由这里接管,两边不会双弹)。
+//
+// 参数(用户勘误 2026-09-15「想右键却几乎总是触发拖动」):delay 与全局长按
+// 同拍 500ms(350ms 时用户还在等右键,手指微晃就进了拖拽待命);tolerance
+// 8→12px —— delay 期间位移超过 tolerance 才取消激活,12px 更能吞住按住时的
+// 自然抖动。拿起瞬间 mobile.ts 的 armed 层会给元素加 .marina-drag-armed
+// 视觉反馈(抬起感),用户能感知"现在移动才是拖"。
+const TOUCH_DRAG_DELAY_MS = 500;
+const TOUCH_DRAG_TOLERANCE_PX = 12;
+const useMarinaDragSensors = () =>
+  useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: TOUCH_DRAG_DELAY_MS, tolerance: TOUCH_DRAG_TOLERANCE_PX },
+    }),
+  );
+
+/** onDragEnd 收尾判定:触摸长按零位移抬起 = 右键。鼠标走 distance:5 激活,
+ *  零位移根本到不了 onDragEnd,不受影响。 */
+function dragEndIsTouchLongPress(event: DragEndEvent): boolean {
+  if (Math.hypot(event.delta.x, event.delta.y) >= 8) return false;
+  return event.activatorEvent instanceof TouchEvent;
+}
+
+/** 从 dnd-kit 的 activatorEvent(触摸按下点)派发 contextmenu。 */
+function dispatchTouchContextMenuFromActivator(event: DragEndEvent): void {
+  const activator = event.activatorEvent as
+    | { clientX?: number; clientY?: number; changedTouches?: TouchList }
+    | undefined;
+  let x = 0;
+  let y = 0;
+  const touch = activator?.changedTouches?.[0];
+  if (touch) {
+    x = touch.clientX;
+    y = touch.clientY;
+  } else if (typeof activator?.clientX === 'number') {
+    x = activator.clientX;
+    y = activator.clientY ?? 0;
+  }
+  dispatchSyntheticContextMenu(x, y);
 }
 /** 反解 subgroup 容器 id（__marina_subgroups__:<encodeURIComponent gid>）为 gid；失败返回 null。
  *  前缀需与 bookmark-dnd-layout.ts 的 BOOKMARK_SUBGROUP_CONTAINER_PREFIX 一致。 */
@@ -1497,9 +1592,7 @@ function BookmarkGroupList({
               renderPath={renderPath}
               onRequestAddSubgroup={onRequestAddSubgroup}
               onRequestAddFolder={onRequestAddFolder}
-              {...(externalDropTargetGroupId !== undefined
-                ? { externalDropTargetGroupId }
-                : {})}
+              {...(externalDropTargetGroupId !== undefined ? { externalDropTargetGroupId } : {})}
               {...(addFolderDisabledReason ? { addFolderDisabledReason } : {})}
             />
           );
@@ -1661,9 +1754,7 @@ function GroupBlock({
             onRequestAddSubgroup={onRequestAddSubgroup}
             onRequestAddFolder={onRequestAddFolder}
             disabled={groupDropForbidden}
-            {...(externalDropTargetGroupId !== undefined
-              ? { externalDropTargetGroupId }
-              : {})}
+            {...(externalDropTargetGroupId !== undefined ? { externalDropTargetGroupId } : {})}
             {...(addFolderDisabledReason ? { addFolderDisabledReason } : {})}
           />
           <BookmarkPathList
@@ -1803,7 +1894,8 @@ function BookmarkCategory({
     };
   }, [allGroups, allPaths]);
 
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+  // 触屏长按激活(见 useMarinaDragSensors 注释):滑动浏览不再误触拖拽。
+  const sensors = useMarinaDragSensors();
 
   /**
    * droppable 数据。拖拽 v3 是「行模型」：每个可见行（路径 li / 组标题）本身是
@@ -2216,6 +2308,11 @@ function BookmarkCategory({
   const handleDragEnd = (event: DragEndEvent): void => {
     const last = dragState;
     clearDragState();
+    // 触屏长按未移动 = 右键(语义见 useMarinaDragSensors 注释),不是拖放。
+    if (dragEndIsTouchLongPress(event)) {
+      dispatchTouchContextMenuFromActivator(event);
+      return;
+    }
     const activeData = event.active.data.current as DndData | undefined;
     const activeType = activeData?.type;
     const placement = last?.placement;
@@ -2473,9 +2570,7 @@ function PathItem({
 
   // 同 path session 拖拽：列表容器是唯一 droppable，按指针 y 在子行中点
   // 单调推导插入索引；不渲染任何占位 placeholder，列表高度恒定。
-  const sessionSensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-  );
+  const sessionSensors = useMarinaDragSensors();
   const [sessionDragState, setSessionDragState] = useState<SessionDragState | null>(null);
   const sessionListRef = useRef<HTMLUListElement | null>(null);
   // 同 BookmarkCategory：DragOverlay 跟随有延迟，拖拽期间缓存真实指针 clientY。
@@ -2506,6 +2601,11 @@ function PathItem({
   const handleSessionDragEnd = (event: DragEndEvent, sess: SessionInfo[]): void => {
     const last = sessionDragState;
     setSessionDragState(null);
+    // 触屏长按未移动 = 右键(同 handleDragEnd)。
+    if (dragEndIsTouchLongPress(event)) {
+      dispatchTouchContextMenuFromActivator(event);
+      return;
+    }
     const activeId = String(event.active.id);
     const targetIndex = last?.targetIndex;
     if (typeof targetIndex !== 'number') return;
@@ -2609,15 +2709,12 @@ function PathItem({
     const templateId = node.defaultTemplateId ?? state.defaultTemplateId ?? 'shell';
     try {
       const dims = state.lastTerminalDims;
-      const res = await window.api.invoke(
-        COMMAND_CHANNELS.SESSION_CREATE,
-        {
-          pathId: node.id,
-          templateId,
-          cols: dims.cols,
-          rows: dims.rows,
-        },
-      );
+      const res = await window.api.invoke(COMMAND_CHANNELS.SESSION_CREATE, {
+        pathId: node.id,
+        templateId,
+        cols: dims.cols,
+        rows: dims.rows,
+      });
       // 乐观 dispatch sessions/created:把新 session 立即写入 state 并选中它
       // (reducer 同时设 selectedPathId + 展开 path)。
       //
@@ -2804,10 +2901,10 @@ function PathItem({
                 // 查询失败不阻塞安装流程（见上方注释）
               }
               try {
-                const r = await window.api.invoke(
-                  COMMAND_CHANNELS.PI_BRIDGE_INSTALL,
-                  { scope: 'project', projectPath: node.path },
-                );
+                const r = await window.api.invoke(COMMAND_CHANNELS.PI_BRIDGE_INSTALL, {
+                  scope: 'project',
+                  projectPath: node.path,
+                });
                 toast.push({
                   kind: 'success',
                   message: r.alreadyInstalled

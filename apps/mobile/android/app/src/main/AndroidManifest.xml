@@ -34,9 +34,23 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
+        <!-- 退后台期间保住 WebView 进程不被冻结/限网,WS 连接不断。
+             生命周期由 MainActivity onPause/onResume 驱动(见类注释)。 -->
+        <service
+            android:name=".KeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 后台保活 FGS(用户勘误 2026-09-15 第十批③):FOREGROUND_SERVICE_DATA_SYNC
+         是 targetSdk 34+ 对 typed FGS 的强制要求;POST_NOTIFICATIONS 是 13+
+         显示「正在保持连接」通知的运行时权限(未授权时服务照常运行,仅通知
+         不可见)。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
 </manifest>

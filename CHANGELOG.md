@@ -7,6 +7,11 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
+## [0.4.0-dev.1] — 2026-09-17
+
+> 移动端适配开发构建(附录 F):安卓远程客户端第一版 + 第二至十批勘误修复。
+> MINOR 级预告(0.4.0)= 新能力子系统(ADR-042 安卓端)。
+
 ### Added
 
 - **安卓远程客户端首批(ADR-042,方案-安卓远程客户端-20260914)**:新增
@@ -31,8 +36,247 @@
   原生构建(Node ≥ 20 + g++/make/python3,无 Docker),verify --strict 门禁保留;
   `quality:linux` 同步跑在 marina-linux runner 原生 Node 上;`publish:release`
   只依赖 Linux 产物 —— tag 推送即发 deb/AppImage,Windows 包由 build:windows
-  (手动,Windows runner 未就绪)产出后由 publish-release.mjs 幂等补传;feat/*
+  (手动,Windows runner 未就绪)产出后由 publish-release.mjs 幂等补传;feat/\*
   分支可手动触发 build:linux 验证构建管线(不打 tag)。
+
+### Fixed
+
+- **安卓端第十批(双滚动条 / 设置输入生效 / 后台保活 / 档案编辑校验)**:
+  - **终端两根滚动条把手重叠**:自绘触摸轨道(第八批)与 xterm 自带滚动条
+    同时显示 —— xterm 6 的滚动条是**真实 DOM 元素**(`.xterm-scrollbar >
+    .xterm-slider`,显隐由 xterm 自己的类控制),此前用 `::-webkit-scrollbar`
+    伪元素规则隐藏对它无效。原生壳内整棵 `.xterm-scrollbar` display:none,
+    只留自绘轨道(真机:2 个原生滚动条全部隐藏)。
+  - **设置页输入必须按回车才生效**(用户裁决:退出编辑状态即应生效):
+    桌面点别处会自然 blur,Android WebView 触摸非可聚焦元素**不转移焦点**,
+    输入框一直保持聚焦,而字号/UI 缩放等大量输入是 onBlur 才提交。设置层
+    在原生壳内挂 touchstart:触点不在输入控件内就主动 blur → 走既有
+    onBlur 提交路径。移动端「点框外任意处=生效」。
+  - **手机切后台断开连接**:断连根因不在心跳(daemon 的协议层 ping 由
+    Chromium 网络栈自动回 pong,不依赖页面 JS),而是 Android 冻结后台
+    进程/限网(CachedAppFreezer/Doze)。新增 KeepAliveService 前台服务
+    (Termux 同款):onPause 启动、onResume 停止,「正在后台保持连接」
+    通知只在后台期间出现(无常驻通知);dataSync 类型(Android 15 有 6h/天
+    限时,超时由 renderer 指数退避重连兜底)。真机实测后台 146 秒(超
+    daemon 90s 心跳判死窗口)后回前台,WS RPC 双向 133ms 正常 —— 连接
+    未断。
+  - **连接档案编辑「密码留空=不改」失效**:MobileBoot 表单校验
+    `!host || !password` 一刀切,编辑模式密码留空时「保存并连接」被静默
+    拦截(点按钮无反应)。改为密码仅新增必填(`!initial && !password`),
+    编辑留空走既有的 `password || initial.password` 保留逻辑。真机:留空
+    提交后名称更新、密码保留原值。
+
+- **安卓端第九批(长按误触拖动 / 切换连接架构重做)**:
+  - **「远程界面的设置位置还是在上面」(第三轮定位修复)**:前两轮修的是
+    设置页内的内容排版,真正的问题在侧栏 —— `.sidebar-footer`(设置按钮)
+    没有 `margin-top:auto`,它跟着 tab 内容流走:「当前电脑」tab 的收藏/
+    临时/最近内容长,把它顶到左下角;「远程」tab 只有几台电脑(81px 高),
+    它紧跟在列表后面悬在屏幕上部(真机取证:footer top 151/1292)。按用户
+    裁决「设置按钮跟那两个页面不是同一个 UI 布局、它们之间应该是同级的」:
+    footer 加 `margin-top:auto` 钉死在侧栏骨架底部(与两个 tab 同级、不随
+    tab 内容移动,两端 PC/移动统一生效);`.sidebar-computers` 补
+    `flex:1 1 0 + overflow-y:auto`(与本机 tab 的 dropzone 同款内滚,电脑
+    多时列表内滚、footer 恒在底)。真机:远程/本机 tab 下设置按钮均恒在
+    左下角(top 1240/1292),设置入口点击正常。
+  - **长按想右键却几乎总是触发拖动**:TouchSensor 的 delay 350→500ms(与
+    全局长按=右键同拍,350ms 时用户还在等右键、手指微晃就进了拖拽待命)、
+    tolerance 8→12px(吞住按住时的自然抖动);新增 500ms「拿起就位」视觉
+    反馈(marina-drag-armed:轻微抬起 + 阴影,长按层与 TouchSensor 同拍
+    触发)—— 没有反馈时用户不知道拖拽何时可用,误感一半来自这里。
+  - **切换远程电脑第二次报错 + 架构重做**(用户裁决:切换必须走上一层的
+    本机逻辑,不复用之前的按钮):此前两条错误路径 —— ① shim 里
+    setLast+reload 不关旧 transport,Android WebView 卸载时序不保证及时关
+    WS,daemon 侧旧 socket 未收割时快速切回同一台会撞车;② 侧栏「远程」段
+    的 Marina 电脑项复用 PC 的 WINDOW_CREATE(开新窗口),移动端单窗口下
+    是 notSupported → 点击报错。现在:main.tsx 暴露
+    `__marinaBootSwitchProfile`(先显式 close 当前 transport 再 reload 走
+    完整 boot 序)作为切换唯一入口;侧栏远程段在原生壳内 = 切换本设备连接
+    (当前连接「当前」徽标 + 高亮);设置页「连接电脑」行主体改纯展示 +
+    独立「切换」按钮。真机:fex→工作电脑→fex 双向切换(侧栏入口 + 设置
+    入口)全部无报错。
+
+- **安卓端第八批(平板勘误:设置排版 / 键条统一 / 键盘焦点链 / 触摸滚动条)**:
+  - **设置页控件行排版与 PC 不一致**(三层根因):①移动端把行改纵向堆叠时
+    漏改 `.settings-row-meta` 的 `flex: 0 0 200px` —— 堆叠态基准从「宽」
+    变「高」,meta 被拉成 200px 高,每行标签下出现 ~160px 空白(远程面板
+    真机取证);②平板竖屏 CSS 宽 914px 却套用手机的纵向堆叠 —— 现在
+    `<700px` 才堆叠,平板竖屏沿用 PC 的标签左/控件右;③远程面板裸容器
+    无 `.settings-panel`(720px 约束)且拿 SettingRow 当标题 —— 改用 PC 的
+    subsection 标题体系。真机:pad 竖屏行高 83px、meta 54px(修复前 256/200)。
+  - **平板横屏补快捷键条**(用户裁决「保持统一」):横屏是桌面布局但同样
+    软键盘,Esc/方向键物理缺失的痛点一致 —— 键条渲染条件从「移动布局」
+    扩为「原生壳横竖两态」,CSS 选择器 marina-native+marina-mobile 双门。
+  - **设置返回主界面自动唤起输入**:Android 上「textarea 已聚焦 + 任意触摸」
+    会让 IME 回弹,而程序性聚焦有三条路径(mount 聚焦 / [active] 重激活
+    聚焦 / 关设置时 Chromium 把焦点还给恢复可见的 textarea —— focus 日志
+    取证)。建立不变式「原生壳内焦点只来自 tap 画布」:三条路径全部关闭
+    (重激活用 1.5s 抑制标记,Chromium 归还在 rAF×2 后补 blur 收掉);配套
+    「滑动即 blur」(位移 >10px 收键盘)与 helper-textarea 禁原生选择
+    (聚焦态下触摸不再走文本选择,pan 滑动可用)。真机:tap=开、滑屏=收、
+    关设置(横竖两态)=不动。
+  - **终端滚动条触摸拖动卡顿中断**:xterm 自带 webkit 滚动条在 WebView 上
+    不可拖(被 pan-y 内容滚动接管 pointercancel,长按还可能弹右键菜单)。
+    原生壳内隐藏之,终端右缘改自绘触摸轨道(TerminalTouchScroller,
+    touch-action:none,拖动 = 比例映射 term.scrollToLine)。注意 xterm 6
+    滚动是虚拟的:DOM scrollHeight/scrollTop 全是假象,位置必须读
+    buffer.viewportY/length(mobile-interactions.md §5.2)。
+  - **新增「跳到最底部」按钮**(用户裁决):浏览位置在滚动范围顶部 3/4 内
+    (ratio<0.75)时终端右下角浮出,点击 scrollToBottom(同时恢复输出自动
+    跟随);alt-buffer / 不足一屏时隐藏。轨道与按钮豁免长按层与 tap 唤键
+    盘层(滚动意图)。真机:滚到 379 行出现、点击回底部、不弹键盘。
+
+- **安卓端第七批(平板勘误:滚动死区 / 分界线拖动 / 宽度比例 / 远程段)**:
+  - **侧栏列表滚动死区**:`.sidebar-group-header` 的 `touch-action: none`
+    (桌面拖拽时代遗留)让手指落在组头上的滑动变成死区。改 `pan-y`
+    (与长按延迟拖拽兼容:激活前不动不抢滚动,激活后 dnd-kit
+    preventDefault)。左右面板触屏滚动全部正常(真机:组头起手向上滑
+    scrollTop 453、文件树面板 551)。
+  - **分界线触屏拖不动**:侧栏/dock 的 resize 把手原是 mouse 事件,触摸
+    无反应。改 pointer 事件(鼠标触摸同路);把手 `touch-action: none` +
+    `(pointer: coarse)` 下加宽(侧栏 12px / dock 18px)。真机:拖 dock
+    440→512、侧栏 188→251,数学精确。
+  - **宽度改比例制**(用户裁决:绝对像素跨设备不一致,平板上终端被挤):
+    侧栏存 ratio(localStorage,旧 px key 按当前视口一次性换算迁移);
+    右 dock 落盘同时带 px 与 `widthRatio`(per-session 后端态,main
+    updateUiLayout 白名单新增校验 0.1~0.6,含单测),跨设备渲染优先
+    ratio,旧数据退回 px + 45% 视口钳制。平板横屏侧栏默认 280→188px,
+    终端不再被挤。
+  - **侧栏「远程」段移除收藏/临时/最近**(用户裁决,PC 同步):那是本机
+    路径的收藏语义,远程段只剩「Marina 电脑」列表。
+  - **长按去重两处实现修正**(第六批遗留的真机复验):去重监听必须应用
+    启动时安装(懒装时原生 echo 先经过、标记没记上);输入类型判定改
+    `pointerdown.pointerType`(Chromium 长按会先合成 mousedown 把 touch
+    标记清掉)。真机复验:长按组头/终端单发 contextmenu,菜单开出且保持。
+
+- **安卓端第六批(平板勘误:设置避让 / 远程=本设备 / 长按=右键)**:
+  - **横屏设置页顶进状态栏**:settings-layer 是 content-shell 里的
+    `absolute inset:0`,不吃 .app-body 的避让 —— 新增
+    `html.marina-native:not(.marina-mobile)` 专用规则推 top/bottom
+    (竖屏 fixed+padding 规则不合并,否则双倍避让)。
+  - **「远程」分类改为本设备连接切换**(用户裁决):原生壳内设置页的
+    远程分类渲染 DeviceConnectionsPanel —— 本设备存储的连接档案列表/
+    当前徽标/切换/删除/添加(web-api-shim 注入 `window.api.deviceConnections`,
+    与 MobileBoot 同一 localStorage),不再显示 daemon 侧的「允许远程连接」
+    等远程设置(手机上不可操作且误导)。切换 = setLast + reload,重建
+    transport 走 MobileBoot 启动序单一真相源。
+  - **触屏长按 = 右键(全面落地)**:`attachTouchLongPressContextMenu`
+    (原生壳内常挂)在触点合成 contextmenu —— 桌面端右键菜单链(分组/
+    session/文件树/终端链接)原样复用;输入框豁免(系统选择/粘贴菜单);
+    菜单弹出后的抬手 click 被吞防误点。
+  - **滑动误触拖拽**:Sidebar 拖拽传感器由 PointerSensor(distance:5,
+    触摸同样生效 —— 手指划过分组 5px 即拖)拆为 MouseSensor(distance:5,
+    桌面不变)+ TouchSensor(delay:350ms/tolerance:8px):**长按后移动 =
+    拖拽,长按不动抬起 = 右键**(零位移 onDragEnd → 合成 contextmenu,
+    dnd 元素从全局长按层豁免,不双弹)。
+  - **WebView 长按 contextmenu 原生 echo 双发**(真机取证:组头长按菜单
+    开又关):WebView 自己合成的原生 contextmenu(按住 ~500ms)与合成
+    事件(抬手时)双发 —— 按手势去重,一次触摸只放行第一个 contextmenu,
+    touchstart 重置,鼠标不参与。
+
+- **安卓端第五批(用户裁决:平板交互 —— 方向即布局)**:
+  - **布局判定改双源**:原生壳内有 `MarinaNative` 桥时**方向就是布局**
+    —— 竖屏 = 移动布局(三页手势,同手机),横屏 = 桌面布局(三栏,
+    同 PC,无手势);非壳环境(桌面 Electron / 手机浏览器)沿用宽度断点
+    (≤900px 或横屏矮窗)。不按宽度判平板:竖屏平板 CSS 宽可 >900px
+    (如 ~915px),媒体查询够不到。
+  - **手机锁竖屏**:MainActivity 按 `smallestScreenWidthDp < 600` 识别手机,
+    锁 `USER_PORTRAIT`(允许倒持);平板不锁,横竖两态都可用。
+  - **CSS 门从媒体查询换成 html 类**(判定单源化到 mobile.ts):
+    `html.marina-native` = 原生壳横竖通用(隐标题栏 / 状态栏避让 /
+    键盘视口 / 触屏手感 —— 横屏 PC 三栏同样需要,此前横屏会把内容顶进
+    状态栏、假窗口按钮、xterm 无触屏滚动);`html.marina-mobile` = 移动
+    布局(全屏抽屉/全屏右面板/全屏设置/辅助键条)。main.tsx 渲染前预挂
+    类,防首帧闪桌面布局。`(hover: none)` 粘滞修复提为触屏通用(横屏
+    也命中)。
+  - **旋转时 dock 折叠态自动对齐**(LayoutHost snap):进入移动布局 =
+    折叠(终端页;PC 端展开着的 session 在竖屏打开不再被全屏面板盖住)、
+    转回桌面布局 = 展开(与 PC 默认一致)、移动布局下切换 session 强制落
+    终端页;稳态不写(手势开合面板不会被反向改写),桌面冷启动尊重已存
+    状态(PC 语义不变)。
+  - 软键盘视口适配(`useMobileViewportFix`)在原生壳横屏(桌面布局)
+    也启用 —— 键盘照样弹,输入行照样要避让。
+  - 规范文档 `docs/standards/mobile-interactions.md` 升 v1.2:布局判定
+    矩阵(方向/锁竖屏/类门)、旋转 snap 规则、触屏手感规则扩到横屏。
+
+- **安卓端第四批(用户裁决:三页手势导航 + 五项勘误)**:
+  - **三页手势导航模型**(用户裁决 2026-09-14):手机比例下为
+    左栏(选终端)| 终端(默认)| 右面板 三页,左右页**全屏**;终端左滑→
+    右面板、右滑→左栏,浮层上反向滑或返回键→回终端,左右页互斥。
+    检测原语 `attachMobileSwipeNavigation`(mobile.ts,window capture,
+    单指 ≥60px 且水平 >2×垂直且 ≤600ms,按落点 closest 判上下文);
+    dock 开关经 `PANEL_NAV_EVENT` 事件由 LayoutHost 执行(collapsed 是
+    per-session 后端态)。据此**移除浮球按钮与 collapsed 把手圆钮**
+    (手势是唯一入口)。手势 touchend preventDefault(非 passive)吞合成
+    mousedown,防 xterm 抢回焦点;离开终端页主动 blur helper-textarea,
+    防 IME 回弹盖住全屏页(返回键只藏 IME 不清焦点,透明 textarea 上的
+    任何触摸都会重新弹键盘 —— 真机取证)。
+  - **设置打不开**:抽屉的自动收抽屉委托原挂 onClickCapture —— 真实触摸
+    的 click 是离散事件,React 在根节点 capture/bubble 两次监听之间同步
+    flush 捕获阶段更新,capture 里卸载抽屉后「设置」按钮已不在树上,
+    bubble 阶段其 onClick(dispatch enter-settings)永不执行(真机全事件
+    流取证:touchstart→touchend→mousedown→mouseup→click 后
+    inSettingsView 仍 false)。改挂 bubble(onClick),顺序天然正确。
+  - **左抽屉「什么都没有」(与 PC 一致性)**:抽屉里 `.sidebar` 高度塌成
+    87px —— 它在桌面靠 .app-body 的 flex 行 align-stretch 获得全高,抽屉
+    内无此机制,flex column 把收藏/临时/最近全部塞进 10px 的 dropzone 缝
+    里。修复:抽屉 flex column + sidebar `flex:1 1 auto` 撑满(真机复测
+    收藏 22 条分组/临时/最近全量可见,底部设置入口沉底)。
+  - **顶部仍被状态栏遮住**:此前给 `.app-content-shell` 加 padding 的方案
+    无效 —— `.app-body` 是 `position:absolute; inset:0`,absolute 子元素的
+    containing block 是父级 padding box,padding 挡不住它(computed 39px
+    但 tab 栏仍顶进状态栏,真机取证)。改为直接覆写 `.app-body.mobile`
+    的 top/height(calc 含 vvh 与上下 inset,键盘开时不扣底部 inset),
+    辅助键条随之去掉重复的底部 inset。
+  - **移动端 dock 默认折叠**:无持久化布局的 session 在移动端兜底
+    collapsed=true(桌面仍 false),否则新建 session 被展开面板全屏盖住且
+    无把手可关。
+  - 规范文档 `docs/standards/mobile-interactions.md` 升 v1.1:三页手势
+    模型、返回键层级表更新、decorFits 反例(疑似冻结 Android 16 WebView
+    渲染表面)、IME 焦点残留规则、capture/bubble 委托陷阱入册。
+
+- **安卓端第三批(用户勘误:交互系统性缺陷)**:
+  - **状态栏遮挡**:targetSdk 35 默认 edge-to-edge 而 WebView 的
+    `env(safe-area-inset-*)` 恒为空,顶部被系统状态栏盖住 → MainActivity
+    把 systemBars inset 换算 CSS px 注入 `--android-inset-top/bottom`
+    (变化时推送 + `MarinaNative` 桥同步拉取兜底),mobile.css 全部
+    safe-area 位消费该变量。
+  - **返回键无响应**:Capacitor 默认 goBack 对 SPA 无效 → 原生转发
+    `__marinaAndroidBack` → 'marina-back' 事件逐层消费(设置子页 → 设置
+    详情 → 设置列表 → 侧栏抽屉 → 面板 dock → 回后台 moveTaskToBack,
+    绝不杀 app);设置 header 的 ‹ 走同一事件。
+  - **设置返回按钮异常**(返回后显示红×):两因 —— ‹ 一刀切跳层(改
+    back-bus 逐层退)+ 触屏 `:hover` 粘滞(`@media (hover: none)` 还原)。
+  - **键盘收起后无法再唤起**:xterm 触摸处理吃掉 tap 默认行为 →
+    TerminalView capture 阶段识别单指短 tap 主动 focus helper-textarea
+    (用户手势上下文内,IME 正常弹出);键盘判定改基线法兼容两种壳模式。
+  - **右侧面板消失**:panel-dock 从 `display:none` 改为右缘全高 overlay
+    (min(92vw,420px),collapsed=右缘把手);展开状态与 PC 同一数据源。
+  - 新增长期规范 `docs/standards/mobile-interactions.md`(断点双处同步/
+    返回键层级表/键盘/触屏规则/一致性检查清单)。
+
+- **安卓端移动交互第二批(设置可用性/比例适配/终端触屏生死线)**:
+  - **设置页单栏两级导航**:桌面双栏(200px 侧导航 + 详情)在 411px 竖屏挤压
+    不可用 → 移动布局改单栏(分类列表 → 详情页滑入,header ×/‹ 双态);依赖
+    桌面本机能力的分类(系统集成/高级/远程)在移动端整体隐藏(local-commands
+    对应命令明确报不支持,双入口/死按钮不暴露)。
+  - **软键盘视口适配**:Android WebView 沉浸模式下系统不 resize layout
+    viewport(innerHeight 恒定、visualViewport 被键盘压缩,真机实测 914→537),
+    新增 `useMobileViewportFix` 把 visualViewport.height 写到 `--marina-mobile-vh`
+    供 `.app-body.mobile` 消费 —— 键盘弹起时应用整体压到键盘上沿,输入行不再
+    被遮;键盘态给 `<html>` 挂 `.mobile-keyboard-open`(隐藏浮球);TerminalView
+    在键盘弹起时把活跃终端 scrollToBottom。
+  - **横屏手机断点**:移动布局判定从 `max-width: 900px` 扩为「窄屏 或
+    (横屏且高 ≤500px)」—— 横屏手机(914x411)此前落进桌面布局,侧栏常驻
+    280px 挤压终端;平板横屏(高 >500)仍走桌面三栏。mobile.css 媒体查询同步。
+  - **终端辅助键条**(TerminalAuxBar):Deck 底部一排横向滚动按键,补齐软键盘
+    没有的 Esc/Tab/方向/PgUp/PgDn/Home/End/Ctrl+C/D/Z/L —— 直发
+    SESSION_SEND_INPUT(与物理键同路,真机验证 ↑ 键历史回显生效)。
+  - **双指缩放终端字号**(= 桌面 Ctrl+滚轮的触屏等价):原生 passive:false
+    监听(React 合成 touch 在 WebView 下 preventDefault 不可靠),写
+    SETTINGS_UPDATE_APPEARANCE(local-control,ADR-029 外观归客户端,不写
+    daemon);移动端默认字号 13→15(411px 视口下 13px 过小,真机确认)。
+  - xterm 触屏 touch-action 从 `pan-y pinch-zoom` 收紧为 `pan-y`(双指手势
+    交应用接管,禁浏览器页面缩放干扰)。
 
 ## [0.3.3] — 2026-09-14
 
@@ -57,7 +301,7 @@
 - **pi 状态与标题的分层架构(ADR-030/032)。** `TerminalStateGetter`:agent 信号
   (working/settled)为权威主源,字节流启发式降为 fallback 且 agent 绑定时完全
   旁路 —— settled 立即 idle、无闪烁。`TitleState` 五槽派生:`user > agent >
-  program > shell > default`,pi 标题在结构上不可被 shell 子进程(如
+program > shell > default`,pi 标题在结构上不可被 shell 子进程(如
   powershell.exe 抢写"Windows PowerShell")覆盖;OSC 133 只用 D 标记前台程序
   退出,pi 的 A/B/C 分区标记不参与归类(防污染)。
 - **pi fork / 子会话的 workspace 语义(ADR-033)。** 绑定读取按对话文件当前分支

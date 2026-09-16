@@ -26,7 +26,14 @@
 
 import { COMMAND_CHANNELS, EVENT_CHANNELS, getCommandRouting } from '@shared/protocol';
 import type { RemoteTransport } from '../../../src/preload/remote-transport';
-import { handleLocalCommand, subscribeLocal } from './local-commands';
+import {
+  handleLocalCommand,
+  subscribeLocal,
+  readProfilesForBoot,
+  saveProfilesForBoot,
+  setLastProfileId,
+  type MobileDaemonProfile,
+} from './local-commands';
 
 /** 与 src/preload/index.ts 的 LOCAL_CONTROL_EVENTS 保持同步(客户端控制面事件,
  * 进程内分发,不订阅 daemon 的同名事件)。preload 若增删需同步这里。 */
@@ -86,6 +93,51 @@ export function installWebApi(opts: InstallWebApiOptions): void {
     on,
     /** webFrame 不存在于 web 环境;UI 缩放由移动端系统字号/应用内设置承担。 */
     setUiZoom: (_factor: number): void => {},
+    /**
+     * 本设备连接档案(用户裁决 2026-09-14「远程栏=切换本设备」):设置页
+     * 「远程」分类在壳内渲染的是这份 —— 与 MobileBoot 同一存储
+     * (local-commands 的 localStorage),不是 daemon 侧的远程设置。
+     * 桌面 Electron 的 api 上没有这个字段(renderer 用窄化 cast 读取,
+     * 缺失即走桌面 RemotePanel)。list() 刻意剥掉 password(最小暴露面,
+     * 编辑时留空=不改,与 MobileBoot 表单语义一致)。
+     */
+    deviceConnections: {
+      list: (): Array<Omit<MobileDaemonProfile, 'password'>> =>
+        readProfilesForBoot().map(({ password: _password, ...rest }) => rest),
+      currentId: (): string => profileId,
+      remove: (id: string): void => {
+        saveProfilesForBoot(readProfilesForBoot().filter((p) => p.id !== id));
+      },
+      save: (input: { id?: string; displayName: string; host: string; password: string }): void => {
+        const profiles = readProfilesForBoot();
+        const next: MobileDaemonProfile = {
+          id: input.id ?? globalThis.crypto.randomUUID(),
+          displayName: input.displayName || input.host,
+          host: input.host,
+          // 编辑模式密码留空 = 保留原密码(与 MobileBoot ProfileForm 语义一致)。
+          password: input.password || profiles.find((p) => p.id === input.id)?.password || '',
+          addedAt: profiles.find((p) => p.id === input.id)?.addedAt ?? Date.now(),
+        };
+        saveProfilesForBoot(
+          input.id ? profiles.map((p) => (p.id === input.id ? next : p)) : [...profiles, next],
+        );
+      },
+      /** 切换 = 转发 MobileBoot 层的切换逻辑(main.tsx 的
+       *  __marinaBootSwitchProfile:先关旧 transport 再走完整 boot 序)。用户
+       *  裁决 2026-09-15:不在 shim 里 setLast+reload 各玩各的 —— 连接/断开/
+       *  错误 UI 的单一真相源在 MobileBoot.startConnect。 */
+      connect: (id: string): void => {
+        const bootSwitch = (window as { __marinaBootSwitchProfile?: (id: string) => boolean })
+          .__marinaBootSwitchProfile;
+        if (bootSwitch) {
+          bootSwitch(id);
+          return;
+        }
+        // 兜底(理论不可达:main.tsx 总是先于 renderer 安装)
+        setLastProfileId(id);
+        window.location.reload();
+      },
+    },
     clipboard: {
       async readText(): Promise<string> {
         const res = (await invoke(COMMAND_CHANNELS.SYSTEM_CLIPBOARD_READ_TEXT, undefined)) as {

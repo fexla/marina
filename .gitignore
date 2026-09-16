@@ -76,3 +76,4 @@ docs/pr-reviews/
 # Python appears here solely as the test mock-server runtime.
 __pycache__/
 *.pyc
+dist-mobile/

@@ -80,6 +80,7 @@ import {
   useState,
   type DragEvent as ReactDragEvent,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from 'react';
 import { Terminal, type ILink, type ITheme } from '@xterm/xterm';
@@ -112,6 +113,12 @@ import { detectFileLinks, parsePathWithLineCol } from '@shared/terminal-path-det
 import { detectMdLinks } from '@shared/terminal-md-link-detector';
 import { setPendingLineJump, movePendingLineJump } from '../pending-line-jump';
 import { useAppDispatch, useAppState, useAppStateRef } from '../store';
+import {
+  isNativeShell,
+  subscribeMobileViewport,
+  terminalAutoFocusSuppressed,
+  useIsMobile,
+} from '../mobile';
 import { useCloseSession } from '../hooks/useCloseSession';
 import { readClipboardText, writeClipboardText } from '../clipboard';
 import { Icon } from './icons';
@@ -663,6 +670,176 @@ function yieldToMainThread(): Promise<void> {
   });
 }
 
+// ── 触屏终端滚动条 +「跳到底部」按钮(用户勘误④⑤ 2026-09-14,仅原生壳)──
+//
+// 为什么不用 xterm 自带滚动条:Android WebView 里它只是视觉指示 —— 触摸拖
+// 它会被 xterm 区域的 touch-action: pan-y 内容滚动接管(pointercancel,
+// 「拖一小段就中断」的根因),按住起步阶段还可能触发长按右键菜单进一步
+// 打断。这里在终端右缘自绘一条 touch-action:none 的轨道:
+// - 拖动 = 按比例映射 term.scrollToLine()(走 xterm 公共 API;pan-y 的
+//   滑动浏览不受影响,两者并存);
+// - scrollback 不足一屏 / alt-buffer(vim 等全屏 TUI)时整条隐藏;
+// - 浏览位置在滚动范围顶部 3/4 内(viewportY/denom < 0.75)时右下角浮出
+//   「跳到底部」按钮,点击调 term.scrollToBottom() —— 它同时清 xterm 的
+//   user-scroll 状态,新输出恢复自动跟随(scrollToLine 不会)。
+//
+// **不要改回 DOM 滚动指标**(2026-09-14 真机踩坑):xterm 6 的滚动是虚拟的,
+// `.xterm-viewport` / `.xterm-scrollable-element` 的 scrollHeight 恒等于
+// clientHeight,scrollTop 恒 0 —— 读它们只会得到「缓冲区是空的」的假象
+// (缓冲区实际有几百行)。位置与行程必须读 buffer API:
+//   viewportY(视口顶行)/ length(buffer 总行数)/ rows(一屏行数)。
+//
+// 刷新时机:term.onScroll(视口移动,thumb 立即跟手)+ 500ms 轮询兜底(新
+// 输出加高 buffer 不触发 onScroll)。两个控件都带 data-marina-touch-overlay,
+// 让全局长按层(mobile.ts)与 tap 唤键盘层豁免 —— 那里是滚动意图,不是
+// 输入/菜单意图。
+
+function TerminalTouchScroller({
+  termRef,
+}: {
+  termRef: { current: Terminal | null };
+}): JSX.Element {
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const thumbRef = useRef<HTMLDivElement | null>(null);
+  // 拖动中标记只用于样式(thumb 加深);pointer capture 由浏览器管理。
+  const [dragging, setDragging] = useState(false);
+  const [scrollable, setScrollable] = useState(false);
+  const [showJump, setShowJump] = useState(false);
+
+  /** buffer 行程:可滚行数(denom)、当前比例、一屏行数、buffer 总行数。
+   *  不可滚时 denom=0/ratio=1(alt-buffer 与不足一屏都归一为「不可滚」)。 */
+  const getScrollModel = useCallback((): {
+    denom: number;
+    ratio: number;
+    rows: number;
+    length: number;
+  } => {
+    const term = termRef.current;
+    if (!term) return { denom: 0, ratio: 1, rows: 1, length: 1 };
+    const buffer = term.buffer.active;
+    const denom = Math.max(0, buffer.length - term.rows);
+    if (denom === 0 || buffer.type === 'alternate') {
+      return { denom: 0, ratio: 1, rows: term.rows, length: buffer.length };
+    }
+    return {
+      denom,
+      ratio: Math.min(1, Math.max(0, buffer.viewportY / denom)),
+      rows: term.rows,
+      length: buffer.length,
+    };
+  }, [termRef]);
+
+  /** thumb 几何 + 按钮可见性一起算;onScroll 与轮询共用。 */
+  const update = useCallback((): void => {
+    const track = trackRef.current;
+    if (!track) return;
+    const { denom, ratio, rows, length } = getScrollModel();
+    const trackH = track.clientHeight;
+    // thumb 长度 = 一屏行数占 buffer 总行数的比例(与桌面滚动条同语义),
+    // 下限 36px 保证可抓。
+    const thumbH = Math.min(
+      trackH,
+      Math.max(36, Math.round((rows / Math.max(1, length)) * trackH)),
+    );
+    if (thumbRef.current) {
+      thumbRef.current.style.height = `${thumbH}px`;
+      thumbRef.current.style.top = `${Math.round(ratio * Math.max(0, trackH - thumbH))}px`;
+    }
+    setScrollable(denom > 0);
+    setShowJump(denom > 0 && ratio < 0.75);
+  }, [getScrollModel]);
+
+  useEffect(() => {
+    // onScroll 挂到「当前」term 实例上;xterm 生命周期 effect 在字体/渲染器
+    // 等设置变化时会换实例重开,身份变了要重挂。轮询兜底两件事:实例切换后
+    // 的重挂检查,以及新输出加高 buffer(onScroll 不触发)。
+    let lastTerm: Terminal | null = null;
+    let disposeScroll: (() => void) | null = null;
+    const timer = window.setInterval(() => {
+      const term = termRef.current;
+      if (term === lastTerm) {
+        update();
+        return;
+      }
+      lastTerm = term;
+      disposeScroll?.();
+      disposeScroll = null;
+      if (term) {
+        const d = term.onScroll(() => update());
+        disposeScroll = () => d.dispose();
+      }
+      update();
+    }, 500);
+    update();
+    return () => {
+      window.clearInterval(timer);
+      disposeScroll?.();
+    };
+  }, [termRef, update]);
+
+  /** 指针 Y → 比例 → term.scrollToLine。thumb 中心跟随手指(轨道即总程)。 */
+  const applyPointerToScroll = (clientY: number): void => {
+    const term = termRef.current;
+    const track = trackRef.current;
+    if (!term || !track) return;
+    const { denom, rows, length } = getScrollModel();
+    if (denom <= 0) return;
+    const rect = track.getBoundingClientRect();
+    const thumbH = Math.min(rect.height, Math.max(36, (rows / Math.max(1, length)) * rect.height));
+    const usable = Math.max(1, rect.height - thumbH);
+    const ratio = Math.min(1, Math.max(0, (clientY - rect.top - thumbH / 2) / usable));
+    term.scrollToLine(Math.round(ratio * denom));
+  };
+
+  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setDragging(true);
+    applyPointerToScroll(e.clientY);
+  };
+  const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    if (!dragging) return;
+    applyPointerToScroll(e.clientY);
+  };
+  const onPointerUp = (e: ReactPointerEvent<HTMLDivElement>): void => {
+    if (!dragging) return;
+    setDragging(false);
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  };
+
+  return (
+    <>
+      <div
+        ref={trackRef}
+        className={`terminal-touch-scroll-track${dragging ? ' dragging' : ''}`}
+        data-marina-touch-overlay=""
+        style={{ visibility: scrollable ? 'visible' : 'hidden' }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        aria-hidden="true"
+      >
+        <div ref={thumbRef} className="terminal-touch-scroll-thumb" />
+      </div>
+      {showJump && (
+        <button
+          type="button"
+          className="terminal-jump-bottom"
+          data-marina-touch-overlay=""
+          aria-label="跳到最底部"
+          title="跳到最底部"
+          onClick={() => termRef.current?.scrollToBottom()}
+        >
+          <Icon name="chevronDown" size={20} />
+        </button>
+      )}
+    </>
+  );
+}
+
 export function TerminalView({
   session,
   active,
@@ -1124,6 +1301,9 @@ export function TerminalView({
 
   // 缓存 slot 重新激活:恢复 WebGL/尺寸/焦点。普通 A→B→A 不重建 Terminal,
   // xterm 自己保留 viewportY/isUserScrolling,这才是滚动位置的一等真值。
+  // 焦点例外(用户勘误 2026-09-14):Android 壳内退出设置等"非输入意图"路径
+  // 会先埋 terminalAutoFocusSuppressed 标记 —— 此时跳过 term.focus(),否则
+  // WebView 会弹出输入法(键盘只应显式 tap 画布唤起,见 mobile.ts 注释)。
   useEffect(() => {
     if (!active) return undefined;
     const frame = requestAnimationFrame(() => {
@@ -1148,7 +1328,11 @@ export function TerminalView({
           })
           .catch(() => {});
       }
-      if (!searchVisibleRef.current) term.focus();
+      // 原生壳同 A1 例外(见 mount effect 注释):重激活(退设置/切 session)
+      // 无输入意图,不聚焦;tap 画布唤起。桌面保持「切回即可打字」。
+      if (!searchVisibleRef.current && !terminalAutoFocusSuppressed() && !isNativeShell()) {
+        term.focus();
+      }
     });
     return () => cancelAnimationFrame(frame);
   }, [active, dispatch, session.id]);
@@ -1773,11 +1957,19 @@ export function TerminalView({
     }
 
     // FOC-1:mount 后立即抢焦点 — 修复"切 tab/创建 session/接管 orphan/
-    // 退出 settings 后必须再点一次终端区才能打字"。xterm 的 helper-textarea
+    // 退出 settings 后必须再点一下终端区才能打字"。xterm 的 helper-textarea
     // 在 open() 后才存在,所以 focus 必须在 open() 之后调。
     // 不走 focusTerminal helper:searchVisibleRef 在 mount 时尚未与上层
     // hook 绑定,直接 term.focus() 即可,且 mount 时不可能 search 是开的。
-    if (activeRef.current) term.focus();
+    // 原生壳例外(用户勘误 2026-09-14 真机取证):Android 上「textarea 已
+    // 聚焦 + 之后任意触摸」会让输入法立即回弹 —— 挂载即聚焦会让滑屏浏览
+    // 终端必弹键盘。触屏键盘只应显式 tap 画布唤起(TerminalView 的 tap
+    // handler),挂载时无输入意图,不聚焦。
+    if (activeRef.current && !isNativeShell()) term.focus();
+    // xterm 的 open() 自己会 focus helper-textarea(即使上面跳过了 A1)——
+    // 原生壳内补一刀 blur,保证「焦点 = 用户显式 tap」是唯一入口;不 blur
+    // 的话 textarea 静默持有焦点,之后第一次滑屏就可能回弹输入法。
+    if (isNativeShell()) term.blur();
 
     const cols = term.cols;
     const rows = term.rows;
@@ -2288,6 +2480,87 @@ export function TerminalView({
     };
   }, [selectOnCopy, session.id]);
 
+  // 移动端软键盘弹起时把终端滚到底(ADR-042)。App.tsx 的 useMobileViewportFix
+  // 已把布局压到键盘上沿、ResizeObserver 已 re-fit 行数;但 xterm fit 只改
+  // viewport 行数,不自动滚到最新行 —— 输入行(提示符)会留在屏幕外。
+  // 桌面 Electron 没有 visualViewport,subscribeMobileViewport 直接 no-op。
+  useEffect(() => {
+    if (!active) return undefined;
+    const off = subscribeMobileViewport({
+      onHeight: () => {},
+      onKeyboardOpen: (open) => {
+        if (open) termRef.current?.scrollToBottom();
+      },
+    });
+    return off;
+  }, [active]);
+
+  // 移动端 tap 终端画布唤起键盘(2026-09-14 真机取证:xterm 的 touch 处理会
+  // 吃掉 tap 的默认行为,合成 click 不再派发 → helper-textarea 不 focus,
+  // IME 不弹;键盘一旦收起就再也唤不起,触屏终端不可用)。
+  // 这里在 capture 阶段监听(先于 xterm 的处理;preventDefault 不影响后续
+  // listener 执行),识别「单指、未滚动、短按」的 tap 后主动 focus
+  // helper-textarea —— 此刻仍在用户手势上下文内,Android WebView 会弹出
+  // 输入法(脱离手势的 programmatic focus 不会)。
+  // 生效范围:原生壳横竖两态(平板横屏同样是触屏软键盘,勘误 2026-09-14)
+  // + 非壳窄窗口(手机浏览器)。触摸滚动条/跳底按钮(data-marina-touch-overlay)
+  // 豁免 —— 点那里不是输入意图。
+  const isMobileView = useIsMobile();
+  const nativeShell = isNativeShell();
+  useEffect(() => {
+    if ((!isMobileView && !nativeShell) || !active) return undefined;
+    const host = containerRef.current;
+    if (!host) return undefined;
+    let startX = 0;
+    let startY = 0;
+    let startedAt = 0;
+    let moved = false;
+    const onTouchStart = (e: TouchEvent): void => {
+      const t = e.touches[0];
+      if (e.touches.length !== 1 || !t) {
+        moved = true; // 双指(pinch 缩放)不视为 tap
+        return;
+      }
+      if (e.target instanceof Element && e.target.closest('[data-marina-touch-overlay]')) {
+        moved = true; // 触摸滚动条/跳底按钮:点击是滚动意图,不唤键盘
+        return;
+      }
+      startX = t.clientX;
+      startY = t.clientY;
+      startedAt = Date.now();
+      moved = false;
+    };
+    const onTouchMove = (e: TouchEvent): void => {
+      const t = e.touches[0];
+      if (e.touches.length !== 1 || !t) return;
+      if (Math.hypot(t.clientX - startX, t.clientY - startY) > 10) {
+        if (!moved) {
+          moved = true;
+          // 滑动 = 滚动/浏览意图,不是输入意图(2026-09-14 真机取证:Android 上
+          // textarea 处于聚焦态时,触摸终端任意处都会让输入法立即回弹 —— 键盘
+          // 会在滑屏浏览时不断弹出)。位移越过 tap 阈值的第一帧就把焦点从
+          // helper-textarea 上摘掉,IME 随手势收起,布局回弹全高。之后想输入
+          // 再 tap 画布即可(tap 路径在下)。
+          const ta = host.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null;
+          if (ta && document.activeElement === ta) ta.blur();
+        }
+      }
+    };
+    const onTouchEnd = (): void => {
+      if (moved || Date.now() - startedAt > 500) return;
+      const ta = host.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null;
+      ta?.focus();
+    };
+    host.addEventListener('touchstart', onTouchStart, { passive: true, capture: true });
+    host.addEventListener('touchmove', onTouchMove, { passive: true, capture: true });
+    host.addEventListener('touchend', onTouchEnd, { passive: true, capture: true });
+    return () => {
+      host.removeEventListener('touchstart', onTouchStart, { capture: true });
+      host.removeEventListener('touchmove', onTouchMove, { capture: true });
+      host.removeEventListener('touchend', onTouchEnd, { capture: true });
+    };
+  }, [isMobileView, nativeShell, active]);
+
   // CP-4 勘误 #6/#9:Ctrl+F / Esc 走 attachCustomKeyEventHandler (见 xterm
   // mount effect),不再用 wrapper 的 onKeyDown — 后者优先级低于 xterm 内部
   // keydown,在终端 focus 时根本拿不到。
@@ -2573,7 +2846,13 @@ export function TerminalView({
         onContextMenu={handleContextMenu}
         onWheel={handleWheel}
         onDrop={handleTerminalDrop}
-      />
+      >
+        {/* 触屏滚动条 + 跳底按钮(勘误④⑤):仅原生壳、仅 active slot 渲染。
+            host 是 xterm 的挂载容器,React 子节点先挂、xterm 的 .xterm 元素
+            之后追加 —— 轨道 z-index 高于 .xterm(absolute inset:0)才能收到
+            触摸。 */}
+        {nativeShell && active && <TerminalTouchScroller termRef={termRef} />}
+      </div>
       {searchVisible && (
         <div
           className="terminal-search-bar"

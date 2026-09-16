@@ -136,8 +136,10 @@ const CWD_GRACE_MS = 5000;
  * 宽度属于 dock，不属于其中的 file-tree/file-panel 页面；切换页面必须保持同一
  * 几何，见 ADR-016。main 不依赖 React registry，仍保持 IPC 校验权威。
  */
-const DOCK_LAYOUT_RULES: Readonly<Record<string, { minWidth: number; maxWidth: number }>> = {
-  right: { minWidth: 280, maxWidth: 900 },
+const DOCK_LAYOUT_RULES: Readonly<
+  Record<string, { minWidth: number; maxWidth: number; minRatio: number; maxRatio: number }>
+> = {
+  right: { minWidth: 280, maxWidth: 900, minRatio: 0.1, maxRatio: 0.6 },
 };
 
 /**
@@ -1401,6 +1403,25 @@ export class SessionManager extends EventEmitter {
         const width = Math.round(dockPatch.width);
         changed ||= width !== currentDock.width;
         currentDock.width = width;
+      }
+      if (dockPatch.widthRatio !== undefined) {
+        // 跨设备比例宽度(见 DockLayoutState.widthRatio 注释):拖宽结束时
+        // renderer 同时上报 px 与 ratio,别的设备按 ratio 还原。
+        if (
+          typeof dockPatch.widthRatio !== 'number' ||
+          !Number.isFinite(dockPatch.widthRatio) ||
+          dockPatch.widthRatio < rule.minRatio ||
+          dockPatch.widthRatio > rule.maxRatio
+        ) {
+          throw new SessionManagerError(
+            'InvalidUiLayout',
+            `sessionId="${sessionId}" 的 ${dockId}.widthRatio 必须是 [${rule.minRatio}, ${rule.maxRatio}] ` +
+              `内的有限数字，实际: ${String(dockPatch.widthRatio)}。`,
+          );
+        }
+        const widthRatio = Math.round(dockPatch.widthRatio * 1000) / 1000;
+        changed ||= widthRatio !== currentDock.widthRatio;
+        currentDock.widthRatio = widthRatio;
       }
       if (dockPatch.collapsed !== undefined) {
         if (typeof dockPatch.collapsed !== 'boolean') {

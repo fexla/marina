@@ -1,19 +1,23 @@
 /**
  * @file apps/mobile/src/mobile.css
  * @purpose Android 壳专属样式:MobileBoot(连接管理)UI + 共享 renderer 的
- *   移动端适配(第一版,ADR-042 决策 4「先做一版」)。
+ *   移动端适配(ADR-042;2026-09-14 平板交互重构)。
  *
  * @分层:
  * 1. MobileBoot 样式(.mobile-boot-*):不依赖主题系统(此时还没连上 daemon,
  *    拿不到主题;用自带的深色中性配色)。
- * 2. renderer 移动适配(媒体查询 @media (max-width: 900px)):共享 renderer 的
- *    DOM 结构在窄屏的等价布局 —— 隐藏桌面自绘标题栏、侧栏改抽屉(配合
- *    App.tsx 的 isMobile 分支渲染浮球按钮)、dock 面板宽度钳制。
- *    桌面端(Electron 窗口 >= 900px)这些规则零命中,不影响 PC。
+ * 2. renderer 移动适配:以 <html> 类为门(不是媒体查询 —— 判定单源在
+ *    src/renderer/mobile.ts,平板竖屏 CSS 宽可 >900px 媒体查询够不到):
+ *    - html.marina-native:原生壳横竖通用(隐标题栏/状态栏避让/键盘视口/
+ *      触屏手感),平板横屏的 PC 三栏布局也命中;
+ *    - html.marina-mobile:移动布局 = 三页手势(全屏抽屉侧栏/全屏右面板/
+ *      全屏设置页/底部辅助键条),壳竖屏与非壳窄窗口命中。
+ *    桌面 Electron 常规窗口两类皆无,零命中,不影响 PC。
  *
  * @不要在这里做的事:
  * - 不要改主题变量(主题来自 daemon 下发的 settings,断连时 boot 界面也该好看)
  * - 不要写死px字号 —— 用根字号/相对单位,配合系统字体缩放
+ * - 不要再引入媒体查询断点(宽度判定归 mobile.ts,这里只消费类)
  */
 
 /* ════════════════════════════════════════════════════════════════
@@ -27,8 +31,8 @@
   align-items: center;
   justify-content: center;
   padding: 16px;
-  padding-top: calc(16px + env(safe-area-inset-top, 0px));
-  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  padding-top: calc(16px + var(--android-inset-top, env(safe-area-inset-top, 0px)));
+  padding-bottom: calc(16px + var(--android-inset-bottom, env(safe-area-inset-bottom, 0px)));
   background: #16141f; /* Rose Pine base 近似,未连上 daemon 前的固定配色 */
   color: #e0def4;
   font-family: system-ui, sans-serif;
@@ -194,122 +198,562 @@
 }
 
 /* ════════════════════════════════════════════════════════════════
- * 2. 共享 renderer 的移动端适配(第一版)
- *    媒体查询限窄屏;桌面 Electron 窗口宽度通常 >= 1000px,零命中。
+ * 2. 共享 renderer 的移动端适配
+ *
+ * 门是 <html> 上的两个类,不是媒体查询(2026-09-14 平板交互重构):
+ * - html.marina-native —— 运行在 Android 原生壳(main.tsx 在渲染前挂上,
+ *   横竖屏都带):壳级适配,见 2A。
+ * - html.marina-mobile —— 走移动布局(App 的 useMobileLayoutClass 按
+ *   src/renderer/mobile.ts 的判定维护:壳内=竖屏,壳外=窄窗口断点):
+ *   三页手势形态,见 2B。
+ * 判定单源在 mobile.ts(平板竖屏 CSS 宽可 >900px,媒体查询够不到,所以
+ * CSS 不再自带断点)。桌面 Electron 常规窗口两类皆无,零命中,不影响 PC。
  * ════════════════════════════════════════════════════════════════ */
 
-@media (max-width: 900px) {
-  /* 2.1 隐藏桌面自绘标题栏(WindowChrome 根类名 .app-titlebar):Android 有
-     系统状态栏,最小化/最大化/关闭与拖拽区在移动端无意义。 */
-  .app-titlebar {
-    display: none !important;
+/* ── 2A. 原生壳通用(横竖两态;非壳的窄窗口也命中 marina-mobile 份) ── */
+
+/* 2A.0 系统栏避让 + 软键盘视口,二者都作用在 .app-body 上:
+   - 避让:不能给 .app-content-shell 加 padding —— .app-body 是
+     position:absolute; inset:0,absolute 子元素的 containing block 是父级
+     的 padding box,padding 挡不住它,tab 栏仍顶进状态栏(2026-09-14
+     真机取证:computed paddingTop 39.43px 但视觉仍被遮)。正确做法是
+     直接改 app-body 自己的 top/height。横屏(PC 三栏布局)同样要避让,
+     所以挂 marina-native 而不是 marina-mobile。
+   - 键盘:Android WebView 沉浸模式下系统不 resize layout viewport
+     (innerHeight 恒定,visualViewport 被键盘压缩)。useMobileViewportFix
+     把 visualViewport.height 写到 :root 的 --marina-mobile-vh,这里消费:
+     键盘弹起时整个应用压到键盘上沿,输入行不被盖住(横屏桌面布局同理,
+     fix 在原生壳内常开)。键盘弹开时不再扣底部 inset(IME 已覆盖导航条
+     区域),关闭时扣掉(html.mobile-keyboard-open 由 useMobileViewportFix
+     维护)。无这些变量时回退 100%/0px(桌面 Electron 窄窗口,行为不变)。 */
+html.marina-native .app-body,
+html.marina-mobile .app-body {
+  top: var(--android-inset-top, env(safe-area-inset-top, 0px));
+  height: calc(
+    var(--marina-mobile-vh, 100%) - var(--android-inset-top, env(safe-area-inset-top, 0px)) -
+      var(--android-inset-bottom, env(safe-area-inset-bottom, 0px))
+  );
+}
+
+html.marina-native.mobile-keyboard-open .app-body,
+html.marina-mobile.mobile-keyboard-open .app-body {
+  height: calc(
+    var(--marina-mobile-vh, 100%) - var(--android-inset-top, env(safe-area-inset-top, 0px))
+  );
+}
+
+/* 2A.1 隐藏桌面自绘标题栏(WindowChrome 根类名 .app-titlebar):Android 有
+   系统状态栏,最小化/最大化/关闭与拖拽区在壳里无意义 —— 横屏的「PC 三栏」
+   指布局形态,不包含 PC 的窗口装饰。挂 marina-native(横竖都隐)。 */
+html.marina-native .app-titlebar,
+html.marina-mobile .app-titlebar {
+  display: none !important;
+}
+
+/* 2A.2 触屏滚动与手势手感(横竖两态都要 —— 横屏 PC 布局下 xterm 一样靠
+   系统 pan-y 滚 scrollback,长按选择一样要禁):
+   全局禁浏览器长按选择(终端内的文本选择由 xterm 自己接管)+ 禁
+   double-tap-zoom(双击缩放交给应用逻辑)。 */
+html.marina-native .app-root,
+html.marina-mobile .app-root {
+  -webkit-user-select: none;
+  user-select: none;
+  /* 双击缩放交给应用逻辑(字号调整),禁浏览器原生 double-tap-zoom */
+  touch-action: manipulation;
+}
+
+html.marina-native .app-root .xterm,
+html.marina-native .app-root .xterm *,
+html.marina-mobile .app-root .xterm,
+html.marina-mobile .app-root .xterm * {
+  /* 终端区内允许系统 pan-y 滚动 scrollback(xterm 无内建触屏滚动,第一版
+     借用原生滚动容器;选择/点击与滚动的冲突在 CP-A2 打磨)。
+     注意不给 pinch-zoom:双指缩放由 usePinchFontSize 接管(调字号而不是
+     缩放页面)。 */
+  touch-action: pan-y;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* helper-textarea 例外(勘误④真机取证):textarea 聚焦态下触摸它,Android
+   会优先走文本选择而不是 pan 滚动 —— 滑屏浏览被吃掉。它是 xterm 的隐形
+   输入代理(选中/IME 由 xterm 自己管),禁其原生选择不损失任何功能,
+   换取聚焦态下 pan 依然可用。 */
+html.marina-native .terminal-host .xterm-helper-textarea,
+html.marina-mobile .terminal-host .xterm-helper-textarea {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* 2A.3 触屏终端滚动条与「跳到底部」按钮(用户勘误④⑤ 2026-09-14,
+   TerminalView 的 TerminalTouchScroller 渲染,横竖两态):
+   - 隐藏 xterm 自带 webkit 滚动条 —— Android WebView 里它只是视觉指示
+     (触摸拖不动,还被 pan-y 内容滚动接管),留着只会和自绘轨道双轨重复。
+     xterm 6 的滚动容器是 .xterm-scrollable-element(viewport 是包装层),
+     两个都盖掉;
+   - 自绘轨道 touch-action:none,拖动 = term.scrollToLine() 比例映射,
+     不被浏览器手势管道 pointercancel(勘误④「拖一小段就中断」的根因)。 */
+html.marina-native .terminal-host .xterm-viewport::-webkit-scrollbar,
+html.marina-native .terminal-host .xterm-scrollable-element::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* xterm 6 的滚动条本体是**真实 DOM 元素**(.xterm-scrollable-element >
+   .xterm-scrollbar > .xterm-slider,由 ScrollbarVisibilityController 加
+   xterm-visible/xterm-invisible 类控制显隐)—— 上面的 ::-webkit-scrollbar
+   伪元素规则只对浏览器原生滚动条有效,藏不住它,结果自绘轨道 + xterm
+   自带滑块两根把手重叠显示(用户勘误 2026-09-15 第十批①)。原生壳内
+   整棵 .xterm-scrollbar 直接 display:none,只留自绘轨道。 */
+html.marina-native .terminal-host .xterm-scrollable-element .xterm-scrollbar {
+  display: none !important;
+}
+
+html.marina-native .terminal-touch-scroll-track {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 22px;
+  z-index: 4; /* 高于 .xterm(absolute inset:0,xterm.open 后追加在 DOM 末尾) */
+  touch-action: none;
+}
+
+html.marina-native .terminal-touch-scroll-thumb {
+  position: absolute;
+  left: 5px;
+  width: 10px;
+  border-radius: 5px;
+  background: var(--color-bg-active, rgba(144, 140, 170, 0.4));
+  transition: background 0.15s ease;
+}
+
+html.marina-native .terminal-touch-scroll-track.dragging .terminal-touch-scroll-thumb {
+  background: var(--color-accent-special, rgba(196, 167, 231, 0.8));
+}
+
+html.marina-native .terminal-jump-bottom {
+  position: absolute;
+  right: 20px;
+  bottom: 14px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-bg-elevated, rgba(128, 128, 128, 0.3));
+  background: var(--color-bg-secondary, #1f1d2e);
+  color: var(--color-text-primary, #e0def4);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+
+html.marina-native .terminal-jump-bottom:active {
+  background: var(--color-accent-special, #c4a7e7);
+  color: var(--color-bg-primary, #191724);
+}
+
+/* 2A.5 dnd「拿起就位」反馈(mobile.ts 长按层加的 class,与 Sidebar
+   TouchSensor 的 delay=500ms 同拍):长按满 500ms 元素轻微抬起 —— 告诉用户
+   "从现在起移动 = 拖动,不动抬起 = 右键"。没有这个反馈,用户不知道拖拽
+   何时激活,"想右键却总在拖"的误感一半来自这里(用户勘误 2026-09-15)。
+   dnd-kit 拖拽开始后 inline transform 会覆盖 scale,无需手动还原。 */
+html.marina-native .marina-drag-armed {
+  position: relative;
+  z-index: 5;
+  transform: scale(1.02);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  filter: brightness(1.12);
+  transition:
+    transform 0.12s ease-out,
+    box-shadow 0.12s ease-out,
+    filter 0.12s ease-out;
+}
+
+/* ── 2B. 移动布局(壳竖屏 = 三页手势;非壳窄窗口同形态) ────────────── */
+
+/* 2B.3 侧栏改抽屉(配合 App.tsx 的 isMobile 分支:开抽屉 = 渲染
+   .mobile-sidebar-backdrop + .mobile-sidebar-drawer,入口是终端右滑
+   三页手势导航 —— 没有浮球按钮,见 docs/standards/mobile-interactions.md)。
+   抽屉本体必须是 flex column 并让 .sidebar 撑满:sidebar 在桌面靠
+   .app-body 的 flex 行 align-stretch 拿到全高,抽屉里没有这个机制,
+   不给高度的话 flex column 会把它压成内容高(dropzone 只剩十几像素,
+   收藏/临时/最近全被塞进缝里 —— 2026-09-14 真机取证的抽屉塌陷)。
+   注意:.app-body 的 absolute inset:0 铺满机制不能动 —— 曾在此处画蛇添足
+   写过 position:relative,把整条内容链塌成 tab 栏高度(32px),真机截图
+   才暴露(2026-09-14)。 */
+html.marina-mobile .mobile-sidebar-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 900;
+}
+
+html.marina-mobile .mobile-sidebar-drawer {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  /* 用户裁决 2026-09-14:三页模型(左栏|终端|右面板),左右页全屏 ——
+     82vw/340px 的半屏在手机上阅读成本高。 */
+  width: 100vw;
+  padding-top: var(--android-inset-top, env(safe-area-inset-top, 0px));
+  padding-bottom: var(--android-inset-bottom, env(safe-area-inset-bottom, 0px));
+  z-index: 901;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--base, #16141f);
+  animation: marina-drawer-in 0.18s ease-out;
+}
+
+@keyframes marina-drawer-in {
+  from {
+    transform: translateX(-100%);
+  }
+}
+
+html.marina-mobile .mobile-sidebar-drawer .sidebar {
+  width: 100% !important;
+  min-width: 0 !important;
+  /* flex-basis 覆盖 Sidebar.tsx inline style 的 sidebarWidth(列方向上
+     它是"高度"初值,grow 到全高后无影响,清成 auto 语义更干净)。 */
+  flex: 1 1 auto !important;
+  flex-basis: auto !important;
+  min-height: 0;
+  border-right: none;
+}
+
+/* 2B.5 右 dock(文件树/Git/已打开面板):不参与水平 split(移动布局下桌面
+   280px 会把终端挤成 131px/12 列),改为右缘全高滑入面板 —— 组件结构
+   (LayoutHost)零改动,只是形态变化:终端恒满宽,dock 覆盖在其上。
+   触屏没有 mouse,resize 拖条隐藏(固定宽度,排序/浏览不受影响)。 */
+html.marina-mobile .layout-split {
+  position: relative;
+}
+
+html.marina-mobile .panel-dock:not(.panel-dock-collapsed) {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  /* 三页模型:右页全屏。width/max-width/min-width 都要 !important ——
+     inline style 带着桌面的 width(280-440px)与 global.css 的
+     max-width: calc(100% - 360px),不全压掉会得到 280px 的残宽
+     (真机实测的 inline-width bug)。 */
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  z-index: 60;
+  animation: marina-panel-in 0.18s ease-out;
+  background: var(--base, #16141f);
+}
+
+@keyframes marina-panel-in {
+  from {
+    transform: translateX(100%);
+  }
+}
+
+html.marina-mobile .panel-dock .panel-dock-resize-handle {
+  display: none !important;
+}
+
+html.marina-mobile .panel-dock-collapsed {
+  /* 三页模型下终端是常驻页,展开右面板的唯一入口是终端左滑
+     (用户裁决 2026-09-14:右缘把手圆钮没有意义,移除)。DOM 保留
+     (LayoutHost 仍渲染),只是不可见不占位。 */
+  display: none !important;
+}
+
+html.marina-mobile .layout-split > .layout-terminal-leaf {
+  flex: 1 1 auto !important;
+  width: 100% !important;
+  min-width: 0;
+}
+
+/* 2B.7 设置页全屏(桌面是右侧 overlay,移动布局全屏更自然) */
+html.marina-mobile .settings-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 950;
+  padding-top: var(--android-inset-top, env(safe-area-inset-top, 0px));
+}
+
+/* 原生壳横屏(桌面形态设置页,用户勘误 2026-09-14):settings-layer 是
+   content-shell 里的 absolute inset:0,不吃 .app-body 的避让 —— 不推下来的话
+   设置页头部顶进状态栏。不能并进上面的 marina-mobile 规则(那条用
+   fixed + padding,两条同时作用会双倍避让 64px),必须 :not(.marina-mobile)。 */
+html.marina-native:not(.marina-mobile) .settings-layer {
+  top: var(--android-inset-top, env(safe-area-inset-top, 0px));
+  bottom: var(--android-inset-bottom, env(safe-area-inset-bottom, 0px));
+}
+
+/* 2B.7.1 设置页单栏两级导航(SettingsView 的 .settings-body.mobile):
+   第一级 = 分类列表全宽;点分类后 .detail-open,详情页从右滑入覆盖列表,
+   header 的 × 变 ‹ 返回。桌面双栏规则(global.css)在此被以下覆盖。 */
+html.marina-mobile .settings-body.mobile {
+  position: relative;
+}
+
+html.marina-mobile .settings-body.mobile .settings-nav {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  flex: 1 1 auto;
+  padding: 8px;
+  gap: 4px;
+}
+
+html.marina-mobile .settings-body.mobile .settings-nav-item {
+  /* 触屏目标 >= 44px(桌面 8px 10px 太小,手指点不准) */
+  min-height: 44px;
+  padding: 10px 14px;
+  font-size: 14px;
+}
+
+html.marina-mobile .settings-body.mobile .settings-detail {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  transform: translateX(100%);
+  transition: transform 0.18s ease-out;
+  padding: 16px;
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.4);
+}
+
+html.marina-mobile .settings-body.mobile.detail-open .settings-detail {
+  transform: none;
+}
+
+/* 设置详情里的控件行:标签列 + 控件列只在**窄竖屏**(手机,<700px)纵向
+   堆叠;平板竖屏 CSS 宽 ~914px,沿用 PC 的「标签左 / 控件右」,和工作电脑
+   的设置观感一致(用户勘误 2026-09-14:远程面板排版与 PC 不一致)。
+   踩坑(同一勘误定位):纵向堆叠时 .settings-row-meta 的 flex:0 0 200px
+   基准从「宽」变「高」—— meta 盒被拉成 200px 高,标签下多出 ~160px 空白
+   (远程面板真机取证实测)。堆叠态必须把 basis 归还内容。 */
+@media (max-width: 699.98px) {
+  html.marina-mobile .settings-body.mobile .settings-row,
+  html.marina-mobile .settings-body.mobile .settings-field {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
   }
 
-  /* 2.2 内容壳从标题栏下方起改为覆盖全屏(标题栏隐藏后回收它的高度),
-     safe-area 让开系统状态栏与导航条。 */
-  .app-root.with-shell .app-content-shell {
-    padding-top: env(safe-area-inset-top, 0px);
-    padding-bottom: env(safe-area-inset-bottom, 0px);
+  html.marina-mobile .settings-body.mobile .settings-row-meta {
+    flex: 0 0 auto;
+  }
+}
+
+html.marina-mobile .settings-body.mobile .settings-input,
+html.marina-mobile .settings-body.mobile select,
+html.marina-mobile .settings-body.mobile .settings-button {
+  min-height: 40px;
+  font-size: 15px;
+}
+
+/* 2B.8 上下文菜单/弹窗在窄屏的可用性:宽度钳制 */
+html.marina-mobile .context-menu,
+html.marina-mobile .modal-overlay .modal-card {
+  max-width: 92vw;
+}
+
+/* 2B.9 终端辅助键条(TerminalAuxBar):渲染在 .terminal-workspace 内、
+   TerminalDeck 的下方(不进 Deck —— deck-slot 是 absolute inset:0 会盖住
+   它)。workspace 改纵向 flex:deck flex:1 占满,键条一行沉底。
+   选择器用 marina-native + marina-mobile 双门(用户勘误 2026-09-14
+   「保持统一」):平板横屏是桌面布局但同样软键盘,键条横竖两态都要;
+   marina-mobile 单独保留覆盖非壳窄窗口(手机浏览器)形态。 */
+html.marina-native .terminal-workspace,
+html.marina-mobile .terminal-workspace {
+  flex-direction: column;
+}
+
+html.marina-native .terminal-aux-bar,
+html.marina-mobile .terminal-aux-bar {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  /* 底部 inset 不在这里重复扣:app-body(2A.0)已经把底边上抬到导航条上方,
+     键条随 app-body 沉底即可。 */
+  padding: 6px 8px;
+  overflow-x: auto;
+  background: var(--surface, #1f1d2e);
+  border-top: 1px solid var(--inactive, rgba(128, 128, 128, 0.2));
+  /* 键条自身不参与双指缩放;点击不触发 300ms 延迟 */
+  touch-action: pan-x manipulation;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+html.marina-native .terminal-aux-bar::-webkit-scrollbar,
+html.marina-mobile .terminal-aux-bar::-webkit-scrollbar {
+  display: none;
+}
+
+html.marina-native .terminal-aux-key,
+html.marina-mobile .terminal-aux-key {
+  flex: 0 0 auto;
+  min-width: 44px;
+  min-height: 40px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--inactive, rgba(128, 128, 128, 0.3));
+  background: var(--base, #191724);
+  color: var(--text, #e0def4);
+  font-size: 13px;
+  font-family: inherit;
+  line-height: 1;
+}
+
+html.marina-native .terminal-aux-key:active,
+html.marina-mobile .terminal-aux-key:active {
+  background: var(--iris, #c4a7e7);
+  color: var(--base, #191724);
+}
+
+/* ── 2B.10 「远程」分类的本设备连接面板(仅原生壳挂载,用户裁决
+   2026-09-14):列表 + 当前徽标 + 删除/添加。触屏目标 ≥44px。 */
+html.marina-native .device-connections {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+html.marina-native .device-connections-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+html.marina-native .device-connections-item {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+/* 行主体(纯展示卡片,2026-09-15 起不再是按钮);「切换」独立按钮在右 */
+html.marina-native .device-connections-main {
+  flex: 1;
+  min-height: 48px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--inactive, rgba(128, 128, 128, 0.3));
+  background: var(--base, #191724);
+  color: var(--text, #e0def4);
+  text-align: left;
+}
+
+html.marina-native .device-connections-switch {
+  flex: 0 0 auto;
+  min-width: 52px;
+  min-height: 48px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--iris, #c4a7e7);
+  background: transparent;
+  color: var(--iris, #c4a7e7);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+html.marina-native .device-connections-switch:active {
+  background: var(--iris, #c4a7e7);
+  color: var(--base, #191724);
+}
+
+html.marina-native .device-connections-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+html.marina-native .device-connections-badge {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--iris, #c4a7e7);
+  color: var(--base, #191724);
+}
+
+html.marina-native .device-connections-host {
+  font-size: 12px;
+  opacity: 0.6;
+  font-family: ui-monospace, monospace;
+}
+
+html.marina-native .device-connections-remove {
+  width: 48px;
+  min-height: 48px;
+  border-radius: 8px;
+  border: 1px solid rgba(235, 111, 146, 0.35);
+  background: transparent;
+  color: #eb6f92; /* Rose Pine love,与 MobileBoot 的 danger 按钮一致 */
+  font-size: 18px;
+}
+
+html.marina-native .device-connections-empty {
+  opacity: 0.55;
+  font-size: 13px;
+  padding: 8px 2px;
+}
+
+html.marina-native .device-connections-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+html.marina-native .device-connections-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  opacity: 0.85;
+}
+
+html.marina-native .device-connections-error {
+  color: #eb6f92;
+  font-size: 12px;
+}
+
+html.marina-native .device-connections-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* ── 2C. 触屏设备通用((hover: none),与布局形态无关 —— 平板横屏的 PC
+      三栏下同样命中) ────────────────────────────────────────────────── */
+
+/* 触屏 :hover 粘滞修复:Chromium 触屏上 tap 会触发 :hover 并保持到点别处
+   (用户报的「返回后按钮变红×」即 settings-close 的 hover 态)。
+   把高频按钮的 hover 效果还原为常态 —— 触屏用 :active 给按压反馈,
+   不需要 hover。后续新按钮沿用此模式。 */
+@media (hover: none) {
+  .settings-close:hover {
+    background: transparent;
+    color: var(--color-text-primary, inherit);
+    border-color: var(--color-bg-elevated, currentColor);
   }
 
-  /* 2.3 侧栏改抽屉(配合 App.tsx 的 isMobile 分支:.app-body 加
-     .mobile 类,侧栏外层包 .mobile-sidebar-backdrop / .mobile-sidebar-drawer)。
-     抽屉从左缘滑入,宽度 82vw 上限 340px。
-     注意:.app-body 的 absolute inset:0 铺满机制不能动 —— 曾在此处画蛇添足
-     写过 position:relative,把整条内容链塌成 tab 栏高度(32px),真机截图
-     才暴露(2026-09-14)。 */
-  .mobile-sidebar-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.45);
-    z-index: 900;
+  .settings-nav-item:hover:not(.active),
+  .settings-button:hover {
+    background: transparent;
   }
 
-  .mobile-sidebar-drawer {
-    position: fixed;
-    top: 0;
-    bottom: 0;
-    left: 0;
-    width: min(82vw, 340px);
-    padding-top: env(safe-area-inset-top, 0px);
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-    z-index: 901;
-    overflow: hidden auto;
-    background: var(--base, #16141f);
-    box-shadow: 8px 0 32px rgba(0, 0, 0, 0.5);
-  }
-
-  .mobile-sidebar-drawer .sidebar {
-    width: 100% !important;
-    min-width: 0 !important;
-    border-right: none;
-  }
-
-  /* 2.4 浮球按钮(开抽屉):右下角(拇指热区 + 避开顶部 TabBar —— 左上角
-     会和第一个 tab 重叠,真机验证过的问题)。 */
-  .mobile-sidebar-fab {
-    position: fixed;
-    right: 16px;
-    bottom: calc(20px + env(safe-area-inset-bottom, 0px));
-    z-index: 800;
-    width: 48px;
-    height: 48px;
-    border-radius: 14px;
-    border: 1px solid rgba(128, 128, 128, 0.35);
-    background: var(--surface, rgba(30, 28, 40, 0.92));
-    color: var(--text, #e0def4);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 20px;
-    line-height: 1;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
-    touch-action: manipulation;
-  }
-
-  /* 2.5 右 dock(文件树/Git/已打开面板):窄屏下不能参与水平 split ——
-     桌面的 280px 钳制下限在 411px 视口会把终端挤成 131px/12 列(真机
-     实测)。v1 暂时整体隐藏,终端拿满宽;「已打开」面板的移动端形态
-     (底部 sheet + 把手)是下一个任务,涉及 LayoutHost 分支。 */
-  .panel-dock {
-    display: none !important;
-  }
-
-  .layout-split > .layout-terminal-leaf {
-    flex: 1 1 auto !important;
-    width: 100% !important;
-    min-width: 0;
-  }
-
-  /* 2.6 触屏滚动:全局允许垂直 pan,禁掉浏览器长按选择的默认干扰
-     (终端内的文本选择由 xterm 自己接管)。 */
-  .app-root {
-    -webkit-user-select: none;
-    user-select: none;
-    /* 双击缩放交给应用逻辑(字号调整),禁浏览器原生 double-tap-zoom */
-    touch-action: manipulation;
-  }
-
-  .app-root .xterm,
-  .app-root .xterm * {
-    /* 终端区内允许系统 pan-y 滚动 scrollback(xterm 无内建触屏滚动,第一版
-       借用原生滚动容器;选择/点击与滚动的冲突在 CP-A2 打磨) */
-    touch-action: pan-y pinch-zoom;
-    -webkit-user-select: text;
-    user-select: text;
-  }
-
-  /* 2.7 设置页全屏(桌面是右侧 overlay,移动端全屏更自然) */
-  .settings-layer {
-    position: fixed;
-    inset: 0;
-    z-index: 950;
-    padding-top: env(safe-area-inset-top, 0px);
-  }
-
-  /* 2.8 上下文菜单/弹窗在窄屏的可用性:宽度钳制 */
-  .context-menu,
-  .modal-overlay .modal-card {
-    max-width: 92vw;
+  .panel-dock-expand-button:hover,
+  .panel-dock-collapse-button:hover {
+    background: transparent;
+    color: var(--color-text-muted, inherit);
   }
 }
