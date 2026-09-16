@@ -1,6 +1,6 @@
 # Marina GitLab CI · 多平台打包 + 发布(GitLab 先发,GitHub 可选同步)
 #
-# 触发: push tag v* → quality → build(linux 原生自动 / windows 手动) → publish
+# 触发: push tag v* → quality → build(linux 原生自动 / windows 手动) → publish → deploy(网关镜像)
 # 分支 feat/* 推送会生成 build:linux 手动任务 —— 不打 tag 就能验证构建管线全链路
 # 对应: docs/打包发布流程.md §4、scripts/release.mjs、scripts/publish-release.mjs
 #
@@ -14,6 +14,9 @@
 #      - GITLAB_TOKEN       (必填;project access token,scope 需含 api + write_repository)
 #                           ↑ Generic Package 上传与 Release 创建都靠它。CI_JOB_TOKEN
 #                             权限不足,不能替代(脚本虽保留 JOB-TOKEN 兼容,但不建议依赖)
+#      - PKG_GATEWAY_TOKEN   (必填;包体网关上传 Bearer token,masked。网关在 VPN 内
+#                           10.0.0.1:8090,详见 Manager 仓库
+#                           common/plans/gitlab-packages-gateway.md)
 #      - GH_TOKEN           (可选,GitHub classic PAT repo scope;不配则只发 GitLab)
 #      - GITHUB_OWNER / GITHUB_REPO  (可选,默认 fexla / marina)
 #      - ELECTRON_MIRROR    (可选,默认 npmmirror)
@@ -29,11 +32,15 @@
 #   - publish 只依赖 build:linux 的产物(Linux 先发):tag 推送即发 deb/AppImage;
 #     Windows 包就绪后由 publish-release.mjs 增量补传(远端已有且 sha256 一致的
 #     文件自动跳过,同名不同内容先删后传)
+#   - deploy 把 GitLab 发布资产镜像到包体网关(OSS,VPN 内下载):镜像源选 GitLab
+#     Generic Packages 而非本地构建产物 —— Windows 包由 Windows 机器本地 publish,
+#     从不经过本 runner;拉 GitLab 才能三平台全覆盖,重跑 gateway:mirror 即补齐
 
 stages:
   - quality
   - build
   - publish
+  - deploy
 
 variables:
   GIT_DEPTH: "0"
@@ -109,7 +116,8 @@ build:windows:
   artifacts:
     name: "marina-win-$CI_COMMIT_TAG"
     when: on_success
-    expire_in: 30 days
+    # 同 build:linux:持久副本在 packages + 网关 OSS,artifacts 只作管线内传输
+    expire_in: 3 days
     paths:
       - release/
     exclude:
@@ -163,7 +171,9 @@ build:linux:
   artifacts:
     name: "marina-linux-$CI_COMMIT_REF_SLUG"
     when: on_success
-    expire_in: 30 days
+    # 包体持久副本在 GitLab packages + 网关 OSS(gateway:mirror);artifacts 只是
+    # 管线内交给 publish 的传输件,3 天足够覆盖发布后立即重跑的窗口
+    expire_in: 3 days
     paths:
       - release/
     exclude:
@@ -201,3 +211,29 @@ publish:release:
       ls -la release/"$VER"/ || ls -laR release/ | head -100
     - node scripts/publish-release.mjs --version="$VER"
   # 不把 release 再 artifact 出去 — 已在 GitLab/GitHub 上
+
+# ---------------------------------------------------------------------------
+# deploy · 包体网关镜像(GitLab 发布资产 → OSS,供 VPN 内网下载)
+# 在 publish 之后跑:从 GitLab Generic Packages 拉该版本全部文件流式上传网关。
+# 镜像源是 GitLab 而非本地产物 —— Windows 包由 Windows 机器本地 publish,
+# 从不经过本 runner;拉 GitLab 才能三平台全覆盖。Windows 资产后续到位后,在
+# tag 流水线里重跑本 job 即补齐(网关侧按 size 幂等跳过已有文件)。
+# dev/rc 版本自动带 ?tag=dev(OSS 生命周期 30 天自动删),stable 长期留存。
+# ---------------------------------------------------------------------------
+gateway:mirror:
+  stage: deploy
+  tags:
+    - marina-linux
+  needs:
+    - job: publish:release
+      artifacts: false
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v/'
+  variables:
+    # 同 publish:release:预定义变量 → 脚本环境变量名映射;GITLAB_TOKEN 与
+    # PKG_GATEWAY_TOKEN 由项目级 CI/CD 变量自动注入,勿在 job 级再声明。
+    GITLAB_URL: "$CI_SERVER_URL"
+    GITLAB_PROJECT_ID: "$CI_PROJECT_ID"
+  script:
+    - node -v
+    - node scripts/upload-gateway.mjs --tag="$CI_COMMIT_TAG"
