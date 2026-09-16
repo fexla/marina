@@ -114,7 +114,7 @@ describe('buildSpawnArgs', () => {
       args: ['-c', 'npm test'],
     });
     expect(buildSpawnArgs('sh', 'ls', false)).toEqual({
-      command: 'sh',
+      command: 'bash', // POSIX 兕底也走 bash(与 SHELL_ID_PREFERENCE 偏好序一致)
       args: ['-c', 'ls'],
     });
   });

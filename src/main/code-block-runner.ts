@@ -234,7 +234,7 @@ export function buildSpawnArgs(
   switch (language) {
     case 'bash':
     case 'sh': {
-      const command = resolveShellPath(language, shells) ?? (isWin ? 'bash' : 'sh');
+      const command = resolveShellPath(language, shells) ?? 'bash';
       // -c(非登录非交互):一次性跑完整 code。不用 -l(登录)——登录 shell 读
       //   profile 会产生副作用、可能吞掉/重定向输出(实测 Git Bash 登录 shell
       //   下输出异常)。一次性脚本执行标准用法就是 -c。

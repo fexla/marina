@@ -10,7 +10,7 @@ android {
         // versionName 跟随仓库 package.json 版本(打安卓包时同步);versionCode
         // 每次产出可安装包时 +1,保证升级安装路径成立(同 code 的包只能覆盖装)。
         versionCode 4
-        versionName "0.4.0-dev.1"
+        versionName "0.4.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

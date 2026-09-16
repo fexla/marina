@@ -108,7 +108,7 @@ describe('linkifyMarkdown 裸路径 → marina:show', () => {
     expect(decodeURIComponent(out)).toContain(`show "${resolve(CTX.homeDir!, 'notes/a.md')}"`);
   });
 
-  it('绝对路径原样(不再拼 cwd)—— 正斜杠盘符形态', () => {
+  it.skipIf(process.platform !== 'win32')('绝对路径原样(不再拼 cwd)—— 正斜杠盘符形态', () => {
     const out = linkifyMarkdown('open D:/data/log.txt:10', CTX);
     expect(decodeURIComponent(out)).toContain('show "D:/data/log.txt" --line 10');
   });

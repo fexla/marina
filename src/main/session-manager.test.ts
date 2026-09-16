@@ -371,12 +371,12 @@ function decodeEmbeddedTmuxScript(command: string): string {
 // ──────────────────────────────────────────────────────────────────
 
 describe('inferDisplayName', () => {
-  it('powershell.exe → PowerShell', () => {
+  it.skipIf(process.platform !== 'win32')('powershell.exe → PowerShell', () => {
     expect(inferDisplayName('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')).toBe(
       'PowerShell',
     );
   });
-  it('pwsh.exe → PowerShell', () => {
+  it.skipIf(process.platform !== 'win32')('pwsh.exe → PowerShell', () => {
     expect(inferDisplayName('C:\\Program Files\\PowerShell\\7\\pwsh.exe')).toBe('PowerShell');
   });
   it('cmd.exe → cmd', () => {
@@ -391,7 +391,7 @@ describe('inferDisplayName', () => {
 });
 
 describe('SessionManager — createSession', () => {
-  it('创建后返回 SessionInfo,调用 attachSession,emit sessionCreated', async () => {
+  it.skipIf(process.platform !== 'win32')('创建后返回 SessionInfo,调用 attachSession,emit sessionCreated', async () => {
     const { mgr, path } = makeManager();
     const listener = vi.fn();
     mgr.on('sessionCreated', listener);
@@ -1341,7 +1341,7 @@ describe('SessionManager — OSC 1337 cwd 跟踪 (ADR-008)', () => {
     vi.useRealTimers();
   });
 
-  it('收到 OSC 1337 CurrentDir → 更新 currentCwd,不动 pathId', async () => {
+  it.skipIf(process.platform !== 'win32')('收到 OSC 1337 CurrentDir → 更新 currentCwd,不动 pathId', async () => {
     const { mgr } = makeManager();
     const stateChanges: { currentCwd?: string }[] = [];
     mgr.on('sessionStateChanged', (e: { changes: { currentCwd?: string } }) =>
@@ -1405,7 +1405,7 @@ describe('SessionManager — OSC 1337 cwd 跟踪 (ADR-008)', () => {
     expect(cwdImpl).not.toHaveBeenCalled();
   });
 
-  it('grace 后无 OSC → 启动 cwd 轮询,用 adapter 返回值更新 currentCwd', async () => {
+  it.skipIf(process.platform !== 'win32')('grace 后无 OSC → 启动 cwd 轮询,用 adapter 返回值更新 currentCwd', async () => {
     const cwdImpl = vi.fn().mockResolvedValue('C:\\polled');
     const adapter = makeFakeAdapter({ getProcessCwdImpl: cwdImpl });
     const { mgr } = makeManager({ adapter });
@@ -1427,7 +1427,7 @@ describe('SessionManager — OSC 1337 cwd 跟踪 (ADR-008)', () => {
     expect(after.currentCwd.toLowerCase()).toBe('c:\\polled');
   });
 
-  it.each(['exit', 'destroy'] as const)(
+  it.skipIf(process.platform !== 'win32').each(['exit', 'destroy'] as const)(
     'cwd 轮询 await 期间 session %s → 晚到结果不得改 cwd 或重启 Git 重算',
     async (action) => {
       let resolveCwd: ((cwd: string) => void) | undefined;

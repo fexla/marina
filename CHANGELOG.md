@@ -7,10 +7,13 @@
 > 开发期间(未分发)的改动记入此段。版本号按附录 E 纪律 1 攒批,不在每个小改时 bump;
 > 等攒够一批、产开发构建(附录 F)或正式发布时,把本段折成一个版本号(并加日期)。
 
-## [0.4.0-dev.1] — 2026-09-17
+## [0.4.0] — 2026-09-17
 
-> 移动端适配开发构建(附录 F):安卓远程客户端第一版 + 第二至十批勘误修复。
-> MINOR 级预告(0.4.0)= 新能力子系统(ADR-042 安卓端)。
+> 主题版本(MINOR,移动端大更新):**安卓移动端适配完整落地(ADR-042)+
+> Linux 发布全自动** —— Capacitor 远程壳、移动端交互规范 v1.8 与第二~十批
+> 真机勘误;FEX shell runner 原生构建、verify 门禁(含 libnode 检查)与
+> Linux 先发发布;Electron 33.4.11(修运行时堆破坏)与 node-pty 编译修复。
+> (原拟 0.3.4,开发者裁决:移动端是大更新,跳版直定 0.4.0。)
 
 ### Added
 
@@ -38,6 +41,25 @@
   只依赖 Linux 产物 —— tag 推送即发 deb/AppImage,Windows 包由 build:windows
   (手动,Windows runner 未就绪)产出后由 publish-release.mjs 幂等补传;feat/\*
   分支可手动触发 build:linux 验证构建管线(不打 tag)。
+- **Electron 31.7.7 → 33.4.11**(精确锁定,不用 caret):31.x 运行时在部署机
+  存在堆破坏崩溃(5~25s 内 SIGSEGV,core 见 0xbadbad00 毒化,不稳定复现;
+  部署实测 32.3.3 与 33.4.11 均稳定,取后者)。
+
+### Fixed
+
+- **Linux 包内 `pty.node` 链接 `libnode.so.127`,daemon 起不来**(0.3.3 部署
+  实测发现):linux-x64 无预编译,node-pty 被 npm 生命周期用系统共享库版 Node
+  编译,install-app-deps 又因 prebuilds 目录存在而静默跳过重编;报错文案还
+  误导成 "Cannot find module './prebuilds/linux-x64/.../pty.node'"(node-pty
+  只抛最后一个候选,实为 dlopen 失败)。修复:构建流程在 electron-vite 前用
+  `@electron/rebuild -f -w node-pty` 按 Electron 头强制重编(CI 与手工流程
+  同步);verify-artifacts 新增 ldd 门禁 —— Linux 包内任何 .node 依赖
+  libnode.so 即校验失败,同类问题不再出仓。
+- **quality:linux 门禁在 Linux 跑绿**(首跑 21 败/1721 过):CodeBlockRunner
+  POSIX 兕底从 sh 改 bash(与偏好序一致,原测试自相矛盾);marina / marina.sh
+  从 Windows 提交丢了执行位 → git 补 +x;marina-cli 测试在 POSIX 改经 bash
+  跑 wrapper;Windows 行为断言(pwsh 显示名/WSL/C:\ fixtures/盘符链接化/
+  Windows 路径往返)加 skipIf 守卫,Windows 开发机全量照跑。
 
 ### Fixed
 

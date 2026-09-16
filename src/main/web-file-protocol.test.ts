@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 describe('encodePathToWebFileUrl / decodeWebFileUrl 往返', () => {
-  it('Windows 绝对路径往返', () => {
+  it.skipIf(process.platform !== 'win32')('Windows 绝对路径往返', () => {
     const p = join(root, '子目录', 'arch.html'); // realpath 后是系统真实大小写
     const url = encodePathToWebFileUrl(p);
     expect(url.startsWith('marina-file://local/')).toBe(true);
@@ -38,12 +38,12 @@ describe('encodePathToWebFileUrl / decodeWebFileUrl 往返', () => {
     expect(decodeWebFileUrl(url)).toBe(p);
   });
 
-  it('文件名含 % 、空格、中文时往返无损', () => {
+  it.skipIf(process.platform !== 'win32')('文件名含 % 、空格、中文时往返无损', () => {
     const p = join(root, 'a%2Fb 100%.html');
     expect(decodeWebFileUrl(encodePathToWebFileUrl(p))).toBe(p);
   });
 
-  it('?v= 缓存击穿查询串不影响路径解析', () => {
+  it.skipIf(process.platform !== 'win32')('?v= 缓存击穿查询串不影响路径解析', () => {
     const url = encodePathToWebFileUrl(join(root, 'x.html')) + '?v=123-456';
     expect(decodeWebFileUrl(url)).toBe(join(root, 'x.html'));
   });
@@ -180,7 +180,7 @@ describe('WebFileProtocol 白名单判定', () => {
 });
 
 describe('WebFileProtocol.handle(URL → Response)', () => {
-  it('白名单内 html:200 + Content-Type + CSP + ACAO;白名单外:403', async () => {
+  it.skipIf(process.platform !== 'win32')('白名单内 html:200 + Content-Type + CSP + ACAO;白名单外:403', async () => {
     const dirA = join(root, 'a');
     await mkdir(dirA, { recursive: true });
     const openFile = join(dirA, 'arch.html');
