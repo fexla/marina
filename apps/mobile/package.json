@@ -1,6 +1,6 @@
 {
   "name": "@marina/mobile",
-  "version": "0.4.0",
+  "version": "0.4.0-dev.1",
   "private": true,
   "description": "Marina Android client — Capacitor WebView shell reusing the desktop renderer (ADR-042)",
   "license": "MIT",
